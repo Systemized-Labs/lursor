@@ -28,7 +28,11 @@ import {
   useThreads,
   useUpdateThread,
 } from "@/api/threads"
-import { useWorkspaces } from "@/api/workspaces"
+import {
+  useDeleteWorkspace,
+  useUpdateWorkspace,
+  useWorkspaces,
+} from "@/api/workspaces"
 import {
   Sidebar,
   SidebarContent,
@@ -53,6 +57,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import {
   Dialog,
   DialogContent,
@@ -129,6 +139,14 @@ export function AppSidebar() {
   const [renameValue, setRenameValue] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<Thread | null>(null)
 
+  const [renameWsTarget, setRenameWsTarget] = useState<WorkspaceTarget | null>(
+    null
+  )
+  const [renameWsValue, setRenameWsValue] = useState("")
+  const [deleteWsTarget, setDeleteWsTarget] = useState<WorkspaceTarget | null>(
+    null
+  )
+
   const updateThread = useUpdateThread()
   const deleteThread = useMutation({
     mutationFn: (thread: Thread) => threadsApi.remove(thread.id),
@@ -136,6 +154,9 @@ export function AppSidebar() {
       qc.invalidateQueries({ queryKey: threadKeys.byWorkspace(thread.workspace_id) })
     },
   })
+
+  const updateWorkspace = useUpdateWorkspace()
+  const deleteWorkspace = useDeleteWorkspace()
 
   const closeMobile = () => {
     if (isMobile) setOpenMobile(false)
@@ -175,6 +196,37 @@ export function AppSidebar() {
         navigate(`/workspaces/${thread.workspace_id}/chat`)
       }
       toast.success("Conversation deleted")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete")
+    }
+  }
+
+  async function handleRenameWorkspace() {
+    if (!renameWsTarget) return
+    const name = renameWsValue.trim()
+    if (!name) return
+    try {
+      await updateWorkspace.mutateAsync({
+        id: renameWsTarget.id,
+        input: { name },
+      })
+      setRenameWsTarget(null)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to rename")
+    }
+  }
+
+  async function handleDeleteWorkspace() {
+    if (!deleteWsTarget) return
+    const ws = deleteWsTarget
+    try {
+      await deleteWorkspace.mutateAsync(ws.id)
+      setDeleteWsTarget(null)
+      // If the open workspace was deleted, leave the chat surface.
+      if (activeWorkspaceId === ws.id) {
+        navigate("/workspaces")
+      }
+      toast.success("Workspace deleted")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete")
     }
@@ -275,6 +327,13 @@ export function AppSidebar() {
                       setRenameValue(t.title)
                     }}
                     onDelete={setDeleteTarget}
+                    onRenameWorkspace={() => {
+                      setRenameWsTarget({ id: ws.id, name: ws.name })
+                      setRenameWsValue(ws.name)
+                    }}
+                    onDeleteWorkspace={() =>
+                      setDeleteWsTarget({ id: ws.id, name: ws.name })
+                    }
                   />
                 ))
               )}
@@ -346,8 +405,62 @@ export function AppSidebar() {
         loading={deleteThread.isPending}
         onConfirm={handleDelete}
       />
+
+      {/* Workspace rename dialog */}
+      <Dialog
+        open={Boolean(renameWsTarget)}
+        onOpenChange={(open) => !open && setRenameWsTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename workspace</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameWsValue}
+            onChange={(e) => setRenameWsValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                void handleRenameWorkspace()
+              }
+            }}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameWsTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleRenameWorkspace()}
+              disabled={updateWorkspace.isPending || !renameWsValue.trim()}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(deleteWsTarget)}
+        onOpenChange={(open) => !open && setDeleteWsTarget(null)}
+        title="Delete workspace"
+        description={
+          deleteWsTarget
+            ? `This will permanently delete "${deleteWsTarget.name || "this workspace"}" and all of its conversations.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        loading={deleteWorkspace.isPending}
+        onConfirm={handleDeleteWorkspace}
+      />
     </Sidebar>
   )
+}
+
+interface WorkspaceTarget {
+  id: string
+  name: string
 }
 
 interface WorkspaceRowProps {
@@ -361,6 +474,8 @@ interface WorkspaceRowProps {
   onNavigate: () => void
   onRename: (thread: Thread) => void
   onDelete: (thread: Thread) => void
+  onRenameWorkspace: () => void
+  onDeleteWorkspace: () => void
 }
 
 function WorkspaceRow({
@@ -374,17 +489,36 @@ function WorkspaceRow({
   onNavigate,
   onRename,
   onDelete,
+  onRenameWorkspace,
+  onDeleteWorkspace,
 }: WorkspaceRowProps) {
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
-        isActive={isActive}
-        tooltip={name}
-        onClick={onToggle}
-      >
-        {isOpen ? <FolderOpen className="size-4" /> : <Folder className="size-4" />}
-        <span>{name}</span>
-      </SidebarMenuButton>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <SidebarMenuButton isActive={isActive} tooltip={name} onClick={onToggle}>
+            {isOpen ? (
+              <FolderOpen className="size-4" />
+            ) : (
+              <Folder className="size-4" />
+            )}
+            <span>{name}</span>
+          </SidebarMenuButton>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={onRenameWorkspace}>
+            <Pencil className="size-4" />
+            Rename
+          </ContextMenuItem>
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={onDeleteWorkspace}
+          >
+            <Trash2 className="size-4" />
+            Delete
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
 
       {isOpen ? (
         <WorkspaceThreads
@@ -465,24 +599,41 @@ function SessionRow({
 }: SessionRowProps) {
   return (
     <SidebarMenuSubItem className="group/session relative">
-      <SidebarMenuSubButton asChild isActive={isActive}>
-        <Link
-          to={`/workspaces/${thread.workspace_id}/chat?c=${thread.id}`}
-          onClick={onNavigate}
-        >
-          {running ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <MessageSquare className="size-4" />
-          )}
-          <span className={cn("flex-1 truncate", running && "text-primary")}>
-            {thread.title || "Untitled"}
-          </span>
-          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground group-hover/session:hidden">
-            {timeAgo(thread.updated_at)}
-          </span>
-        </Link>
-      </SidebarMenuSubButton>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <SidebarMenuSubButton asChild isActive={isActive}>
+            <Link
+              to={`/workspaces/${thread.workspace_id}/chat?c=${thread.id}`}
+              onClick={onNavigate}
+            >
+              {running ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <MessageSquare className="size-4" />
+              )}
+              <span className={cn("flex-1 truncate", running && "text-primary")}>
+                {thread.title || "Untitled"}
+              </span>
+              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground group-hover/session:hidden">
+                {timeAgo(thread.updated_at)}
+              </span>
+            </Link>
+          </SidebarMenuSubButton>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => onRename(thread)}>
+            <Pencil className="size-4" />
+            Rename
+          </ContextMenuItem>
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => onDelete(thread)}
+          >
+            <Trash2 className="size-4" />
+            Delete
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
