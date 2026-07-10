@@ -11,6 +11,7 @@ import type { ElementType } from "react"
 
 import { Suspense, lazy } from "react"
 
+import { PreviewPanel } from "@/components/shell/preview-panel"
 import { TerminalPanel } from "@/components/shell/terminal-panel"
 import { DOCK_KINDS, type DockKind, type DockTab } from "@/hooks/use-dock-state"
 
@@ -56,10 +57,10 @@ interface RightDockProps {
 /**
  * The right-side, editor-style panel dock — the Cursor "agent view" right pane.
  *
- * Hosts closeable tabs with a `+` menu and an empty state of panel cards. Panel
- * bodies are placeholders for now; each kind will host real content (file tree,
- * preview, terminal, activity) as those features land. Tab/collapse state is
- * owned by the shell so it can be persisted per workspace.
+ * Hosts closeable tabs with a `+` menu and an empty state of panel cards. Files,
+ * preview, and terminal host real content; remaining kinds (activity) are
+ * placeholders until those features land. Tab/collapse state is owned by the
+ * shell so it can be persisted per workspace.
  */
 export function RightDock({
   workspaceId,
@@ -183,6 +184,9 @@ function DockPanelContent({
 }) {
   if (kind === "terminal") {
     return <TerminalPanel workspaceId={workspaceId} />
+  }
+  if (kind === "preview") {
+    return <PreviewPanel workspaceId={workspaceId} />
   }
   if (kind === "file") {
     return (
