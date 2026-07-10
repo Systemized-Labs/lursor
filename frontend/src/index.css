@@ -22,6 +22,8 @@
   --accent-foreground: 240 5.9% 10%;
   --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 0 0% 98%;
+  --success: 142 71% 45%;
+  --success-foreground: 0 0% 98%;
   --border: 240 5.9% 90%;
   --input: 240 5.9% 90%;
   --ring: 240 10% 3.9%;
@@ -55,6 +57,8 @@
   --accent-foreground: 0 0% 98%;
   --destructive: 0 62.8% 30.6%;
   --destructive-foreground: 0 0% 98%;
+  --success: 142 65% 45%;
+  --success-foreground: 0 0% 98%;
   --border: 240 3.7% 15.9%;
   --input: 240 3.7% 15.9%;
   --ring: 240 4.9% 83.9%;
@@ -88,6 +92,8 @@
   --color-accent-foreground: hsl(var(--accent-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -117,3 +123,26 @@
     color: hsl(var(--foreground));
   }
 }
+
+/* Chat typing indicator — soft pulse used by the streaming dots. */
+@keyframes chat-typing {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+/* highlight.js token colors (rehype-highlight), theme-token aware. */
+.hljs { color: hsl(var(--foreground)); }
+.hljs-comment, .hljs-quote { color: hsl(var(--muted-foreground)); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-subst { color: oklch(0.7 0.18 280); font-weight: 500; }
+.hljs-number, .hljs-literal, .hljs-variable, .hljs-template-variable, .hljs-tag .hljs-attr { color: oklch(0.7 0.18 200); }
+.hljs-string, .hljs-doctag { color: oklch(0.72 0.17 145); }
+.hljs-title, .hljs-section, .hljs-selector-id { color: oklch(0.75 0.2 55); font-weight: 500; }
+.hljs-type, .hljs-class .hljs-title, .hljs-tag { color: oklch(0.72 0.18 220); }
+.hljs-regexp, .hljs-link { color: oklch(0.72 0.17 145); }
+.hljs-symbol, .hljs-bullet { color: oklch(0.7 0.18 200); }
+.hljs-built_in, .hljs-builtin-name { color: oklch(0.7 0.18 200); }
+.hljs-meta { color: hsl(var(--muted-foreground)); }
+.hljs-deletion { color: oklch(0.65 0.2 27); }
+.hljs-addition { color: oklch(0.72 0.17 145); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }

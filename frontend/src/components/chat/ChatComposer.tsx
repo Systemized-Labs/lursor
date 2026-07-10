@@ -1,0 +1,82 @@
+import { type KeyboardEvent } from "react"
+import { Send, Square } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+
+export interface ChatComposerProps {
+  input: string
+  onInputChange: (value: string) => void
+  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void
+  onSend: () => void
+  onStop: () => void
+  isSending: boolean
+  /** Disables the whole composer (e.g. no thread). */
+  disabled?: boolean
+  placeholder?: string
+}
+
+/** Message composer: a growing textarea inside a rounded card, with send/stop. */
+export function ChatComposer({
+  input,
+  onInputChange,
+  onKeyDown,
+  onSend,
+  onStop,
+  isSending,
+  disabled,
+  placeholder = "Type a message…",
+}: ChatComposerProps) {
+  const hasContent = !!input.trim()
+
+  return (
+    <div className="px-4 pb-4 pt-2 flex-shrink-0">
+      <div
+        className={cn(
+          "flex items-center gap-1.5 rounded-2xl border border-border bg-background px-2.5 py-2 shadow-sm",
+          "transition-[border-color,box-shadow] duration-200",
+          "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15",
+          disabled && "opacity-60"
+        )}
+      >
+        <Textarea
+          value={input}
+          onChange={(e) => onInputChange(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder={placeholder}
+          disabled={disabled}
+          rows={1}
+          className={cn(
+            "min-h-[34px] max-h-44 resize-none border-0 bg-transparent px-1 py-1.5 text-sm leading-relaxed shadow-none",
+            "focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent disabled:bg-transparent dark:disabled:bg-transparent"
+          )}
+        />
+        {isSending ? (
+          <Button
+            onClick={onStop}
+            variant="destructive"
+            size="icon"
+            title="Stop"
+            className="h-8 w-8 flex-shrink-0 rounded-full"
+          >
+            <Square className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button
+            onClick={onSend}
+            disabled={disabled || !hasContent}
+            size="icon"
+            title="Send"
+            className={cn(
+              "h-8 w-8 flex-shrink-0 rounded-full transition-transform duration-150",
+              hasContent && !disabled && "hover:scale-105 active:scale-95"
+            )}
+          >
+            <Send className="h-4 w-4" />
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}

@@ -1,10 +1,9 @@
 import { useState } from "react"
-import { Outlet } from "react-router-dom"
+import { Outlet, useLocation } from "react-router-dom"
 import { PanelRight } from "lucide-react"
 
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { RightDock } from "@/components/shell/right-dock"
-import { Button } from "@/components/ui/button"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -27,10 +26,19 @@ import { useIsMobile } from "@/hooks/use-mobile"
  */
 export function AppShell() {
   const isMobile = useIsMobile()
+  const { pathname } = useLocation()
   const [dockCollapsed, setDockCollapsed] = useState(false)
   const dockVisible = !isMobile && !dockCollapsed
 
-  const center = (
+  // Full-bleed surfaces (e.g. a chat thread) manage their own scroll and fill
+  // the panel edge to edge; everything else keeps the padded, centered column.
+  const fullBleed = pathname.includes("/threads/")
+
+  const center = fullBleed ? (
+    <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+      <Outlet />
+    </main>
+  ) : (
     <main className="flex-1 min-w-0 overflow-y-auto">
       <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">
         <Outlet />
@@ -42,21 +50,22 @@ export function AppShell() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
-          <SidebarTrigger />
-          {!isMobile && dockCollapsed && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="ml-auto h-7 w-7"
-              title="Show panel"
-              aria-label="Show panel"
-              onClick={() => setDockCollapsed(false)}
-            >
-              <PanelRight className="h-4 w-4" />
-            </Button>
-          )}
-        </header>
+        {/* Mobile-only floating trigger to open the off-canvas sidebar (the
+            sidebar's own toggle is off-screen while it's collapsed on phones). */}
+        <SidebarTrigger className="absolute left-2 top-2 z-40 h-8 w-8 rounded-md border border-border bg-background/80 shadow-sm backdrop-blur md:hidden" />
+
+        {/* Re-open the right dock after it's been hidden. */}
+        {!isMobile && dockCollapsed && (
+          <button
+            type="button"
+            onClick={() => setDockCollapsed(false)}
+            title="Show panel"
+            aria-label="Show panel"
+            className="absolute right-3 top-3 z-40 rounded-md border border-border bg-background p-1.5 text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground"
+          >
+            <PanelRight className="h-4 w-4" />
+          </button>
+        )}
 
         {dockVisible ? (
           <ResizablePanelGroup

@@ -14,6 +14,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -49,23 +50,19 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              size="lg"
-              tooltip="Hearthstack"
-              className="gap-2.5"
-              asChild
-            >
-              <Link to="/agents" onClick={closeMobile}>
-                <Hexagon className="!size-6 shrink-0 text-primary" />
-                <span className="text-lg font-bold tracking-tight text-foreground">
-                  Hearthstack
-                </span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        <div className="flex items-center gap-1 group-data-[collapsible=icon]:justify-center">
+          <Link
+            to="/agents"
+            onClick={closeMobile}
+            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:hidden"
+          >
+            <Hexagon className="size-6 shrink-0 text-primary" />
+            <span className="truncate text-lg font-bold tracking-tight text-foreground">
+              Hearthstack
+            </span>
+          </Link>
+          <SidebarTrigger className="shrink-0" />
+        </div>
       </SidebarHeader>
 
       <SidebarContent>
