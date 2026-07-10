@@ -5,6 +5,7 @@ import {
   Loader2,
   MessageSquare,
   MoreHorizontal,
+  Palette,
   Pencil,
   SlidersHorizontal,
   Trash2,
@@ -73,7 +74,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ConfirmDialog } from "@/components/confirm-dialog"
-import { ThemeToggle } from "@/components/theme-toggle"
+import { ThemePicker } from "@/components/ui/theme-picker"
 import { cn } from "@/lib/utils"
 
 interface NavItem {
@@ -343,7 +344,19 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <div className="flex items-center justify-between group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
-              <ThemeToggle />
+              <ThemePicker
+                trigger={(open) => (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Choose theme"
+                    onClick={open}
+                  >
+                    <Palette className="h-5 w-5" />
+                    <span className="sr-only">Choose theme</span>
+                  </Button>
+                )}
+              />
               <SidebarTrigger className="shrink-0" />
             </div>
           </SidebarMenuItem>
