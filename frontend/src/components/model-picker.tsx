@@ -300,7 +300,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
         onClick={handleOpen}
         className="flex h-9 w-full items-center justify-between rounded-lg border border-transparent bg-muted/60 px-3 py-1 text-sm transition-colors hover:bg-muted focus:outline-none focus:border-ring/40 focus:bg-background focus:ring-2 focus:ring-ring/15"
       >
-        <span className="truncate text-foreground">{displayLabel}</span>
+        <span className="min-w-0 truncate text-foreground">{displayLabel}</span>
         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
       </button>
 
