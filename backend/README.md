@@ -1,6 +1,6 @@
-# Hearthstack Backend
+# Lursor Backend
 
-FastAPI + SQLite backend for the Hearthstack agent harness. Agents are built on
+FastAPI + SQLite backend for the Lursor agent harness. Agents are built on
 [pydantic-deepagents](https://github.com/vstorm-co/pydantic-deepagents) and chat
 is served over the [AG-UI](https://github.com/ag-ui-protocol/ag-ui) protocol via
 Pydantic AI's first-party AG-UI adapter.

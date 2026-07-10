@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 # Point the app at throwaway DB + workspace dirs before importing it.
-_tmp = tempfile.mkdtemp(prefix="hearthstack-test-")
+_tmp = tempfile.mkdtemp(prefix="lursor-test-")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
 os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
 # Dummy key so provider construction succeeds offline (no network call is made).

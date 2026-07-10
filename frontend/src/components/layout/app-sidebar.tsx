@@ -199,7 +199,7 @@ export function AppSidebar() {
           >
             <Hexagon className="size-6 shrink-0 text-primary" />
             <span className="truncate text-lg font-bold tracking-tight text-foreground">
-              Hearthstack
+              Lursor
             </span>
           </Link>
           <SidebarTrigger className="shrink-0" />

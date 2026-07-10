@@ -158,7 +158,7 @@ export function WorkspaceFormDialog({
                 id="workspace-path"
                 className="flex-1"
                 value={form.path}
-                placeholder="~/.hearthstack/workspaces/{id}"
+                placeholder="~/.lursor/workspaces/{id}"
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, path: e.target.value }))
                 }

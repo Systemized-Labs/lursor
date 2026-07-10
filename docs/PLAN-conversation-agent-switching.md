@@ -24,7 +24,7 @@
 
 ## 3. Target architecture
 
-Hearthstack **Workspace** maps onto swarmcore **Project**; the swarmcore chat engine
+Lursor **Workspace** maps onto swarmcore **Project**; the swarmcore chat engine
 (`use-chat.ts`) + global-chat sidebar layout is what we port.
 
 ```

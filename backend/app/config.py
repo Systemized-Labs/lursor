@@ -25,19 +25,19 @@ class Settings(BaseSettings):
     )
 
     # --- Server ---
-    app_name: str = "Hearthstack"
+    app_name: str = "Lursor"
     debug: bool = True
     # Origins allowed to call the API (the Vite dev server by default).
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     # --- Database ---
-    database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'hearthstack.db'}"
+    database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'lursor.db'}"
 
     # --- Workspaces ---
     # Root directory under which each workspace gets its own folder (named by its
     # id) unless a custom location is supplied. This folder becomes the deep
     # agent's filesystem root when it runs.
-    workspaces_dir: Path = Path.home() / ".hearthstack" / "workspaces"
+    workspaces_dir: Path = Path.home() / ".lursor" / "workspaces"
 
     # --- Agents ---
     # Default model used when an agent row does not specify one.

@@ -1,7 +1,7 @@
 [project]
-name = "hearthstack-backend"
+name = "lursor-backend"
 version = "0.1.0"
-description = "Hearthstack agent-harness backend (FastAPI + pydantic-deepagents)"
+description = "Lursor agent-harness backend (FastAPI + pydantic-deepagents)"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi>=0.115",

@@ -1,6 +1,6 @@
-# Hearthstack Frontend
+# Lursor Frontend
 
-Admin UI and streaming chat for the Hearthstack agent harness. Built with Vite,
+Admin UI and streaming chat for the Lursor agent harness. Built with Vite,
 React 18, TypeScript, Tailwind CSS, shadcn/ui, React Router, TanStack Query, and
 the AG-UI client for streaming chat over SSE.
 

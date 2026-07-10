@@ -86,7 +86,7 @@ export interface WorkspaceInput {
   description: string
   agent_ids: string[]
   // Optional custom folder location. Blank uses the default
-  // ~/.hearthstack/workspaces/{id} location.
+  // ~/.lursor/workspaces/{id} location.
   path?: string
 }
 

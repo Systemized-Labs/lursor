@@ -1,4 +1,4 @@
-# Hearthstack
+# Lursor
 
 A self-hosted **agent harness**: create and manage AI agents, skills, and tools;
 organize them into **workspaces** (directories on disk); and chat with them in
@@ -13,7 +13,7 @@ Built on:
 ## Structure
 
 ```
-hearthstack/
+lursor/
   backend/     FastAPI + pydantic-deepagents + SQLite   (see backend/README.md)
   frontend/    Vite + React + Tailwind + shadcn/ui       (see frontend/README.md)
   docs/        Plans and design notes (docs/PLAN.md)

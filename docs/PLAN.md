@@ -1,4 +1,4 @@
-# Hearthstack — Agent Harness MVP Plan
+# Lursor — Agent Harness MVP Plan
 
 > Status: **MVP IMPLEMENTED** (2026-07-10). Backend + frontend scaffolded and verified end-to-end. See "Verification" at the bottom. Decisions below are locked.
 
@@ -29,7 +29,7 @@ Sources:
 | Auth | **Single-user, no auth.** DB carries a nullable `user_id` everywhere so multi-tenant auth drops in later without a painful migration. |
 | Models | Served via **OpenRouter** (Pydantic AI `openrouter:` prefix). Default `openrouter:qwen/qwen3.7-max`, configurable per-agent. |
 
-> Note on location: current working dir is `hearthstack/client`. I'll scaffold the monorepo **in this directory as the repo root**. If you'd rather it live at `hearthstack/` (renaming `client`), say so before we start.
+> Note on location: current working dir is `lursor/client`. I'll scaffold the monorepo **in this directory as the repo root**. If you'd rather it live at `lursor/` (renaming `client`), say so before we start.
 
 ## 3. Core domain model
 
@@ -144,7 +144,7 @@ Auth/multi-tenancy · Docker sandbox execution · live-run forking · MCP tool w
 ## 7. Resolved decisions
 1. **Install source:** pydantic-deep installed from the GitHub repo (`pydantic-deep @ git+https://github.com/vstorm-co/pydantic-deepagents.git`). Also required `ag-ui-protocol` for the adapter.
 2. **Frontend styling:** Tailwind **v4** (CSS-first config via `@tailwindcss/vite`, `@theme inline` tokens, `tw-animate-css`) + shadcn/ui components (hand-written on Radix).
-3. **Directory:** monorepo root is `hearthstack/` (the `client` subdir was removed).
+3. **Directory:** monorepo root is `lursor/` (the `client` subdir was removed).
 4. **MVP scope:** no additions to the deferred list.
 
 ## 8. Verification (2026-07-10)
@@ -152,7 +152,7 @@ Auth/multi-tenancy · Docker sandbox execution · live-run forking · MCP tool w
 - **Backend:** `ruff` clean; `pytest` 4/4 pass; live `uvicorn` serves `/api/health` + full CRUD; seed script runs.
 - **Deep agent:** `builder.build_deep_agent` constructs a real `pydantic_ai.Agent` offline.
 - **AG-UI chat, end-to-end:** POSTing a `RunAgentInput` to `/api/threads/{id}/chat` streams SSE events (`RUN_STARTED` → token/tool events; ends in `RUN_ERROR` only when no valid provider key is set). User turn persisted; assistant turn persists on successful runs.
-- **Frontend:** `pnpm build` (tsc + vite) passes with zero type errors; dev server serves the app (title "Hearthstack") with router, CRUD pages, and the AG-UI chat page wired to the backend endpoint.
+- **Frontend:** `pnpm build` (tsc + vite) passes with zero type errors; dev server serves the app (title "Lursor") with router, CRUD pages, and the AG-UI chat page wired to the backend endpoint.
 
 ### Confirmed integration facts (from introspecting installed packages)
 - `create_deep_agent(...)` returns a `pydantic_ai.Agent`, so it drops straight into `AGUIAdapter.dispatch_request`.
