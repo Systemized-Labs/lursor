@@ -100,7 +100,9 @@ export interface ThreadMessage {
   thread_id: string
   role: MessageRole
   content: string
-  tool_calls: ThreadMessageToolCall[] | null
+  // Backend persists this as an opaque JSON object (default `{}`); it is only
+  // an array once real tool-call payloads are stored. Callers must narrow.
+  tool_calls: ThreadMessageToolCall[] | Record<string, unknown> | null
   created_at: string
 }
 

@@ -15,11 +15,15 @@ function toChatMessages(messages: ThreadMessage[]): ChatMessage[] {
     id: m.id,
     role: m.role,
     content: m.content,
-    toolCalls: (m.tool_calls ?? []).map((tc) => ({
-      id: tc.id,
-      name: tc.name,
-      args: tc.arguments,
-    })),
+    // The backend persists `tool_calls` as an opaque JSON object (default `{}`),
+    // so guard against anything that isn't the expected array before mapping.
+    toolCalls: Array.isArray(m.tool_calls)
+      ? m.tool_calls.map((tc) => ({
+          id: tc.id,
+          name: tc.name,
+          args: tc.arguments,
+        }))
+      : [],
   }))
 }
 
