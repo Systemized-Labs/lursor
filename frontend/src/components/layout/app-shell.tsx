@@ -1,88 +1,86 @@
-import { Bot, Boxes, Hammer, Sparkles } from "lucide-react"
-import type { ComponentType } from "react"
-import { NavLink, Outlet } from "react-router-dom"
+import { useState } from "react"
+import { Outlet } from "react-router-dom"
+import { PanelRight } from "lucide-react"
 
-import { cn } from "@/lib/utils"
-import { ThemeToggle } from "@/components/theme-toggle"
+import { AppSidebar } from "@/components/layout/app-sidebar"
+import { RightDock } from "@/components/shell/right-dock"
+import { Button } from "@/components/ui/button"
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar"
+import { useIsMobile } from "@/hooks/use-mobile"
 
-interface NavItem {
-  to: string
-  label: string
-  icon: ComponentType<{ className?: string }>
-}
-
-const navItems: NavItem[] = [
-  { to: "/agents", label: "Agents", icon: Bot },
-  { to: "/skills", label: "Skills", icon: Sparkles },
-  { to: "/tools", label: "Tools", icon: Hammer },
-  { to: "/workspaces", label: "Workspaces", icon: Boxes },
-]
-
+/**
+ * The persistent app shell: a Cursor-style collapsible sidebar, the routed
+ * center content, and a resizable right-side dock. A slim inset header carries
+ * the sidebar toggle and (when the dock is hidden) a re-open affordance.
+ *
+ * The dock is a side-by-side split, so on phones it would crush the content —
+ * there it collapses and the center takes the full width.
+ */
 export function AppShell() {
-  return (
-    <div className="flex min-h-screen bg-background">
-      <aside className="hidden w-60 shrink-0 flex-col border-r bg-card md:flex">
-        <div className="flex h-16 items-center border-b px-6">
-          <span className="text-lg font-semibold tracking-tight text-foreground">
-            Hearthstack
-          </span>
-        </div>
-        <nav className="flex flex-1 flex-col gap-1 p-3">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                )
-              }
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
+  const isMobile = useIsMobile()
+  const [dockCollapsed, setDockCollapsed] = useState(false)
+  const dockVisible = !isMobile && !dockCollapsed
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center justify-between border-b bg-card px-4 sm:px-6">
-          <div className="flex items-center gap-4 md:hidden">
-            <span className="text-lg font-semibold tracking-tight text-foreground">
-              Hearthstack
-            </span>
-          </div>
-          <nav className="flex items-center gap-1 md:hidden">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  cn(
-                    "rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
-                    isActive && "bg-accent text-accent-foreground"
-                  )
-                }
-                aria-label={item.label}
-              >
-                <item.icon className="h-4 w-4" />
-              </NavLink>
-            ))}
-          </nav>
-          <div className="ml-auto flex items-center gap-2">
-            <ThemeToggle />
-          </div>
+  const center = (
+    <main className="flex-1 min-w-0 overflow-y-auto">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">
+        <Outlet />
+      </div>
+    </main>
+  )
+
+  return (
+    <SidebarProvider>
+      <AppSidebar />
+      <SidebarInset>
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
+          <SidebarTrigger />
+          {!isMobile && dockCollapsed && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto h-7 w-7"
+              title="Show panel"
+              aria-label="Show panel"
+              onClick={() => setDockCollapsed(false)}
+            >
+              <PanelRight className="h-4 w-4" />
+            </Button>
+          )}
         </header>
 
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">
-            <Outlet />
-          </div>
-        </main>
-      </div>
-    </div>
+        {dockVisible ? (
+          <ResizablePanelGroup
+            direction="horizontal"
+            autoSaveId="app-shell-dock"
+            className="flex-1 min-h-0"
+          >
+            <ResizablePanel minSize={30} className="flex flex-col min-w-0">
+              {center}
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel
+              defaultSize={40}
+              minSize={22}
+              maxSize={70}
+              className="flex flex-col min-w-0"
+            >
+              <RightDock onCollapse={() => setDockCollapsed(true)} />
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        ) : (
+          center
+        )}
+      </SidebarInset>
+    </SidebarProvider>
   )
 }
