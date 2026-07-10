@@ -11,12 +11,12 @@ from pathlib import Path
 
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 from pydantic_deep import Skill as DeepSkill
 
+from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider
@@ -47,7 +47,12 @@ def resolve_model(
     if provider is None or not model_name:
         return settings.default_model
 
-    return OpenAIChatModel(
+    # Route through the tolerant model: local OpenAI-compatible servers
+    # (vLLM/llama.cpp/LM Studio, often behind a LiteLLM proxy) run strict chat
+    # templates that reject request shapes cloud providers accept. It normalizes
+    # the outgoing messages (merges the leading system-message run, coerces
+    # tool-call arguments to JSON, guarantees a user turn).
+    model = TolerantOpenAIChatModel(
         model_name,
         provider=OpenAIProvider(
             base_url=provider.base_url,
@@ -56,6 +61,9 @@ def resolve_model(
             api_key=provider.api_key or "api-key-not-set",
         ),
     )
+    # Strict local templates reject a request with no user turn; guarantee one.
+    model._ensure_user_message = True
+    return model
 
 
 def build_deep_agent(
