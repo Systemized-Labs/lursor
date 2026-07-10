@@ -1,5 +1,3 @@
-import { useState } from "react"
-import { useLocation } from "react-router-dom"
 import {
   Activity,
   FileCode,
@@ -12,6 +10,7 @@ import {
 import type { ElementType } from "react"
 
 import { TerminalPanel } from "@/components/shell/terminal-panel"
+import { DOCK_KINDS, type DockKind, type DockTab } from "@/hooks/use-dock-state"
 
 import {
   DropdownMenu,
@@ -23,11 +22,6 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 
-/** Panel kinds the dock can host. Placeholders until real content is wired up. */
-export type DockKind = "file" | "preview" | "terminal" | "activity"
-
-const DOCK_KINDS: DockKind[] = ["file", "preview", "terminal", "activity"]
-
 const TAB_META: Record<DockKind, { title: string; icon: ElementType }> = {
   file: { title: "Files", icon: FileCode },
   preview: { title: "Preview", icon: Globe },
@@ -35,15 +29,16 @@ const TAB_META: Record<DockKind, { title: string; icon: ElementType }> = {
   activity: { title: "Activity", icon: Activity },
 }
 
-interface DockTab {
-  id: string
-  kind: DockKind
-}
-
-let tabSeq = 0
-const nextTabId = () => `dock-tab-${++tabSeq}`
-
 interface RightDockProps {
+  /** The active workspace id, used to root dock content (e.g. the terminal). */
+  workspaceId?: string
+  /** Open tabs, their active selection, and mutations — owned by the shell so
+   *  they can be persisted per workspace. */
+  tabs: DockTab[]
+  activeId: string | null
+  onOpenTab: (kind: DockKind) => void
+  onCloseTab: (id: string) => void
+  onSelectTab: (id: string) => void
   /** Collapse the dock (shell hides it and offers a re-open affordance). */
   onCollapse: () => void
 }
@@ -53,32 +48,18 @@ interface RightDockProps {
  *
  * Hosts closeable tabs with a `+` menu and an empty state of panel cards. Panel
  * bodies are placeholders for now; each kind will host real content (file tree,
- * preview, terminal, activity) as those features land.
+ * preview, terminal, activity) as those features land. Tab/collapse state is
+ * owned by the shell so it can be persisted per workspace.
  */
-export function RightDock({ onCollapse }: RightDockProps) {
-  const [tabs, setTabs] = useState<DockTab[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
-  // The active workspace (from `/workspaces/:id/...`) roots dock content like
-  // the terminal in that workspace's directory.
-  const { pathname } = useLocation()
-  const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
-
-  function openTab(kind: DockKind) {
-    const tab: DockTab = { id: nextTabId(), kind }
-    setTabs((prev) => [...prev, tab])
-    setActiveId(tab.id)
-  }
-
-  function closeTab(id: string) {
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id)
-      setActiveId((cur) =>
-        cur === id ? next[next.length - 1]?.id ?? null : cur
-      )
-      return next
-    })
-  }
-
+export function RightDock({
+  workspaceId,
+  tabs,
+  activeId,
+  onOpenTab,
+  onCloseTab,
+  onSelectTab,
+  onCollapse,
+}: RightDockProps) {
   return (
     <div className="flex-1 flex flex-col min-h-0 border-l border-border bg-background">
       {/* Tab strip */}
@@ -93,9 +74,9 @@ export function RightDock({ onCollapse }: RightDockProps) {
                 role="tab"
                 aria-selected={isActive}
                 tabIndex={0}
-                onClick={() => setActiveId(t.id)}
+                onClick={() => onSelectTab(t.id)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") setActiveId(t.id)
+                  if (e.key === "Enter" || e.key === " ") onSelectTab(t.id)
                 }}
                 className={cn(
                   "group flex items-center gap-1.5 rounded-md px-2 py-1 text-xs whitespace-nowrap cursor-pointer",
@@ -111,7 +92,7 @@ export function RightDock({ onCollapse }: RightDockProps) {
                   aria-label={`Close ${TAB_META[t.kind].title}`}
                   onClick={(e) => {
                     e.stopPropagation()
-                    closeTab(t.id)
+                    onCloseTab(t.id)
                   }}
                   className="ml-0.5 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-background/60"
                 >
@@ -139,7 +120,7 @@ export function RightDock({ onCollapse }: RightDockProps) {
               {DOCK_KINDS.map((kind) => {
                 const Icon = TAB_META[kind].icon
                 return (
-                  <DropdownMenuItem key={kind} onClick={() => openTab(kind)}>
+                  <DropdownMenuItem key={kind} onClick={() => onOpenTab(kind)}>
                     <Icon className="h-4 w-4" />
                     <span>{TAB_META[kind].title}</span>
                   </DropdownMenuItem>
@@ -163,7 +144,7 @@ export function RightDock({ onCollapse }: RightDockProps) {
       {/* Body: all open panels mounted, inactive ones hidden */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {tabs.length === 0 ? (
-          <DockEmptyState onOpen={openTab} />
+          <DockEmptyState onOpen={onOpenTab} />
         ) : (
           tabs.map((t) => (
             <div

@@ -1,8 +1,7 @@
-import { useState } from "react"
 import { Outlet, useLocation } from "react-router-dom"
-import { PanelRight } from "lucide-react"
 
 import { AppSidebar } from "@/components/layout/app-sidebar"
+import { DockRail } from "@/components/shell/dock-rail"
 import { RightDock } from "@/components/shell/right-dock"
 import {
   ResizableHandle,
@@ -14,6 +13,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+import { useDockState } from "@/hooks/use-dock-state"
 import { useIsMobile } from "@/hooks/use-mobile"
 
 /**
@@ -27,8 +27,12 @@ import { useIsMobile } from "@/hooks/use-mobile"
 export function AppShell() {
   const isMobile = useIsMobile()
   const { pathname } = useLocation()
-  const [dockCollapsed, setDockCollapsed] = useState(false)
-  const dockVisible = !isMobile && !dockCollapsed
+  // The active workspace (from `/workspaces/:id/...`) keys the dock's persisted
+  // layout, so each workspace remembers whether its dock is open and which
+  // panels were up.
+  const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
+  const dock = useDockState(workspaceId)
+  const dockVisible = !isMobile && !dock.collapsed
 
   // Full-bleed surfaces (e.g. a chat thread) manage their own scroll and fill
   // the panel edge to edge; everything else keeps the padded, centered column.
@@ -58,41 +62,47 @@ export function AppShell() {
             sidebar's own toggle is off-screen while it's collapsed on phones). */}
         <SidebarTrigger className="absolute left-2 top-2 z-40 h-8 w-8 rounded-md border border-border bg-background/80 shadow-sm backdrop-blur md:hidden" />
 
-        {/* Re-open the right dock after it's been hidden. */}
-        {!isMobile && dockCollapsed && (
-          <button
-            type="button"
-            onClick={() => setDockCollapsed(false)}
-            title="Show panel"
-            aria-label="Show panel"
-            className="absolute right-3 top-3 z-40 rounded-md border border-border bg-background p-1.5 text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground"
-          >
-            <PanelRight className="h-4 w-4" />
-          </button>
-        )}
+        {/* A horizontal row: the content area (with its optional dock split) and
+            a thin, always-present rail whose toggle governs the dock. The rail
+            owns a real column, so its toggle never overlaps page content. */}
+        <div className="flex flex-1 min-h-0">
+          <div className="flex flex-1 flex-col min-w-0">
+            {dockVisible ? (
+              <ResizablePanelGroup
+                direction="horizontal"
+                autoSaveId="app-shell-dock"
+                className="flex-1 min-h-0"
+              >
+                <ResizablePanel minSize={30} className="flex flex-col min-w-0">
+                  {center}
+                </ResizablePanel>
+                <ResizableHandle withHandle />
+                <ResizablePanel
+                  defaultSize={40}
+                  minSize={22}
+                  maxSize={70}
+                  className="flex flex-col min-w-0"
+                >
+                  <RightDock
+                    workspaceId={workspaceId}
+                    tabs={dock.tabs}
+                    activeId={dock.activeId}
+                    onOpenTab={dock.openTab}
+                    onCloseTab={dock.closeTab}
+                    onSelectTab={dock.selectTab}
+                    onCollapse={() => dock.setCollapsed(true)}
+                  />
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            ) : (
+              center
+            )}
+          </div>
 
-        {dockVisible ? (
-          <ResizablePanelGroup
-            direction="horizontal"
-            autoSaveId="app-shell-dock"
-            className="flex-1 min-h-0"
-          >
-            <ResizablePanel minSize={30} className="flex flex-col min-w-0">
-              {center}
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel
-              defaultSize={40}
-              minSize={22}
-              maxSize={70}
-              className="flex flex-col min-w-0"
-            >
-              <RightDock onCollapse={() => setDockCollapsed(true)} />
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        ) : (
-          center
-        )}
+          {!isMobile && dock.collapsed && (
+            <DockRail onOpen={() => dock.setCollapsed(false)} />
+          )}
+        </div>
       </SidebarInset>
     </SidebarProvider>
   )
