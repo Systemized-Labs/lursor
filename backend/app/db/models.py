@@ -1,0 +1,187 @@
+"""Database models (SQLModel tables).
+
+Domain: an :class:`Agent` is configured once and can be attached to many
+:class:`Workspace` s (a workspace is a directory on disk). Agents own reusable
+:class:`Skill` s and :class:`Tool` s. Conversations are :class:`Thread` s that
+hold :class:`Message` s.
+
+Every table carries a nullable ``user_id`` so single-user-now can become
+multi-tenant later without a migration.
+"""
+
+import uuid
+from datetime import UTC, datetime
+from enum import StrEnum
+
+from sqlalchemy import JSON, Column
+from sqlmodel import Field, Relationship, SQLModel
+
+
+def _uuid() -> str:
+    return uuid.uuid4().hex
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+class TimestampMixin(SQLModel):
+    """Shared identity, ownership, and audit columns."""
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str | None = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+# --- Link tables (many-to-many) -------------------------------------------------
+
+
+class AgentSkillLink(SQLModel, table=True):
+    __tablename__ = "agent_skills"
+    agent_id: str = Field(foreign_key="agents.id", primary_key=True)
+    skill_id: str = Field(foreign_key="skills.id", primary_key=True)
+
+
+class AgentToolLink(SQLModel, table=True):
+    __tablename__ = "agent_tools"
+    agent_id: str = Field(foreign_key="agents.id", primary_key=True)
+    tool_id: str = Field(foreign_key="tools.id", primary_key=True)
+
+
+class WorkspaceAgentLink(SQLModel, table=True):
+    __tablename__ = "workspace_agents"
+    workspace_id: str = Field(foreign_key="workspaces.id", primary_key=True)
+    agent_id: str = Field(foreign_key="agents.id", primary_key=True)
+
+
+# --- Core entities --------------------------------------------------------------
+
+
+class ToolKind(StrEnum):
+    builtin = "builtin"
+    mcp = "mcp"
+    http = "http"
+
+
+class ThinkingLevel(StrEnum):
+    off = "off"
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class Skill(TimestampMixin, table=True):
+    """Reusable domain knowledge, stored as SKILL.md-style markdown."""
+
+    __tablename__ = "skills"
+
+    name: str = Field(index=True)
+    description: str = ""
+    content: str = ""  # markdown body
+
+    agents: list["Agent"] = Relationship(
+        back_populates="skills",
+        link_model=AgentSkillLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+
+
+class Tool(TimestampMixin, table=True):
+    """A capability the agent can call: a builtin, an MCP server, or an HTTP tool."""
+
+    __tablename__ = "tools"
+
+    name: str = Field(index=True)
+    description: str = ""
+    kind: ToolKind = Field(default=ToolKind.builtin)
+    config: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+    agents: list["Agent"] = Relationship(
+        back_populates="tools",
+        link_model=AgentToolLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+
+
+class Agent(TimestampMixin, table=True):
+    """A configured deep agent. Rendered into ``create_deep_agent(...)`` at run time."""
+
+    __tablename__ = "agents"
+
+    name: str = Field(index=True)
+    description: str = ""
+    model: str | None = None  # falls back to settings.default_model when null
+    instructions: str = ""  # system prompt
+
+    # Deep-agent feature toggles (map 1:1 to create_deep_agent kwargs).
+    include_todo: bool = True
+    include_subagents: bool = False
+    include_skills: bool = True
+    include_memory: bool = False
+    include_plan: bool = False
+    web_search: bool = False
+    thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
+
+    # Escape hatch for future kwargs without a schema change.
+    extra_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+    skills: list[Skill] = Relationship(
+        back_populates="agents",
+        link_model=AgentSkillLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+    tools: list[Tool] = Relationship(
+        back_populates="agents",
+        link_model=AgentToolLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+    workspaces: list["Workspace"] = Relationship(
+        back_populates="agents",
+        link_model=WorkspaceAgentLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+
+
+class Workspace(TimestampMixin, table=True):
+    """A named directory on disk that scopes an agent's filesystem."""
+
+    __tablename__ = "workspaces"
+
+    name: str = Field(index=True)
+    description: str = ""
+    path: str = ""  # absolute path, assigned on creation
+
+    agents: list[Agent] = Relationship(
+        back_populates="workspaces",
+        link_model=WorkspaceAgentLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+
+
+class Thread(TimestampMixin, table=True):
+    """A conversation between the user and one agent inside one workspace."""
+
+    __tablename__ = "threads"
+
+    title: str = "New conversation"
+    workspace_id: str = Field(foreign_key="workspaces.id", index=True)
+    agent_id: str = Field(foreign_key="agents.id", index=True)
+
+    messages: list["Message"] = Relationship(
+        back_populates="thread",
+        sa_relationship_kwargs={"lazy": "selectin", "cascade": "all, delete-orphan"},
+    )
+
+
+class Message(TimestampMixin, table=True):
+    """A single turn in a thread. ``tool_calls`` holds raw AG-UI/tool payloads."""
+
+    __tablename__ = "messages"
+
+    thread_id: str = Field(foreign_key="threads.id", index=True)
+    role: str  # "user" | "assistant" | "system" | "tool"
+    content: str = ""
+    tool_calls: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+    thread: Thread | None = Relationship(back_populates="messages")

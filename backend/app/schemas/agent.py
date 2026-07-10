@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel
+
+from app.db.models import Agent, ThinkingLevel
+
+
+class AgentCreate(BaseModel):
+    name: str
+    description: str = ""
+    model: str | None = None
+    instructions: str = ""
+    include_todo: bool = True
+    include_subagents: bool = False
+    include_skills: bool = True
+    include_memory: bool = False
+    include_plan: bool = False
+    web_search: bool = False
+    thinking: ThinkingLevel = ThinkingLevel.off
+    extra_config: dict[str, Any] = {}
+    skill_ids: list[str] = []
+    tool_ids: list[str] = []
+
+
+class AgentUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    model: str | None = None
+    instructions: str | None = None
+    include_todo: bool | None = None
+    include_subagents: bool | None = None
+    include_skills: bool | None = None
+    include_memory: bool | None = None
+    include_plan: bool | None = None
+    web_search: bool | None = None
+    thinking: ThinkingLevel | None = None
+    extra_config: dict[str, Any] | None = None
+    skill_ids: list[str] | None = None
+    tool_ids: list[str] | None = None
+
+
+class AgentRead(BaseModel):
+    id: str
+    name: str
+    description: str
+    model: str | None
+    instructions: str
+    include_todo: bool
+    include_subagents: bool
+    include_skills: bool
+    include_memory: bool
+    include_plan: bool
+    web_search: bool
+    thinking: ThinkingLevel
+    extra_config: dict[str, Any]
+    skill_ids: list[str]
+    tool_ids: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_agent(cls, agent: Agent) -> AgentRead:
+        return cls(
+            id=agent.id,
+            name=agent.name,
+            description=agent.description,
+            model=agent.model,
+            instructions=agent.instructions,
+            include_todo=agent.include_todo,
+            include_subagents=agent.include_subagents,
+            include_skills=agent.include_skills,
+            include_memory=agent.include_memory,
+            include_plan=agent.include_plan,
+            web_search=agent.web_search,
+            thinking=agent.thinking,
+            extra_config=agent.extra_config,
+            skill_ids=[s.id for s in agent.skills],
+            tool_ids=[t.id for t in agent.tools],
+            created_at=agent.created_at,
+            updated_at=agent.updated_at,
+        )
