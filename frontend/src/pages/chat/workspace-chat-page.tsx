@@ -61,10 +61,16 @@ export function WorkspaceChatPage() {
   const { loadConversation, startNewConversation, selectedThreadId } = chat
 
   // The URL is the source of truth for which conversation is open.
+  const prevCParam = useRef(cParam)
   useEffect(() => {
+    const cParamCleared = prevCParam.current !== cParam && !cParam
+    prevCParam.current = cParam
     if (cParam) {
       if (cParam !== selectedThreadId) void loadConversation(cParam)
-    } else if (selectedThreadId !== null) {
+    } else if (cParamCleared && selectedThreadId !== null) {
+      // Only reset when the URL param was actually cleared (user hit "New
+      // conversation"). During a lazy first-send the chat sets selectedThreadId
+      // before the URL catches up; resetting here would abort the fresh run.
       startNewConversation()
     }
   }, [cParam, selectedThreadId, loadConversation, startNewConversation])
