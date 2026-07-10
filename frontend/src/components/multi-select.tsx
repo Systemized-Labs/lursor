@@ -32,7 +32,7 @@ export function MultiSelect({
 
   if (options.length === 0) {
     return (
-      <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+      <div className="rounded-lg border border-dashed border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
         {emptyText}
       </div>
     )

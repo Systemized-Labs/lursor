@@ -313,7 +313,7 @@ interface TabStripProps {
 
 function TabStrip({ files, activePath, onActivate, onClose }: TabStripProps) {
   return (
-    <div className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border px-1">
+    <div className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/60 px-1">
       {files.map((f) => {
         const isActive = f.path === activePath
         return (
@@ -398,7 +398,7 @@ function EditorBody({
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {file.conflict !== undefined && (
-        <div className="flex items-center gap-2 border-b border-border bg-accent/40 px-3 py-1.5 text-xs text-foreground">
+        <div className="flex items-center gap-2 border-b border-border/60 bg-accent/40 px-3 py-1.5 text-xs text-foreground">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="flex-1">
             Changed on disk while you had unsaved edits.
@@ -419,7 +419,7 @@ function EditorBody({
           </button>
         </div>
       )}
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-border px-3 text-xs text-muted-foreground">
+      <div className="flex h-7 shrink-0 items-center justify-between border-b border-border/60 px-3 text-xs text-muted-foreground">
         <span className="truncate font-mono">{file.path}</span>
         <button
           type="button"

@@ -71,9 +71,9 @@ export function RightDock({
   onCollapse,
 }: RightDockProps) {
   return (
-    <div className="flex-1 flex flex-col min-h-0 border-l border-border bg-background">
+    <div className="flex-1 flex flex-col min-h-0 border-l border-border/60 bg-background">
       {/* Tab strip */}
-      <div className="flex items-center gap-1 border-b border-border px-1.5 h-9 shrink-0">
+      <div className="flex items-center gap-1 border-b border-border/60 px-1.5 h-9 shrink-0">
         <div className="flex-1 flex items-center gap-0.5 overflow-x-auto">
           {tabs.map((t) => {
             const Icon = TAB_META[t.kind].icon
@@ -221,7 +221,7 @@ function DockEmptyState({ onOpen }: { onOpen: (kind: DockKind) => void }) {
             key={kind}
             type="button"
             onClick={() => onOpen(kind)}
-            className="aspect-square flex flex-col items-center justify-center gap-2 rounded-xl border border-border text-sm text-foreground transition-colors hover:bg-accent hover:border-primary/40"
+            className="aspect-square flex flex-col items-center justify-center gap-2 rounded-xl bg-muted/40 text-sm text-foreground shadow-sm transition-all hover:bg-muted hover:shadow-md"
           >
             <Icon className="h-6 w-6" />
             <span>{meta.title}</span>

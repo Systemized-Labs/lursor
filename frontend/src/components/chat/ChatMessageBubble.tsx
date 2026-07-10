@@ -132,7 +132,7 @@ export function ChatMessageBubble({ message, renderIcons }: ChatMessageBubblePro
           "min-w-0 max-w-[72%] shadow-sm rounded-2xl px-4 py-2.5 text-sm transition-shadow",
           isUser
             ? "bg-primary text-primary-foreground rounded-br-md"
-            : "bg-muted/70 text-foreground rounded-bl-md border border-border/40"
+            : "bg-muted/60 text-foreground rounded-bl-md"
         )}
       >
         {!isUser ? (

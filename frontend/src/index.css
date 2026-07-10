@@ -27,7 +27,14 @@
   --border: 240 5.9% 90%;
   --input: 240 5.9% 90%;
   --ring: 240 10% 3.9%;
-  --radius: 0.5rem;
+  --radius: 0.625rem;
+
+  /* Elevation scale — soft, layered shadows. Light mode leans on shadow for
+     depth (surfaces share a near-white tone), so keep these gentle. */
+  --sh-xs: 0 1px 2px 0 hsl(240 6% 10% / 0.04);
+  --sh-sm: 0 1px 2px 0 hsl(240 6% 10% / 0.05), 0 1px 3px 0 hsl(240 6% 10% / 0.05);
+  --sh-md: 0 2px 6px -1px hsl(240 6% 10% / 0.07), 0 6px 16px -4px hsl(240 6% 10% / 0.08);
+  --sh-lg: 0 4px 10px -2px hsl(240 6% 10% / 0.08), 0 16px 40px -12px hsl(240 6% 10% / 0.16);
 
   /* Cursor-style shell sidebar tokens. */
   --sidebar: 0 0% 98%;
@@ -43,9 +50,11 @@
 .dark {
   --background: 240 10% 3.9%;
   --foreground: 0 0% 98%;
-  --card: 240 10% 3.9%;
+  /* Lift elevated surfaces a touch above the near-black base so borderless
+     cards and menus read as raised planes (shadows alone barely show on dark). */
+  --card: 240 8% 6.5%;
   --card-foreground: 0 0% 98%;
-  --popover: 240 10% 3.9%;
+  --popover: 240 8% 8%;
   --popover-foreground: 0 0% 98%;
   --primary: 0 0% 98%;
   --primary-foreground: 240 5.9% 10%;
@@ -71,6 +80,12 @@
   --sidebar-accent-foreground: 0 0% 98%;
   --sidebar-border: 240 3.7% 15.9%;
   --sidebar-ring: 240 4.9% 83.9%;
+
+  /* On dark, depth comes from deeper, more opaque shadows. */
+  --sh-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.28);
+  --sh-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.32), 0 1px 3px 0 hsl(0 0% 0% / 0.24);
+  --sh-md: 0 2px 8px -2px hsl(0 0% 0% / 0.40), 0 8px 24px -6px hsl(0 0% 0% / 0.36);
+  --sh-lg: 0 8px 24px -6px hsl(0 0% 0% / 0.50), 0 20px 48px -16px hsl(0 0% 0% / 0.55);
 }
 
 /* Map shadcn design tokens onto Tailwind v4's theme (CSS-first config).
@@ -112,6 +127,15 @@
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Shadow utilities resolve to the theme-aware source vars (inline theme, so
+     the `.dark` overrides above propagate at the use site). */
+  --shadow-xs: var(--sh-xs);
+  --shadow-sm: var(--sh-sm);
+  --shadow: var(--sh-sm);
+  --shadow-md: var(--sh-md);
+  --shadow-lg: var(--sh-lg);
 }
 
 @layer base {

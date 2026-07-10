@@ -34,9 +34,9 @@ export function ChatComposer({
     <div className="px-4 pb-4 pt-2 flex-shrink-0">
       <div
         className={cn(
-          "flex items-center gap-1.5 rounded-2xl border border-border bg-background px-2.5 py-2 shadow-sm",
-          "transition-[border-color,box-shadow] duration-200",
-          "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15",
+          "flex items-center gap-1.5 rounded-2xl border border-transparent bg-muted/50 px-2.5 py-2 shadow-sm",
+          "transition-[border-color,box-shadow,background-color] duration-200",
+          "focus-within:border-ring/30 focus-within:bg-background focus-within:shadow-md focus-within:ring-2 focus-within:ring-ring/15",
           disabled && "opacity-60"
         )}
       >

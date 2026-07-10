@@ -153,7 +153,7 @@ function ModelDetail({
         ) : null}
       </div>
 
-      <div className="shrink-0 border-t border-border px-6 py-4">
+      <div className="shrink-0 border-t border-border/60 px-6 py-4">
         <Button className="w-full gap-2" onClick={onUse}>
           {isActive ? <Check className="h-4 w-4" /> : null}
           {isActive ? "Currently selected" : "Use this model"}
@@ -298,7 +298,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
       <button
         type="button"
         onClick={handleOpen}
-        className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring"
+        className="flex h-9 w-full items-center justify-between rounded-lg border border-transparent bg-muted/60 px-3 py-1 text-sm transition-colors hover:bg-muted focus:outline-none focus:border-ring/40 focus:bg-background focus:ring-2 focus:ring-ring/15"
       >
         <span className="truncate text-foreground">{displayLabel}</span>
         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -315,14 +315,14 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                 while the detail view is pushed over it. */}
             <div
               className={cn(
-                "flex min-h-0 flex-col border-r border-border",
+                "flex min-h-0 flex-col border-r border-border/60",
                 isMobile ? "w-full" : "w-[55%]",
                 isMobile && mobileDetail && "hidden"
               )}
             >
               {/* Search */}
-              <div className="shrink-0 space-y-2 border-b border-border px-4 pb-2 pt-3">
-                <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-muted/40 px-3">
+              <div className="shrink-0 space-y-2 border-b border-border/60 px-4 pb-2 pt-3">
+                <div className="flex h-9 items-center gap-2 rounded-lg border border-transparent bg-muted/60 px-3 focus-within:border-ring/40 focus-within:bg-background">
                   <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <input
                     ref={searchRef}
@@ -437,7 +437,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                 <button
                   type="button"
                   onClick={() => setMobileDetail(false)}
-                  className="flex min-h-[44px] shrink-0 items-center gap-1 border-b border-border px-3 py-3 text-sm text-muted-foreground"
+                  className="flex min-h-[44px] shrink-0 items-center gap-1 border-b border-border/60 px-3 py-3 text-sm text-muted-foreground"
                 >
                   <ChevronLeft className="h-4 w-4" />
                   Back to models
