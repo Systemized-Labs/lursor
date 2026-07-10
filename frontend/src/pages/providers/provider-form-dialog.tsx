@@ -1,8 +1,17 @@
+import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
-import { useCreateProvider, useUpdateProvider } from "@/api/providers"
-import type { CustomProvider, CustomProviderInput } from "@/api/types"
+import {
+  providersApi,
+  useCreateProvider,
+  useUpdateProvider,
+} from "@/api/providers"
+import type {
+  CustomProvider,
+  CustomProviderInput,
+  ProviderHealth,
+} from "@/api/types"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -39,6 +48,8 @@ export function ProviderFormDialog({
   provider,
 }: ProviderFormDialogProps) {
   const [form, setForm] = useState<FormState>(EMPTY)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<ProviderHealth | null>(null)
   const createProvider = useCreateProvider()
   const updateProvider = useUpdateProvider()
   const isEdit = Boolean(provider)
@@ -46,6 +57,7 @@ export function ProviderFormDialog({
 
   useEffect(() => {
     if (open) {
+      setTestResult(null)
       setForm(
         provider
           ? {
@@ -57,6 +69,31 @@ export function ProviderFormDialog({
       )
     }
   }, [open, provider])
+
+  async function handleTest() {
+    if (!form.baseUrl.trim()) {
+      toast.error("Base URL is required to test")
+      return
+    }
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const result = await providersApi.test({
+        name: form.name.trim() || "test",
+        base_url: form.baseUrl.trim(),
+        api_key: form.apiKey.trim() || null,
+      })
+      setTestResult(result)
+    } catch (err) {
+      setTestResult({
+        status: "error",
+        model_count: null,
+        error: err instanceof Error ? err.message : "Test failed",
+      })
+    } finally {
+      setTesting(false)
+    }
+  }
 
   async function handleSubmit() {
     if (!form.name.trim()) {
@@ -140,9 +177,45 @@ export function ProviderFormDialog({
               autoComplete="off"
             />
           </div>
+
+          {testResult ? (
+            testResult.status === "ok" ? (
+              <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-foreground">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+                <span>
+                  Connected
+                  {typeof testResult.model_count === "number"
+                    ? ` — ${testResult.model_count} model${
+                        testResult.model_count === 1 ? "" : "s"
+                      } available.`
+                    : "."}
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                <span>{testResult.error ?? "Could not reach the provider."}</span>
+              </div>
+            )
+          ) : null}
         </div>
 
         <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={handleTest}
+            disabled={isSaving || testing}
+            className="sm:mr-auto"
+          >
+            {testing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Testing…
+              </>
+            ) : (
+              "Test connection"
+            )}
+          </Button>
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}

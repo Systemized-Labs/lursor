@@ -16,6 +16,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { ProviderFormDialog } from "./provider-form-dialog"
+import { ProviderHealthBadge } from "./provider-health-badge"
 
 const DESCRIPTION =
   "Connect locally-hosted models (Ollama, LM Studio, vLLM, …) by adding their OpenAI-compatible URLs. Their models appear in the model picker."
@@ -112,7 +113,8 @@ export function ProvidersPage({ embedded = false }: { embedded?: boolean } = {})
                   {provider.base_url}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="mt-auto">
+              <CardContent className="mt-auto space-y-3">
+                <ProviderHealthBadge providerId={provider.id} />
                 <span className="text-xs text-muted-foreground">
                   {provider.api_key ? "API key set" : "No API key"}
                 </span>

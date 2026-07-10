@@ -174,3 +174,8 @@ export interface CustomProviderInput {
   base_url: string
   api_key?: string | null
 }
+export interface ProviderHealth {
+  status: "ok" | "error"
+  model_count: number | null
+  error: string | null
+}
