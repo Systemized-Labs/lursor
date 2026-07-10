@@ -1,6 +1,6 @@
 import { ArrowLeft, MessageSquare, Plus, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
+import { useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 
 import type { Thread } from "@/api/types"
@@ -18,7 +18,6 @@ import {
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
-import { NewChatDialog } from "./new-chat-dialog"
 
 export function WorkspaceDetailPage() {
   const { workspaceId } = useParams<{ workspaceId: string }>()
@@ -29,8 +28,16 @@ export function WorkspaceDetailPage() {
   const agentsQuery = useAgents()
   const deleteThread = useDeleteThread(workspaceId)
 
-  const [newChatOpen, setNewChatOpen] = useState(false)
   const [toDelete, setToDelete] = useState<Thread | undefined>(undefined)
+
+  function openChat(threadId?: string) {
+    if (!workspaceId) return
+    navigate(
+      threadId
+        ? `/workspaces/${workspaceId}/chat?c=${threadId}`
+        : `/workspaces/${workspaceId}/chat`
+    )
+  }
 
   const agentNameById = useMemo(() => {
     const map = new Map<string, string>()
@@ -92,7 +99,7 @@ export function WorkspaceDetailPage() {
         description={workspace.description || "No description"}
         actions={
           <Button
-            onClick={() => setNewChatOpen(true)}
+            onClick={() => openChat(undefined)}
             disabled={workspace.agent_ids.length === 0}
           >
             <Plus className="h-4 w-4" />
@@ -141,7 +148,7 @@ export function WorkspaceDetailPage() {
             description="Start a new chat to create the first thread."
             action={
               <Button
-                onClick={() => setNewChatOpen(true)}
+                onClick={() => openChat(undefined)}
                 disabled={workspace.agent_ids.length === 0}
               >
                 <Plus className="h-4 w-4" />
@@ -154,9 +161,10 @@ export function WorkspaceDetailPage() {
             {threads.map((thread) => (
               <Card key={thread.id}>
                 <CardContent className="flex items-center justify-between gap-3 p-4">
-                  <Link
-                    to={`/workspaces/${workspace.id}/threads/${thread.id}`}
-                    className="flex min-w-0 flex-1 items-center gap-3"
+                  <button
+                    type="button"
+                    onClick={() => openChat(thread.id)}
+                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
                   >
                     <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <span className="min-w-0">
@@ -167,7 +175,7 @@ export function WorkspaceDetailPage() {
                         {agentNameById.get(thread.agent_id) ?? thread.agent_id}
                       </span>
                     </span>
-                  </Link>
+                  </button>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -182,13 +190,6 @@ export function WorkspaceDetailPage() {
           </div>
         )}
       </div>
-
-      <NewChatDialog
-        open={newChatOpen}
-        onOpenChange={setNewChatOpen}
-        workspace={workspace}
-        agents={agentsQuery.data ?? []}
-      />
 
       <ConfirmDialog
         open={Boolean(toDelete)}

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.agents.chat_run_manager import chat_run_manager
 from app.db.models import Agent, Message, Thread, Workspace
 from app.db.session import get_session
-from app.schemas.thread import MessageRead, ThreadCreate, ThreadRead
+from app.schemas.thread import MessageRead, ThreadCreate, ThreadRead, ThreadUpdate
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
@@ -20,6 +23,13 @@ async def list_threads(
         query = query.where(Thread.workspace_id == workspace_id)
     result = await session.execute(query)
     return result.scalars().all()
+
+
+# Declared before "/{thread_id}" so the literal path is matched first.
+@router.get("/active-runs", response_model=list[str])
+async def list_active_runs() -> list[str]:
+    """Thread ids with a live background chat run (drives the UI's running badges)."""
+    return chat_run_manager.active_threads()
 
 
 @router.post("", response_model=ThreadRead, status_code=status.HTTP_201_CREATED)
@@ -40,6 +50,28 @@ async def get_thread(thread_id: str, session: AsyncSession = Depends(get_session
     thread = await session.get(Thread, thread_id)
     if thread is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
+    return thread
+
+
+@router.patch("/{thread_id}", response_model=ThreadRead)
+async def update_thread(
+    thread_id: str, payload: ThreadUpdate, session: AsyncSession = Depends(get_session)
+):
+    thread = await session.get(Thread, thread_id)
+    if thread is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
+
+    if payload.agent_id is not None:
+        if await session.get(Agent, payload.agent_id) is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown agent_id")
+        thread.agent_id = payload.agent_id
+    if payload.title is not None:
+        thread.title = payload.title
+
+    thread.updated_at = datetime.now(UTC)
+    session.add(thread)
+    await session.commit()
+    await session.refresh(thread)
     return thread
 
 

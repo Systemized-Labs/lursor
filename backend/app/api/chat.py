@@ -1,26 +1,37 @@
-"""AG-UI chat endpoint.
+"""AG-UI chat endpoints (decoupled runs + reconnect).
 
-Streams a deep-agent run to the browser using the AG-UI protocol (SSE). The
-frontend AG-UI client posts a ``RunAgentInput`` (message history + state); the
-adapter runs the agent and streams AG-UI events back. We persist the incoming
-user turn up front and the assistant turn on completion so threads can be
-reloaded later.
+``POST /threads/{id}/chat`` starts an agent run and returns an SSE stream. The
+run is not driven by that response, though: it is spawned into the
+:mod:`chat_run_manager` as a detached task, and the response merely *subscribes*
+to it. That lets the browser disconnect (switch conversations, reload) without
+killing the run, and later reconnect via ``GET /threads/{id}/stream`` to replay
+buffered events and follow the live stream again.
+
+The incoming user turn is persisted up front and the assistant turn on
+completion (or a partial on stop) so threads reload cleanly.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 
+from ag_ui.core import EventType
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.responses import Response
+from starlette.responses import StreamingResponse
 
 from app.agents.builder import build_deep_agent
+from app.agents.chat_run_manager import chat_run_manager
 from app.db.models import Agent, Message, Thread, Workspace
 from app.db.session import async_session_factory, get_session
 
 router = APIRouter(prefix="/threads", tags=["chat"])
+
+_KEEPALIVE_TIMEOUT = 25.0  # seconds between ": keepalive" comments on an idle stream
+_TEXT_DELTA_TYPES = {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_CHUNK}
 
 
 def _latest_user_text(run_input: dict) -> str:
@@ -32,10 +43,53 @@ def _latest_user_text(run_input: dict) -> str:
     return ""
 
 
+async def _persist_message(thread_id: str, role: str, content: str) -> None:
+    """Append a message on its own background session (runs outside the request)."""
+    if not content:
+        return
+    async with async_session_factory() as bg_session:
+        bg_session.add(Message(thread_id=thread_id, role=role, content=content))
+        await bg_session.commit()
+
+
+def subscribe_chat_sse(thread_id: str) -> StreamingResponse:
+    """SSE response that replays buffered events then follows the live run.
+
+    Shared by the initial POST and the reconnect GET — both just subscribe to
+    the thread's run. Disconnecting only unsubscribes; the run keeps going.
+    """
+
+    async def generate() -> AsyncIterator[str]:
+        queue, replay = chat_run_manager.subscribe(thread_id)
+        try:
+            for encoded in replay:
+                yield encoded
+            # A finished run's replay already carried its terminal event.
+            if not chat_run_manager.is_running(thread_id):
+                return
+            while True:
+                try:
+                    encoded = await asyncio.wait_for(queue.get(), _KEEPALIVE_TIMEOUT)
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if encoded is None:  # sentinel → run finished
+                    return
+                yield encoded
+        finally:
+            chat_run_manager.unsubscribe(thread_id, queue)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("/{thread_id}/chat")
 async def chat(
     thread_id: str, request: Request, session: AsyncSession = Depends(get_session)
-) -> Response:
+) -> StreamingResponse:
     thread = await session.get(Thread, thread_id)
     if thread is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
@@ -45,7 +99,9 @@ async def chat(
     if agent_row is None or workspace is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Thread's agent or workspace is missing")
 
-    # Persist the incoming user turn (best-effort; body is cached for re-read).
+    # Persist the incoming user turn up front (best-effort; body is cached for re-read
+    # by the adapter below). AG-UI only fires on_complete on success, so doing this
+    # here means the user turn survives even if the run errors or is stopped.
     with contextlib.suppress(Exception):
         body = await request.json()
         user_text = _latest_user_text(body)
@@ -57,17 +113,55 @@ async def chat(
             await session.commit()
 
     agent, deps = build_deep_agent(agent_row, workspace.path)
+    # Build the adapter (parses the request body/messages) before returning, so the
+    # detached driver never touches the request object after the response starts.
+    adapter = await AGUIAdapter.from_request(request, agent=agent)
 
     async def on_complete(result) -> None:
-        """Persist the assistant turn once the run finishes."""
         output = getattr(result, "output", None)
         content = output if isinstance(output, str) else str(output) if output else ""
-        if not content:
-            return
-        async with async_session_factory() as bg_session:
-            bg_session.add(Message(thread_id=thread_id, role="assistant", content=content))
-            await bg_session.commit()
+        await _persist_message(thread_id, "assistant", content)
 
-    return await AGUIAdapter.dispatch_request(
-        request, agent=agent, deps=deps, on_complete=on_complete
-    )
+    accumulated: list[str] = []
+
+    async def _tee(stream: AsyncIterator) -> AsyncIterator:
+        """Pass events through while accumulating assistant text for partial-persist."""
+        async for event in stream:
+            if getattr(event, "type", None) in _TEXT_DELTA_TYPES:
+                delta = getattr(event, "delta", None)
+                if delta:
+                    accumulated.append(delta)
+            yield event
+
+    async def driver() -> None:
+        stream = adapter.run_stream(deps=deps, on_complete=on_complete)
+        try:
+            async for encoded in adapter.encode_stream(_tee(stream)):
+                chat_run_manager.publish(thread_id, encoded)
+        except asyncio.CancelledError:
+            # Stopped mid-run: on_complete never fired, so keep the partial answer.
+            await _persist_message(thread_id, "assistant", "".join(accumulated))
+            raise
+        else:
+            chat_run_manager.finish(thread_id, "finished")
+
+    if not chat_run_manager.start_run(thread_id, driver):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "A chat run is already active for this conversation"
+        )
+
+    return subscribe_chat_sse(thread_id)
+
+
+@router.get("/{thread_id}/stream")
+async def reconnect_stream(thread_id: str) -> StreamingResponse:
+    """Re-attach to a thread's in-flight run: replay its buffer, then stream live."""
+    return subscribe_chat_sse(thread_id)
+
+
+@router.post("/{thread_id}/stop", status_code=status.HTTP_200_OK)
+async def stop_run(thread_id: str) -> dict[str, bool]:
+    stopped = await chat_run_manager.stop(thread_id)
+    if not stopped:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No active run for this conversation")
+    return {"stopped": True}

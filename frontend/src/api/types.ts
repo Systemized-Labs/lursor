@@ -124,6 +124,12 @@ export interface ThreadInput {
   title: string
 }
 
+export interface ThreadUpdate {
+  title?: string
+  // Swap the agent this conversation talks to; the next message uses it.
+  agent_id?: string
+}
+
 export interface HealthResponse {
   status: string
   app: string

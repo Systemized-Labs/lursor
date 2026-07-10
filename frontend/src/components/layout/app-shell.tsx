@@ -32,10 +32,14 @@ export function AppShell() {
 
   // Full-bleed surfaces (e.g. a chat thread) manage their own scroll and fill
   // the panel edge to edge; everything else keeps the padded, centered column.
-  const fullBleed = pathname.includes("/threads/")
+  const fullBleed = pathname.includes("/threads/") || pathname.endsWith("/chat")
 
+  // Full-bleed surfaces must fill exactly the viewport so their inner regions
+  // (e.g. a chat message list) scroll independently. The sidebar shell is only
+  // `min-h-svh` (a floor that grows with content), so `flex-1`/`min-h-0` have no
+  // definite height to cap against — pin a concrete `h-svh` here instead.
   const center = fullBleed ? (
-    <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+    <main className="h-svh min-w-0 flex flex-col overflow-hidden">
       <Outlet />
     </main>
   ) : (

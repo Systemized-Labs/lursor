@@ -88,6 +88,44 @@ async def test_agent_with_links_and_workspace_thread(client: AsyncClient):
     assert (await client.get(f"/threads/{thread['id']}/messages")).json() == []
 
 
+async def test_thread_update_and_run_endpoints(client: AsyncClient):
+    """PATCH swaps a thread's agent / renames it; run endpoints behave when idle."""
+    a1 = (await client.post("/agents", json={"name": "A1"})).json()
+    a2 = (await client.post("/agents", json={"name": "A2"})).json()
+    ws = (
+        await client.post(
+            "/workspaces", json={"name": "WS", "agent_ids": [a1["id"], a2["id"]]}
+        )
+    ).json()
+    thread = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": a1["id"]}
+        )
+    ).json()
+
+    # Rename + swap the agent.
+    r = await client.patch(
+        f"/threads/{thread['id']}", json={"title": "Renamed", "agent_id": a2["id"]}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "Renamed"
+    assert r.json()["agent_id"] == a2["id"]
+
+    # Unknown agent -> 400; unknown thread -> 404.
+    assert (
+        await client.patch(f"/threads/{thread['id']}", json={"agent_id": "nope"})
+    ).status_code == 400
+    assert (await client.patch("/threads/nope", json={"title": "x"})).status_code == 404
+
+    # active-runs must resolve to the literal route (not {thread_id}) and be empty.
+    r = await client.get("/threads/active-runs")
+    assert r.status_code == 200, r.text
+    assert r.json() == []
+
+    # Stopping a thread with no live run is a 404.
+    assert (await client.post(f"/threads/{thread['id']}/stop")).status_code == 404
+
+
 async def test_pick_folder_and_custom_path(client: AsyncClient, monkeypatch):
     """The pick-folder endpoint returns the native dialog's choice, and a custom
     path is honored (and created) when a workspace is made."""

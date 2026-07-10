@@ -12,6 +12,13 @@ class ThreadCreate(BaseModel):
     title: str = "New conversation"
 
 
+class ThreadUpdate(BaseModel):
+    """Partial update: rename a thread and/or swap the agent it talks to."""
+
+    title: str | None = None
+    agent_id: str | None = None
+
+
 class ThreadRead(BaseModel):
     id: str
     title: str
