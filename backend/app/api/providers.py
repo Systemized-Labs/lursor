@@ -54,13 +54,19 @@ async def _probe_provider(provider: CustomProvider) -> ProviderHealth:
         logger.warning("health: %r unreachable: %s", provider.name, exc)
         return ProviderHealth(
             status="error",
-            error="Could not reach the endpoint — check the base URL and that the server is running.",
+            error=(
+                "Could not reach the endpoint — check the base URL and that "
+                "the server is running."
+            ),
         )
 
     if resp.status_code in (401, 403):
         return ProviderHealth(
             status="error",
-            error="Authentication failed — this endpoint requires an API key (or the key is wrong).",
+            error=(
+                "Authentication failed — this endpoint requires an API key "
+                "(or the key is wrong)."
+            ),
         )
     if resp.status_code >= 400:
         return ProviderHealth(

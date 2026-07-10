@@ -59,10 +59,13 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
   const openFile = useCallback(
     async (path: string, name: string) => {
       setActivePath(path)
-      let exists = false
+      // Read existence from a ref, not from inside the setState updater: React
+      // doesn't guarantee the updater runs synchronously, so reading a flag it
+      // sets is unreliable and would re-fetch (clobbering unsaved edits) on a
+      // file that's already open.
+      if (openPathsRef.current.has(path)) return
       setOpenFiles((prev) => {
-        exists = prev.some((f) => f.path === path)
-        if (exists) return prev
+        if (prev.some((f) => f.path === path)) return prev
         return [
           ...prev,
           {
@@ -78,7 +81,7 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
           },
         ]
       })
-      if (exists || !workspaceId) return
+      if (!workspaceId) return
       try {
         const file = await filesApi.read(workspaceId, path)
         patch(path, {

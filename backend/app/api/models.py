@@ -105,7 +105,7 @@ async def list_models(
         if not custom_providers:
             raise HTTPException(
                 status_code=502, detail="Failed to fetch models from OpenRouter"
-            )
+            ) from exc
 
     # Group by provider (prefix before the first "/").
     groups: dict[str, list[dict[str, Any]]] = {}

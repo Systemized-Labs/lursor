@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { HttpAgent, type Message, randomUUID } from "@ag-ui/client"
 
 import type { Thread, ThreadMessage } from "@/api/types"
@@ -139,6 +139,11 @@ export function useChat(options: UseChatOptions): UseChat {
     reconnectAbortRef.current?.abort()
     reconnectAbortRef.current = null
   }, [])
+
+  // On unmount, tear down the local stream consumers so they stop calling
+  // setState on a gone component. The server run is intentionally left alive to
+  // rejoin later.
+  useEffect(() => abortLocalStreams, [abortLocalStreams])
 
   const reconnectToRun = useCallback(
     (threadId: string) => {
@@ -293,12 +298,22 @@ export function useChat(options: UseChatOptions): UseChat {
           }
         )
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Chat request failed")
+        // Only surface the error on the conversation this send belongs to; a
+        // switch mid-send aborts this run and must not paint an error onto the
+        // conversation the user moved to.
+        if (selectedThreadIdRef.current === threadId) {
+          setError(err instanceof Error ? err.message : "Chat request failed")
+        }
       } finally {
         if (sendingThreadRef.current === threadId) sendingThreadRef.current = null
-        setIsStreaming(false)
-        currentAssistantId.current = null
-        setMessages((prev) => finishStreaming(prev))
+        // Only reset shared streaming state if this send still owns the surface.
+        // If the user switched conversation mid-send, the newer conversation now
+        // owns isStreaming/messages/currentAssistantId and must not be clobbered.
+        if (selectedThreadIdRef.current === threadId) {
+          setIsStreaming(false)
+          currentAssistantId.current = null
+          setMessages((prev) => finishStreaming(prev))
+        }
       }
     },
     [handlers]

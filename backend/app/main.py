@@ -49,5 +49,16 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
 
 
-for module in (agents, skills, tools, providers, workspaces, threads, chat, models, terminal, files):
+for module in (
+    agents,
+    skills,
+    tools,
+    providers,
+    workspaces,
+    threads,
+    chat,
+    models,
+    terminal,
+    files,
+):
     app.include_router(module.router, prefix="/api")
