@@ -7,7 +7,6 @@ import type { Thread } from "@/api/types"
 import { useAgents } from "@/api/agents"
 import { useDeleteThread, useThreads } from "@/api/threads"
 import { useWorkspace } from "@/api/workspaces"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -98,10 +97,7 @@ export function WorkspaceDetailPage() {
         title={workspace.name}
         description={workspace.description || "No description"}
         actions={
-          <Button
-            onClick={() => openChat(undefined)}
-            disabled={workspace.agent_ids.length === 0}
-          >
+          <Button onClick={() => openChat(undefined)}>
             <Plus className="h-4 w-4" />
             New chat
           </Button>
@@ -119,22 +115,6 @@ export function WorkspaceDetailPage() {
             </span>
             <span className="font-mono text-foreground">{workspace.path}</span>
           </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground">
-              Agents
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {workspace.agent_ids.length === 0 ? (
-                <span className="text-muted-foreground">None</span>
-              ) : (
-                workspace.agent_ids.map((id) => (
-                  <Badge key={id} variant="secondary">
-                    {agentNameById.get(id) ?? id}
-                  </Badge>
-                ))
-              )}
-            </div>
-          </div>
         </CardContent>
       </Card>
 
@@ -147,10 +127,7 @@ export function WorkspaceDetailPage() {
             title="No threads yet"
             description="Start a new chat to create the first thread."
             action={
-              <Button
-                onClick={() => openChat(undefined)}
-                disabled={workspace.agent_ids.length === 0}
-              >
+              <Button onClick={() => openChat(undefined)}>
                 <Plus className="h-4 w-4" />
                 New chat
               </Button>

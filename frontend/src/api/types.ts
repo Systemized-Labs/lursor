@@ -76,7 +76,6 @@ export interface Workspace {
   name: string
   description: string
   path: string
-  agent_ids: string[]
   created_at: string
   updated_at: string
 }
@@ -84,7 +83,6 @@ export interface Workspace {
 export interface WorkspaceInput {
   name: string
   description: string
-  agent_ids: string[]
   // Optional custom folder location. Blank uses the default
   // ~/.lursor/workspaces/{id} location.
   path?: string

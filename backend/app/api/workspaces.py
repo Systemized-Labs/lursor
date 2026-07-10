@@ -9,9 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.api.agents import _resolve
 from app.config import get_settings
-from app.db.models import Agent, Workspace
+from app.db.models import Workspace
 from app.db.session import get_session
 from app.schemas.workspace import WorkspaceCreate, WorkspaceRead, WorkspaceUpdate
 
@@ -100,8 +99,7 @@ async def list_workspaces(session: AsyncSession = Depends(get_session)):
 async def create_workspace(
     payload: WorkspaceCreate, session: AsyncSession = Depends(get_session)
 ):
-    agents = await _resolve(session, Agent, payload.agent_ids)
-    ws = Workspace(name=payload.name, description=payload.description, agents=agents)
+    ws = Workspace(name=payload.name, description=payload.description)
     # Materialize the workspace directory (agent filesystem root).
     ws.path = _materialize(payload.path, ws.id)
 
@@ -136,11 +134,9 @@ async def update_workspace(
     if ws is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found")
 
-    data = payload.model_dump(exclude_unset=True, exclude={"agent_ids", "path"})
+    data = payload.model_dump(exclude_unset=True, exclude={"path"})
     for key, value in data.items():
         setattr(ws, key, value)
-    if payload.agent_ids is not None:
-        ws.agents = await _resolve(session, Agent, payload.agent_ids)
     # Relocating: materialize the new directory. The old one is left in place to
     # avoid destroying user files.
     if payload.path is not None:

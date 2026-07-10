@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { FolderOpen } from "lucide-react"
 import { toast } from "sonner"
 
 import type { Workspace, WorkspaceInput } from "@/api/types"
-import { useAgents } from "@/api/agents"
 import {
   useCreateWorkspace,
   useUpdateWorkspace,
@@ -20,16 +19,14 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { MultiSelect } from "@/components/multi-select"
 
 interface FormState {
   name: string
   description: string
-  agent_ids: string[]
   path: string
 }
 
-const EMPTY: FormState = { name: "", description: "", agent_ids: [], path: "" }
+const EMPTY: FormState = { name: "", description: "", path: "" }
 
 interface WorkspaceFormDialogProps {
   open: boolean
@@ -44,7 +41,6 @@ export function WorkspaceFormDialog({
 }: WorkspaceFormDialogProps) {
   const [form, setForm] = useState<FormState>(EMPTY)
   const [isBrowsing, setIsBrowsing] = useState(false)
-  const agentsQuery = useAgents()
   const createWorkspace = useCreateWorkspace()
   const updateWorkspace = useUpdateWorkspace()
   const isEdit = Boolean(workspace)
@@ -73,23 +69,12 @@ export function WorkspaceFormDialog({
           ? {
               name: workspace.name,
               description: workspace.description,
-              agent_ids: workspace.agent_ids,
               path: workspace.path,
             }
           : EMPTY
       )
     }
   }, [open, workspace])
-
-  const agentOptions = useMemo(
-    () =>
-      (agentsQuery.data ?? []).map((a) => ({
-        value: a.id,
-        label: a.name,
-        description: a.description,
-      })),
-    [agentsQuery.data]
-  )
 
   async function handleSubmit() {
     if (!form.name.trim()) {
@@ -99,7 +84,6 @@ export function WorkspaceFormDialog({
     const input: WorkspaceInput = {
       name: form.name.trim(),
       description: form.description.trim(),
-      agent_ids: form.agent_ids,
       path: form.path.trim() || undefined,
     }
     try {
@@ -126,7 +110,7 @@ export function WorkspaceFormDialog({
             {isEdit ? "Edit workspace" : "New workspace"}
           </DialogTitle>
           <DialogDescription>
-            A workspace groups agents and hosts chat threads.
+            A workspace is a directory on disk that hosts chat threads.
           </DialogDescription>
         </DialogHeader>
 
@@ -177,17 +161,6 @@ export function WorkspaceFormDialog({
               Absolute path to the workspace directory. Leave blank to use the
               default location.
             </p>
-          </div>
-          <div className="grid gap-2">
-            <Label>Agents</Label>
-            <MultiSelect
-              options={agentOptions}
-              selected={form.agent_ids}
-              onChange={(ids) =>
-                setForm((prev) => ({ ...prev, agent_ids: ids }))
-              }
-              emptyText="No agents created yet."
-            />
           </div>
         </div>
 

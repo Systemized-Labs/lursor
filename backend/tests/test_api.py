@@ -70,13 +70,10 @@ async def test_agent_with_links_and_workspace_thread(client: AsyncClient):
     bad = await client.post("/agents", json={"name": "X", "skill_ids": ["nope"]})
     assert bad.status_code == 400
 
-    # Workspace with the agent attached; a directory should be created.
-    r = await client.post(
-        "/workspaces", json={"name": "My Space", "agent_ids": [agent["id"]]}
-    )
+    # Workspace creation; a directory should be created.
+    r = await client.post("/workspaces", json={"name": "My Space"})
     assert r.status_code == 201, r.text
     ws = r.json()
-    assert ws["agent_ids"] == [agent["id"]]
     assert os.path.isdir(ws["path"])
 
     # Thread + message listing.
@@ -92,11 +89,7 @@ async def test_thread_update_and_run_endpoints(client: AsyncClient):
     """PATCH swaps a thread's agent / renames it; run endpoints behave when idle."""
     a1 = (await client.post("/agents", json={"name": "A1"})).json()
     a2 = (await client.post("/agents", json={"name": "A2"})).json()
-    ws = (
-        await client.post(
-            "/workspaces", json={"name": "WS", "agent_ids": [a1["id"], a2["id"]]}
-        )
-    ).json()
+    ws = (await client.post("/workspaces", json={"name": "WS"})).json()
     thread = (
         await client.post(
             "/threads", json={"workspace_id": ws["id"], "agent_id": a1["id"]}

@@ -43,10 +43,7 @@ export function WorkspaceChatPage() {
     () => new Set(activeRunsQuery.data ?? []),
     [activeRunsQuery.data]
   )
-  const workspaceAgents = useMemo(() => {
-    const ids = new Set(workspace?.agent_ids ?? [])
-    return (agentsQuery.data ?? []).filter((a) => ids.has(a.id))
-  }, [agentsQuery.data, workspace?.agent_ids])
+  const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
   const [draft, setDraft] = useState("")
@@ -78,9 +75,9 @@ export function WorkspaceChatPage() {
       const t = threads.find((x) => x.id === selectedThreadId)
       if (t) setSelectedAgentId(t.agent_id)
     } else {
-      setSelectedAgentId((prev) => prev || workspaceAgents[0]?.id || "")
+      setSelectedAgentId((prev) => prev || agents[0]?.id || "")
     }
-  }, [selectedThreadId, threads, workspaceAgents])
+  }, [selectedThreadId, threads, agents])
 
   async function handleAgentChange(agentId: string) {
     setSelectedAgentId(agentId)
@@ -145,7 +142,7 @@ export function WorkspaceChatPage() {
   }, [])
 
   const currentThread = threads.find((t) => t.id === selectedThreadId)
-  const noAgents = workspaceAgents.length === 0
+  const noAgents = agents.length === 0
 
   if (workspaceQuery.isLoading) {
     return <p className="p-6 text-sm text-muted-foreground">Loading workspace…</p>
@@ -189,7 +186,7 @@ export function WorkspaceChatPage() {
               <SelectValue placeholder="Select agent" />
             </SelectTrigger>
             <SelectContent>
-              {workspaceAgents.map((agent) => (
+              {agents.map((agent) => (
                 <SelectItem key={agent.id} value={agent.id}>
                   {agent.name}
                 </SelectItem>
@@ -215,11 +212,11 @@ export function WorkspaceChatPage() {
               </div>
               <div className="space-y-1">
                 <p className="text-sm font-semibold text-foreground">
-                  {noAgents ? "Add an agent to this workspace" : "Start the conversation"}
+                  {noAgents ? "No agents yet" : "Start the conversation"}
                 </p>
                 <p className="mx-auto max-w-[16rem] text-xs text-muted-foreground">
                   {noAgents
-                    ? "This workspace has no agents yet. Edit the workspace to attach one."
+                    ? "Create an agent in Customization to start chatting."
                     : "Pick an agent above and send the first message."}
                 </p>
               </div>

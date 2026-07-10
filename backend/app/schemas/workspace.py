@@ -10,7 +10,6 @@ from app.db.models import Workspace
 class WorkspaceCreate(BaseModel):
     name: str
     description: str = ""
-    agent_ids: list[str] = []
     # Optional custom folder location. When omitted, the workspace defaults to
     # ``<workspaces_dir>/<id>``. ``~`` is expanded and the path is made absolute.
     path: str | None = None
@@ -19,7 +18,6 @@ class WorkspaceCreate(BaseModel):
 class WorkspaceUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    agent_ids: list[str] | None = None
     path: str | None = None
 
 
@@ -28,7 +26,6 @@ class WorkspaceRead(BaseModel):
     name: str
     description: str
     path: str
-    agent_ids: list[str]
     created_at: datetime
     updated_at: datetime
 
@@ -39,7 +36,6 @@ class WorkspaceRead(BaseModel):
             name=ws.name,
             description=ws.description,
             path=ws.path,
-            agent_ids=[a.id for a in ws.agents],
             created_at=ws.created_at,
             updated_at=ws.updated_at,
         )

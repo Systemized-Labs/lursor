@@ -49,12 +49,6 @@ class AgentToolLink(SQLModel, table=True):
     tool_id: str = Field(foreign_key="tools.id", primary_key=True)
 
 
-class WorkspaceAgentLink(SQLModel, table=True):
-    __tablename__ = "workspace_agents"
-    workspace_id: str = Field(foreign_key="workspaces.id", primary_key=True)
-    agent_id: str = Field(foreign_key="agents.id", primary_key=True)
-
-
 # --- Core entities --------------------------------------------------------------
 
 
@@ -136,11 +130,6 @@ class Agent(TimestampMixin, table=True):
         link_model=AgentToolLink,
         sa_relationship_kwargs={"lazy": "selectin"},
     )
-    workspaces: list["Workspace"] = Relationship(
-        back_populates="agents",
-        link_model=WorkspaceAgentLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
-    )
 
 
 class CustomProvider(TimestampMixin, table=True):
@@ -168,12 +157,6 @@ class Workspace(TimestampMixin, table=True):
     name: str = Field(index=True)
     description: str = ""
     path: str = ""  # absolute path, assigned on creation
-
-    agents: list[Agent] = Relationship(
-        back_populates="workspaces",
-        link_model=WorkspaceAgentLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
-    )
 
 
 class Thread(TimestampMixin, table=True):

@@ -5,7 +5,6 @@ import { toast } from "sonner"
 
 import type { Workspace } from "@/api/types"
 import { useDeleteWorkspace, useWorkspaces } from "@/api/workspaces"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -112,10 +111,7 @@ export function WorkspacesPage() {
                 <p className="truncate font-mono text-xs text-muted-foreground">
                   {workspace.path}
                 </p>
-                <div className="flex items-center justify-between gap-2">
-                  <Badge variant="outline">
-                    {workspace.agent_ids.length} agents
-                  </Badge>
+                <div className="flex items-center justify-end gap-2">
                   <Button asChild variant="secondary" size="sm">
                     <Link to={`/workspaces/${workspace.id}`}>
                       <FolderOpen className="h-4 w-4" />
