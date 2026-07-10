@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { FolderOpen } from "lucide-react"
 import { toast } from "sonner"
 
 import type { Workspace, WorkspaceInput } from "@/api/types"
@@ -6,6 +7,7 @@ import { useAgents } from "@/api/agents"
 import {
   useCreateWorkspace,
   useUpdateWorkspace,
+  workspacesApi,
 } from "@/api/workspaces"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,9 +26,10 @@ interface FormState {
   name: string
   description: string
   agent_ids: string[]
+  path: string
 }
 
-const EMPTY: FormState = { name: "", description: "", agent_ids: [] }
+const EMPTY: FormState = { name: "", description: "", agent_ids: [], path: "" }
 
 interface WorkspaceFormDialogProps {
   open: boolean
@@ -40,11 +43,28 @@ export function WorkspaceFormDialog({
   workspace,
 }: WorkspaceFormDialogProps) {
   const [form, setForm] = useState<FormState>(EMPTY)
+  const [isBrowsing, setIsBrowsing] = useState(false)
   const agentsQuery = useAgents()
   const createWorkspace = useCreateWorkspace()
   const updateWorkspace = useUpdateWorkspace()
   const isEdit = Boolean(workspace)
   const isSaving = createWorkspace.isPending || updateWorkspace.isPending
+
+  async function handleBrowse() {
+    setIsBrowsing(true)
+    try {
+      const { path } = await workspacesApi.pickFolder()
+      if (path) {
+        setForm((prev) => ({ ...prev, path }))
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not open folder picker"
+      )
+    } finally {
+      setIsBrowsing(false)
+    }
+  }
 
   useEffect(() => {
     if (open) {
@@ -54,6 +74,7 @@ export function WorkspaceFormDialog({
               name: workspace.name,
               description: workspace.description,
               agent_ids: workspace.agent_ids,
+              path: workspace.path,
             }
           : EMPTY
       )
@@ -79,6 +100,7 @@ export function WorkspaceFormDialog({
       name: form.name.trim(),
       description: form.description.trim(),
       agent_ids: form.agent_ids,
+      path: form.path.trim() || undefined,
     }
     try {
       if (workspace) {
@@ -128,6 +150,33 @@ export function WorkspaceFormDialog({
                 setForm((prev) => ({ ...prev, description: e.target.value }))
               }
             />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="workspace-path">Folder location</Label>
+            <div className="flex gap-2">
+              <Input
+                id="workspace-path"
+                className="flex-1"
+                value={form.path}
+                placeholder="~/.hearthstack/workspaces/{id}"
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, path: e.target.value }))
+                }
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleBrowse}
+                disabled={isBrowsing}
+              >
+                <FolderOpen />
+                {isBrowsing ? "Opening…" : "Browse"}
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Absolute path to the workspace directory. Leave blank to use the
+              default location.
+            </p>
           </div>
           <div className="grid gap-2">
             <Label>Agents</Label>

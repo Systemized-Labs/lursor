@@ -34,9 +34,10 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'hearthstack.db'}"
 
     # --- Workspaces ---
-    # Root directory under which each workspace gets its own folder. This folder
-    # becomes the deep agent's filesystem root when it runs.
-    workspaces_dir: Path = BACKEND_DIR / "workspaces"
+    # Root directory under which each workspace gets its own folder (named by its
+    # id) unless a custom location is supplied. This folder becomes the deep
+    # agent's filesystem root when it runs.
+    workspaces_dir: Path = Path.home() / ".hearthstack" / "workspaces"
 
     # --- Agents ---
     # Default model used when an agent row does not specify one.

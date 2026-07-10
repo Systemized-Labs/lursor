@@ -85,6 +85,9 @@ export interface WorkspaceInput {
   name: string
   description: string
   agent_ids: string[]
+  // Optional custom folder location. Blank uses the default
+  // ~/.hearthstack/workspaces/{id} location.
+  path?: string
 }
 
 export type MessageRole = "user" | "assistant" | "system" | "tool"

@@ -16,6 +16,10 @@ export const workspacesApi = {
   update: (id: string, input: Partial<WorkspaceInput>) =>
     api.patch<Workspace>(`/workspaces/${id}`, input),
   remove: (id: string) => api.delete<void>(`/workspaces/${id}`),
+  // Opens the OS folder explorer on the machine running the backend. Returns
+  // the chosen path, or null if the user cancelled the dialog.
+  pickFolder: () =>
+    api.post<{ path: string | null }>("/workspaces/pick-folder", {}),
 }
 
 export const workspaceKeys = {

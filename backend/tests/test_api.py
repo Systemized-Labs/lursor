@@ -88,6 +88,46 @@ async def test_agent_with_links_and_workspace_thread(client: AsyncClient):
     assert (await client.get(f"/threads/{thread['id']}/messages")).json() == []
 
 
+async def test_pick_folder_and_custom_path(client: AsyncClient, monkeypatch):
+    """The pick-folder endpoint returns the native dialog's choice, and a custom
+    path is honored (and created) when a workspace is made."""
+    import subprocess
+    from types import SimpleNamespace
+
+    chosen = f"{_tmp}/picked-workspace"
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        return SimpleNamespace(returncode=0, stdout=f"{chosen}/\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/dialog")
+
+    r = await client.post("/workspaces/pick-folder")
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == chosen  # trailing slash stripped
+
+    r = await client.post("/workspaces", json={"name": "Custom", "path": chosen})
+    assert r.status_code == 201, r.text
+    ws = r.json()
+    assert ws["path"] == chosen
+    assert os.path.isdir(chosen)
+
+
+async def test_pick_folder_cancelled(client: AsyncClient, monkeypatch):
+    """A cancelled dialog (non-zero exit / empty output) yields a null path."""
+    import subprocess
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kw: SimpleNamespace(returncode=1, stdout="", stderr="")
+    )
+    monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/dialog")
+
+    r = await client.post("/workspaces/pick-folder")
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] is None
+
+
 async def test_build_deep_agent_offline(client: AsyncClient):
     """The builder should construct a pydantic-ai Agent without hitting the network."""
     from app.agents.builder import build_deep_agent
