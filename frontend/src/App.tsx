@@ -1,10 +1,8 @@
 import { Navigate, Route, Routes, useParams } from "react-router-dom"
 
 import { AppShell } from "@/components/layout/app-shell"
-import { AgentsPage } from "@/pages/agents/agents-page"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
-import { SkillsPage } from "@/pages/skills/skills-page"
-import { ToolsPage } from "@/pages/tools/tools-page"
+import { CustomizationPage } from "@/pages/customization/customization-page"
 import { WorkspaceDetailPage } from "@/pages/workspaces/workspace-detail-page"
 import { WorkspacesPage } from "@/pages/workspaces/workspaces-page"
 
@@ -26,10 +24,21 @@ function App() {
   return (
     <Routes>
       <Route element={<AppShell />}>
-        <Route index element={<Navigate to="/agents" replace />} />
-        <Route path="agents" element={<AgentsPage />} />
-        <Route path="skills" element={<SkillsPage />} />
-        <Route path="tools" element={<ToolsPage />} />
+        <Route index element={<Navigate to="/customization" replace />} />
+        <Route path="customization" element={<CustomizationPage />} />
+        {/* Back-compat: the old top-level pages now live as tabs. */}
+        <Route
+          path="agents"
+          element={<Navigate to="/customization?tab=agents" replace />}
+        />
+        <Route
+          path="skills"
+          element={<Navigate to="/customization?tab=skills" replace />}
+        />
+        <Route
+          path="tools"
+          element={<Navigate to="/customization?tab=tools" replace />}
+        />
         <Route path="workspaces" element={<WorkspacesPage />} />
         <Route path="workspaces/:workspaceId" element={<WorkspaceDetailPage />} />
         <Route
@@ -40,7 +49,7 @@ function App() {
           path="workspaces/:workspaceId/threads/:threadId"
           element={<LegacyThreadRedirect />}
         />
-        <Route path="*" element={<Navigate to="/agents" replace />} />
+        <Route path="*" element={<Navigate to="/customization" replace />} />
       </Route>
     </Routes>
   )

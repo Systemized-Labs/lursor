@@ -18,7 +18,9 @@ import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { ToolFormDialog } from "./tool-form-dialog"
 
-export function ToolsPage() {
+const DESCRIPTION = "Capabilities agents can call: builtin, MCP, or HTTP."
+
+export function ToolsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: tools, isLoading, isError, error } = useTools()
   const deleteTool = useDeleteTool()
 
@@ -42,18 +44,23 @@ export function ToolsPage() {
     }
   }
 
+  const action = (
+    <Button onClick={openCreate}>
+      <Plus className="h-4 w-4" />
+      New tool
+    </Button>
+  )
+
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Tools"
-        description="Capabilities agents can call: builtin, MCP, or HTTP."
-        actions={
-          <Button onClick={openCreate}>
-            <Plus className="h-4 w-4" />
-            New tool
-          </Button>
-        }
-      />
+      {embedded ? (
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">{DESCRIPTION}</p>
+          {action}
+        </div>
+      ) : (
+        <PageHeader title="Tools" description={DESCRIPTION} actions={action} />
+      )}
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading tools…</p>

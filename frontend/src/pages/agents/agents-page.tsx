@@ -18,7 +18,9 @@ import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { AgentFormDialog } from "./agent-form-dialog"
 
-export function AgentsPage() {
+const DESCRIPTION = "Configure the agents available in your harness."
+
+export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: agents, isLoading, isError, error } = useAgents()
   const deleteAgent = useDeleteAgent()
 
@@ -47,18 +49,23 @@ export function AgentsPage() {
     }
   }
 
+  const action = (
+    <Button onClick={openCreate}>
+      <Plus className="h-4 w-4" />
+      New agent
+    </Button>
+  )
+
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Agents"
-        description="Configure the agents available in your harness."
-        actions={
-          <Button onClick={openCreate}>
-            <Plus className="h-4 w-4" />
-            New agent
-          </Button>
-        }
-      />
+      {embedded ? (
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">{DESCRIPTION}</p>
+          {action}
+        </div>
+      ) : (
+        <PageHeader title="Agents" description={DESCRIPTION} actions={action} />
+      )}
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading agents…</p>

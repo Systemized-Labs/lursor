@@ -17,7 +17,9 @@ import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { SkillFormDialog } from "./skill-form-dialog"
 
-export function SkillsPage() {
+const DESCRIPTION = "Reusable markdown instructions for your agents."
+
+export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: skills, isLoading, isError, error } = useSkills()
   const deleteSkill = useDeleteSkill()
 
@@ -41,18 +43,23 @@ export function SkillsPage() {
     }
   }
 
+  const action = (
+    <Button onClick={openCreate}>
+      <Plus className="h-4 w-4" />
+      New skill
+    </Button>
+  )
+
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Skills"
-        description="Reusable markdown instructions for your agents."
-        actions={
-          <Button onClick={openCreate}>
-            <Plus className="h-4 w-4" />
-            New skill
-          </Button>
-        }
-      />
+      {embedded ? (
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">{DESCRIPTION}</p>
+          {action}
+        </div>
+      ) : (
+        <PageHeader title="Skills" description={DESCRIPTION} actions={action} />
+      )}
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading skills…</p>

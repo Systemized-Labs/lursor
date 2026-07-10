@@ -1,15 +1,13 @@
 import {
-  Bot,
   Folder,
   FolderOpen,
   FolderPlus,
-  Hammer,
   Hexagon,
   Loader2,
   MessageSquare,
   MoreHorizontal,
   Pencil,
-  Sparkles,
+  SlidersHorizontal,
   Trash2,
 } from "lucide-react"
 import { type ComponentType, useEffect, useMemo, useState } from "react"
@@ -77,9 +75,7 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { to: "/agents", label: "Agents", icon: Bot },
-  { to: "/skills", label: "Skills", icon: Sparkles },
-  { to: "/tools", label: "Tools", icon: Hammer },
+  { to: "/customization", label: "Customization", icon: SlidersHorizontal },
 ]
 
 /** Compact relative time ("3s" / "5m" / "2h" / "4d"). */
@@ -193,7 +189,7 @@ export function AppSidebar() {
       <SidebarHeader>
         <div className="flex items-center gap-1 group-data-[collapsible=icon]:justify-center">
           <Link
-            to="/agents"
+            to="/customization"
             onClick={closeMobile}
             className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:hidden"
           >
