@@ -26,6 +26,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { MultiSelect } from "@/components/multi-select"
+import { ModelPicker } from "@/components/model-picker"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
 
@@ -236,11 +237,9 @@ export function AgentFormDialog({
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="agent-model">Model</Label>
-              <Input
-                id="agent-model"
+              <ModelPicker
                 value={form.model}
-                onChange={(e) => update("model", e.target.value)}
-                placeholder="Leave blank for default"
+                onChange={(value) => update("model", value)}
               />
             </div>
             <div className="grid gap-2">

@@ -134,3 +134,20 @@ export interface HealthResponse {
   status: string
   app: string
 }
+
+/** A single model in the OpenRouter catalogue (grouped by provider). */
+export interface ModelEntry {
+  id: string
+  label: string
+  name: string
+  description?: string
+  context_length?: number
+  pricing?: { prompt?: string; completion?: string }
+  modality?: string
+  input_modalities?: string[]
+}
+
+export interface ModelGroup {
+  label: string
+  models: ModelEntry[]
+}

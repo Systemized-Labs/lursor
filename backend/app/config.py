@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     # Models are served through OpenRouter (prefix "openrouter:").
     default_model: str = "openrouter:qwen/qwen3.7-max"
     openrouter_api_key: str | None = None
+    # Base URL for OpenRouter's REST API; "/models" is appended to list models.
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     def ensure_dirs(self) -> None:
         """Create on-disk directories the app relies on."""
