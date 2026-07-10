@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { Globe, Pencil, Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -6,19 +6,30 @@ import type { Agent } from "@/api/types"
 import { useAgents, useDeleteAgent } from "@/api/agents"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { AgentFormDialog } from "./agent-form-dialog"
 
 const DESCRIPTION = "Configure the agents available in your harness."
+
+/**
+ * Shorten a model identifier for display. Custom providers use a
+ * `custom:<provider-uuid>:<model-name>` form that is far too long to render in a
+ * badge, so we surface just the trailing model name and keep the full value in a
+ * tooltip via `title`.
+ */
+function formatModel(model: string | null): string {
+  if (!model) return "default model"
+  const parts = model.split(":")
+  return parts[parts.length - 1] || model
+}
+
+/** Two-character monogram derived from the agent name, for the card avatar. */
+function monogram(name: string): string {
+  return name.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "A"
+}
 
 export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: agents, isLoading, isError, error } = useAgents()
@@ -85,44 +96,73 @@ export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
           }
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {agents.map((agent) => (
-            <Card key={agent.id} className="flex flex-col">
-              <CardHeader>
-                <div className="flex items-start justify-between gap-2">
-                  <CardTitle className="truncate">{agent.name}</CardTitle>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => openEdit(agent)}
-                      aria-label="Edit agent"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setToDelete(agent)}
-                      aria-label="Delete agent"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
+            <Card
+              key={agent.id}
+              className="group flex flex-col gap-3 overflow-hidden border border-border/60 p-4 transition-colors hover:border-border"
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-xs font-semibold text-muted-foreground">
+                  {monogram(agent.name)}
                 </div>
-                <CardDescription className="line-clamp-2">
-                  {agent.description || "No description"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="mt-auto flex flex-wrap gap-2">
-                <Badge variant="secondary">{agent.model ?? "default model"}</Badge>
-                <Badge variant="outline">thinking: {agent.thinking}</Badge>
+                <div className="min-w-0 flex-1">
+                  <h3
+                    className="truncate text-sm font-semibold text-foreground"
+                    title={agent.name}
+                  >
+                    {agent.name}
+                  </h3>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                    {agent.description || "No description"}
+                  </p>
+                </div>
+                <div className="-mr-1.5 -mt-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => openEdit(agent)}
+                    aria-label="Edit agent"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                    onClick={() => setToDelete(agent)}
+                    aria-label="Delete agent"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-3">
+                <Badge
+                  variant="secondary"
+                  className="max-w-full font-normal"
+                  title={agent.model ?? "default model"}
+                >
+                  <span className="truncate">{formatModel(agent.model)}</span>
+                </Badge>
+                <Badge variant="outline" className="font-normal">
+                  thinking: {agent.thinking}
+                </Badge>
                 {agent.web_search ? (
-                  <Badge variant="outline">web search</Badge>
+                  <Badge variant="outline" className="gap-1 font-normal">
+                    <Globe className="h-3 w-3" />
+                    web
+                  </Badge>
                 ) : null}
-                <Badge variant="outline">{agent.skill_ids.length} skills</Badge>
-                <Badge variant="outline">{agent.tool_ids.length} tools</Badge>
-              </CardContent>
+                <Badge variant="outline" className="font-normal">
+                  {agent.skill_ids.length} skills
+                </Badge>
+                <Badge variant="outline" className="font-normal">
+                  {agent.tool_ids.length} tools
+                </Badge>
+              </div>
             </Card>
           ))}
         </div>
