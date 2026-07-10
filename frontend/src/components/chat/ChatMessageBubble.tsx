@@ -87,6 +87,91 @@ function StreamingDots({ lead }: { lead?: boolean }) {
   )
 }
 
+/**
+ * One assistant turn's segments (text and/or tool calls), rendered in order
+ * inside a shared bubble body. Kept separate so a single bubble and a grouped
+ * run of consecutive turns share identical segment layout.
+ */
+function AssistantSegments({ messages }: { messages: ChatMessage[] }) {
+  const segments = messages.filter(
+    (m) => m.content !== "" || m.toolCalls.length > 0
+  )
+  return (
+    <>
+      {segments.map((seg, i) => (
+        <div key={seg.id} className={i > 0 ? "mt-3" : undefined}>
+          {seg.content !== "" && (
+            <StreamingMarkdown text={seg.content} animate={Boolean(seg.streaming)} />
+          )}
+          {seg.toolCalls.length > 0 && (
+            <div className={seg.content !== "" ? "mt-3" : undefined}>
+              <ChatToolCalls toolCalls={seg.toolCalls} />
+            </div>
+          )}
+        </div>
+      ))}
+    </>
+  )
+}
+
+export interface ChatAssistantGroupProps {
+  /** Consecutive assistant turns (agent loop steps) shown as one bubble. */
+  messages: ChatMessage[]
+}
+
+/**
+ * A run of consecutive assistant turns rendered under a single avatar and
+ * bubble. The agent loop emits one assistant message per step (reason→tool→
+ * reason→answer); grouping them presents the whole response as one turn instead
+ * of a stack of look-alike bubbles, and mirrors how the run persists (one
+ * assistant message) on reload.
+ */
+export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
+  const isStreaming = messages.some((m) => m.streaming)
+  const hasBody = messages.some((m) => m.content !== "" || m.toolCalls.length > 0)
+
+  const copyText = messages
+    .map((m) => m.content)
+    .filter((c) => c !== "")
+    .join("\n\n")
+  const canCopy = !isStreaming && copyText.trim() !== ""
+  const actions = canCopy ? (
+    <div className="self-center flex-shrink-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      <CopyButton text={copyText} />
+    </div>
+  ) : null
+
+  return (
+    <div className="group flex justify-start gap-3 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+      <div
+        className={cn(
+          "h-7 w-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-300",
+          isStreaming
+            ? "bg-primary/15 ring-2 ring-primary/30 shadow-sm shadow-primary/10"
+            : "bg-primary/10"
+        )}
+      >
+        <Bot className="h-3.5 w-3.5 text-primary" />
+      </div>
+      <div className="min-w-0 max-w-[72%] shadow-sm rounded-2xl rounded-bl-md bg-muted/60 px-4 py-2.5 text-sm text-foreground transition-shadow">
+        {isStreaming && !hasBody ? (
+          <StreamingDots lead />
+        ) : (
+          <>
+            <AssistantSegments messages={messages} />
+            {isStreaming && (
+              <div className="mt-2 border-t border-border/20 pt-1.5">
+                <StreamingDots />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      {actions}
+    </div>
+  )
+}
+
 export interface ChatMessageBubbleProps {
   message: ChatMessage
   /** Run user-message text through the emoji→icon renderer. */

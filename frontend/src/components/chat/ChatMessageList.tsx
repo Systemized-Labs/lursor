@@ -4,8 +4,37 @@ import { ArrowDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
-import { ChatMessageBubble } from "@/components/chat/ChatMessageBubble"
+import {
+  ChatAssistantGroup,
+  ChatMessageBubble,
+} from "@/components/chat/ChatMessageBubble"
 import type { ChatMessage } from "@/agui/types"
+
+type Segment =
+  | { kind: "message"; message: ChatMessage }
+  | { kind: "assistant-group"; id: string; messages: ChatMessage[] }
+
+/**
+ * Collapses runs of consecutive assistant turns into one group so the agent
+ * loop's steps render as a single bubble. Everything else passes through as its
+ * own message.
+ */
+function groupMessages(messages: ChatMessage[]): Segment[] {
+  const segments: Segment[] = []
+  for (const message of messages) {
+    const last = segments[segments.length - 1]
+    if (message.role === "assistant") {
+      if (last?.kind === "assistant-group") {
+        last.messages.push(message)
+      } else {
+        segments.push({ kind: "assistant-group", id: message.id, messages: [message] })
+      }
+    } else {
+      segments.push({ kind: "message", message })
+    }
+  }
+  return segments
+}
 
 /** Shimmer placeholder shown while a conversation's history loads. */
 function ChatSkeleton() {
@@ -80,13 +109,17 @@ export function ChatMessageList({
         empty
       ) : (
         <>
-          {messages.map((message) => (
-            <ChatMessageBubble
-              key={message.id}
-              message={message}
-              renderIcons={renderIcons}
-            />
-          ))}
+          {groupMessages(messages).map((segment) =>
+            segment.kind === "assistant-group" ? (
+              <ChatAssistantGroup key={segment.id} messages={segment.messages} />
+            ) : (
+              <ChatMessageBubble
+                key={segment.message.id}
+                message={segment.message}
+                renderIcons={renderIcons}
+              />
+            )
+          )}
           {onScrollToBottom && showScrollToBottom && (
             <div className="sticky bottom-0 z-10 h-0">
               <Button

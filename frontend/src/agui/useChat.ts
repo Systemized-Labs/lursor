@@ -80,6 +80,10 @@ export function useChat(options: UseChatOptions): UseChat {
   const agentThreadRef = useRef<string | null>(null)
   const reconnectAbortRef = useRef<AbortController | null>(null)
   const currentAssistantId = useRef<string | null>(null)
+  // Thread `send` is actively driving via the live POST stream. Set synchronously
+  // so `loadConversation` can bail before it opens a second consumer for the same
+  // run (see the guard in `loadConversation`).
+  const sendingThreadRef = useRef<string | null>(null)
 
   // Latest values for use inside stable callbacks without re-binding them.
   const optionsRef = useRef(options)
@@ -163,6 +167,13 @@ export function useChat(options: UseChatOptions): UseChat {
 
   const loadConversation = useCallback(
     async (threadId: string) => {
+      // Already driving this exact thread via `send`? Opening it again would abort
+      // the live POST stream and spin up a reconnect GET stream — two consumers of
+      // one run, which duplicates the assistant bubble when the model emits no
+      // message ids. This fires on first-send because `setSearchParams` flushes the
+      // URL (via useSyncExternalStore) a render before `selectedThreadId` catches
+      // up, so the URL effect's `cParam !== selectedThreadId` guard slips through.
+      if (threadId === sendingThreadRef.current) return
       abortLocalStreams()
       const seq = ++loadSeq.current
       setSelectedThreadId(threadId)
@@ -197,6 +208,8 @@ export function useChat(options: UseChatOptions): UseChat {
     agentRef.current = null
     agentThreadRef.current = null
     currentAssistantId.current = null
+    // Abandoned any in-flight send; re-opening that thread should reconnect, not bail.
+    sendingThreadRef.current = null
     setSelectedThreadId(null)
     setMessages([])
     setError(null)
@@ -225,6 +238,9 @@ export function useChat(options: UseChatOptions): UseChat {
           })
           threadId = thread.id
           selectedThreadIdRef.current = thread.id
+          // Claim this thread as ours before the URL update below, so the
+          // resulting `loadConversation` bails instead of opening a rival stream.
+          sendingThreadRef.current = thread.id
           setSelectedThreadId(thread.id)
           optionsRef.current.onThreadCreated?.(thread)
         } catch (err) {
@@ -232,6 +248,7 @@ export function useChat(options: UseChatOptions): UseChat {
           return
         }
       }
+      sendingThreadRef.current = threadId
 
       if (!agentRef.current || agentThreadRef.current !== threadId) {
         agentRef.current = createThreadAgent(threadId)
@@ -278,6 +295,7 @@ export function useChat(options: UseChatOptions): UseChat {
       } catch (err) {
         setError(err instanceof Error ? err.message : "Chat request failed")
       } finally {
+        if (sendingThreadRef.current === threadId) sendingThreadRef.current = null
         setIsStreaming(false)
         currentAssistantId.current = null
         setMessages((prev) => finishStreaming(prev))
