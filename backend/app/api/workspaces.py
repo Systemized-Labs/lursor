@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -17,16 +18,28 @@ from app.schemas.workspace import WorkspaceCreate, WorkspaceRead, WorkspaceUpdat
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 settings = get_settings()
 
-# Native "choose folder" dialog per platform. The backend runs on the user's own
-# machine (local single-user app), so it can present the OS file explorer. Each
-# command prints the selected POSIX path to stdout and exits non-zero on cancel.
-_FOLDER_DIALOGS: dict[str, list[str]] = {
+# Native "choose folder" dialogs. The backend runs on the user's own machine
+# (local single-user app), so it can present the OS file explorer. Each command
+# prints the selected path to stdout and exits non-zero on cancel.
+#
+# macOS and Windows ship their tool with the OS, but Linux/other Unix has no
+# single guaranteed picker: GNOME provides ``zenity``, KDE provides ``kdialog``,
+# and ``qarma`` is a common Qt-based ``zenity`` clone. We try each in turn and
+# use the first one whose binary is actually installed.
+_HOME = os.path.expanduser("~")
+_FOLDER_DIALOGS: dict[str, list[list[str]]] = {
     "darwin": [
-        "osascript",
-        "-e",
-        'POSIX path of (choose folder with prompt "Select a workspace folder")',
+        [
+            "osascript",
+            "-e",
+            'POSIX path of (choose folder with prompt "Select a workspace folder")',
+        ]
     ],
-    "linux": ["zenity", "--file-selection", "--directory", "--title=Select a workspace folder"],
+    "linux": [
+        ["zenity", "--file-selection", "--directory", "--title=Select a workspace folder"],
+        ["kdialog", "--getexistingdirectory", _HOME, "--title", "Select a workspace folder"],
+        ["qarma", "--file-selection", "--directory", "--title=Select a workspace folder"],
+    ],
 }
 
 
@@ -37,22 +50,28 @@ def _pick_folder_dialog() -> str | None:
     """
     if sys.platform.startswith("win"):
         # PowerShell's FolderBrowserDialog; empty output means the user cancelled.
-        cmd = [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            "Add-Type -AssemblyName System.Windows.Forms;"
-            "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
-            "if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }",
+        candidates = [
+            [
+                "powershell",
+                "-NoProfile",
+                "-STA",
+                "-Command",
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+                "if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }",
+            ]
         ]
     else:
         key = "darwin" if sys.platform == "darwin" else "linux"
-        cmd = _FOLDER_DIALOGS[key]
+        candidates = _FOLDER_DIALOGS[key]
 
-    if shutil.which(cmd[0]) is None:
+    cmd = next((c for c in candidates if shutil.which(c[0]) is not None), None)
+    if cmd is None:
+        tools = ", ".join(dict.fromkeys(c[0] for c in candidates))
         raise HTTPException(
             status.HTTP_501_NOT_IMPLEMENTED,
-            f"No folder picker available on this system (missing '{cmd[0]}').",
+            f"No folder picker is available on this system. Install one of: {tools} "
+            "(or type the workspace path manually).",
         )
 
     try:
