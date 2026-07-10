@@ -79,29 +79,31 @@ export function ChatMessageList({
       ) : messages.length === 0 ? (
         empty
       ) : (
-        messages.map((message) => (
-          <ChatMessageBubble
-            key={message.id}
-            message={message}
-            renderIcons={renderIcons}
-          />
-        ))
+        <>
+          {messages.map((message) => (
+            <ChatMessageBubble
+              key={message.id}
+              message={message}
+              renderIcons={renderIcons}
+            />
+          ))}
+          {onScrollToBottom && showScrollToBottom && (
+            <div className="sticky bottom-0 z-10 h-0">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={onScrollToBottom}
+                className="absolute bottom-4 left-1/2 -translate-x-1/2 gap-1.5 whitespace-nowrap rounded-full border border-border shadow-md animate-in fade-in-0 slide-in-from-bottom-2"
+              >
+                <ArrowDown className="h-3.5 w-3.5" />
+                Jump to latest
+              </Button>
+            </div>
+          )}
+          <div ref={endRef} />
+        </>
       )}
-      {onScrollToBottom && showScrollToBottom && (
-        <div className="sticky bottom-0 z-10 h-0">
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            onClick={onScrollToBottom}
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 gap-1.5 whitespace-nowrap rounded-full border border-border shadow-md animate-in fade-in-0 slide-in-from-bottom-2"
-          >
-            <ArrowDown className="h-3.5 w-3.5" />
-            Jump to latest
-          </Button>
-        </div>
-      )}
-      <div ref={endRef} />
     </div>
   )
 }
