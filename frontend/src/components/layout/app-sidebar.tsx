@@ -237,23 +237,20 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        <div className="flex items-center gap-1 group-data-[collapsible=icon]:justify-center">
-          <Link
-            to="/customization"
-            onClick={closeMobile}
-            className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:hidden"
-          >
-            <img
-              src="/lursor_icon.png"
-              alt="Lursor"
-              className="size-11 shrink-0 rounded-md object-contain"
-            />
-            <span className="truncate text-lg font-bold tracking-tight text-foreground">
-              Lursor
-            </span>
-          </Link>
-          <SidebarTrigger className="shrink-0" />
-        </div>
+        <Link
+          to="/customization"
+          onClick={closeMobile}
+          className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+        >
+          <img
+            src="/lursor_icon.png"
+            alt="Lursor"
+            className="size-11 shrink-0 rounded-md object-contain"
+          />
+          <span className="truncate text-lg font-bold tracking-tight text-foreground group-data-[collapsible=icon]:hidden">
+            Lursor
+          </span>
+        </Link>
       </SidebarHeader>
 
       <SidebarContent>
@@ -345,11 +342,9 @@ export function AppSidebar() {
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <div className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center">
+            <div className="flex items-center justify-between group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
               <ThemeToggle />
-              <span className="text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-                Toggle theme
-              </span>
+              <SidebarTrigger className="shrink-0" />
             </div>
           </SidebarMenuItem>
         </SidebarMenu>

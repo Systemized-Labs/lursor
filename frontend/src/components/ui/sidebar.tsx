@@ -30,6 +30,12 @@ const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
+// Drag-to-resize bounds (px). The default matches SIDEBAR_WIDTH (16rem).
+const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar:width"
+const SIDEBAR_WIDTH_DEFAULT = 256
+const SIDEBAR_WIDTH_MIN = 200
+const SIDEBAR_WIDTH_MAX = 480
+
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
   open: boolean
@@ -38,6 +44,10 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
   toggleSidebar: () => void
+  width: number
+  setWidth: (width: number) => void
+  isResizing: boolean
+  setIsResizing: (resizing: boolean) => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -72,6 +82,24 @@ const SidebarProvider = React.forwardRef<
   ) => {
     const isMobile = useIsMobile()
     const [openMobile, setOpenMobile] = React.useState(false)
+
+    // Drag-to-resize width (desktop only), persisted across refreshes.
+    const [width, _setWidth] = React.useState(() => {
+      if (typeof window === "undefined") return SIDEBAR_WIDTH_DEFAULT
+      const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+      return stored >= SIDEBAR_WIDTH_MIN && stored <= SIDEBAR_WIDTH_MAX
+        ? stored
+        : SIDEBAR_WIDTH_DEFAULT
+    })
+    const [isResizing, setIsResizing] = React.useState(false)
+    const setWidth = React.useCallback((value: number) => {
+      const clamped = Math.min(
+        SIDEBAR_WIDTH_MAX,
+        Math.max(SIDEBAR_WIDTH_MIN, Math.round(value))
+      )
+      _setWidth(clamped)
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped))
+    }, [])
 
     // Internal open state; `openProp`/`setOpenProp` allow external control.
     const [_open, _setOpen] = React.useState(defaultOpen)
@@ -121,17 +149,33 @@ const SidebarProvider = React.forwardRef<
         openMobile,
         setOpenMobile,
         toggleSidebar,
+        width,
+        setWidth,
+        isResizing,
+        setIsResizing,
       }),
-      [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+      [
+        state,
+        open,
+        setOpen,
+        isMobile,
+        openMobile,
+        setOpenMobile,
+        toggleSidebar,
+        width,
+        setWidth,
+        isResizing,
+      ]
     )
 
     return (
       <SidebarContext.Provider value={contextValue}>
         <TooltipProvider delayDuration={0}>
           <div
+            data-resizing={isResizing}
             style={
               {
-                "--sidebar-width": SIDEBAR_WIDTH,
+                "--sidebar-width": `${width}px`,
                 "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
                 ...style,
               } as React.CSSProperties
@@ -225,6 +269,7 @@ const Sidebar = React.forwardRef<
         <div
           className={cn(
             "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
+            "group-data-[resizing=true]/sidebar-wrapper:transition-none",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
@@ -234,7 +279,7 @@ const Sidebar = React.forwardRef<
         />
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex",
+            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]/sidebar-wrapper:transition-none md:flex",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -288,7 +333,47 @@ const SidebarRail = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button">
 >(({ className, ...props }, ref) => {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, state, setWidth, setIsResizing } = useSidebar()
+
+  // The rail doubles as a drag handle: dragging resizes (when expanded), while
+  // a plain click (no meaningful movement) still toggles the sidebar.
+  const handleMouseDown = React.useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault()
+      const startX = event.clientX
+      const resizable = state === "expanded"
+      // `side` lives as a data attribute on the sidebar wrapper, not in context.
+      const side =
+        event.currentTarget.closest("[data-side]")?.getAttribute("data-side") ??
+        "left"
+      let moved = false
+
+      const onMove = (e: MouseEvent) => {
+        if (Math.abs(e.clientX - startX) > 3) moved = true
+        if (!resizable) return
+        // The sidebar is anchored to the viewport edge, so the pointer's
+        // distance from that edge is the new width.
+        setWidth(side === "left" ? e.clientX : window.innerWidth - e.clientX)
+      }
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove)
+        document.removeEventListener("mouseup", onUp)
+        document.body.style.removeProperty("cursor")
+        document.body.style.removeProperty("user-select")
+        setIsResizing(false)
+        if (!moved) toggleSidebar()
+      }
+
+      if (resizable) {
+        setIsResizing(true)
+        document.body.style.cursor = "col-resize"
+        document.body.style.userSelect = "none"
+      }
+      document.addEventListener("mousemove", onMove)
+      document.addEventListener("mouseup", onUp)
+    },
+    [state, setWidth, setIsResizing, toggleSidebar]
+  )
 
   return (
     <button
@@ -296,7 +381,7 @@ const SidebarRail = React.forwardRef<
       data-sidebar="rail"
       aria-label="Toggle Sidebar"
       tabIndex={-1}
-      onClick={toggleSidebar}
+      onMouseDown={handleMouseDown}
       title="Toggle Sidebar"
       className={cn(
         "absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border group-data-[side=left]:-right-4 group-data-[side=right]:left-0 sm:flex",
