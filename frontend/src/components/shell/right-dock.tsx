@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useLocation } from "react-router-dom"
 import {
   Activity,
   FileCode,
@@ -9,6 +10,8 @@ import {
   X,
 } from "lucide-react"
 import type { ElementType } from "react"
+
+import { TerminalPanel } from "@/components/shell/terminal-panel"
 
 import {
   DropdownMenu,
@@ -55,6 +58,10 @@ interface RightDockProps {
 export function RightDock({ onCollapse }: RightDockProps) {
   const [tabs, setTabs] = useState<DockTab[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  // The active workspace (from `/workspaces/:id/...`) roots dock content like
+  // the terminal in that workspace's directory.
+  const { pathname } = useLocation()
+  const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
 
   function openTab(kind: DockKind) {
     const tab: DockTab = { id: nextTabId(), kind }
@@ -166,7 +173,7 @@ export function RightDock({ onCollapse }: RightDockProps) {
                 t.id !== activeId && "hidden"
               )}
             >
-              <DockPanelContent kind={t.kind} />
+              <DockPanelContent kind={t.kind} workspaceId={workspaceId} />
             </div>
           ))
         )}
@@ -175,8 +182,18 @@ export function RightDock({ onCollapse }: RightDockProps) {
   )
 }
 
-/** Placeholder panel body — swap for real content as each feature lands. */
-function DockPanelContent({ kind }: { kind: DockKind }) {
+/** Panel body: real content where wired up, a placeholder otherwise. */
+function DockPanelContent({
+  kind,
+  workspaceId,
+}: {
+  kind: DockKind
+  workspaceId?: string
+}) {
+  if (kind === "terminal") {
+    return <TerminalPanel workspaceId={workspaceId} />
+  }
+
   const meta = TAB_META[kind]
   const Icon = meta.icon
   return (
