@@ -8,7 +8,6 @@ import { useAgents } from "@/api/agents"
 import { threadKeys, useActiveRuns, useThreads, useUpdateThread } from "@/api/threads"
 import { useWorkspace } from "@/api/workspaces"
 import { useChat } from "@/agui/useChat"
-import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -159,18 +158,6 @@ export function WorkspaceChatPage() {
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-card">
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-border/60 bg-card/60 px-4 py-2.5 backdrop-blur-sm">
-        <div className="relative flex-shrink-0">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/20">
-            <Bot className="h-4 w-4 text-primary" />
-          </div>
-          <span
-            className={cn(
-              "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-card transition-colors",
-              chat.isStreaming ? "animate-pulse bg-primary" : "bg-success"
-            )}
-          />
-        </div>
-
         <div className="flex min-w-0 flex-1 flex-col leading-tight">
           <span className="truncate text-sm font-semibold text-foreground">
             {currentThread?.title ?? "New conversation"}
