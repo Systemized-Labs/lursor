@@ -2,7 +2,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  Hexagon,
   Loader2,
   MessageSquare,
   MoreHorizontal,
@@ -191,9 +190,13 @@ export function AppSidebar() {
           <Link
             to="/customization"
             onClick={closeMobile}
-            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:hidden"
+            className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:hidden"
           >
-            <Hexagon className="size-6 shrink-0 text-primary" />
+            <img
+              src="/lursor_icon.png"
+              alt="Lursor"
+              className="size-11 shrink-0 rounded-md object-contain"
+            />
             <span className="truncate text-lg font-bold tracking-tight text-foreground">
               Lursor
             </span>
