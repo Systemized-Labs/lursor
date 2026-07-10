@@ -164,17 +164,12 @@ function ModelDetail({
   )
 }
 
-const TOP_PROVIDERS = [
-  "anthropic",
-  "openai",
-  "google",
-  "qwen",
-  "deepseek",
-  "minimax",
-  "x-ai",
-  "meta-llama",
-  "mistralai",
-]
+// Every cloud model is served through OpenRouter, so they all live under a
+// single "OpenRouter" tab. Each custom (locally-hosted) provider gets its own
+// tab, keyed by its group label. This sentinel keys the OpenRouter tab and is
+// unlikely to collide with a user's custom provider name.
+const OPENROUTER_TAB = "__openrouter__"
+const OPENROUTER_LABEL = "OpenRouter"
 
 interface ModelPickerProps {
   /** Stored model string (may carry the `openrouter:` prefix). Empty = default. */
@@ -188,7 +183,9 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
-  const [providerFilter, setProviderFilter] = useState<string | null>(null)
+  // The selected tab: OPENROUTER_TAB for all cloud models, or a custom
+  // provider's group label for that provider's models.
+  const [activeTab, setActiveTab] = useState<string>(OPENROUTER_TAB)
   const [preview, setPreview] = useState<{ model: ModelEntry; group: string } | null>(
     null
   )
@@ -223,9 +220,38 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
     return null
   }, [groups, value, modelFilter])
 
+  const hasVisible = useCallback(
+    (g: ModelGroup) => !modelFilter || g.models.some((m) => modelFilter(m)),
+    [modelFilter]
+  )
+
+  const hasCloud = groups.some((g) => !isCustomGroup(g) && hasVisible(g))
+
+  // Tabs: OpenRouter (all cloud models) first, then one per custom provider.
+  const tabs: { key: string; label: string }[] = [
+    ...(hasCloud ? [{ key: OPENROUTER_TAB, label: OPENROUTER_LABEL }] : []),
+    ...groups
+      .filter((g) => isCustomGroup(g) && hasVisible(g))
+      .map((g) => ({ key: g.label, label: g.label })),
+  ]
+
+  // Open on the tab holding the current selection, else the first tab.
+  const resolveInitialTab = useCallback(() => {
+    if (value) {
+      for (const group of groups) {
+        if (group.models.some((m) => entryValue(m) === value)) {
+          return isCustomGroup(group) ? group.label : OPENROUTER_TAB
+        }
+      }
+    }
+    if (hasCloud) return OPENROUTER_TAB
+    const firstCustom = groups.find((g) => isCustomGroup(g) && hasVisible(g))
+    return firstCustom?.label ?? OPENROUTER_TAB
+  }, [groups, value, hasCloud, hasVisible])
+
   function handleOpen() {
     setSearch("")
-    setProviderFilter(null)
+    setActiveTab(resolveInitialTab())
     setPreview(resolveInitialPreview())
     setMobileDetail(false)
     setOpen(true)
@@ -238,8 +264,12 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
     }
   }, [open])
 
-  // Filter groups by search, provider, and capability.
+  // Only the active tab's groups are shown: all cloud groups under OpenRouter,
+  // or the single matching custom group. Then filter models by search/capability.
   const filtered = groups
+    .filter((g) =>
+      activeTab === OPENROUTER_TAB ? !isCustomGroup(g) : g.label === activeTab
+    )
     .map((g) => ({
       ...g,
       models: g.models.filter((m) => {
@@ -249,37 +279,11 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
           m.name.toLowerCase().includes(search.toLowerCase()) ||
           m.id.toLowerCase().includes(search.toLowerCase()) ||
           g.label.toLowerCase().includes(search.toLowerCase())
-        const matchesProvider =
-          !providerFilter ||
-          g.label.toLowerCase() === providerFilter.toLowerCase() ||
-          m.id.toLowerCase().startsWith(providerFilter.toLowerCase() + "/")
         const matchesCapability = !modelFilter || modelFilter(m)
-        return matchesSearch && matchesProvider && matchesCapability
+        return matchesSearch && matchesCapability
       }),
     }))
     .filter((g) => g.models.length > 0)
-
-  // Filter chips: one per custom provider (keyed by its group label) first, then
-  // the top cloud providers that actually have models in the current catalogue.
-  // `key` is what gets matched in `matchesProvider` above; `capitalize` only
-  // affects display (cloud slugs look nicer capitalized, provider names don't).
-  const hasVisible = (g: ModelGroup) =>
-    !modelFilter || g.models.some((m) => modelFilter(m))
-
-  const availableProviders: { key: string; label: string; capitalize: boolean }[] = [
-    ...groups
-      .filter((g) => isCustomGroup(g) && hasVisible(g))
-      .map((g) => ({ key: g.label, label: g.label, capitalize: false })),
-    ...TOP_PROVIDERS.filter((p) =>
-      groups.some(
-        (g) =>
-          !isCustomGroup(g) &&
-          (g.label.toLowerCase() === p.toLowerCase() ||
-            g.models.some((m) => m.id.toLowerCase().startsWith(p.toLowerCase() + "/"))) &&
-          hasVisible(g)
-      )
-    ).map((p) => ({ key: p, label: p, capitalize: true })),
-  ]
 
   function handleUse() {
     if (preview) {
@@ -310,7 +314,30 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
           style={isMobile ? undefined : { width: "62vw", maxWidth: "62vw", height: "80vh" }}
         >
           <DialogTitle className="sr-only">Select model</DialogTitle>
-          <div className="flex h-full min-h-0">
+          <div className="flex h-full min-h-0 flex-col">
+            {/* Provider tabs — one per custom/top-cloud provider, plus "All".
+                Scroll horizontally when they overflow the dialog width. */}
+            <div className="shrink-0 overflow-x-auto border-b border-border/60">
+              <div className="flex items-center gap-1 px-3">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={cn(
+                      "shrink-0 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
+                      activeTab === tab.key
+                        ? "border-primary text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex min-h-0 flex-1">
             {/* Left — search + list. On mobile this is full-width and hidden
                 while the detail view is pushed over it. */}
             <div
@@ -321,7 +348,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
               )}
             >
               {/* Search */}
-              <div className="shrink-0 space-y-2 border-b border-border/60 px-4 pb-2 pt-3">
+              <div className="shrink-0 border-b border-border/60 px-4 pb-2 pt-3">
                 <div className="flex h-9 items-center gap-2 rounded-lg border border-transparent bg-muted/60 px-3 focus-within:border-ring/40 focus-within:bg-background">
                   <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <input
@@ -332,29 +359,6 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                     className="flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
                   />
                 </div>
-                {/* Provider filter chips */}
-                {availableProviders.length > 0 ? (
-                  <div className="flex flex-wrap gap-1">
-                    {availableProviders.map((p) => (
-                      <button
-                        key={p.key}
-                        type="button"
-                        onClick={() =>
-                          setProviderFilter(providerFilter === p.key ? null : p.key)
-                        }
-                        className={cn(
-                          "rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
-                          p.capitalize && "capitalize",
-                          providerFilter === p.key
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
-                        )}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
               </div>
 
               {/* Model list */}
@@ -458,6 +462,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                   </p>
                 </div>
               )}
+            </div>
             </div>
           </div>
         </DialogContent>
