@@ -18,13 +18,21 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 
-// Models are served through OpenRouter; the stored model string carries this
-// prefix (see backend `default_model`). The catalogue returns bare ids, so we
-// strip the prefix for matching and re-apply it on selection.
+// Cloud models are served through OpenRouter and carry this prefix (see backend
+// `default_model`). The backend now also stamps each catalogue entry with a
+// canonical `value` — the exact string to persist — which lets custom
+// (locally-hosted) models coexist. Fallback/legacy entries have no `value`, so
+// we synthesize the OpenRouter form from the bare id.
 const MODEL_PREFIX = "openrouter:"
+// Marks a locally-hosted model (see backend). Custom groups get their own
+// filter chip keyed by the provider's group label.
+const CUSTOM_PREFIX = "custom:"
 
-const stripPrefix = (v: string) =>
-  v.startsWith(MODEL_PREFIX) ? v.slice(MODEL_PREFIX.length) : v
+/** The string to persist / match on for an entry. */
+const entryValue = (m: ModelEntry) => m.value ?? `${MODEL_PREFIX}${m.id}`
+
+const isCustomGroup = (g: ModelGroup) =>
+  g.models.some((m) => m.value?.startsWith(CUSTOM_PREFIX))
 
 // Fallback static list used when the API is unavailable.
 const FALLBACK_MODEL_GROUPS: ModelGroup[] = [
@@ -178,7 +186,6 @@ interface ModelPickerProps {
 
 export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) {
   const isMobile = useIsMobile()
-  const bareValue = stripPrefix(value)
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
   const [providerFilter, setProviderFilter] = useState<string | null>(null)
@@ -196,15 +203,15 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
   const displayLabel = (() => {
     if (!value) return "Default model"
     for (const group of groups) {
-      const match = group.models.find((m) => m.id === bareValue)
+      const match = group.models.find((m) => entryValue(m) === value)
       if (match) return `${group.label} — ${match.label}`
     }
-    return bareValue
+    return value
   })()
 
   const resolveInitialPreview = useCallback(() => {
     for (const group of groups) {
-      const match = group.models.find((m) => m.id === bareValue)
+      const match = group.models.find((m) => entryValue(m) === value)
       if (match) return { model: match, group: group.label }
     }
     for (const group of groups) {
@@ -214,7 +221,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
       if (first) return { model: first, group: group.label }
     }
     return null
-  }, [groups, bareValue, modelFilter])
+  }, [groups, value, modelFilter])
 
   function handleOpen() {
     setSearch("")
@@ -252,19 +259,31 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
     }))
     .filter((g) => g.models.length > 0)
 
-  // Providers that actually have models in the current catalogue.
-  const availableProviders = TOP_PROVIDERS.filter((p) =>
-    groups.some(
-      (g) =>
-        (g.label.toLowerCase() === p.toLowerCase() ||
-          g.models.some((m) => m.id.toLowerCase().startsWith(p.toLowerCase() + "/"))) &&
-        (!modelFilter || g.models.some((m) => modelFilter(m)))
-    )
-  )
+  // Filter chips: one per custom provider (keyed by its group label) first, then
+  // the top cloud providers that actually have models in the current catalogue.
+  // `key` is what gets matched in `matchesProvider` above; `capitalize` only
+  // affects display (cloud slugs look nicer capitalized, provider names don't).
+  const hasVisible = (g: ModelGroup) =>
+    !modelFilter || g.models.some((m) => modelFilter(m))
+
+  const availableProviders: { key: string; label: string; capitalize: boolean }[] = [
+    ...groups
+      .filter((g) => isCustomGroup(g) && hasVisible(g))
+      .map((g) => ({ key: g.label, label: g.label, capitalize: false })),
+    ...TOP_PROVIDERS.filter((p) =>
+      groups.some(
+        (g) =>
+          !isCustomGroup(g) &&
+          (g.label.toLowerCase() === p.toLowerCase() ||
+            g.models.some((m) => m.id.toLowerCase().startsWith(p.toLowerCase() + "/"))) &&
+          hasVisible(g)
+      )
+    ).map((p) => ({ key: p, label: p, capitalize: true })),
+  ]
 
   function handleUse() {
     if (preview) {
-      onChange(`${MODEL_PREFIX}${preview.model.id}`)
+      onChange(entryValue(preview.model))
       setOpen(false)
     }
   }
@@ -318,19 +337,20 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                   <div className="flex flex-wrap gap-1">
                     {availableProviders.map((p) => (
                       <button
-                        key={p}
+                        key={p.key}
                         type="button"
                         onClick={() =>
-                          setProviderFilter(providerFilter === p ? null : p)
+                          setProviderFilter(providerFilter === p.key ? null : p.key)
                         }
                         className={cn(
-                          "rounded px-2 py-0.5 text-[11px] font-medium capitalize transition-colors",
-                          providerFilter === p
+                          "rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
+                          p.capitalize && "capitalize",
+                          providerFilter === p.key
                             ? "bg-primary text-primary-foreground"
                             : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
                         )}
                       >
-                        {p}
+                        {p.label}
                       </button>
                     ))}
                   </div>
@@ -367,8 +387,10 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                           {group.label}
                         </p>
                         {group.models.map((m) => {
-                          const isSelected = m.id === bareValue
-                          const isPreviewed = preview?.model.id === m.id
+                          const isSelected = entryValue(m) === value
+                          const isPreviewed =
+                            preview !== null &&
+                            entryValue(preview.model) === entryValue(m)
                           return (
                             <button
                               key={m.id}
@@ -426,7 +448,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                   model={preview.model}
                   group={preview.group}
                   onUse={handleUse}
-                  isActive={preview.model.id === bareValue}
+                  isActive={entryValue(preview.model) === value}
                 />
               ) : (
                 <div className="flex h-full flex-col items-center justify-center px-6 text-center">

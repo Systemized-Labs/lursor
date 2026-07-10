@@ -143,6 +143,23 @@ class Agent(TimestampMixin, table=True):
     )
 
 
+class CustomProvider(TimestampMixin, table=True):
+    """A user-added, locally-hosted OpenAI-compatible model endpoint.
+
+    Local runtimes (Ollama, LM Studio, vLLM, llama.cpp, …) all expose an
+    OpenAI-compatible REST API, so a base URL plus an optional API key is enough
+    to both list the endpoint's models and route runs to it. Selected models are
+    stored on an agent as ``custom:{provider_id}:{model_name}`` (see
+    ``agents/builder.py``).
+    """
+
+    __tablename__ = "custom_providers"
+
+    name: str = Field(index=True)  # display name, e.g. "Local Ollama"
+    base_url: str = ""  # OpenAI-compatible base, e.g. "http://localhost:11434/v1"
+    api_key: str | None = None  # optional; local servers usually don't require one
+
+
 class Workspace(TimestampMixin, table=True):
     """A named directory on disk that scopes an agent's filesystem."""
 

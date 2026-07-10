@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agents, chat, models, skills, threads, tools, workspaces
+from app.api import agents, chat, models, providers, skills, threads, tools, workspaces
 from app.config import get_settings
 from app.db.session import init_db
 
@@ -38,5 +38,5 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
 
 
-for module in (agents, skills, tools, workspaces, threads, chat, models):
+for module in (agents, skills, tools, providers, workspaces, threads, chat, models):
     app.include_router(module.router, prefix="/api")

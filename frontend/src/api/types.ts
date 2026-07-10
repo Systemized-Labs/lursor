@@ -135,11 +135,18 @@ export interface HealthResponse {
   app: string
 }
 
-/** A single model in the OpenRouter catalogue (grouped by provider). */
+/** A single model in the catalogue (cloud or custom, grouped by provider). */
 export interface ModelEntry {
   id: string
   label: string
   name: string
+  /**
+   * Exact string to persist on an agent so the run routes to the right backend
+   * (e.g. `openrouter:anthropic/claude-opus-4` or `custom:{id}:llama3`). The
+   * backend supplies this; older/fallback entries without it default to the
+   * OpenRouter prefix.
+   */
+  value?: string
   description?: string
   context_length?: number
   pricing?: { prompt?: string; completion?: string }
@@ -150,4 +157,20 @@ export interface ModelEntry {
 export interface ModelGroup {
   label: string
   models: ModelEntry[]
+}
+
+/** A user-added, locally-hosted OpenAI-compatible model endpoint. */
+export interface CustomProvider {
+  id: string
+  name: string
+  base_url: string
+  api_key: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CustomProviderInput {
+  name: string
+  base_url: string
+  api_key?: string | null
 }

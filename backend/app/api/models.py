@@ -10,13 +10,23 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from app.config import get_settings
+from app.db.models import CustomProvider
+from app.db.session import get_session
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/models", tags=["models"])
+
+# Prefix carried by a stored model string so runs can be routed back to the
+# right backend. Cloud models go through OpenRouter; custom models encode their
+# provider id (see agents/builder.py for the parsing side).
+OPENROUTER_PREFIX = "openrouter:"
+CUSTOM_PREFIX = "custom:"
 
 # Map OpenRouter provider prefixes to display names.
 _PROVIDER_LABELS: dict[str, str] = {
@@ -45,8 +55,15 @@ def _provider_label(provider_slug: str) -> str:
 
 
 @router.get("")
-async def list_models() -> list[dict[str, Any]]:
-    """Fetch available models from OpenRouter and return them grouped by provider.
+async def list_models(
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Return available models grouped by provider.
+
+    Merges the OpenRouter cloud catalogue with the models advertised by each
+    user-added custom provider (locally-hosted, OpenAI-compatible endpoints).
+    Every entry carries a ``value`` — the exact string to persist on an agent so
+    the run can be routed back to the right backend.
 
     Returns a list of provider groups::
 
@@ -54,7 +71,8 @@ async def list_models() -> list[dict[str, Any]]:
           {
             "label": "Anthropic",
             "models": [
-              {"id": "anthropic/claude-opus-4", "label": "claude-opus-4", "name": "Claude Opus 4"},
+              {"id": "anthropic/claude-opus-4", "label": "claude-opus-4",
+               "name": "Claude Opus 4", "value": "openrouter:anthropic/claude-opus-4"},
               ...
             ]
           },
@@ -67,19 +85,27 @@ async def list_models() -> list[dict[str, Any]]:
     if settings.openrouter_api_key:
         headers["Authorization"] = f"Bearer {settings.openrouter_api_key}"
 
+    # Load custom providers up front so they can still be returned even if
+    # OpenRouter is unreachable (a common case when working fully offline).
+    custom_providers = (
+        (await session.execute(select(CustomProvider))).scalars().all()
+    )
+
+    raw_models: list[dict[str, Any]] = []
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPStatusError as exc:
-        logger.error("models: OpenRouter returned %s", exc.response.status_code)
-        raise HTTPException(status_code=502, detail="Failed to fetch models from OpenRouter")
-    except httpx.RequestError as exc:
-        logger.error("models: request error: %s", exc)
-        raise HTTPException(status_code=502, detail="Could not reach OpenRouter")
-
-    raw_models: list[dict[str, Any]] = data.get("data", [])
+            raw_models = resp.json().get("data", [])
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        # Don't fail the whole request: custom/local models should still show.
+        # When there are none either, surface the error so the picker can fall
+        # back to its static list.
+        logger.error("models: OpenRouter fetch failed: %s", exc)
+        if not custom_providers:
+            raise HTTPException(
+                status_code=502, detail="Failed to fetch models from OpenRouter"
+            )
 
     # Group by provider (prefix before the first "/").
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -96,6 +122,7 @@ async def list_models() -> list[dict[str, Any]]:
             "id": model_id,
             "label": short_name,
             "name": m.get("name", short_name),
+            "value": f"{OPENROUTER_PREFIX}{model_id}",
         }
         if m.get("description"):
             entry["description"] = m["description"]
@@ -125,7 +152,52 @@ async def list_models() -> list[dict[str, Any]]:
         except ValueError:
             return (len(known_order), provider)
 
-    return [
+    cloud_groups = [
         {"label": _provider_label(provider), "models": models}
         for provider, models in sorted(groups.items(), key=lambda kv: _sort_key(kv[0]))
     ]
+
+    # Custom (locally-hosted) providers listed first so they're easy to find.
+    custom_groups = [g for p in custom_providers if (g := await _custom_group(p))]
+
+    return custom_groups + cloud_groups
+
+
+async def _custom_group(provider: CustomProvider) -> dict[str, Any] | None:
+    """Fetch a custom provider's model list via its OpenAI-compatible ``/models``.
+
+    Returns a picker group, or ``None`` if the endpoint is unreachable so one
+    dead provider can't blank out the whole catalogue.
+    """
+    base = provider.base_url.rstrip("/")
+    if not base:
+        return None
+    headers = {"Accept": "application/json"}
+    if provider.api_key:
+        headers["Authorization"] = f"Bearer {provider.api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base}/models", headers=headers)
+            resp.raise_for_status()
+            raw = resp.json().get("data", [])
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        logger.warning("models: custom provider %r unreachable: %s", provider.name, exc)
+        return None
+
+    models: list[dict[str, Any]] = []
+    for m in raw:
+        model_id = m.get("id", "")
+        if not model_id:
+            continue
+        models.append(
+            {
+                "id": model_id,
+                "label": model_id,
+                "name": model_id,
+                "value": f"{CUSTOM_PREFIX}{provider.id}:{model_id}",
+            }
+        )
+    if not models:
+        return None
+    return {"label": provider.name, "models": models}
