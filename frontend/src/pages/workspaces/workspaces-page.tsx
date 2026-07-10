@@ -113,7 +113,7 @@ export function WorkspacesPage() {
                 </p>
                 <div className="flex items-center justify-end gap-2">
                   <Button asChild variant="secondary" size="sm">
-                    <Link to={`/workspaces/${workspace.id}`}>
+                    <Link to={`/workspaces/${workspace.id}/chat`}>
                       <FolderOpen className="h-4 w-4" />
                       Open
                     </Link>

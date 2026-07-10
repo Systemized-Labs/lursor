@@ -3,8 +3,16 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom"
 import { AppShell } from "@/components/layout/app-shell"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
-import { WorkspaceDetailPage } from "@/pages/workspaces/workspace-detail-page"
 import { WorkspacesPage } from "@/pages/workspaces/workspaces-page"
+
+/**
+ * Opening a workspace now drops straight into its chat surface. The old
+ * workspace detail page is gone, so redirect the bare URL to the chat.
+ */
+function WorkspaceIndexRedirect() {
+  const { workspaceId } = useParams<{ workspaceId: string }>()
+  return <Navigate to={`/workspaces/${workspaceId}/chat`} replace />
+}
 
 /**
  * Back-compat for the old per-thread URL. Conversation selection now lives on
@@ -40,7 +48,10 @@ function App() {
           element={<Navigate to="/customization?tab=tools" replace />}
         />
         <Route path="workspaces" element={<WorkspacesPage />} />
-        <Route path="workspaces/:workspaceId" element={<WorkspaceDetailPage />} />
+        <Route
+          path="workspaces/:workspaceId"
+          element={<WorkspaceIndexRedirect />}
+        />
         <Route
           path="workspaces/:workspaceId/chat"
           element={<WorkspaceChatPage />}

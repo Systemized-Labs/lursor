@@ -38,7 +38,6 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
@@ -230,7 +229,16 @@ export function AppSidebar() {
 
         <SidebarGroup>
           <div className="flex items-center">
-            <SidebarGroupLabel className="flex-1">Workspaces</SidebarGroupLabel>
+            <SidebarGroupLabel className="flex-1 p-0" asChild>
+              <Link
+                to="/workspaces"
+                onClick={closeMobile}
+                title="View all workspaces"
+                className="px-2 hover:text-sidebar-accent-foreground"
+              >
+                Workspaces
+              </Link>
+            </SidebarGroupLabel>
             <Link
               to="/workspaces"
               onClick={closeMobile}
@@ -261,11 +269,6 @@ export function AppSidebar() {
                     activeThreadId={activeThreadId}
                     activeRuns={activeRuns}
                     onToggle={() => toggleWorkspace(ws.id)}
-                    onNewChat={() => {
-                      setOpenWorkspaces((prev) => new Set(prev).add(ws.id))
-                      navigate(`/workspaces/${ws.id}/chat`)
-                      closeMobile()
-                    }}
                     onNavigate={closeMobile}
                     onRename={(t) => {
                       setRenameTarget(t)
@@ -355,7 +358,6 @@ interface WorkspaceRowProps {
   activeThreadId: string | null
   activeRuns: Set<string>
   onToggle: () => void
-  onNewChat: () => void
   onNavigate: () => void
   onRename: (thread: Thread) => void
   onDelete: (thread: Thread) => void
@@ -369,7 +371,6 @@ function WorkspaceRow({
   activeThreadId,
   activeRuns,
   onToggle,
-  onNewChat,
   onNavigate,
   onRename,
   onDelete,
@@ -384,9 +385,6 @@ function WorkspaceRow({
         {isOpen ? <FolderOpen className="size-4" /> : <Folder className="size-4" />}
         <span>{name}</span>
       </SidebarMenuButton>
-      <SidebarMenuAction showOnHover onClick={onNewChat} title="New conversation">
-        <MessageSquare className="size-4" />
-      </SidebarMenuAction>
 
       {isOpen ? (
         <WorkspaceThreads
