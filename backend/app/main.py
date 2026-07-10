@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import (
     agents,
     chat,
+    files,
     models,
     providers,
     skills,
@@ -48,5 +49,5 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
 
 
-for module in (agents, skills, tools, providers, workspaces, threads, chat, models, terminal):
+for module in (agents, skills, tools, providers, workspaces, threads, chat, models, terminal, files):
     app.include_router(module.router, prefix="/api")

@@ -9,8 +9,18 @@ import {
 } from "lucide-react"
 import type { ElementType } from "react"
 
+import { Suspense, lazy } from "react"
+
 import { TerminalPanel } from "@/components/shell/terminal-panel"
 import { DOCK_KINDS, type DockKind, type DockTab } from "@/hooks/use-dock-state"
+
+// Monaco is heavy (~5MB); load the file editor only when a Files panel opens so
+// it never weighs down the base app.
+const FileViewer = lazy(() =>
+  import("@/components/files/file-viewer").then((m) => ({
+    default: m.FileViewer,
+  }))
+)
 
 import {
   DropdownMenu,
@@ -173,6 +183,19 @@ function DockPanelContent({
 }) {
   if (kind === "terminal") {
     return <TerminalPanel workspaceId={workspaceId} />
+  }
+  if (kind === "file") {
+    return (
+      <Suspense
+        fallback={
+          <div className="flex-1 flex items-center justify-center p-6 text-sm text-muted-foreground">
+            Loading editor…
+          </div>
+        }
+      >
+        <FileViewer workspaceId={workspaceId} />
+      </Suspense>
+    )
   }
 
   const meta = TAB_META[kind]
