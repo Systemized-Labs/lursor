@@ -50,6 +50,8 @@ export function WorkspaceChatPage() {
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
@@ -133,6 +135,36 @@ export function WorkspaceChatPage() {
     setSearchParams({})
   }
 
+  function startEditingTitle() {
+    if (!currentThread) return
+    setTitleDraft(currentThread.title)
+    setIsEditingTitle(true)
+  }
+
+  async function commitTitle() {
+    setIsEditingTitle(false)
+    const next = titleDraft.trim()
+    if (!currentThread || !next || next === currentThread.title) return
+    try {
+      await updateThread.mutateAsync({
+        id: currentThread.id,
+        input: { title: next },
+      })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to rename conversation")
+    }
+  }
+
+  function handleTitleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      void commitTitle()
+    } else if (e.key === "Escape") {
+      e.preventDefault()
+      setIsEditingTitle(false)
+    }
+  }
+
   async function handleSend() {
     const text = draft
     const atts = attachments
@@ -195,9 +227,30 @@ export function WorkspaceChatPage() {
       <div className="flex h-9 shrink-0 items-center gap-3 bg-background/70 px-3 backdrop-blur-sm">
         {/* Conversation title + live status */}
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="truncate text-sm font-medium text-foreground">
-            {currentThread?.title ?? "New conversation"}
-          </span>
+          {isEditingTitle ? (
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={() => void commitTitle()}
+              onKeyDown={handleTitleKeyDown}
+              aria-label="Conversation title"
+              className="min-w-0 flex-1 rounded-md bg-accent px-1.5 py-0.5 text-sm font-medium text-foreground outline-none ring-1 ring-primary/40 focus:ring-primary"
+            />
+          ) : currentThread ? (
+            <button
+              type="button"
+              onClick={startEditingTitle}
+              title="Rename conversation"
+              className="min-w-0 truncate rounded-md px-1.5 py-0.5 text-left text-sm font-medium text-foreground hover:bg-accent"
+            >
+              {currentThread.title}
+            </button>
+          ) : (
+            <span className="truncate px-1.5 text-sm font-medium text-foreground">
+              New conversation
+            </span>
+          )}
           {chat.isStreaming && (
             <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
               <span className="relative flex h-1.5 w-1.5">
