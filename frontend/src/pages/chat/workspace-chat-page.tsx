@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
+import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 
 /**
  * The chat surface for a workspace. The conversation list lives in the left app
@@ -47,6 +48,7 @@ export function WorkspaceChatPage() {
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
   const [draft, setDraft] = useState("")
+  const mentionSources = useWorkspaceChatMentionSources(workspaceId)
 
   const chat = useChat({
     workspaceId,
@@ -244,6 +246,7 @@ export function WorkspaceChatPage() {
         onStop={chat.stop}
         isSending={chat.isStreaming}
         disabled={noAgents}
+        mentionSources={mentionSources}
       />
     </div>
   )

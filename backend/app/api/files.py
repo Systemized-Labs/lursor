@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shutil
 from pathlib import Path
 
@@ -56,6 +57,11 @@ _IGNORED_DIRS = frozenset(
 
 # Files larger than this are not returned inline (the editor shows a notice).
 _MAX_READ_BYTES = 2 * 1024 * 1024
+
+# Upper bound on files visited during a fuzzy search, so the recursive walk
+# stays cheap even on a large workspace. Beyond this we stop scanning and rank
+# what we've seen.
+_MAX_SEARCH_SCAN = 20_000
 
 
 class DirEntry(BaseModel):
@@ -168,6 +174,87 @@ async def list_directory(
 
     entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
     return entries
+
+
+def _fuzzy_score(query: str, text: str) -> int | None:
+    """Subsequence-match ``query`` against ``text`` (case-insensitive).
+
+    Returns a relevance score (higher is better), or ``None`` when the query's
+    characters don't all appear in order. Consecutive hits and hits at path/word
+    boundaries (after ``/._- ``) score higher, so ``chatcomp`` ranks
+    ``ChatComposer.tsx`` above an incidental scattered match.
+    """
+    if not query:
+        return 0
+    text_l = text.lower()
+    score = 0
+    cursor = 0
+    prev = -2
+    for ch in query.lower():
+        idx = text_l.find(ch, cursor)
+        if idx == -1:
+            return None
+        score += 1
+        if idx == prev + 1:
+            score += 5  # consecutive with the previous matched char
+        if idx == 0 or text_l[idx - 1] in "/._- ":
+            score += 3  # start of a path segment or word
+        prev = idx
+        cursor = idx + 1
+    return score
+
+
+@router.get("/search", response_model=list[DirEntry])
+async def search_files(
+    workspace_id: str,
+    q: str = "",
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+) -> list[DirEntry]:
+    """Fuzzy-search files (not directories) anywhere under the workspace root.
+
+    ``q`` is matched as a subsequence against each file's workspace-relative
+    path; results are ranked best-first and capped at ``limit``. An empty ``q``
+    returns the first files encountered (a default listing). Ignored/noise
+    directories are pruned from the walk.
+    """
+    root = await _workspace_root(workspace_id, session)
+    limit = max(1, min(limit, 200))
+    query = q.strip()
+
+    # (score, path-length, name, path) — path-length and name break score ties so
+    # shorter, alphabetically-earlier paths win.
+    scored: list[tuple[int, int, str, str]] = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune ignored dirs in place so os.walk never descends into them.
+        dirnames[:] = [d for d in dirnames if d not in _IGNORED_DIRS]
+        for name in filenames:
+            if name in _IGNORED_DIRS:
+                continue
+            scanned += 1
+            rel = _rel(root, Path(dirpath) / name)
+            if query:
+                # Prefer a basename hit, but fall back to the full relative path
+                # so "src/comp" style queries still match.
+                score = _fuzzy_score(query, name)
+                path_score = _fuzzy_score(query, rel)
+                if score is None and path_score is None:
+                    continue
+                best = max(s for s in (score, path_score) if s is not None)
+                if score is not None:
+                    best += 4  # nudge basename matches above path-only matches
+            else:
+                best = 0
+            scored.append((-best, len(rel), name.lower(), rel))
+        if scanned >= _MAX_SEARCH_SCAN:
+            break
+
+    scored.sort()
+    return [
+        DirEntry(name=Path(rel).name, path=rel, is_dir=False)
+        for _, _, _, rel in scored[:limit]
+    ]
 
 
 @router.get("/read", response_model=FileContent)

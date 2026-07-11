@@ -36,6 +36,11 @@ export const filesApi = {
       `/workspaces/${workspaceId}/files/read?path=${encodeURIComponent(path)}`,
       signal
     ),
+  search: (workspaceId: string, query = "", limit = 50, signal?: AbortSignal) =>
+    api.get<DirEntry[]>(
+      `/workspaces/${workspaceId}/files/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+      signal
+    ),
   write: (workspaceId: string, path: string, content: string) =>
     api.put<{ path: string; size: number }>(
       `/workspaces/${workspaceId}/files/write`,
