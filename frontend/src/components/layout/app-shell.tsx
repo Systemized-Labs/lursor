@@ -67,9 +67,17 @@ export function AppShell() {
 
         {/* A horizontal row: the content area (with its optional dock split) and
             a thin, always-present rail whose toggle governs the dock. The rail
-            owns a real column, so its toggle never overlaps page content. */}
-        <div className="flex flex-1 min-h-0">
-          <div className="flex flex-1 flex-col min-w-0">
+            owns a real column, so its toggle never overlaps page content.
+
+            The row is pinned to a concrete `h-svh` (the sidebar shell is only
+            `min-h-svh`, a floor that grows with content). Without a definite
+            height here, `flex-1`/`min-h-0` descendants have nothing to cap
+            against, so a tall panel — e.g. a large Changes diff in the dock —
+            would grow the whole inset and overflow the viewport instead of
+            scrolling internally. `overflow-hidden` clips at the row so the split
+            below always resolves its own scroll. */}
+        <div className="flex h-svh min-h-0 overflow-hidden">
+          <div className="flex flex-1 flex-col min-w-0 min-h-0">
             {dockVisible ? (
               <ResizablePanelGroup
                 direction="horizontal"

@@ -12,8 +12,9 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
-import { fileWatchWsUrl, filesApi } from "@/api/files"
+import { filesApi } from "@/api/files"
 import type { FileChange } from "@/api/files"
+import { useFileWatch } from "@/hooks/use-file-watch"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -204,29 +205,10 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
     openPathsRef.current = new Map(openFiles.map((f) => [f.path, f]))
   }, [openFiles])
 
-  useEffect(() => {
-    if (!workspaceId) return
-    let socket: WebSocket | null = null
-    let reconnect: ReturnType<typeof setTimeout> | undefined
-    let closed = false
-    // Exponential backoff so a socket that fails immediately (e.g. no workspace
-    // directory) doesn't reconnect in a tight loop. A connection that survives a
-    // while resets the delay, so genuine drops still recover quickly.
-    let delay = 1000
-    const MAX_DELAY = 30000
-
-    const connect = () => {
-      const openedAt = Date.now()
-      socket = new WebSocket(fileWatchWsUrl(workspaceId))
-      socket.onmessage = (event) => {
-        let batch: { changes?: FileChange[] }
-        try {
-          batch = JSON.parse(event.data as string)
-        } catch {
-          return
-        }
-        const changes = batch.changes ?? []
-        if (changes.length === 0) return
+  useFileWatch(
+    workspaceId,
+    useCallback(
+      (changes: FileChange[]) => {
         // Refresh the tree (adds/removes/renames) regardless of open files.
         qc.invalidateQueries({ queryKey: ["files", workspaceId, "dir"] })
         // Reconcile the last change per open file.
@@ -235,24 +217,10 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
           if (openPathsRef.current.has(c.path)) latest.set(c.path, c.type)
         }
         for (const [path, type] of latest) reconcile(path, type)
-      }
-      socket.onclose = () => {
-        if (closed) return
-        // Lasted a while → treat as a transient drop and recover fast; failed
-        // fast → back off (capped).
-        if (Date.now() - openedAt > 10000) delay = 1000
-        reconnect = setTimeout(connect, delay)
-        delay = Math.min(delay * 2, MAX_DELAY)
-      }
-    }
-    connect()
-
-    return () => {
-      closed = true
-      if (reconnect) clearTimeout(reconnect)
-      socket?.close()
-    }
-  }, [workspaceId, qc, reconcile])
+      },
+      [workspaceId, qc, reconcile]
+    )
+  )
 
   if (!workspaceId) {
     return (

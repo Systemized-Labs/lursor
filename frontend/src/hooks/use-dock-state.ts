@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 /** Panel kinds the right dock can host. */
-export type DockKind = "file" | "preview" | "terminal" | "activity"
+export type DockKind = "changes" | "file" | "preview" | "terminal" | "activity"
 
-export const DOCK_KINDS: DockKind[] = ["file", "preview", "terminal", "activity"]
+export const DOCK_KINDS: DockKind[] = [
+  "changes",
+  "file",
+  "preview",
+  "terminal",
+  "activity",
+]
 
 export interface DockTab {
   id: string

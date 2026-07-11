@@ -1,5 +1,6 @@
 import {
   Activity,
+  Diff,
   FileCode,
   Globe,
   Plus,
@@ -11,6 +12,7 @@ import type { ElementType } from "react"
 
 import { Suspense, lazy } from "react"
 
+import { ChangesPanel } from "@/components/shell/changes-panel"
 import { PreviewPanel } from "@/components/shell/preview-panel"
 import { TerminalPanel } from "@/components/shell/terminal-panel"
 import { DOCK_KINDS, type DockKind, type DockTab } from "@/hooks/use-dock-state"
@@ -34,6 +36,7 @@ import {
 import { cn } from "@/lib/utils"
 
 const TAB_META: Record<DockKind, { title: string; icon: ElementType }> = {
+  changes: { title: "Changes", icon: Diff },
   file: { title: "Files", icon: FileCode },
   preview: { title: "Preview", icon: Globe },
   terminal: { title: "Terminal", icon: TerminalIcon },
@@ -182,6 +185,9 @@ function DockPanelContent({
   kind: DockKind
   workspaceId?: string
 }) {
+  if (kind === "changes") {
+    return <ChangesPanel workspaceId={workspaceId} />
+  }
   if (kind === "terminal") {
     return <TerminalPanel workspaceId={workspaceId} />
   }
