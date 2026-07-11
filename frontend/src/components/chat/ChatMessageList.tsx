@@ -1,5 +1,5 @@
 import { type RefObject, type ReactNode } from "react"
-import { ArrowDown } from "lucide-react"
+import { ArrowDown } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"

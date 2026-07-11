@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Wrench, ChevronDown } from "lucide-react"
+import { Wrench, CaretDown } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import type { ChatToolCall } from "@/agui/types"
@@ -54,7 +54,7 @@ export function ChatToolCalls({
         <span>
           {toolCalls.length} tool{toolCalls.length === 1 ? "" : "s"} used
         </span>
-        <ChevronDown
+        <CaretDown
           className={cn("h-3 w-3 transition-transform", open && "rotate-180")}
         />
       </button>

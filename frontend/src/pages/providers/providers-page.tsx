@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { Pencil, Plus, Trash } from "@phosphor-icons/react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -105,7 +105,7 @@ export function ProvidersPage({ embedded = false }: { embedded?: boolean } = {})
                       onClick={() => setToDelete(provider)}
                       aria-label="Remove provider"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Trash className="h-4 w-4" />
                     </Button>
                   </div>
                 </div>

@@ -1,4 +1,4 @@
-import { GitBranch, Loader2, Lock, Search } from "lucide-react"
+import { GitBranch, Lock, MagnifyingGlass } from "@phosphor-icons/react"
 import { useMemo, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { toast } from "sonner"
@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { useCloneRepo, useGitHubConfig, useGitHubRepos } from "@/api/github"
 import type { GitHubRepo, Workspace } from "@/api/types"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import {
   Dialog,
   DialogContent,
@@ -97,7 +98,7 @@ export function GitHubRepoPickerDialog({
         ) : (
           <>
             <div className="relative">
-              <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <MagnifyingGlass className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 className="pl-8"
                 placeholder="Search repositories…"
@@ -148,7 +149,7 @@ export function GitHubRepoPickerDialog({
                       ) : null}
                     </div>
                     {cloning === repo.full_name ? (
-                      <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                      <DotGridLoader size="xs" className="shrink-0" />
                     ) : (
                       <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
                     )}

@@ -4051,6 +4051,12 @@
   50% { opacity: 1; transform: scale(1); }
 }
 
+/* Global dot-grid loader — a diagonal wave sweeps across a 3x3 grid of dots. */
+@keyframes dot-grid-wave {
+  0%, 70%, 100% { opacity: 0.18; transform: scale(0.7); }
+  35% { opacity: 1; transform: scale(1); }
+}
+
 /* highlight.js token colors (rehype-highlight), theme-token aware. */
 .hljs { color: var(--foreground); }
 .hljs-comment, .hljs-quote { color: var(--muted-foreground); font-style: italic; }

@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react"
+import { WarningCircle, CheckCircle } from "@phosphor-icons/react"
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
@@ -13,6 +13,7 @@ import type {
   ProviderHealth,
 } from "@/api/types"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import {
   Dialog,
   DialogContent,
@@ -181,7 +182,7 @@ export function ProviderFormDialog({
           {testResult ? (
             testResult.status === "ok" ? (
               <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-foreground">
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+                <CheckCircle className="h-4 w-4 shrink-0 text-success" />
                 <span>
                   Connected
                   {typeof testResult.model_count === "number"
@@ -193,7 +194,7 @@ export function ProviderFormDialog({
               </div>
             ) : (
               <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                <WarningCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
                 <span>{testResult.error ?? "Could not reach the provider."}</span>
               </div>
             )
@@ -209,7 +210,7 @@ export function ProviderFormDialog({
           >
             {testing ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <DotGridLoader size="xs" />
                 Testing…
               </>
             ) : (

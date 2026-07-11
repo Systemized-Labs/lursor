@@ -1,4 +1,4 @@
-import { Loader2 } from "lucide-react"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 
 import { useLaiosStatus } from "@/api/laios"
 import { cn } from "@/lib/utils"
@@ -46,7 +46,7 @@ export function LaiosStatusBadge({ connectionId }: { connectionId: string }) {
   return (
     <div className="flex items-center gap-1.5" title={errorText ?? undefined}>
       {checking && !data ? (
-        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+        <DotGridLoader size="2xs" className="text-muted-foreground" />
       ) : (
         <span className={cn("h-2 w-2 shrink-0 rounded-full", tone)} />
       )}

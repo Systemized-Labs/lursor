@@ -1,4 +1,4 @@
-import { CheckCircle2, KeyRound, Loader2, Trash2, XCircle } from "lucide-react"
+import { CheckCircle, Key, Trash, XCircle } from "@phosphor-icons/react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -11,6 +11,7 @@ import {
 import type { OpenRouterTestResult } from "@/api/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import {
   Card,
   CardContent,
@@ -87,7 +88,7 @@ export function OpenRouterSection() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <KeyRound className="h-5 w-5" />
+              <Key className="h-5 w-5" />
               OpenRouter API key
             </CardTitle>
             <CardDescription>
@@ -146,7 +147,7 @@ export function OpenRouterSection() {
             }
           >
             {testResult.status === "ok" ? (
-              <CheckCircle2 className="h-4 w-4" />
+              <CheckCircle className="h-4 w-4" />
             ) : (
               <XCircle className="h-4 w-4" />
             )}
@@ -163,7 +164,7 @@ export function OpenRouterSection() {
               className="mr-auto text-destructive hover:text-destructive"
               onClick={() => setConfirmClear(true)}
             >
-              <Trash2 className="h-4 w-4" />
+              <Trash className="h-4 w-4" />
               Remove key
             </Button>
           ) : null}
@@ -172,11 +173,11 @@ export function OpenRouterSection() {
             onClick={handleTest}
             disabled={testing || (!key.trim() && !configured)}
           >
-            {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {testing ? <DotGridLoader size="xs" /> : null}
             Test
           </Button>
           <Button onClick={handleSave} disabled={save.isPending || !key.trim()}>
-            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {save.isPending ? <DotGridLoader size="xs" /> : null}
             Save key
           </Button>
         </div>

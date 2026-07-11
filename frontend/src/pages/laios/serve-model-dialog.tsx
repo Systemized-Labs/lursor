@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2 } from "lucide-react"
+import { WarningCircle, CheckCircle } from "@phosphor-icons/react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
@@ -245,9 +245,9 @@ export function ServeModelDialog({
               }
             >
               {compat.canServe ? (
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-success" />
               ) : (
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                <WarningCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               )}
               <span>{compat.reason}</span>
             </div>

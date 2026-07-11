@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
-import { Loader2, RefreshCw } from "lucide-react"
+import { ArrowsClockwise } from "@phosphor-icons/react"
 
 import { laiosApi, laiosKeys } from "@/api/laios"
 import type { LaiosInstance } from "@/api/types"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import {
   Dialog,
   DialogContent,
@@ -62,9 +63,9 @@ export function InstanceLogsDialog({
               disabled={isFetching}
             >
               {isFetching ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <DotGridLoader size="xs" />
               ) : (
-                <RefreshCw className="h-4 w-4" />
+                <ArrowsClockwise className="h-4 w-4" />
               )}
               Refresh
             </Button>

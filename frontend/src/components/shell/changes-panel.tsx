@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import {
-  ChevronDown,
-  ChevronRight,
-  ChevronsDownUp,
+  CaretDown,
+  CaretRight,
+  ArrowsInLineVertical,
   GitBranch,
-  MonitorSmartphone,
-  RefreshCw,
-} from "lucide-react"
+  Devices,
+  ArrowsClockwise,
+} from "@phosphor-icons/react"
 
 import { fileKind } from "@/components/files/file-icon"
 import { useGitDiff, gitKeys, type ChangedFile } from "@/api/git"
@@ -62,7 +62,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
       {/* Source / branch header */}
       <div className="flex items-center gap-2 border-b border-border/60 px-2 h-9 shrink-0">
         <span className="flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-0.5 text-xs text-foreground">
-          <MonitorSmartphone className="h-3.5 w-3.5" />
+          <Devices className="h-3.5 w-3.5" />
           Local
         </span>
         <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
@@ -76,7 +76,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
           aria-label="Refresh changes"
           className="ml-auto rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
         >
-          <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
+          <ArrowsClockwise className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
         </button>
       </div>
 
@@ -155,9 +155,9 @@ function FileDiff({ file }: { file: ChangedFile }) {
         className="group flex items-center gap-1.5 px-2 py-2 cursor-pointer hover:bg-accent/40"
       >
         {open ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <CaretDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <CaretRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         )}
         <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate text-xs text-foreground" title={file.path}>
@@ -205,7 +205,7 @@ function Hunk({ hunk }: { hunk: DiffHunk }) {
     <div>
       {hunk.gapBefore > 0 && (
         <div className="flex items-center gap-2 bg-accent/30 px-2 py-1 text-muted-foreground">
-          <ChevronsDownUp className="h-3.5 w-3.5" />
+          <ArrowsInLineVertical className="h-3.5 w-3.5" />
           <span>
             {hunk.gapBefore} unmodified line{hunk.gapBefore === 1 ? "" : "s"}
           </span>

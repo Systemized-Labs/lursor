@@ -1,6 +1,6 @@
-import { Bot, MessageSquarePlus } from "lucide-react"
+import { Robot, ChatCenteredDots } from "@phosphor-icons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useParams, useSearchParams } from "react-router-dom"
+import { useLocation, useParams, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
@@ -19,6 +19,7 @@ import {
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
+import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
 
 /**
@@ -30,6 +31,7 @@ import type { PendingAttachment } from "@/agui/types"
 export function WorkspaceChatPage() {
   const { workspaceId } = useParams<{ workspaceId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
+  const location = useLocation()
   const cParam = searchParams.get("c")
   const qc = useQueryClient()
 
@@ -79,6 +81,13 @@ export function WorkspaceChatPage() {
     }
   }, [cParam, selectedThreadId, loadConversation, startNewConversation])
 
+  // A prompt arriving from the New Agent home surface: pre-select its agent so
+  // the auto-launch below uses it rather than the default first agent.
+  useEffect(() => {
+    const launch = location.state as NewAgentLaunch | null
+    if (launch?.agentId) setSelectedAgentId(launch.agentId)
+  }, [location.state])
+
   // Keep the agent picker in sync with the open thread (or the default for a new one).
   useEffect(() => {
     if (selectedThreadId) {
@@ -88,6 +97,23 @@ export function WorkspaceChatPage() {
       setSelectedAgentId((prev) => prev || agents[0]?.id || "")
     }
   }, [selectedThreadId, threads, agents])
+
+  // Auto-launch the first turn when we arrive from the New Agent home surface.
+  // Guarded so a refresh/back-nav (which drops the router state) can't resend.
+  const launchedRef = useRef(false)
+  useEffect(() => {
+    if (launchedRef.current) return
+    const launch = location.state as NewAgentLaunch | null
+    if (!launch || (!launch.draft && !launch.attachments?.length)) return
+    // Only launch into a fresh conversation with an agent ready to run.
+    if (cParam || agents.length === 0 || !selectedAgentId) return
+    launchedRef.current = true
+    const text = launch.draft
+    const atts = launch.attachments ?? []
+    // Drop the router state so the prompt isn't replayed on remount.
+    window.history.replaceState({}, "")
+    void chat.send(text, atts)
+  }, [location.state, cParam, agents, selectedAgentId, chat])
 
   async function handleAgentChange(agentId: string) {
     setSelectedAgentId(agentId)
@@ -185,7 +211,7 @@ export function WorkspaceChatPage() {
           aria-label="New conversation"
           title="New conversation"
         >
-          <MessageSquarePlus className="h-3.5 w-3.5" />
+          <ChatCenteredDots className="h-3.5 w-3.5" />
         </Button>
 
         {noAgents ? (
@@ -221,7 +247,7 @@ export function WorkspaceChatPage() {
           <div className="flex h-full items-center justify-center">
             <div className="space-y-3 text-center">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/15">
-                <Bot className="h-7 w-7 text-primary" />
+                <Robot className="h-7 w-7 text-primary" />
               </div>
               <div className="space-y-1">
                 <p className="text-sm font-semibold text-foreground">

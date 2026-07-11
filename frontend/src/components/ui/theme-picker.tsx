@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTheme } from 'next-themes'
-import { ChevronsUpDown, Check, Sun, Moon } from 'lucide-react'
+import { CaretUpDown, Check, Sun, Moon } from '@phosphor-icons/react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { THEME_OPTIONS, type ThemeOption } from '@/lib/themes'
@@ -135,7 +135,7 @@ export function ThemePicker({ trigger }: { trigger?: (open: () => void) => React
             {ActiveIcon && <ActiveIcon className="h-4 w-4 shrink-0 text-muted-foreground" />}
             {active?.label ?? 'Select theme'}
           </span>
-          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          <CaretUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </button>
       )}
 

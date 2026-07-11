@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, Copy, Check } from "lucide-react"
+import { Robot, Copy, Check } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
@@ -152,7 +152,7 @@ export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
             : "bg-primary/10"
         )}
       >
-        <Bot className="h-3.5 w-3.5 text-primary" />
+        <Robot className="h-3.5 w-3.5 text-primary" />
       </div>
       <div className="min-w-0 max-w-[72%] shadow-sm rounded-2xl rounded-bl-md bg-muted/60 px-4 py-2.5 text-sm text-foreground transition-shadow">
         {isStreaming && !hasBody ? (
@@ -212,7 +212,7 @@ export function ChatMessageBubble({ message, renderIcons }: ChatMessageBubblePro
               : "bg-primary/10"
           )}
         >
-          <Bot className="h-3.5 w-3.5 text-primary" />
+          <Robot className="h-3.5 w-3.5 text-primary" />
         </div>
       )}
       <div

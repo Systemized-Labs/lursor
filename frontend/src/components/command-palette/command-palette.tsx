@@ -13,17 +13,17 @@ import { useNavigate } from "react-router-dom"
 import { useQueries } from "@tanstack/react-query"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
-  Blocks,
-  CornerDownLeft,
-  FolderGit2,
-  MessageSquare,
+  SquaresFour,
+  ArrowElbowDownLeft,
+  GitBranch,
+  ChatCentered,
   Plug,
-  Settings,
+  Gear,
   SlidersHorizontal,
-  Sparkles,
+  ShootingStar,
   Wrench,
-  type LucideIcon,
-} from "lucide-react"
+  type Icon,
+} from "@phosphor-icons/react"
 
 import { filesApi } from "@/api/files"
 import { threadKeys, threadsApi } from "@/api/threads"
@@ -271,7 +271,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         id: `agent:${t.id}`,
         label: t.title || "Untitled",
         meta: [t.workspaceName, timeAgo(t.updated_at)].filter(Boolean).join("  "),
-        icon: MessageSquare,
+        icon: ChatCentered,
         onSelect: () => go(`/workspaces/${t.workspace_id}/chat?c=${t.id}`),
       }))
 
@@ -285,17 +285,17 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
 
     const actionDefs: {
       label: string
-      icon: LucideIcon
+      icon: Icon
       to: string
       meta?: string
     }[] = [
       { label: "Customization", icon: SlidersHorizontal, to: "/customization" },
-      { label: "Agents", icon: Sparkles, to: "/customization?tab=agents" },
-      { label: "Skills", icon: Blocks, to: "/customization?tab=skills" },
+      { label: "Agents", icon: ShootingStar, to: "/customization?tab=agents" },
+      { label: "Skills", icon: SquaresFour, to: "/customization?tab=skills" },
       { label: "Tools", icon: Wrench, to: "/customization?tab=tools" },
-      { label: "Settings", icon: Settings, to: "/settings" },
+      { label: "Settings", icon: Gear, to: "/settings" },
       { label: "Providers", icon: Plug, to: "/settings?tab=providers" },
-      { label: "GitHub", icon: FolderGit2, to: "/settings?tab=github" },
+      { label: "GitHub", icon: GitBranch, to: "/settings?tab=github" },
     ]
     const actionRows: Row[] = actionDefs
       .filter((a) => !q || a.label.toLowerCase().includes(q))
@@ -442,7 +442,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
                       </span>
                     )}
                     {isActive && (
-                      <CornerDownLeft className="size-3.5 shrink-0 text-muted-foreground" />
+                      <ArrowElbowDownLeft className="size-3.5 shrink-0 text-muted-foreground" />
                     )}
                   </button>
                 )

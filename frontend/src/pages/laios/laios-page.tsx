@@ -1,16 +1,15 @@
 import {
-  AlertCircle,
+  WarningCircle,
   Check,
-  ChevronsUpDown,
+  CaretUpDown,
   Cpu,
   FileText,
-  Loader2,
   Pencil,
   Plus,
   Square,
-  Trash2,
+  Trash,
   X,
-} from "lucide-react"
+} from "@phosphor-icons/react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
@@ -35,6 +34,7 @@ import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import {
   Card,
   CardContent,
@@ -302,7 +302,7 @@ function ConnectionBar({
             <span className="truncate">
               {active?.name ?? "Select a connection"}
             </span>
-            <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-60" />
+            <CaretUpDown className="h-4 w-4 shrink-0 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-72">
@@ -361,7 +361,7 @@ function ConnectionBar({
               onClick={() => onDelete(active)}
               aria-label="Remove connection"
             >
-              <Trash2 className="h-4 w-4" />
+              <Trash className="h-4 w-4" />
             </Button>
           </div>
         </>
@@ -410,7 +410,7 @@ function ConnectionPanel({
 
       {updating ? (
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" />
+          <DotGridLoader size="2xs" />
           updating
         </div>
       ) : null}
@@ -495,9 +495,9 @@ function PendingCard({
             className="shrink-0 gap-1 font-normal"
           >
             {failed ? (
-              <AlertCircle className="h-3 w-3" />
+              <WarningCircle className="h-3 w-3" />
             ) : (
-              <Loader2 className="h-3 w-3 animate-spin" />
+              <DotGridLoader size="2xs" />
             )}
             {label}
           </Badge>
@@ -558,7 +558,7 @@ function InstanceCard({
             variant={STATE_VARIANT[instance.status]}
             className="shrink-0 gap-1 font-normal"
           >
-            {transitioning ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {transitioning ? <DotGridLoader size="2xs" /> : null}
             {instance.status}
           </Badge>
         </div>

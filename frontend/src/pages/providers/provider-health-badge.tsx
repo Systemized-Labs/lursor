@@ -1,9 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query"
-import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from "lucide-react"
+import { WarningCircle, CheckCircle, ArrowsClockwise } from "@phosphor-icons/react"
 
 import { providerKeys, useProviderHealth } from "@/api/providers"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 
 /**
  * Live status of a provider's endpoint, shown on its card so a misconfigured
@@ -32,12 +33,12 @@ export function ProviderHealthBadge({ providerId }: { providerId: string }) {
       <div className="flex items-center gap-2">
         {checking ? (
           <Badge variant="secondary" className="gap-1 font-normal">
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <DotGridLoader size="2xs" />
             Checking…
           </Badge>
         ) : healthy ? (
           <Badge variant="success" className="gap-1 font-normal">
-            <CheckCircle2 className="h-3 w-3" />
+            <CheckCircle className="h-3 w-3" />
             Connected
             {typeof data?.model_count === "number"
               ? ` · ${data.model_count} model${data.model_count === 1 ? "" : "s"}`
@@ -45,7 +46,7 @@ export function ProviderHealthBadge({ providerId }: { providerId: string }) {
           </Badge>
         ) : (
           <Badge variant="destructive" className="gap-1 font-normal">
-            <AlertCircle className="h-3 w-3" />
+            <WarningCircle className="h-3 w-3" />
             Issue
           </Badge>
         )}
@@ -57,7 +58,7 @@ export function ProviderHealthBadge({ providerId }: { providerId: string }) {
           disabled={checking}
           aria-label="Re-check provider"
         >
-          <RefreshCw className="h-3 w-3" />
+          <ArrowsClockwise className="h-3 w-3" />
         </Button>
       </div>
       {!checking && errorText ? (

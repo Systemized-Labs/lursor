@@ -1,18 +1,18 @@
 import {
+  ChatCentered,
+  DotsThree,
   Folder,
   FolderOpen,
   FolderPlus,
-  Loader2,
-  MessageSquare,
-  MoreHorizontal,
+  Gear,
+  MagnifyingGlass,
   Palette,
   Pencil,
   Plus,
-  Search,
-  Settings,
   SlidersHorizontal,
-  Trash2,
-} from "lucide-react"
+  Sparkle,
+  Trash,
+} from "@phosphor-icons/react"
 import { type ComponentType, useEffect, useMemo, useState } from "react"
 import {
   Link,
@@ -75,6 +75,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import { Input } from "@/components/ui/input"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ThemePicker } from "@/components/ui/theme-picker"
@@ -254,7 +255,7 @@ export function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader>
         <Link
-          to="/customization"
+          to="/"
           onClick={closeMobile}
           className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
         >
@@ -276,6 +277,18 @@ export function AppSidebar() {
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton
+                  isActive={pathname === "/"}
+                  tooltip="New Agent"
+                  asChild
+                >
+                  <Link to="/" onClick={closeMobile}>
+                    <Sparkle className="size-4" />
+                    <span>New Agent</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
                   tooltip="Search"
                   onClick={() => {
                     openCommandPalette()
@@ -283,7 +296,7 @@ export function AppSidebar() {
                   }}
                   className="group/search"
                 >
-                  <Search className="size-4" />
+                  <MagnifyingGlass className="size-4" />
                   <span className="flex-1">Search</span>
                   <kbd className="ml-auto text-[10px] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/search:opacity-100 group-data-[collapsible=icon]:hidden">
                     ⌘K
@@ -373,7 +386,7 @@ export function AppSidebar() {
               asChild
             >
               <Link to="/settings" onClick={closeMobile}>
-                <Settings className="size-4" />
+                <Gear className="size-4" />
                 <span>Settings</span>
               </Link>
             </SidebarMenuButton>
@@ -566,7 +579,7 @@ function WorkspaceRow({
             className="text-destructive focus:text-destructive"
             onSelect={onDeleteWorkspace}
           >
-            <Trash2 className="size-4" />
+            <Trash className="size-4" />
             Delete
           </ContextMenuItem>
         </ContextMenuContent>
@@ -672,9 +685,13 @@ function SessionRow({
               onClick={onNavigate}
             >
               {running ? (
-                <Loader2 className="size-4 animate-spin" />
+                <DotGridLoader
+                  size="xs"
+                  className="shrink-0 text-primary"
+                  label="Working"
+                />
               ) : (
-                <MessageSquare className="size-4" />
+                <ChatCentered className="size-4" />
               )}
               <span className={cn("flex-1 truncate", running && "text-primary")}>
                 {thread.title || "Untitled"}
@@ -694,7 +711,7 @@ function SessionRow({
             className="text-destructive focus:text-destructive"
             onSelect={() => onDelete(thread)}
           >
-            <Trash2 className="size-4" />
+            <Trash className="size-4" />
             Delete
           </ContextMenuItem>
         </ContextMenuContent>
@@ -707,7 +724,7 @@ function SessionRow({
             aria-label="Conversation options"
             className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-md text-sidebar-foreground opacity-0 hover:bg-sidebar-accent focus-visible:opacity-100 group-hover/session:opacity-100 data-[state=open]:opacity-100"
           >
-            <MoreHorizontal className="size-4" />
+            <DotsThree className="size-4" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
@@ -719,7 +736,7 @@ function SessionRow({
             className="text-destructive focus:text-destructive"
             onClick={() => onDelete(thread)}
           >
-            <Trash2 className="size-4" />
+            <Trash className="size-4" />
             Delete
           </DropdownMenuItem>
         </DropdownMenuContent>

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
-  ExternalLink,
+  ArrowSquareOut,
   Globe,
-  RotateCw,
+  ArrowClockwise,
   X,
-} from "lucide-react"
+} from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 
@@ -122,7 +122,7 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
           aria-label="Reload"
           className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-accent disabled:opacity-40 disabled:hover:bg-transparent shrink-0"
         >
-          <RotateCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          <ArrowClockwise className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
         </button>
 
         <form
@@ -158,7 +158,7 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
             !hasUrl && "pointer-events-none opacity-40"
           )}
         >
-          <ExternalLink className="h-3.5 w-3.5" />
+          <ArrowSquareOut className="h-3.5 w-3.5" />
         </a>
 
         {hasUrl && (

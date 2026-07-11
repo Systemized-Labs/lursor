@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { Pencil, Plus, Trash } from "@phosphor-icons/react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -103,7 +103,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
                       onClick={() => setToDelete(skill)}
                       aria-label="Delete skill"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Trash className="h-4 w-4" />
                     </Button>
                   </div>
                 </div>

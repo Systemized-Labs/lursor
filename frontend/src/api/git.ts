@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api } from "./client"
 
@@ -38,13 +38,32 @@ export interface GitDiff {
   deletions: number
 }
 
+/** A branch offered in the picker. `remote` is set only for a remote-tracking
+ *  branch with no local copy yet (selecting it creates a local tracking branch). */
+export interface BranchRef {
+  name: string
+  remote: string | null
+}
+
+/** Branches of the workspace's primary repo (local first, then remote-only). */
+export interface GitBranches {
+  is_repo: boolean
+  current: string | null
+  branches: BranchRef[]
+}
+
 export const gitApi = {
   diff: (workspaceId: string, signal?: AbortSignal) =>
     api.get<GitDiff>(`/workspaces/${workspaceId}/git/diff`, signal),
+  branches: (workspaceId: string, signal?: AbortSignal) =>
+    api.get<GitBranches>(`/workspaces/${workspaceId}/git/branches`, signal),
+  checkout: (workspaceId: string, branch: string) =>
+    api.post<GitBranches>(`/workspaces/${workspaceId}/git/checkout`, { branch }),
 }
 
 export const gitKeys = {
   diff: (workspaceId: string) => ["git", workspaceId, "diff"] as const,
+  branches: (workspaceId: string) => ["git", workspaceId, "branches"] as const,
 }
 
 /** Fetch the workspace's uncommitted diff (powers the Changes panel). */
@@ -53,5 +72,28 @@ export function useGitDiff(workspaceId: string | undefined) {
     queryKey: gitKeys.diff(workspaceId ?? ""),
     queryFn: ({ signal }) => gitApi.diff(workspaceId as string, signal),
     enabled: Boolean(workspaceId),
+  })
+}
+
+/** List the primary repo's local branches (most-recent first). */
+export function useBranches(workspaceId: string | undefined) {
+  return useQuery({
+    queryKey: gitKeys.branches(workspaceId ?? ""),
+    queryFn: ({ signal }) => gitApi.branches(workspaceId as string, signal),
+    enabled: Boolean(workspaceId),
+  })
+}
+
+/** Switch the workspace's primary repo to another local branch. */
+export function useCheckoutBranch(workspaceId: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (branch: string) =>
+      gitApi.checkout(workspaceId as string, branch),
+    onSuccess: () => {
+      if (!workspaceId) return
+      qc.invalidateQueries({ queryKey: gitKeys.branches(workspaceId) })
+      qc.invalidateQueries({ queryKey: gitKeys.diff(workspaceId) })
+    },
   })
 }

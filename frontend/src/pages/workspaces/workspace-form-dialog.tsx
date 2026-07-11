@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { FolderGit2, FolderOpen } from "lucide-react"
+import { GitBranch, FolderOpen } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
 import type { Workspace, WorkspaceInput } from "@/api/types"
@@ -126,7 +126,7 @@ export function WorkspaceFormDialog({
                 className="w-full"
                 onClick={() => setRepoPickerOpen(true)}
               >
-                <FolderGit2 className="h-4 w-4" />
+                <GitBranch className="h-4 w-4" />
                 Clone from GitHub
               </Button>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">

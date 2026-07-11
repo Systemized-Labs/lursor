@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Check,
-  ChevronLeft,
-  ChevronsUpDown,
+  CaretLeft,
+  CaretUpDown,
   Coins,
   Cpu,
-  Layers,
-  Search,
-  Zap,
-} from "lucide-react"
+  Stack,
+  MagnifyingGlass,
+  Lightning,
+} from "@phosphor-icons/react"
 
 import { useModels } from "@/api/models"
 import type { ModelEntry, ModelGroup } from "@/api/types"
@@ -111,7 +111,7 @@ function ModelDetail({
         <div className="flex flex-wrap gap-2">
           {model.context_length ? (
             <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs text-foreground">
-              <Layers className="h-3 w-3 text-muted-foreground" />
+              <Stack className="h-3 w-3 text-muted-foreground" />
               {formatContext(model.context_length)} context
             </span>
           ) : null}
@@ -157,7 +157,7 @@ function ModelDetail({
         <Button className="w-full gap-2" onClick={onUse}>
           {isActive ? <Check className="h-4 w-4" /> : null}
           {isActive ? "Currently selected" : "Use this model"}
-          {isActive ? null : <Zap className="h-4 w-4" />}
+          {isActive ? null : <Lightning className="h-4 w-4" />}
         </Button>
       </div>
     </div>
@@ -305,7 +305,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
         className="flex h-9 w-full items-center justify-between rounded-lg border border-transparent bg-muted/60 px-3 py-1 text-sm transition-colors hover:bg-muted focus:outline-none focus:border-ring/40 focus:bg-background focus:ring-2 focus:ring-ring/15"
       >
         <span className="min-w-0 truncate text-foreground">{displayLabel}</span>
-        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        <CaretUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -350,7 +350,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
               {/* Search */}
               <div className="shrink-0 border-b border-border/60 px-4 pb-2 pt-3">
                 <div className="flex h-9 items-center gap-2 rounded-lg border border-transparent bg-muted/60 px-3 focus-within:border-ring/40 focus-within:bg-background">
-                  <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <MagnifyingGlass className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <input
                     ref={searchRef}
                     value={search}
@@ -443,7 +443,7 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
                   onClick={() => setMobileDetail(false)}
                   className="flex min-h-[44px] shrink-0 items-center gap-1 border-b border-border/60 px-3 py-3 text-sm text-muted-foreground"
                 >
-                  <ChevronLeft className="h-4 w-4" />
+                  <CaretLeft className="h-4 w-4" />
                   Back to models
                 </button>
               ) : null}

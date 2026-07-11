@@ -39,7 +39,10 @@ export function AppShell() {
   // panels were up.
   const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
   const dock = useDockState(workspaceId)
-  const dockVisible = !isMobile && !dock.collapsed
+  // The dock is workspace-scoped (changes/files/terminal for a repo), so it
+  // only makes sense inside a workspace route — not on the New Agent home,
+  // Customization, or Settings surfaces.
+  const dockVisible = !isMobile && !dock.collapsed && Boolean(workspaceId)
 
   // Global "open this file" requests (from the command palette) land here: once
   // we're on the target workspace, reveal the dock and ensure a file tab so the
@@ -59,7 +62,10 @@ export function AppShell() {
 
   // Full-bleed surfaces (e.g. a chat thread) manage their own scroll and fill
   // the panel edge to edge; everything else keeps the padded, centered column.
-  const fullBleed = pathname.includes("/threads/") || pathname.endsWith("/chat")
+  const fullBleed =
+    pathname === "/" ||
+    pathname.includes("/threads/") ||
+    pathname.endsWith("/chat")
 
   // Full-bleed surfaces must fill exactly the viewport so their inner regions
   // (e.g. a chat message list) scroll independently. The sidebar shell is only
@@ -134,7 +140,7 @@ export function AppShell() {
             )}
           </div>
 
-          {!isMobile && dock.collapsed && (
+          {!isMobile && workspaceId && dock.collapsed && (
             <DockRail onOpen={() => dock.setCollapsed(false)} />
           )}
         </div>

@@ -1,4 +1,4 @@
-import { FolderGit2, Loader2, RefreshCw, Unplug } from "lucide-react"
+import { GitBranch, ArrowsClockwise, Plugs } from "@phosphor-icons/react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -9,6 +9,7 @@ import {
 } from "@/api/github"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import {
   Card,
   CardContent,
@@ -73,7 +74,7 @@ function ConnectForm() {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <FolderGit2 className="h-5 w-5" />
+          <GitBranch className="h-5 w-5" />
           Connect GitHub
         </CardTitle>
         <CardDescription>
@@ -133,9 +134,9 @@ function ConnectForm() {
         <div className="flex justify-end">
           <Button onClick={handleConnect} disabled={save.isPending}>
             {save.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <DotGridLoader size="xs" />
             ) : (
-              <FolderGit2 className="h-4 w-4" />
+              <GitBranch className="h-4 w-4" />
             )}
             Connect
           </Button>
@@ -178,7 +179,7 @@ function ConnectedCard({
                   className="h-10 w-10 rounded-full border border-border"
                 />
               ) : (
-                <FolderGit2 className="h-10 w-10" />
+                <GitBranch className="h-10 w-10" />
               )}
               <div className="min-w-0">
                 <CardTitle className="truncate">
@@ -200,7 +201,7 @@ function ConnectedCard({
           </p>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowForm((v) => !v)}>
-              <RefreshCw className="h-4 w-4" />
+              <ArrowsClockwise className="h-4 w-4" />
               {showForm ? "Hide" : "Update token"}
             </Button>
             <Button
@@ -209,7 +210,7 @@ function ConnectedCard({
               className="text-destructive hover:text-destructive"
               onClick={() => setConfirmOpen(true)}
             >
-              <Unplug className="h-4 w-4" />
+              <Plugs className="h-4 w-4" />
               Disconnect
             </Button>
           </div>

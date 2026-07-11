@@ -1,5 +1,5 @@
 import { useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react"
-import { Paperclip, Send, Square, X } from "lucide-react"
+import { Paperclip, PaperPlaneTilt, Square, X } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -237,7 +237,7 @@ export function ChatComposer({
                   hasContent && !disabled && "hover:scale-105 active:scale-95"
                 )}
               >
-                <Send className="h-4 w-4" />
+                <PaperPlaneTilt className="h-4 w-4" />
               </Button>
             )}
           </div>

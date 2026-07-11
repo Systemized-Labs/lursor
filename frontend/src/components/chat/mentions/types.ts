@@ -1,4 +1,4 @@
-import type { LucideIcon } from "lucide-react"
+import type { Icon } from "@phosphor-icons/react"
 
 /** A single referenceable entity within a mention category. */
 export interface MentionItem {
@@ -23,7 +23,7 @@ export interface MentionSource {
   key: string
   /** Category display label. */
   label: string
-  icon: LucideIcon
+  icon: Icon
   /** Pre-loaded items, filtered locally and surfaced at the root level. */
   items?: MentionItem[]
   /** Lazy/hierarchical lookup. Receives the path query after `@/<key>/` and

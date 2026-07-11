@@ -1,4 +1,4 @@
-import { PanelRight } from "lucide-react"
+import { SidebarSimple } from "@phosphor-icons/react"
 
 interface DockRailProps {
   /** Re-open the right dock. */
@@ -22,7 +22,7 @@ export function DockRail({ onOpen }: DockRailProps) {
         aria-label="Show panel"
         className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
       >
-        <PanelRight className="h-4 w-4" />
+        <SidebarSimple className="h-4 w-4" />
       </button>
     </div>
   )

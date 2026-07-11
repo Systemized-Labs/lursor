@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom"
 import { AppShell } from "@/components/layout/app-shell"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
+import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
 import { SettingsPage } from "@/pages/settings/settings-page"
 
 /**
@@ -32,7 +33,7 @@ function App() {
   return (
     <Routes>
       <Route element={<AppShell />}>
-        <Route index element={<Navigate to="/customization" replace />} />
+        <Route index element={<NewAgentPage />} />
         <Route path="customization" element={<CustomizationPage />} />
         <Route path="settings" element={<SettingsPage />} />
         {/* Back-compat: providers/github moved from Customization to Settings. */}
@@ -73,7 +74,7 @@ function App() {
           path="workspaces/:workspaceId/threads/:threadId"
           element={<LegacyThreadRedirect />}
         />
-        <Route path="*" element={<Navigate to="/customization" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   )

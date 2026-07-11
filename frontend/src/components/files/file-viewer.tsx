@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import {
-  AlertTriangle,
-  ChevronRight,
+  Warning,
+  CaretRight,
   FileImage,
   FileX,
   FolderOpen,
-  Save,
-  Scaling,
+  FloppyDisk,
+  ArrowsOut,
   X,
-} from "lucide-react"
+} from "@phosphor-icons/react"
 import { toast } from "sonner"
 
 import { filesApi } from "@/api/files"
@@ -400,7 +400,7 @@ function EditorBody({
   }
   if (file.status === "error") {
     return (
-      <Centered icon={AlertTriangle} title="Couldn’t open this file">
+      <Centered icon={Warning} title="Couldn’t open this file">
         {file.error ?? "The file couldn’t be read. Try opening it again."}
       </Centered>
     )
@@ -421,7 +421,7 @@ function EditorBody({
   }
   if (file.truncated) {
     return (
-      <Centered icon={Scaling} title="File too large">
+      <Centered icon={ArrowsOut} title="File too large">
         This file is too big to open here. Use the terminal to work with it.
       </Centered>
     )
@@ -434,7 +434,7 @@ function EditorBody({
     <div className="flex-1 min-h-0 flex flex-col">
       {file.conflict !== undefined && (
         <div className="flex items-center gap-2 border-b border-border/60 bg-accent/40 px-3 py-1.5 text-xs text-foreground">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <Warning className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="flex-1">
             This file changed on disk while you had unsaved edits.
           </span>
@@ -477,7 +477,7 @@ function EditorBody({
             )}
             title={`Save (${SAVE_HINT})`}
           >
-            <Save className="h-3.5 w-3.5" />
+            <FloppyDisk className="h-3.5 w-3.5" />
             {file.saving ? "Saving…" : "Save"}
             {file.dirty && !file.saving && (
               <kbd className="hidden rounded border border-border/60 bg-muted px-1 font-mono text-[10px] leading-tight text-muted-foreground md:inline">
@@ -516,7 +516,7 @@ function Breadcrumb({ path, name }: { path: string; name: string }) {
       {folders.map((seg, i) => (
         <span key={i} className="flex shrink-0 items-center gap-1">
           <span className="text-muted-foreground">{seg}</span>
-          <ChevronRight className="h-3 w-3 text-muted-foreground/50" />
+          <CaretRight className="h-3 w-3 text-muted-foreground/50" />
         </span>
       ))}
       <span className="flex min-w-0 items-center gap-1.5 text-foreground">

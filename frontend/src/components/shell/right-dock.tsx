@@ -1,13 +1,13 @@
 import {
-  Activity,
-  Diff,
+  Pulse,
+  GitDiff,
   FileCode,
   Globe,
   Plus,
-  Terminal as TerminalIcon,
-  PanelRightClose,
+  Terminal,
+  SidebarSimple,
   X,
-} from "lucide-react"
+} from "@phosphor-icons/react"
 import type { ElementType } from "react"
 
 import { Suspense, lazy } from "react"
@@ -36,11 +36,11 @@ import {
 import { cn } from "@/lib/utils"
 
 const TAB_META: Record<DockKind, { title: string; icon: ElementType }> = {
-  changes: { title: "Changes", icon: Diff },
+  changes: { title: "Changes", icon: GitDiff },
   file: { title: "Files", icon: FileCode },
   preview: { title: "Preview", icon: Globe },
-  terminal: { title: "Terminal", icon: TerminalIcon },
-  activity: { title: "Activity", icon: Activity },
+  terminal: { title: "Terminal", icon: Terminal },
+  activity: { title: "Activity", icon: Pulse },
 }
 
 interface RightDockProps {
@@ -151,7 +151,7 @@ export function RightDock({
           aria-label="Hide panel"
           className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
         >
-          <PanelRightClose className="h-4 w-4" />
+          <SidebarSimple className="h-4 w-4" />
         </button>
       </div>
 

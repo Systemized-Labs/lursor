@@ -1,14 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
-  ChevronRight,
+  CaretRight,
   Folder,
   FolderOpen,
-  FilePlus2,
+  FilePlus,
   FolderPlus,
   Pencil,
-  Trash2,
-} from "lucide-react"
+  Trash,
+} from "@phosphor-icons/react"
 import { toast } from "sonner"
 
 import { filesApi, useDirectory } from "@/api/files"
@@ -198,7 +198,7 @@ export function FileExplorer({
         </ContextMenuTrigger>
         <ContextMenuContent className="w-44">
           <ContextMenuItem onSelect={() => requestCreate("", false)}>
-            <FilePlus2 className="mr-2 h-4 w-4" />
+            <FilePlus className="mr-2 h-4 w-4" />
             New file
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => requestCreate("", true)}>
@@ -311,7 +311,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
 
             {entry.is_dir ? (
               <>
-                <ChevronRight
+                <CaretRight
                   className={cn(
                     "h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none",
                     expanded && "rotate-90"
@@ -336,7 +336,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
         </ContextMenuTrigger>
         <ContextMenuContent className="w-44">
           <ContextMenuItem onSelect={() => requestCreate(createParent, false)}>
-            <FilePlus2 className="mr-2 h-4 w-4" />
+            <FilePlus className="mr-2 h-4 w-4" />
             New file
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => requestCreate(createParent, true)}>
@@ -352,7 +352,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
             className="text-destructive focus:text-destructive"
             onSelect={() => requestDelete(entry)}
           >
-            <Trash2 className="mr-2 h-4 w-4" />
+            <Trash className="mr-2 h-4 w-4" />
             Delete
           </ContextMenuItem>
         </ContextMenuContent>

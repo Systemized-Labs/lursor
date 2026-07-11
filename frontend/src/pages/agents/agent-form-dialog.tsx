@@ -1,4 +1,4 @@
-import { FileText, Sparkles, Wand2 } from "lucide-react"
+import { FileText, ShootingStar, MagicWand } from "@phosphor-icons/react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
@@ -435,7 +435,7 @@ export function AgentFormDialog({
                 onClick={() => setBriefOpen((prev) => !prev)}
                 disabled={isAuthoring}
               >
-                <Sparkles className="h-3.5 w-3.5" />
+                <ShootingStar className="h-3.5 w-3.5" />
                 Generate
               </Button>
 
@@ -447,7 +447,7 @@ export function AgentFormDialog({
                 onClick={handleImprove}
                 disabled={isAuthoring || !form.instructions.trim()}
               >
-                <Wand2 className="h-3.5 w-3.5" />
+                <MagicWand className="h-3.5 w-3.5" />
                 {improvePrompt.isPending ? "Improving…" : "Improve current"}
               </Button>
             </div>

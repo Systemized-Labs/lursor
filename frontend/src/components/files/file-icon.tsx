@@ -1,18 +1,18 @@
 import type { ElementType } from "react"
 import {
-  Braces,
+  BracketsCurly,
   Database,
   File,
   FileCode,
   FileText,
-  FileType,
+  FileHtml,
   Hash,
   Image,
   Lock,
   Palette,
-  Settings2,
+  GearSix,
   Terminal,
-} from "lucide-react"
+} from "@phosphor-icons/react"
 
 /**
  * Map a filename to a glyph and a short language label.
@@ -50,10 +50,10 @@ const EXT_KINDS: Record<string, FileKind> = {
   swift: { Icon: FileCode, label: "Swift" },
   vue: { Icon: FileCode, label: "Vue" },
   svelte: { Icon: FileCode, label: "Svelte" },
-  json: { Icon: Braces, label: "JSON" },
-  html: { Icon: FileType, label: "HTML" },
-  htm: { Icon: FileType, label: "HTML" },
-  xml: { Icon: FileType, label: "XML" },
+  json: { Icon: BracketsCurly, label: "JSON" },
+  html: { Icon: FileHtml, label: "HTML" },
+  htm: { Icon: FileHtml, label: "HTML" },
+  xml: { Icon: FileHtml, label: "XML" },
   css: { Icon: Palette, label: "CSS" },
   scss: { Icon: Palette, label: "Sass" },
   less: { Icon: Palette, label: "Less" },
@@ -64,11 +64,11 @@ const EXT_KINDS: Record<string, FileKind> = {
   bash: { Icon: Terminal, label: "Shell" },
   zsh: { Icon: Terminal, label: "Shell" },
   sql: { Icon: Database, label: "SQL" },
-  yml: { Icon: Settings2, label: "YAML" },
-  yaml: { Icon: Settings2, label: "YAML" },
-  toml: { Icon: Settings2, label: "TOML" },
-  ini: { Icon: Settings2, label: "INI" },
-  env: { Icon: Settings2, label: "Env" },
+  yml: { Icon: GearSix, label: "YAML" },
+  yaml: { Icon: GearSix, label: "YAML" },
+  toml: { Icon: GearSix, label: "TOML" },
+  ini: { Icon: GearSix, label: "INI" },
+  env: { Icon: GearSix, label: "Env" },
   lock: { Icon: Lock, label: "Lockfile" },
   png: { Icon: Image, label: "Image" },
   jpg: { Icon: Image, label: "Image" },
@@ -82,8 +82,8 @@ const EXT_KINDS: Record<string, FileKind> = {
 const NAME_KINDS: Record<string, FileKind> = {
   dockerfile: { Icon: Terminal, label: "Dockerfile" },
   makefile: { Icon: Terminal, label: "Makefile" },
-  ".gitignore": { Icon: Settings2, label: "Git ignore" },
-  ".env": { Icon: Settings2, label: "Env" },
+  ".gitignore": { Icon: GearSix, label: "Git ignore" },
+  ".env": { Icon: GearSix, label: "Env" },
 }
 
 /** Resolve a filename to its glyph + language label. */

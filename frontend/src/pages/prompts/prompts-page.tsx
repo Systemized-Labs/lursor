@@ -1,4 +1,4 @@
-import { Copy, Lock, Pencil, Plus, Trash2 } from "lucide-react"
+import { Copy, Lock, Pencil, Plus, Trash } from "@phosphor-icons/react"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 
@@ -171,7 +171,7 @@ export function PromptsPage({ embedded = false }: { embedded?: boolean } = {}) {
                                 onClick={() => setToDelete(template)}
                                 aria-label="Delete template"
                               >
-                                <Trash2 className="h-4 w-4" />
+                                <Trash className="h-4 w-4" />
                               </Button>
                             </>
                           )}

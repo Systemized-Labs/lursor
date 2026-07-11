@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import { ChevronRight, CornerDownLeft } from "lucide-react"
+import { CaretRight, ArrowElbowDownLeft } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import type { MentionSource } from "./types"
@@ -98,9 +98,9 @@ export function MentionMenu({
                   </span>
                 )}
                 {drillable ? (
-                  <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />
+                  <CaretRight className="h-3.5 w-3.5 flex-shrink-0" />
                 ) : isActive ? (
-                  <CornerDownLeft className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                  <ArrowElbowDownLeft className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
                 ) : null}
               </button>
             )

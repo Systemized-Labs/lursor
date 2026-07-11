@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { FileCode } from "lucide-react"
+import { FileCode } from "@phosphor-icons/react"
 
 import { filesApi } from "@/api/files"
 import type { MentionItem, MentionSource } from "./types"
