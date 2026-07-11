@@ -12,9 +12,23 @@ import type {
   LaiosConnectionStatus,
   LaiosInstance,
   LaiosInstanceLogs,
+  LaiosInstanceStatus,
   LaiosRecipeSummary,
   LaiosServeInput,
 } from "./types"
+
+// Statuses that are still moving toward a steady state — the UI polls faster
+// and shows a spinner while any instance is in one of these.
+const TRANSITIONAL: ReadonlySet<LaiosInstanceStatus> = new Set([
+  "pending",
+  "pulling",
+  "starting",
+  "stopping",
+])
+
+export function isTransitional(status: LaiosInstanceStatus): boolean {
+  return TRANSITIONAL.has(status)
+}
 
 // All model-lifecycle calls are scoped to a connection id; the backend proxies
 // them to that daemon's control plane holding the master_key server-side.
@@ -86,8 +100,12 @@ export function useLaiosInstances(id: string | undefined) {
     queryKey: id ? laiosKeys.instances(id) : laiosKeys.all,
     queryFn: ({ signal }) => laiosApi.instances(id as string, signal),
     enabled: Boolean(id),
-    // Poll so spin up/down + starting→running transitions surface on their own.
-    refetchInterval: 4_000,
+    // Adaptive polling: while a model is spinning up/down, poll fast so the UI
+    // tracks the transition; once everything is steady, back off to save calls.
+    refetchInterval: (query) => {
+      const data = query.state.data
+      return data?.some((i) => TRANSITIONAL.has(i.status)) ? 1_500 : 6_000
+    },
     refetchOnWindowFocus: false,
     retry: false,
   })
@@ -144,30 +162,57 @@ export function useDeleteLaiosConnection() {
   return useConnectionMutation((id: string) => laiosApi.removeConnection(id))
 }
 
-// --- Lifecycle mutations (invalidate the active connection's instances/budget) --
+// --- Lifecycle mutations (optimistic, then reconcile via polling) ---------------
 
-function useLifecycleMutation<TArgs, TData>(
-  connectionId: string,
-  fn: (args: TArgs) => Promise<TData>
-) {
+function upsertInstance(list: LaiosInstance[] | undefined, inst: LaiosInstance) {
+  const next = list ? [...list] : []
+  const i = next.findIndex((x) => x.id === inst.id)
+  if (i >= 0) next[i] = inst
+  else next.push(inst)
+  return next
+}
+
+// Serve returns the (usually `starting`) instance immediately; the daemon
+// promotes it in the background. We drop it into the cache right away so the
+// card shows up instantly, then the adaptive poll tracks it to `running`.
+export function useServeModel(connectionId: string) {
   const qc = useQueryClient()
+  const key = laiosKeys.instances(connectionId)
   return useMutation({
-    mutationFn: fn,
+    mutationFn: (input: LaiosServeInput) => laiosApi.serve(connectionId, input),
+    onSuccess: (inst) => {
+      qc.setQueryData<LaiosInstance[]>(key, (old) => upsertInstance(old, inst))
+    },
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: laiosKeys.instances(connectionId) })
+      qc.invalidateQueries({ queryKey: key })
       qc.invalidateQueries({ queryKey: laiosKeys.budget(connectionId) })
     },
   })
 }
 
-export function useServeModel(connectionId: string) {
-  return useLifecycleMutation(connectionId, (input: LaiosServeInput) =>
-    laiosApi.serve(connectionId, input)
-  )
-}
-
+// Optimistically flip the card to `stopping` so the UI responds instantly,
+// rolling back if the request fails.
 export function useStopInstance(connectionId: string) {
-  return useLifecycleMutation(connectionId, (instanceId: string) =>
-    laiosApi.stop(connectionId, instanceId)
-  )
+  const qc = useQueryClient()
+  const key = laiosKeys.instances(connectionId)
+  return useMutation({
+    mutationFn: (instanceId: string) => laiosApi.stop(connectionId, instanceId),
+    onMutate: async (instanceId) => {
+      await qc.cancelQueries({ queryKey: key })
+      const previous = qc.getQueryData<LaiosInstance[]>(key)
+      qc.setQueryData<LaiosInstance[]>(key, (old) =>
+        old?.map((i) =>
+          i.id === instanceId ? { ...i, status: "stopping" } : i
+        )
+      )
+      return { previous }
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.previous) qc.setQueryData(key, ctx.previous)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: key })
+      qc.invalidateQueries({ queryKey: laiosKeys.budget(connectionId) })
+    },
+  })
 }

@@ -1,8 +1,9 @@
-import { FileText, Pencil, Plus, Server, Square, Trash2 } from "lucide-react"
+import { FileText, Loader2, Pencil, Plus, Server, Square, Trash2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import {
+  isTransitional,
   useDeleteLaiosConnection,
   useLaiosBudget,
   useLaiosConnections,
@@ -300,12 +301,29 @@ function ConnectionPanel({
     error,
   } = useLaiosInstances(connection.id)
 
+  // A stopped model is gone — don't keep it in the "running" view. Keep failed
+  // ones (their error is actionable) and sort active first, failed last.
+  const rank = (s: LaiosInstance["status"]) =>
+    s === "running" ? 0 : s === "failed" ? 2 : 1
+  const visible = (instances ?? [])
+    .filter((i) => i.status !== "stopped")
+    .sort((a, b) => rank(a.status) - rank(b.status))
+  const updating = visible.some((i) => isTransitional(i.status))
+
   return (
     <div className="space-y-4">
       <BudgetStrip connectionId={connection.id} />
 
       <div className="flex items-center justify-between gap-4">
-        <h3 className="text-sm font-medium text-foreground">Models</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium text-foreground">Models</h3>
+          {updating ? (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              updating
+            </span>
+          ) : null}
+        </div>
         <Button size="sm" onClick={onServe}>
           <Server className="h-4 w-4" />
           Serve a model
@@ -318,7 +336,7 @@ function ConnectionPanel({
         <p className="text-sm text-destructive">
           {error instanceof Error ? error.message : "Failed to load models"}
         </p>
-      ) : !instances || instances.length === 0 ? (
+      ) : visible.length === 0 ? (
         <EmptyState
           title="Nothing running"
           description="Serve a model from the catalog to see it here."
@@ -331,7 +349,7 @@ function ConnectionPanel({
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {instances.map((inst) => (
+          {visible.map((inst) => (
             <InstanceCard
               key={inst.id}
               instance={inst}
@@ -356,15 +374,23 @@ function InstanceCard({
 }) {
   const terminal =
     instance.status === "stopped" || instance.status === "failed"
+  const transitioning = isTransitional(instance.status)
   return (
-    <Card className="flex flex-col">
+    <Card
+      className={
+        transitioning
+          ? "flex flex-col ring-1 ring-border transition-shadow"
+          : "flex flex-col"
+      }
+    >
       <CardHeader>
         <div className="flex items-start justify-between gap-2">
           <CardTitle className="truncate">{instance.served_name}</CardTitle>
           <Badge
             variant={STATE_VARIANT[instance.status]}
-            className="shrink-0 font-normal"
+            className="shrink-0 gap-1 font-normal"
           >
+            {transitioning ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
             {instance.status}
           </Badge>
         </div>
