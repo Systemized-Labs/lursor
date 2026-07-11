@@ -386,3 +386,17 @@ export interface LaiosServeInput {
 export interface LaiosInstanceLogs {
   logs: string
 }
+
+export type LaiosJobStatus = "queued" | "running" | "succeeded" | "failed"
+
+/** An async daemon job (currently only model pulls/downloads). */
+export interface LaiosJob {
+  id: string
+  kind: string // "pull"
+  status: LaiosJobStatus
+  recipe_id: string | null
+  result: { model_id: string; path: string; already_present: boolean } | null
+  error: string | null
+  created_at: string
+  updated_at: string
+}

@@ -3,6 +3,8 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query"
+import { useCallback, useEffect, useState } from "react"
+import { toast } from "sonner"
 
 import { api } from "./client"
 import type {
@@ -13,6 +15,7 @@ import type {
   LaiosInstance,
   LaiosInstanceLogs,
   LaiosInstanceStatus,
+  LaiosJob,
   LaiosRecipeSummary,
   LaiosServeInput,
 } from "./types"
@@ -49,6 +52,10 @@ export const laiosApi = {
     api.get<LaiosRecipeSummary[]>(`/laios/connections/${id}/catalog`, signal),
   budget: (id: string, signal?: AbortSignal) =>
     api.get<LaiosBudget>(`/laios/connections/${id}/budget`, signal),
+  pull: (id: string, recipe: string) =>
+    api.post<LaiosJob>(`/laios/connections/${id}/pull`, { recipe }),
+  job: (id: string, jobId: string, signal?: AbortSignal) =>
+    api.get<LaiosJob>(`/laios/connections/${id}/jobs/${jobId}`, signal),
   serve: (id: string, input: LaiosServeInput) =>
     api.post<LaiosInstance>(`/laios/connections/${id}/serve`, input),
   stop: (id: string, instanceId: string) =>
@@ -215,4 +222,80 @@ export function useStopInstance(connectionId: string) {
       qc.invalidateQueries({ queryKey: laiosKeys.budget(connectionId) })
     },
   })
+}
+
+// --- Serve manager: track in-flight spin-ups as visible cards ------------------
+//
+// A model has no daemon instance record until *after* it's downloaded and
+// serve is called, so downloading models would otherwise be invisible. We track
+// each in-flight serve as a synthetic entry (download → start) and render it in
+// the models grid, then hand off to the real (polled) instance once it exists.
+
+export interface PendingServe {
+  key: string
+  connectionId: string
+  recipeId: string
+  name: string
+  phase: "pulling" | "starting" | "failed"
+  error?: string
+}
+
+export function useServeManager(connectionId: string | undefined) {
+  const [pending, setPending] = useState<PendingServe[]>([])
+  const serveModel = useServeModel(connectionId ?? "")
+
+  // Forget entries not belonging to the active connection (e.g. after a switch).
+  useEffect(() => {
+    setPending((p) => p.filter((x) => x.connectionId === connectionId))
+  }, [connectionId])
+
+  const start = useCallback(
+    async (input: LaiosServeInput, name: string) => {
+      if (!connectionId) return
+      const key =
+        globalThis.crypto?.randomUUID?.() ?? `${input.recipe}-${Math.random()}`
+      const entry: PendingServe = {
+        key,
+        connectionId,
+        recipeId: input.recipe,
+        name,
+        phase: "pulling",
+      }
+      setPending((p) => [...p, entry])
+      try {
+        // 1) Download (idempotent; fast when already cached).
+        const job = await laiosApi.pull(connectionId, input.recipe)
+        for (;;) {
+          const j = await laiosApi.job(connectionId, job.id)
+          if (j.status === "succeeded") break
+          if (j.status === "failed") throw new Error(j.error || "Download failed")
+          await new Promise((r) => setTimeout(r, 2000))
+        }
+        // 2) Start the engine — the real instance takes over the card.
+        setPending((p) =>
+          p.map((x) => (x.key === key ? { ...x, phase: "starting" } : x))
+        )
+        const inst = await serveModel.mutateAsync(input)
+        setPending((p) => p.filter((x) => x.key !== key))
+        toast.success(`Serving ${inst.served_name}`)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to serve model"
+        setPending((p) =>
+          p.map((x) => (x.key === key ? { ...x, phase: "failed", error: msg } : x))
+        )
+        toast.error(msg)
+      }
+    },
+    [connectionId, serveModel]
+  )
+
+  const dismiss = useCallback((key: string) => {
+    setPending((p) => p.filter((x) => x.key !== key))
+  }, [])
+
+  return {
+    pending: pending.filter((x) => x.connectionId === connectionId),
+    start,
+    dismiss,
+  }
 }

@@ -1,8 +1,8 @@
-import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react"
+import { AlertCircle, CheckCircle2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
-import { useLaiosBudget, useLaiosCatalog, useServeModel } from "@/api/laios"
+import { useLaiosBudget, useLaiosCatalog } from "@/api/laios"
 import type { LaiosBudget, LaiosRecipeSummary, LaiosServeInput } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import {
@@ -28,6 +28,8 @@ interface ServeModelDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   connectionId: string
+  // Kicks off the download → start flow; a pending card appears under Models.
+  onServe: (input: LaiosServeInput, name: string) => void
 }
 
 const MIB_PER_GB = 1024
@@ -100,18 +102,18 @@ function classify(recipe: LaiosRecipeSummary, budget: LaiosBudget | undefined): 
 }
 
 /**
- * Spin up a model. Shows each recipe's estimated VRAM footprint and whether it
- * fits the machine laios runs on, so users don't launch models that are too big
- * (the daemon would reject them anyway — this surfaces it before the attempt).
+ * Pick a recipe and kick off a serve. The actual download → start lifecycle is
+ * owned by the serve manager and shown as a live card under Models, so this
+ * dialog just validates the choice and closes.
  */
 export function ServeModelDialog({
   open,
   onOpenChange,
   connectionId,
+  onServe,
 }: ServeModelDialogProps) {
   const { data: catalog, isLoading } = useLaiosCatalog(open ? connectionId : undefined)
   const { data: budget } = useLaiosBudget(open ? connectionId : undefined)
-  const serve = useServeModel(connectionId)
 
   const [recipe, setRecipe] = useState<string>("")
   const [maxLen, setMaxLen] = useState<string>("")
@@ -155,7 +157,7 @@ export function ServeModelDialog({
   const available =
     budget && usable !== undefined ? Math.max(0, usable - budget.allocated_mb) : undefined
 
-  async function handleServe() {
+  function handleServe() {
     if (!recipe) {
       toast.error("Pick a recipe to serve")
       return
@@ -175,16 +177,11 @@ export function ServeModelDialog({
     }
     if (servedName.trim()) input.served_name = servedName.trim()
 
-    try {
-      const inst = await serve.mutateAsync(input)
-      toast.success(`Serving ${inst.served_name} (${inst.status})`)
-      onOpenChange(false)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to serve model")
-    }
+    onServe(input, servedName.trim() || selected?.name || recipe)
+    onOpenChange(false)
   }
 
-  const serveDisabled = serve.isPending || !recipe || (compat ? !compat.canServe : false)
+  const serveDisabled = !recipe || (compat ? !compat.canServe : false)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -192,8 +189,9 @@ export function ServeModelDialog({
         <DialogHeader>
           <DialogTitle>Serve a model</DialogTitle>
           <DialogDescription>
-            Launch a curated recipe on this daemon. Models that don't fit the
-            machine's VRAM are disabled.
+            Launch a curated recipe on this daemon. It downloads (if needed) then
+            starts — you'll see its progress under Models. Models that don't fit
+            the machine's VRAM are disabled.
           </DialogDescription>
         </DialogHeader>
 
@@ -293,22 +291,11 @@ export function ServeModelDialog({
         </div>
 
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={serve.isPending}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleServe} disabled={serveDisabled}>
-            {serve.isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Starting…
-              </>
-            ) : (
-              "Serve model"
-            )}
+            Serve model
           </Button>
         </DialogFooter>
       </DialogContent>
