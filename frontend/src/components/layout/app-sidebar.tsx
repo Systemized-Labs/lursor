@@ -7,6 +7,7 @@ import {
   MoreHorizontal,
   Palette,
   Pencil,
+  Settings,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react"
@@ -342,6 +343,18 @@ export function AppSidebar() {
 
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={isNavActive("/settings")}
+              tooltip="Settings"
+              asChild
+            >
+              <Link to="/settings" onClick={closeMobile}>
+                <Settings className="size-4" />
+                <span>Settings</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <div className="flex items-center justify-between group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
               <ThemePicker

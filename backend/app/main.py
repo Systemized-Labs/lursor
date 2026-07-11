@@ -11,6 +11,7 @@ from app.api import (
     agents,
     chat,
     files,
+    github,
     models,
     providers,
     skills,
@@ -18,6 +19,9 @@ from app.api import (
     threads,
     tools,
     workspaces,
+)
+from app.api import (
+    settings as settings_api,
 )
 from app.config import get_settings
 from app.db.session import init_db
@@ -30,6 +34,8 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     settings.apply_env()
     await init_db()
+    # Apply any UI-saved settings (e.g. OpenRouter key) over the env defaults.
+    await settings_api.load_app_config()
     yield
 
 
@@ -60,5 +66,7 @@ for module in (
     models,
     terminal,
     files,
+    github,
+    settings_api,
 ):
     app.include_router(module.router, prefix="/api")

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom"
 import { AppShell } from "@/components/layout/app-shell"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
+import { SettingsPage } from "@/pages/settings/settings-page"
 import { WorkspacesPage } from "@/pages/workspaces/workspaces-page"
 
 /**
@@ -34,6 +35,16 @@ function App() {
       <Route element={<AppShell />}>
         <Route index element={<Navigate to="/customization" replace />} />
         <Route path="customization" element={<CustomizationPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        {/* Back-compat: providers/github moved from Customization to Settings. */}
+        <Route
+          path="providers"
+          element={<Navigate to="/settings?tab=providers" replace />}
+        />
+        <Route
+          path="github"
+          element={<Navigate to="/settings?tab=github" replace />}
+        />
         {/* Back-compat: the old top-level pages now live as tabs. */}
         <Route
           path="agents"

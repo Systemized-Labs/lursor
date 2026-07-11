@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { FolderOpen } from "lucide-react"
+import { FolderGit2, FolderOpen } from "lucide-react"
 import { toast } from "sonner"
 
 import type { Workspace, WorkspaceInput } from "@/api/types"
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { GitHubRepoPickerDialog } from "./github-repo-picker-dialog"
 
 interface FormState {
   name: string
@@ -41,6 +42,7 @@ export function WorkspaceFormDialog({
 }: WorkspaceFormDialogProps) {
   const [form, setForm] = useState<FormState>(EMPTY)
   const [isBrowsing, setIsBrowsing] = useState(false)
+  const [repoPickerOpen, setRepoPickerOpen] = useState(false)
   const createWorkspace = useCreateWorkspace()
   const updateWorkspace = useUpdateWorkspace()
   const isEdit = Boolean(workspace)
@@ -103,6 +105,7 @@ export function WorkspaceFormDialog({
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
         <DialogHeader>
@@ -115,6 +118,24 @@ export function WorkspaceFormDialog({
         </DialogHeader>
 
         <div className="grid gap-4">
+          {!isEdit ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => setRepoPickerOpen(true)}
+              >
+                <FolderGit2 className="h-4 w-4" />
+                Clone from GitHub
+              </Button>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                or create an empty workspace
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            </>
+          ) : null}
           <div className="grid gap-2">
             <Label htmlFor="workspace-name">Name</Label>
             <Input
@@ -178,5 +199,13 @@ export function WorkspaceFormDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <GitHubRepoPickerDialog
+      open={repoPickerOpen}
+      onOpenChange={setRepoPickerOpen}
+      defaultName={form.name}
+      onCloned={() => onOpenChange(false)}
+    />
+    </>
   )
 }

@@ -3,11 +3,10 @@ import { useSearchParams } from "react-router-dom"
 import { PageHeader } from "@/components/page-header"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AgentsPage } from "@/pages/agents/agents-page"
-import { ProvidersPage } from "@/pages/providers/providers-page"
 import { SkillsPage } from "@/pages/skills/skills-page"
 import { ToolsPage } from "@/pages/tools/tools-page"
 
-const TABS = ["agents", "skills", "tools", "providers"] as const
+const TABS = ["agents", "skills", "tools"] as const
 type Tab = (typeof TABS)[number]
 
 function isTab(value: string | null): value is Tab {
@@ -39,7 +38,7 @@ export function CustomizationPage() {
     <div className="space-y-6">
       <PageHeader
         title="Customization"
-        description="Shape your harness: manage agents, skills, tools, and model providers."
+        description="Shape your harness: manage agents, skills, and tools."
       />
 
       <Tabs value={active} onValueChange={handleTabChange} className="space-y-6">
@@ -47,7 +46,6 @@ export function CustomizationPage() {
           <TabsTrigger value="agents">Agents</TabsTrigger>
           <TabsTrigger value="skills">Skills</TabsTrigger>
           <TabsTrigger value="tools">Tools</TabsTrigger>
-          <TabsTrigger value="providers">Providers</TabsTrigger>
         </TabsList>
 
         <TabsContent value="agents">
@@ -58,9 +56,6 @@ export function CustomizationPage() {
         </TabsContent>
         <TabsContent value="tools">
           <ToolsPage embedded />
-        </TabsContent>
-        <TabsContent value="providers">
-          <ProvidersPage embedded />
         </TabsContent>
       </Tabs>
     </div>

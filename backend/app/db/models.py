@@ -149,6 +149,37 @@ class CustomProvider(TimestampMixin, table=True):
     api_key: str | None = None  # optional; local servers usually don't require one
 
 
+class AppConfig(TimestampMixin, table=True):
+    """App-wide settings editable from the UI (single row for this single-user app).
+
+    Currently holds the OpenRouter API key. When set it overrides the value from
+    the environment / ``.env`` and is applied to the running process so model
+    listing and agent runs pick it up without a restart (see ``api/settings.py``).
+    """
+
+    __tablename__ = "app_config"
+
+    openrouter_api_key: str | None = None
+
+
+class GitHubConfig(TimestampMixin, table=True):
+    """The user's GitHub connection (single row for this single-user app).
+
+    Stores a personal access token plus the identity resolved from it. On save
+    the token is also written into git's global credential store so that clone,
+    push, and pull work everywhere — the backend clone endpoint, the terminal
+    panel, and the agent's own shell — without re-prompting.
+    """
+
+    __tablename__ = "github_config"
+
+    token: str = ""  # personal access token (classic or fine-grained)
+    login: str | None = None  # GitHub username resolved from the token
+    name: str | None = None  # git user.name / GitHub display name
+    email: str | None = None  # git user.email
+    avatar_url: str | None = None
+
+
 class Workspace(TimestampMixin, table=True):
     """A named directory on disk that scopes an agent's filesystem."""
 

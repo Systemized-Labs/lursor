@@ -31,6 +31,7 @@ import termios
 from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
+from app import gitcfg
 from app.config import get_settings
 from app.db.models import Workspace
 from app.db.session import async_session_factory
@@ -72,6 +73,10 @@ def _spawn_shell(cwd: str) -> tuple[int, int]:
             os.chdir(cwd)
         os.environ["TERM"] = "xterm-256color"
         os.environ["COLORTERM"] = "truecolor"
+        # If a GitHub account is connected, point git at Lursor's isolated
+        # config so clone/push/pull authenticate here too — without touching
+        # the user's real ~/.gitconfig.
+        os.environ.update(gitcfg.config_env())
         try:
             os.execvp(shell, [shell, "-i"])
         except OSError:

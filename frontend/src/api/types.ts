@@ -177,3 +177,57 @@ export interface ProviderHealth {
   model_count: number | null
   error: string | null
 }
+
+/** The user's GitHub connection status (token is never returned in full). */
+export interface GitHubConfig {
+  connected: boolean
+  login: string | null
+  name: string | null
+  email: string | null
+  avatar_url: string | null
+  token_hint: string | null
+  updated_at: string | null
+}
+
+export interface GitHubConfigInput {
+  token: string
+  name?: string | null
+  email?: string | null
+}
+
+/** A repository the connected account can clone. */
+export interface GitHubRepo {
+  full_name: string
+  name: string
+  description: string | null
+  private: boolean
+  clone_url: string
+  default_branch: string
+  updated_at: string | null
+}
+
+export interface GitHubCloneInput {
+  repo_full_name?: string
+  clone_url?: string
+  name?: string
+  path?: string
+}
+
+/** OpenRouter API key status (the raw key is never returned). */
+export interface OpenRouterSettings {
+  configured: boolean
+  key_hint: string | null
+  // Where the effective key comes from: a UI-saved key, the environment/.env,
+  // or nothing. Only a "database" key can be edited/cleared from the UI.
+  source: "database" | "env" | "none"
+}
+
+export interface OpenRouterSettingsInput {
+  api_key?: string | null
+}
+
+export interface OpenRouterTestResult {
+  status: "ok" | "error"
+  label: string | null
+  error: string | null
+}
