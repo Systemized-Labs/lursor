@@ -41,6 +41,20 @@ export const filesApi = {
       `/workspaces/${workspaceId}/files/write`,
       { path, content }
     ),
+  create: (workspaceId: string, path: string, isDir: boolean) =>
+    api.post<DirEntry>(`/workspaces/${workspaceId}/files/create`, {
+      path,
+      is_dir: isDir,
+    }),
+  rename: (workspaceId: string, path: string, newPath: string) =>
+    api.post<DirEntry>(`/workspaces/${workspaceId}/files/rename`, {
+      path,
+      new_path: newPath,
+    }),
+  remove: (workspaceId: string, path: string) =>
+    api.delete<void>(
+      `/workspaces/${workspaceId}/files/delete?path=${encodeURIComponent(path)}`
+    ),
 }
 
 export const fileKeys = {

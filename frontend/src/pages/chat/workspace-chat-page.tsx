@@ -160,12 +160,13 @@ export function WorkspaceChatPage() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-card">
       {/* Header */}
-      <div className="flex items-center gap-3 border-b border-border/60 bg-card/60 px-4 py-2.5 backdrop-blur-sm">
-        <div className="flex min-w-0 flex-1 flex-col leading-tight">
-          <span className="truncate text-sm font-semibold text-foreground">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-card/60 px-3 backdrop-blur-sm">
+        <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          <span className="truncate text-[13px] font-medium text-foreground">
             {currentThread?.title ?? "New conversation"}
           </span>
-          <span className="text-[11px] text-muted-foreground">
+          <span className="shrink-0 text-muted-foreground/40">·</span>
+          <span className="truncate text-[11px] text-muted-foreground">
             {chat.isStreaming ? "Thinking…" : workspace.name}
           </span>
         </div>
@@ -173,12 +174,12 @@ export function WorkspaceChatPage() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8"
+          className="h-6 w-6 text-muted-foreground hover:text-foreground"
           onClick={handleNewConversation}
           aria-label="New conversation"
           title="New conversation"
         >
-          <MessageSquarePlus className="h-4 w-4" />
+          <MessageSquarePlus className="h-3.5 w-3.5" />
         </Button>
 
         {noAgents ? (
@@ -188,7 +189,7 @@ export function WorkspaceChatPage() {
             value={selectedAgentId}
             onValueChange={(v) => void handleAgentChange(v)}
           >
-            <SelectTrigger className="h-8 w-44" aria-label="Agent">
+            <SelectTrigger className="h-6 w-40 text-xs" aria-label="Agent">
               <SelectValue placeholder="Select agent" />
             </SelectTrigger>
             <SelectContent>

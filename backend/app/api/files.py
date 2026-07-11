@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
@@ -79,6 +80,16 @@ class WriteFileRequest(BaseModel):
 class WriteFileResponse(BaseModel):
     path: str
     size: int
+
+
+class CreateEntryRequest(BaseModel):
+    path: str
+    is_dir: bool = False
+
+
+class RenameRequest(BaseModel):
+    path: str
+    new_path: str
 
 
 def _ensure_dir(path: str | None) -> Path | None:
@@ -214,6 +225,91 @@ async def write_file(
         ) from exc
 
     return WriteFileResponse(path=payload.path, size=target.stat().st_size)
+
+
+@router.post("/create", response_model=DirEntry, status_code=status.HTTP_201_CREATED)
+async def create_entry(
+    workspace_id: str,
+    payload: CreateEntryRequest,
+    session: AsyncSession = Depends(get_session),
+) -> DirEntry:
+    """Create an empty file or a directory, with parents as needed.
+
+    Fails if the target already exists so an accidental create can't silently
+    clobber an existing file or merge into a directory.
+    """
+    root = await _workspace_root(workspace_id, session)
+    target = _safe_join(root, payload.path)
+    if target == root:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid path")
+    if target.exists():
+        raise HTTPException(status.HTTP_409_CONFLICT, "A file or folder already exists")
+
+    try:
+        if payload.is_dir:
+            target.mkdir(parents=True, exist_ok=False)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch(exist_ok=False)
+    except OSError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not create: {exc}"
+        ) from exc
+
+    return DirEntry(name=target.name, path=_rel(root, target), is_dir=payload.is_dir)
+
+
+@router.post("/rename", response_model=DirEntry)
+async def rename_entry(
+    workspace_id: str,
+    payload: RenameRequest,
+    session: AsyncSession = Depends(get_session),
+) -> DirEntry:
+    """Rename or move a file/directory to ``new_path`` (both workspace-relative)."""
+    root = await _workspace_root(workspace_id, session)
+    src = _safe_join(root, payload.path)
+    dst = _safe_join(root, payload.new_path)
+    if src == root or dst == root:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid path")
+    if not src.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    if dst.exists():
+        raise HTTPException(status.HTTP_409_CONFLICT, "A file or folder already exists")
+
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+    except OSError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not rename: {exc}"
+        ) from exc
+
+    return DirEntry(name=dst.name, path=_rel(root, dst), is_dir=dst.is_dir())
+
+
+@router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_entry(
+    workspace_id: str,
+    path: str,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Delete a file, or a directory and everything under it."""
+    root = await _workspace_root(workspace_id, session)
+    target = _safe_join(root, path)
+    if target == root:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot delete workspace root")
+    if not target.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    except OSError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not delete: {exc}"
+        ) from exc
 
 
 # watchfiles.Change → the string kind the client understands.

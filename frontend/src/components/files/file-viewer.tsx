@@ -271,10 +271,6 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
       className="flex-1 min-h-0"
     >
       <ResizablePanel defaultSize={28} minSize={15} className="flex flex-col min-w-0">
-        <div className="flex h-8 shrink-0 items-center gap-2 px-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-          <FolderOpen className="h-3.5 w-3.5" />
-          Explorer
-        </div>
         <FileExplorer
           workspaceId={workspaceId}
           activePath={activePath}
