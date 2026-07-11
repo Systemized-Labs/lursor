@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     # Base URL for OpenRouter's REST API; "/models" is appended to list models.
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # --- laios control plane ---
+    # Used to auto-seed a "local" laios connection on startup when Lursor runs
+    # alongside a daemon (the supervisor injects these). LAIOS_MASTER_KEY takes
+    # precedence; otherwise the master_key is parsed from the daemon config file.
+    laios_url: str | None = None  # e.g. "http://127.0.0.1:7420"
+    laios_master_key: str | None = None
+    # Fallback source for the master_key when the env var is unset.
+    laios_config_path: str = "~/.laios/config/laios.toml"
+
     def ensure_dirs(self) -> None:
         """Create on-disk directories the app relies on."""
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)

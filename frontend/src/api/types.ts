@@ -296,3 +296,93 @@ export interface OpenRouterTestResult {
   label: string | null
   error: string | null
 }
+
+// --- laios control plane --------------------------------------------------------
+
+/** A connection to a laios daemon control plane (`:7420`). */
+export interface LaiosConnection {
+  id: string
+  name: string
+  base_url: string
+  // The master_key is never returned to the browser; only whether one is set.
+  has_master_key: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface LaiosConnectionInput {
+  name: string
+  base_url: string
+  master_key?: string | null
+}
+
+/** Result of probing a daemon's `/health` (+ `/v1/route`). */
+export interface LaiosConnectionStatus {
+  status: "ok" | "error"
+  reachable: boolean
+  role: string | null
+  node_id: string | null
+  version: string | null
+  master_key_set: boolean | null
+  error: string | null
+}
+
+export type LaiosInstanceStatus =
+  | "pending"
+  | "pulling"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "failed"
+
+export type LaiosEngine = "vllm" | "llamacpp" | "ollama"
+
+/** A model instance served by the daemon (subset of the daemon's InstanceRecord). */
+export interface LaiosInstance {
+  id: string
+  recipe_id: string
+  model_id: string | null
+  served_name: string
+  engine: LaiosEngine
+  status: LaiosInstanceStatus
+  port: number
+  host: string
+  max_model_len: number
+  vram_allocated_mb: number
+  node_id: string
+  endpoint: string
+  error: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** A curated recipe summary from the catalog. */
+export interface LaiosRecipeSummary {
+  id: string
+  name: string
+  engine: LaiosEngine
+  model: string | null
+  cluster_only: boolean
+  description: string | null
+  vram_estimate_mb: number | null
+}
+
+export interface LaiosBudget {
+  total_mb: number
+  reserved_mb: number
+  allocated_mb: number
+}
+
+/** Serve knobs POSTed to the daemon (all optional except recipe). */
+export interface LaiosServeInput {
+  recipe: string
+  max_model_len?: number
+  port?: number
+  served_name?: string
+  solo?: boolean
+}
+
+export interface LaiosInstanceLogs {
+  logs: string
+}

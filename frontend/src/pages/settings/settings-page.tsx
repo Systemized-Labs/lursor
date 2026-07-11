@@ -3,10 +3,11 @@ import { useSearchParams } from "react-router-dom"
 import { PageHeader } from "@/components/page-header"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GitHubPage } from "@/pages/github/github-page"
+import { LaiosPage } from "@/pages/laios/laios-page"
 import { ProvidersPage } from "@/pages/providers/providers-page"
 import { OpenRouterSection } from "./openrouter-section"
 
-const TABS = ["openrouter", "providers", "github"] as const
+const TABS = ["openrouter", "providers", "laios", "github"] as const
 type Tab = (typeof TABS)[number]
 
 function isTab(value: string | null): value is Tab {
@@ -45,6 +46,7 @@ export function SettingsPage() {
         <TabsList>
           <TabsTrigger value="openrouter">OpenRouter</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
+          <TabsTrigger value="laios">laios</TabsTrigger>
           <TabsTrigger value="github">GitHub</TabsTrigger>
         </TabsList>
 
@@ -53,6 +55,9 @@ export function SettingsPage() {
         </TabsContent>
         <TabsContent value="providers">
           <ProvidersPage embedded />
+        </TabsContent>
+        <TabsContent value="laios">
+          <LaiosPage embedded />
         </TabsContent>
         <TabsContent value="github">
           <GitHubPage embedded />

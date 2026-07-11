@@ -12,6 +12,7 @@ from app.api import (
     chat,
     files,
     github,
+    laios,
     models,
     prompt_templates,
     providers,
@@ -38,6 +39,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     # Apply any UI-saved settings (e.g. OpenRouter key) over the env defaults.
     await settings_api.load_app_config()
+    # Seed a "local" laios connection when running alongside a daemon.
+    await laios.seed_local_laios()
     yield
 
 
@@ -71,6 +74,7 @@ for module in (
     terminal,
     files,
     github,
+    laios,
     settings_api,
 ):
     app.include_router(module.router, prefix="/api")

@@ -91,10 +91,15 @@ async def _probe_provider(provider: CustomProvider) -> ProviderHealth:
 
 @router.get("", response_model=list[ProviderRead])
 async def list_providers(session: AsyncSession = Depends(get_session)):
+    # Providers auto-managed by a laios connection are surfaced in the model
+    # picker but managed from the laios tab, so hide them from manual CRUD here.
+    from app.api.laios import managed_provider_ids
+
+    managed = await managed_provider_ids(session)
     result = await session.execute(
         select(CustomProvider).order_by(CustomProvider.created_at)
     )
-    return result.scalars().all()
+    return [p for p in result.scalars().all() if p.id not in managed]
 
 
 @router.post("", response_model=ProviderRead, status_code=status.HTTP_201_CREATED)

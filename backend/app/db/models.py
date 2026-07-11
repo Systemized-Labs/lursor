@@ -187,6 +187,30 @@ class CustomProvider(TimestampMixin, table=True):
     api_key: str | None = None  # optional; local servers usually don't require one
 
 
+class LaiosConnection(TimestampMixin, table=True):
+    """A connection to a laios daemon control plane (``:7420``).
+
+    laios is a local-first inference OS: its Rust daemon owns the catalog,
+    model pull/serve lifecycle, VRAM budget, and cluster. Unlike a
+    :class:`CustomProvider` (which points at the OpenAI-compatible *inference*
+    gateway on ``:4000``), this points at the *control* plane and carries the
+    ``master_key`` used as a Bearer token on every ``/v1/*`` call. Daemons may
+    be remote, so several connections can coexist; the backend proxies to the
+    selected one (see ``api/laios.py``). The ``master_key`` is stored
+    server-side only and never returned to the browser.
+    """
+
+    __tablename__ = "laios_connections"
+
+    name: str = Field(index=True)  # display name, e.g. "local" or "spark-head"
+    base_url: str = ""  # daemon control-plane base, e.g. "http://127.0.0.1:7420"
+    master_key: str | None = None  # Bearer token for /v1/*; kept server-side
+    # The CustomProvider auto-managed for this connection so its served models
+    # flow into the model picker (points at the daemon's LiteLLM gateway). Kept
+    # on this (new) table so CustomProvider needs no migration.
+    linked_provider_id: str | None = None
+
+
 class AppConfig(TimestampMixin, table=True):
     """App-wide settings editable from the UI (single row for this single-user app).
 
