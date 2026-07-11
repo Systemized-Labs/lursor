@@ -330,14 +330,22 @@ interface TabStripProps {
 }
 
 function TabStrip({ files, activePath, onActivate, onClose }: TabStripProps) {
+  // Keep the open tab in view when it changes — activating a file from the tree
+  // (or closing a neighbour) can leave the active tab scrolled off-screen.
+  const activeRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [activePath])
+
   return (
-    <div className="flex h-9 min-w-0 shrink-0 items-stretch overflow-x-auto border-b border-border/60">
+    <div className="no-scrollbar flex h-9 min-w-0 shrink-0 items-stretch overflow-x-auto border-b border-border/60 bg-muted/30">
       {files.map((f) => {
         const isActive = f.path === activePath
         const { Icon: Glyph } = fileKind(f.name)
         return (
           <div
             key={f.path}
+            ref={isActive ? activeRef : undefined}
             role="tab"
             aria-selected={isActive}
             tabIndex={0}
@@ -347,11 +355,13 @@ function TabStrip({ files, activePath, onActivate, onClose }: TabStripProps) {
             }}
             title={f.path}
             className={cn(
-              "group relative flex items-center gap-1.5 border-r border-border/60 px-3 text-xs whitespace-nowrap cursor-pointer outline-none",
-              "focus-visible:bg-accent/60",
+              "group relative flex items-center gap-1.5 px-3 text-xs whitespace-nowrap cursor-pointer outline-none transition-colors",
+              // The active tab takes the editor's own surface so it reads as
+              // one continuous panel; others stay on the muted strip. Layering,
+              // not borders, separates them — no lines between tabs.
               isActive
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                ? "bg-background text-foreground"
+                : "text-muted-foreground hover:bg-background/50 hover:text-foreground focus-visible:bg-background/50"
             )}
           >
             {/* Active rail — mirrors the tree's left rail across the top of the tab. */}

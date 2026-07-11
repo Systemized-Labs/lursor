@@ -4033,6 +4033,16 @@
   ::-webkit-scrollbar-corner {
     background: transparent;
   }
+
+  /* Opt-out for scroll areas that should scroll without showing any scrollbar
+     (e.g. the editor tab strip, where a horizontal bar would eat the row's
+     height). Scroll still works via wheel/trackpad. */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Chat typing indicator — soft pulse used by the streaming dots. */
