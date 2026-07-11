@@ -7,7 +7,6 @@ import {
   Loader2,
   Pencil,
   Plus,
-  Server,
   Square,
   Trash2,
   X,
@@ -404,32 +403,17 @@ function ConnectionPanel({
     pending.some((p) => p.phase !== "failed") ||
     visible.some((i) => isTransitional(i.status))
   const empty = visible.length === 0 && pending.length === 0
-  const runningCount = visible.filter((i) => i.status === "running").length
 
   return (
     <div className="space-y-5">
       <VramBar connectionId={connection.id} />
 
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium text-foreground">Models</h3>
-          {runningCount > 0 ? (
-            <Badge variant="secondary" className="font-normal">
-              {runningCount} running
-            </Badge>
-          ) : null}
-          {updating ? (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              updating
-            </span>
-          ) : null}
+      {updating ? (
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          updating
         </div>
-        <Button size="sm" onClick={onServe}>
-          <Server className="h-4 w-4" />
-          Serve a model
-        </Button>
-      </div>
+      ) : null}
 
       {isLoading && empty ? (
         <p className="text-sm text-muted-foreground">Loading models…</p>
@@ -437,17 +421,6 @@ function ConnectionPanel({
         <p className="text-sm text-destructive">
           {error instanceof Error ? error.message : "Failed to load models"}
         </p>
-      ) : empty ? (
-        <EmptyState
-          title="Nothing running"
-          description="Serve a model from the catalog to see it here."
-          action={
-            <Button size="sm" onClick={onServe}>
-              <Server className="h-4 w-4" />
-              Serve a model
-            </Button>
-          }
-        />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {/* In-flight serves first — a downloading/starting model has no daemon
@@ -467,9 +440,28 @@ function ConnectionPanel({
               onStop={() => onStop(inst)}
             />
           ))}
+          {/* The "serve" action lives as a tile in the grid rather than a header
+              button, so it doubles as the empty-state CTA when nothing runs. */}
+          <NewModelCard onClick={onServe} />
         </div>
       )}
     </div>
+  )
+}
+
+// Dashed placeholder tile that kicks off the serve flow. Sits in the models
+// grid so adding a model reads as "one more card", and is the sole tile (and
+// thus the empty-state prompt) when nothing is running yet.
+function NewModelCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-[11rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+    >
+      <Plus className="h-5 w-5" />
+      <span className="text-sm font-medium">Serve a model</span>
+    </button>
   )
 }
 
