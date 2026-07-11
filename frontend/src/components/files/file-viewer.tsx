@@ -248,18 +248,10 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
   return (
     <ResizablePanelGroup
       direction="horizontal"
-      autoSaveId="file-viewer"
+      autoSaveId="file-viewer-v2"
       className="flex-1 min-h-0"
     >
-      <ResizablePanel defaultSize={28} minSize={15} className="flex flex-col min-w-0">
-        <FileExplorer
-          workspaceId={workspaceId}
-          activePath={activePath}
-          onOpenFile={openFile}
-        />
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel minSize={30} className="flex flex-col min-w-0">
+      <ResizablePanel minSize={30} className="flex flex-col min-w-0 bg-card">
         {openFiles.length === 0 ? (
           <EmptyEditor />
         ) : (
@@ -294,6 +286,14 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
             )}
           </>
         )}
+      </ResizablePanel>
+      <ResizableHandle />
+      <ResizablePanel defaultSize={28} minSize={15} className="flex flex-col min-w-0">
+        <FileExplorer
+          workspaceId={workspaceId}
+          activePath={activePath}
+          onOpenFile={openFile}
+        />
       </ResizablePanel>
     </ResizablePanelGroup>
   )
@@ -333,12 +333,12 @@ function TabStrip({ files, activePath, onActivate, onClose }: TabStripProps) {
             title={f.path}
             className={cn(
               "group relative flex items-center gap-1.5 px-3 text-xs whitespace-nowrap cursor-pointer outline-none transition-colors",
-              // The active tab takes the editor's own surface so it reads as
-              // one continuous panel; others stay on the muted strip. Layering,
-              // not borders, separates them — no lines between tabs.
+              // The active tab takes the editor's own surface (`card`) so it
+              // reads as one continuous panel; others stay on the muted strip.
+              // Layering, not borders, separates them — no lines between tabs.
               isActive
-                ? "bg-background text-foreground"
-                : "text-muted-foreground hover:bg-background/50 hover:text-foreground focus-visible:bg-background/50"
+                ? "bg-card text-foreground"
+                : "text-muted-foreground hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50"
             )}
           >
             {/* Active rail — mirrors the tree's left rail across the top of the tab. */}

@@ -75,15 +75,18 @@ export function defineMonacoTheme(monaco: typeof Monaco): string {
   const accent = tokenHex("--accent", "#dddddd")
   const border = tokenHex("--border", "#e5e5e5")
   const primary = tokenHex("--primary", foreground)
+  // The editor rides on the `--card` surface (one step off the canvas) so the
+  // editing pane reads as a distinct panel instead of blending into the shell.
+  const card = tokenHex("--card", background)
 
-  const isDark = luminance(background) < 0.5
+  const isDark = luminance(card) < 0.5
 
   monaco.editor.defineTheme(MONACO_THEME_NAME, {
     base: isDark ? "vs-dark" : "vs",
     inherit: true,
-    rules: [{ token: "", foreground: foreground.slice(1), background: background.slice(1) }],
+    rules: [{ token: "", foreground: foreground.slice(1), background: card.slice(1) }],
     colors: {
-      "editor.background": background,
+      "editor.background": card,
       "editor.foreground": foreground,
       "editorLineNumber.foreground": muted,
       "editorLineNumber.activeForeground": foreground,
@@ -94,11 +97,11 @@ export function defineMonacoTheme(monaco: typeof Monaco): string {
       "editorIndentGuide.background": border,
       "editorIndentGuide.activeBackground": muted,
       "editorWhitespace.foreground": border,
-      "editorGutter.background": background,
-      "editorWidget.background": background,
+      "editorGutter.background": card,
+      "editorWidget.background": card,
       "editorWidget.border": border,
-      "input.background": background,
-      "dropdown.background": background,
+      "input.background": card,
+      "dropdown.background": card,
     },
   })
 
