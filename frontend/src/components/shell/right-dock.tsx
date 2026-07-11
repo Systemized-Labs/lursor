@@ -75,9 +75,9 @@ export function RightDock({
   onCollapse,
 }: RightDockProps) {
   return (
-    <div className="flex-1 flex flex-col min-h-0 border-l border-border/60 bg-background">
+    <div className="flex-1 flex flex-col min-h-0 bg-background">
       {/* Tab strip */}
-      <div className="flex items-center gap-1 border-b border-border/60 px-1.5 h-9 shrink-0">
+      <div className="flex items-center gap-1 border-b border-border/40 px-1.5 h-9 shrink-0">
         <div className="flex-1 flex items-center gap-0.5 overflow-x-auto">
           {tabs.map((t) => {
             const Icon = TAB_META[t.kind].icon

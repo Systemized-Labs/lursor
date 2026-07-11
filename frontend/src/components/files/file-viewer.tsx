@@ -315,7 +315,7 @@ function TabStrip({ files, activePath, onActivate, onClose }: TabStripProps) {
   }, [activePath])
 
   return (
-    <div className="no-scrollbar flex h-9 min-w-0 shrink-0 items-stretch overflow-x-auto border-b border-border/60 bg-muted/30">
+    <div className="no-scrollbar flex h-9 min-w-0 shrink-0 items-stretch overflow-x-auto border-b border-border/40 bg-muted/30">
       {files.map((f) => {
         const isActive = f.path === activePath
         const { Icon: Glyph } = fileKind(f.name)
@@ -433,7 +433,7 @@ function EditorBody({
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {file.conflict !== undefined && (
-        <div className="flex items-center gap-2 border-b border-border/60 bg-accent/40 px-3 py-1.5 text-xs text-foreground">
+        <div className="flex items-center gap-2 border-b border-border/40 bg-accent/40 px-3 py-1.5 text-xs text-foreground">
           <Warning className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="flex-1">
             This file changed on disk while you had unsaved edits.
@@ -454,7 +454,7 @@ function EditorBody({
           </button>
         </div>
       )}
-      <div className="flex h-8 min-w-0 shrink-0 items-center justify-between gap-3 border-b border-border/60 pl-3 pr-2">
+      <div className="flex h-8 min-w-0 shrink-0 items-center justify-between gap-3 border-b border-border/40 pl-3 pr-2">
         <Breadcrumb path={file.path} name={file.name} />
         <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
           <span className="hidden font-mono uppercase tracking-wide sm:inline">

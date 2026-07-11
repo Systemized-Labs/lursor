@@ -190,9 +190,9 @@ export function WorkspaceChatPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-card">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {/* Header */}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-card/60 px-3 backdrop-blur-sm">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/40 bg-background/70 px-3 backdrop-blur-sm">
         <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
           <span className="truncate text-[13px] font-medium text-foreground">
             {currentThread?.title ?? "New conversation"}

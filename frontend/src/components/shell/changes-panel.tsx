@@ -60,7 +60,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {/* Source / branch header */}
-      <div className="flex items-center gap-2 border-b border-border/60 px-2 h-9 shrink-0">
+      <div className="flex items-center gap-2 border-b border-border/40 px-2 h-9 shrink-0">
         <span className="flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-0.5 text-xs text-foreground">
           <Devices className="h-3.5 w-3.5" />
           Local
@@ -81,7 +81,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
       </div>
 
       {/* Summary row */}
-      <div className="flex items-center gap-2 border-b border-border/60 px-3 h-8 shrink-0">
+      <div className="flex items-center gap-2 border-b border-border/40 px-3 h-8 shrink-0">
         <span className="text-xs font-medium text-foreground">Working Changes</span>
         {data && data.is_repo && (
           <span className="ml-auto flex items-center gap-2 font-mono text-xs">

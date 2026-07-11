@@ -14,7 +14,7 @@ interface DockRailProps {
  */
 export function DockRail({ onOpen }: DockRailProps) {
   return (
-    <div className="flex w-9 shrink-0 flex-col items-center border-l border-border/60 bg-background py-2">
+    <div className="flex w-9 shrink-0 flex-col items-center border-l border-border/40 bg-background py-2">
       <button
         type="button"
         onClick={onOpen}

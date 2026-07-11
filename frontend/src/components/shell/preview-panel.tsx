@@ -113,7 +113,7 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {/* Address bar */}
-      <div className="flex items-center gap-1 border-b border-border/60 px-1.5 h-9 shrink-0">
+      <div className="flex items-center gap-1 border-b border-border/40 px-1.5 h-9 shrink-0">
         <button
           type="button"
           onClick={reload}
