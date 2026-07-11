@@ -15,6 +15,7 @@ import { toast } from "sonner"
 import { filesApi } from "@/api/files"
 import type { FileChange } from "@/api/files"
 import { useFileWatch } from "@/hooks/use-file-watch"
+import { consumePendingFile, subscribeOpenFile } from "@/lib/open-file"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -117,6 +118,18 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
     },
     [workspaceId, patch]
   )
+
+  // Open files requested from elsewhere (e.g. the global command palette). We
+  // consume a pending request on mount and whenever a new one is parked, so a
+  // freshly-opened file tab or an already-open viewer both react.
+  useEffect(() => {
+    const tryOpen = () => {
+      const request = consumePendingFile(workspaceId)
+      if (request) void openFile(request.path, request.name)
+    }
+    tryOpen()
+    return subscribeOpenFile(tryOpen)
+  }, [workspaceId, openFile])
 
   const closeFile = useCallback((path: string) => {
     setOpenFiles((prev) => {

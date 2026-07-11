@@ -4,12 +4,10 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
-  Copy,
   GitBranch,
   MonitorSmartphone,
   RefreshCw,
 } from "lucide-react"
-import { toast } from "sonner"
 
 import { fileKind } from "@/components/files/file-icon"
 import { useGitDiff, gitKeys, type ChangedFile } from "@/api/git"
@@ -144,16 +142,6 @@ function FileDiff({ file }: { file: ChangedFile }) {
   const { Icon } = fileKind(file.path)
   const status = STATUS_META[file.status]
 
-  const copy = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    try {
-      await navigator.clipboard.writeText(file.diff || file.path)
-      toast.success("Copied to clipboard")
-    } catch {
-      toast.error("Could not copy")
-    }
-  }
-
   return (
     <div className="border-b border-border/40">
       <div
@@ -183,15 +171,6 @@ function FileDiff({ file }: { file: ChangedFile }) {
             <span className="text-destructive">-{file.deletions}</span>
           )}
         </span>
-        <button
-          type="button"
-          onClick={copy}
-          title="Copy diff"
-          aria-label="Copy diff"
-          className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-background/60 hover:text-foreground group-hover:opacity-100"
-        >
-          <Copy className="h-3 w-3" />
-        </button>
         {status && (
           <span className={cn("shrink-0 text-xs", status.className)}>
             {status.label}

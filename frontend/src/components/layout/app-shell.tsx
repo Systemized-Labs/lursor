@@ -1,6 +1,8 @@
+import { useEffect, useRef, useState } from "react"
 import { Outlet, useLocation } from "react-router-dom"
 
 import { AppSidebar } from "@/components/layout/app-sidebar"
+import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
 import { DockRail } from "@/components/shell/dock-rail"
 import { RightDock } from "@/components/shell/right-dock"
 import {
@@ -15,6 +17,11 @@ import {
 } from "@/components/ui/sidebar"
 import { useDockState } from "@/hooks/use-dock-state"
 import { useIsMobile } from "@/hooks/use-mobile"
+import {
+  peekPendingFile,
+  subscribeOpenFile,
+  type OpenFileRequest,
+} from "@/lib/open-file"
 
 /**
  * The persistent app shell: a Cursor-style collapsible sidebar, the routed
@@ -33,6 +40,22 @@ export function AppShell() {
   const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
   const dock = useDockState(workspaceId)
   const dockVisible = !isMobile && !dock.collapsed
+
+  // Global "open this file" requests (from the command palette) land here: once
+  // we're on the target workspace, reveal the dock and ensure a file tab so the
+  // editor mounts and can pick the request up.
+  const [openFileTick, setOpenFileTick] = useState(0)
+  const handledPendingRef = useRef<OpenFileRequest | null>(null)
+  useEffect(() => subscribeOpenFile(() => setOpenFileTick((t) => t + 1)), [])
+  useEffect(() => {
+    const pending = peekPendingFile()
+    if (!pending || pending.workspaceId !== workspaceId) return
+    // Guard by request identity so re-renders don't spawn duplicate file tabs.
+    if (handledPendingRef.current === pending) return
+    handledPendingRef.current = pending
+    dock.setCollapsed(false)
+    if (!dock.tabs.some((t) => t.kind === "file")) dock.openTab("file")
+  }, [openFileTick, workspaceId, dock])
 
   // Full-bleed surfaces (e.g. a chat thread) manage their own scroll and fill
   // the panel edge to edge; everything else keeps the padded, centered column.
@@ -56,6 +79,7 @@ export function AppShell() {
 
   return (
     <SidebarProvider>
+      <CommandPaletteProvider>
       <AppSidebar />
       {/* `min-w-0` lets this flex child shrink below its content's intrinsic
           width; without it, widening the dock grows the whole inset past the
@@ -115,6 +139,7 @@ export function AppShell() {
           )}
         </div>
       </SidebarInset>
+      </CommandPaletteProvider>
     </SidebarProvider>
   )
 }

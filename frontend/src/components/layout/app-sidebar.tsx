@@ -8,6 +8,7 @@ import {
   Palette,
   Pencil,
   Plus,
+  Search,
   Settings,
   SlidersHorizontal,
   Trash2,
@@ -78,6 +79,7 @@ import { Input } from "@/components/ui/input"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ThemePicker } from "@/components/ui/theme-picker"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
+import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { cn } from "@/lib/utils"
 
 interface NavItem {
@@ -114,6 +116,7 @@ export function AppSidebar() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { isMobile, setOpenMobile } = useSidebar()
+  const { open: openCommandPalette } = useCommandPalette()
   const qc = useQueryClient()
 
   const workspacesQuery = useWorkspaces()
@@ -271,6 +274,22 @@ export function AppSidebar() {
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip="Search"
+                  onClick={() => {
+                    openCommandPalette()
+                    closeMobile()
+                  }}
+                  className="group/search"
+                >
+                  <Search className="size-4" />
+                  <span className="flex-1">Search</span>
+                  <kbd className="ml-auto text-[10px] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/search:opacity-100 group-data-[collapsible=icon]:hidden">
+                    ⌘K
+                  </kbd>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
               {navItems.map((item) => (
                 <SidebarMenuItem key={item.to}>
                   <SidebarMenuButton
