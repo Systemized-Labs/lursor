@@ -4,11 +4,25 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.db.models import Agent, Skill, Tool
+from app.agents.prompt_author import generate_prompt, improve_prompt
+from app.db.models import Agent, CustomProvider, Skill, Tool
 from app.db.session import get_session
-from app.schemas.agent import AgentCreate, AgentRead, AgentUpdate
+from app.schemas.agent import (
+    AgentCreate,
+    AgentRead,
+    AgentUpdate,
+    PromptGenerateRequest,
+    PromptImproveRequest,
+    PromptResult,
+)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+async def _load_custom_providers(session: AsyncSession) -> dict[str, CustomProvider]:
+    """Map provider id → row, so a ``custom:`` model resolves the same way as chat."""
+    providers = (await session.execute(select(CustomProvider))).scalars().all()
+    return {p.id: p for p in providers}
 
 
 async def _resolve(session: AsyncSession, model, ids: list[str]) -> list:
@@ -44,6 +58,32 @@ async def create_agent(payload: AgentCreate, session: AsyncSession = Depends(get
     session.add(agent)
     await session.commit()
     return AgentRead.from_agent(agent)
+
+
+@router.post("/prompt/generate", response_model=PromptResult)
+async def generate_agent_prompt(
+    payload: PromptGenerateRequest, session: AsyncSession = Depends(get_session)
+):
+    """Draft a system prompt from a short brief + the agent's capabilities."""
+    if not payload.brief.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Brief is required")
+    providers = await _load_custom_providers(session)
+    instructions = await generate_prompt(payload.brief, payload.context, providers)
+    return PromptResult(instructions=instructions)
+
+
+@router.post("/prompt/improve", response_model=PromptResult)
+async def improve_agent_prompt(
+    payload: PromptImproveRequest, session: AsyncSession = Depends(get_session)
+):
+    """Rewrite an existing system prompt, tightened and capability-aware."""
+    if not payload.current.strip():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "There is no prompt to improve yet"
+        )
+    providers = await _load_custom_providers(session)
+    instructions = await improve_prompt(payload.current, payload.context, providers)
+    return PromptResult(instructions=instructions)
 
 
 @router.get("/{agent_id}", response_model=AgentRead)

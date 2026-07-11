@@ -13,6 +13,7 @@ from app.api import (
     files,
     github,
     models,
+    prompt_templates,
     providers,
     skills,
     terminal,
@@ -58,6 +59,7 @@ async def health() -> dict[str, str]:
 for module in (
     agents,
     skills,
+    prompt_templates,
     tools,
     providers,
     workspaces,

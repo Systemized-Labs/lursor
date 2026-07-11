@@ -5,7 +5,18 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.agents.prompt_author import AgentPromptContext
 from app.db.models import Agent, ThinkingLevel
+
+__all__ = [
+    "AgentCreate",
+    "AgentUpdate",
+    "AgentRead",
+    "AgentPromptContext",
+    "PromptGenerateRequest",
+    "PromptImproveRequest",
+    "PromptResult",
+]
 
 
 class AgentCreate(BaseModel):
@@ -40,6 +51,20 @@ class AgentUpdate(BaseModel):
     extra_config: dict[str, Any] | None = None
     skill_ids: list[str] | None = None
     tool_ids: list[str] | None = None
+
+
+class PromptGenerateRequest(BaseModel):
+    brief: str
+    context: AgentPromptContext = AgentPromptContext()
+
+
+class PromptImproveRequest(BaseModel):
+    current: str
+    context: AgentPromptContext = AgentPromptContext()
+
+
+class PromptResult(BaseModel):
+    instructions: str
 
 
 class AgentRead(BaseModel):

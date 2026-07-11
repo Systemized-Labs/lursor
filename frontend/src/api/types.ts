@@ -52,6 +52,54 @@ export interface SkillInput {
   content: string
 }
 
+export interface PromptTemplate {
+  id: string
+  name: string
+  description: string
+  category: string
+  content: string
+  is_builtin: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface PromptTemplateInput {
+  name: string
+  description: string
+  category: string
+  content: string
+}
+
+/** Capability subset sent to the prompt generator so output is capability-aware. */
+export interface AgentPromptContext {
+  name: string
+  description: string
+  include_todo: boolean
+  include_subagents: boolean
+  include_skills: boolean
+  include_memory: boolean
+  include_plan: boolean
+  web_search: boolean
+  thinking: ThinkingLevel
+  skill_names: string[]
+  tool_names: string[]
+  model: string | null
+}
+
+export interface PromptGenerateRequest {
+  brief: string
+  context: AgentPromptContext
+}
+
+export interface PromptImproveRequest {
+  current: string
+  context: AgentPromptContext
+}
+
+export interface PromptResult {
+  instructions: string
+}
+
 export type ToolKind = "builtin" | "mcp" | "http"
 
 export interface Tool {

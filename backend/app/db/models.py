@@ -81,6 +81,25 @@ class Skill(TimestampMixin, table=True):
     )
 
 
+class PromptTemplate(TimestampMixin, table=True):
+    """A reusable system-prompt template, applied by copying into ``Agent.instructions``.
+
+    Unlike :class:`Skill`, a template is not linked to agents — it is a starting
+    point that gets copied into an agent's instructions, so the agent stays
+    self-contained and freely editable afterwards. ``is_builtin`` marks the
+    curated set seeded from ``scripts/seed.py`` (read-only in the UI; users
+    duplicate one to customize it).
+    """
+
+    __tablename__ = "prompt_templates"
+
+    name: str = Field(index=True)
+    description: str = ""
+    category: str = Field(default="general", index=True)
+    content: str = ""  # the system-prompt body
+    is_builtin: bool = Field(default=False, index=True)
+
+
 class Tool(TimestampMixin, table=True):
     """A capability the agent can call: a builtin, an MCP server, or an HTTP tool."""
 

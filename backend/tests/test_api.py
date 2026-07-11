@@ -169,3 +169,55 @@ async def test_build_deep_agent_offline(client: AsyncClient):
     agent, deps = build_deep_agent(row, _tmp)
     assert agent is not None
     assert deps is not None
+
+
+async def test_prompt_template_crud_and_builtin_protection(client: AsyncClient):
+    """User templates are full CRUD; built-ins are read-only (403 on edit/delete)."""
+    # Create a user template.
+    r = await client.post(
+        "/prompt-templates",
+        json={
+            "name": "My template",
+            "description": "d",
+            "category": "coding",
+            "content": "You are...",
+        },
+    )
+    assert r.status_code == 201, r.text
+    tmpl = r.json()
+    assert tmpl["is_builtin"] is False
+    assert tmpl["category"] == "coding"
+
+    # Update + delete work for user templates.
+    r = await client.patch(f"/prompt-templates/{tmpl['id']}", json={"name": "Renamed"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Renamed"
+
+    # A built-in row is read-only: seed one directly and confirm 403s.
+    from app.db.models import PromptTemplate
+    from app.db.session import async_session_factory
+
+    async with async_session_factory() as session:
+        builtin = PromptTemplate(name="Builtin", content="x", is_builtin=True)
+        session.add(builtin)
+        await session.commit()
+        await session.refresh(builtin)
+        builtin_id = builtin.id
+
+    assert (
+        await client.patch(f"/prompt-templates/{builtin_id}", json={"name": "z"})
+    ).status_code == 403
+    assert (await client.delete(f"/prompt-templates/{builtin_id}")).status_code == 403
+
+    # User template still deletable.
+    assert (await client.delete(f"/prompt-templates/{tmpl['id']}")).status_code == 204
+
+
+async def test_prompt_generation_validation(client: AsyncClient):
+    """Generate/improve reject empty input before any model call."""
+    assert (
+        await client.post("/agents/prompt/generate", json={"brief": "   "})
+    ).status_code == 400
+    assert (
+        await client.post("/agents/prompt/improve", json={"current": ""})
+    ).status_code == 400

@@ -5,7 +5,13 @@ import {
 } from "@tanstack/react-query"
 
 import { api } from "./client"
-import type { Agent, AgentInput } from "./types"
+import type {
+  Agent,
+  AgentInput,
+  PromptGenerateRequest,
+  PromptImproveRequest,
+  PromptResult,
+} from "./types"
 
 export const agentsApi = {
   list: (signal?: AbortSignal) => api.get<Agent[]>("/agents", signal),
@@ -15,6 +21,10 @@ export const agentsApi = {
   update: (id: string, input: Partial<AgentInput>) =>
     api.patch<Agent>(`/agents/${id}`, input),
   remove: (id: string) => api.delete<void>(`/agents/${id}`),
+  generatePrompt: (input: PromptGenerateRequest) =>
+    api.post<PromptResult>("/agents/prompt/generate", input),
+  improvePrompt: (input: PromptImproveRequest) =>
+    api.post<PromptResult>("/agents/prompt/improve", input),
 }
 
 export const agentKeys = {
@@ -59,5 +69,17 @@ export function useDeleteAgent() {
   return useMutation({
     mutationFn: (id: string) => agentsApi.remove(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: agentKeys.all }),
+  })
+}
+
+export function useGeneratePrompt() {
+  return useMutation({
+    mutationFn: (input: PromptGenerateRequest) => agentsApi.generatePrompt(input),
+  })
+}
+
+export function useImprovePrompt() {
+  return useMutation({
+    mutationFn: (input: PromptImproveRequest) => agentsApi.improvePrompt(input),
   })
 }

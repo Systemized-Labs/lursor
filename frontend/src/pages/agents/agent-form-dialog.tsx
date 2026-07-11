@@ -1,10 +1,23 @@
+import { FileText, Sparkles, Wand2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
-import type { Agent, AgentInput, ThinkingLevel } from "@/api/types"
-import { useCreateAgent, useUpdateAgent } from "@/api/agents"
+import type {
+  Agent,
+  AgentInput,
+  AgentPromptContext,
+  ThinkingLevel,
+} from "@/api/types"
+import {
+  useCreateAgent,
+  useGeneratePrompt,
+  useImprovePrompt,
+  useUpdateAgent,
+} from "@/api/agents"
+import { usePromptTemplates } from "@/api/prompt-templates"
 import { useSkills } from "@/api/skills"
 import { useTools } from "@/api/tools"
+import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -19,7 +32,9 @@ import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -116,15 +131,40 @@ export function AgentFormDialog({
   const [form, setForm] = useState<FormState>(emptyState)
   const skillsQuery = useSkills()
   const toolsQuery = useTools()
+  const templatesQuery = usePromptTemplates()
   const createAgent = useCreateAgent()
   const updateAgent = useUpdateAgent()
+  const generatePrompt = useGeneratePrompt()
+  const improvePrompt = useImprovePrompt()
+
+  // Prompt-authoring UI state: an inline brief box, and a pending destructive
+  // replace guarded by a confirm dialog when the field already has content.
+  const [briefOpen, setBriefOpen] = useState(false)
+  const [brief, setBrief] = useState("")
+  const [pendingInstructions, setPendingInstructions] = useState<string | null>(
+    null
+  )
 
   const isEdit = Boolean(agent)
   const isSaving = createAgent.isPending || updateAgent.isPending
+  const isAuthoring = generatePrompt.isPending || improvePrompt.isPending
+
+  const templateGroups = useMemo(() => {
+    const byCategory = new Map<string, { id: string; name: string }[]>()
+    for (const t of templatesQuery.data ?? []) {
+      const list = byCategory.get(t.category) ?? []
+      list.push({ id: t.id, name: t.name })
+      byCategory.set(t.category, list)
+    }
+    return [...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b))
+  }, [templatesQuery.data])
 
   useEffect(() => {
     if (open) {
       setForm(agent ? fromAgent(agent) : emptyState())
+      setBriefOpen(false)
+      setBrief("")
+      setPendingInstructions(null)
     }
   }, [open, agent])
 
@@ -149,6 +189,85 @@ export function AgentFormDialog({
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  /** Snapshot the current form as the capability context for prompt authoring. */
+  function buildPromptContext(): AgentPromptContext {
+    const namesFor = (
+      rows: { id: string; name: string }[] | undefined,
+      ids: string[]
+    ) => (rows ?? []).filter((row) => ids.includes(row.id)).map((row) => row.name)
+    return {
+      name: form.name.trim(),
+      description: form.description.trim(),
+      include_todo: form.include_todo,
+      include_subagents: form.include_subagents,
+      include_skills: form.include_skills,
+      include_memory: form.include_memory,
+      include_plan: form.include_plan,
+      web_search: form.web_search,
+      thinking: form.thinking,
+      skill_names: namesFor(skillsQuery.data, form.skill_ids),
+      tool_names: namesFor(toolsQuery.data, form.tool_ids),
+      model: form.model.trim() ? form.model.trim() : null,
+    }
+  }
+
+  /** Set instructions, confirming first when there is content to overwrite. */
+  function applyInstructions(next: string) {
+    if (form.instructions.trim()) {
+      setPendingInstructions(next)
+    } else {
+      update("instructions", next)
+    }
+  }
+
+  function handlePickTemplate(templateId: string) {
+    const template = (templatesQuery.data ?? []).find(
+      (t) => t.id === templateId
+    )
+    if (template) applyInstructions(template.content)
+  }
+
+  async function handleGenerate() {
+    if (!brief.trim()) {
+      toast.error("Describe the agent you want first")
+      return
+    }
+    try {
+      const result = await generatePrompt.mutateAsync({
+        brief: brief.trim(),
+        context: buildPromptContext(),
+      })
+      applyInstructions(result.instructions)
+      setBriefOpen(false)
+      setBrief("")
+      toast.success("Prompt generated")
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to generate prompt"
+      )
+    }
+  }
+
+  async function handleImprove() {
+    if (!form.instructions.trim()) {
+      toast.error("Write or pick a prompt to improve first")
+      return
+    }
+    try {
+      const result = await improvePrompt.mutateAsync({
+        current: form.instructions,
+        context: buildPromptContext(),
+      })
+      // Improve is derived from the current text, so replace in place.
+      update("instructions", result.instructions)
+      toast.success("Prompt improved")
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to improve prompt"
+      )
+    }
   }
 
   async function handleSubmit() {
@@ -203,6 +322,7 @@ export function AgentFormDialog({
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
@@ -265,14 +385,103 @@ export function AgentFormDialog({
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="agent-instructions">Instructions</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="agent-instructions">Instructions</Label>
+              <span className="text-xs text-muted-foreground">
+                The agent's system prompt
+              </span>
+            </div>
             <Textarea
               id="agent-instructions"
               value={form.instructions}
               onChange={(e) => update("instructions", e.target.value)}
               placeholder="System instructions for the agent"
-              className="min-h-[120px]"
+              className="min-h-[160px]"
             />
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value="" onValueChange={handlePickTemplate}>
+                <SelectTrigger className="h-8 w-auto gap-1.5 text-xs">
+                  <FileText className="h-3.5 w-3.5" />
+                  <SelectValue placeholder="Start from a template" />
+                </SelectTrigger>
+                <SelectContent>
+                  {templateGroups.length === 0 ? (
+                    <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                      No templates yet
+                    </div>
+                  ) : (
+                    templateGroups.map(([category, items]) => (
+                      <SelectGroup key={category}>
+                        <SelectLabel className="capitalize">
+                          {category}
+                        </SelectLabel>
+                        {items.map((t) => (
+                          <SelectItem key={t.id} value={t.id}>
+                            {t.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={() => setBriefOpen((prev) => !prev)}
+                disabled={isAuthoring}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                Generate
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={handleImprove}
+                disabled={isAuthoring || !form.instructions.trim()}
+              >
+                <Wand2 className="h-3.5 w-3.5" />
+                {improvePrompt.isPending ? "Improving…" : "Improve current"}
+              </Button>
+            </div>
+
+            {briefOpen ? (
+              <div className="grid gap-2 rounded-md border p-3">
+                <Label htmlFor="agent-brief" className="text-xs">
+                  Describe the agent you want, and AI will draft a prompt using
+                  the capabilities enabled below.
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="agent-brief"
+                    value={brief}
+                    onChange={(e) => setBrief(e.target.value)}
+                    placeholder="a friendly support agent for a SaaS billing product"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        void handleGenerate()
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleGenerate}
+                    disabled={generatePrompt.isPending || !brief.trim()}
+                  >
+                    {generatePrompt.isPending ? "Generating…" : "Generate"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="grid gap-3 rounded-md border p-4">
@@ -343,5 +552,20 @@ export function AgentFormDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <ConfirmDialog
+      open={pendingInstructions !== null}
+      onOpenChange={(open) => !open && setPendingInstructions(null)}
+      title="Replace instructions?"
+      description="This will overwrite the current instructions. This can't be undone."
+      confirmLabel="Replace"
+      onConfirm={() => {
+        if (pendingInstructions !== null) {
+          update("instructions", pendingInstructions)
+        }
+        setPendingInstructions(null)
+      }}
+    />
+    </>
   )
 }

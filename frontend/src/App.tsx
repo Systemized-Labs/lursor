@@ -50,6 +50,10 @@ function App() {
           element={<Navigate to="/customization?tab=agents" replace />}
         />
         <Route
+          path="prompts"
+          element={<Navigate to="/customization?tab=prompts" replace />}
+        />
+        <Route
           path="skills"
           element={<Navigate to="/customization?tab=skills" replace />}
         />
