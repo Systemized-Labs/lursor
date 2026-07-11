@@ -161,6 +161,12 @@ export interface ThreadMessageToolCall {
   arguments: string
 }
 
+export interface ThreadMessageAttachment {
+  media_id: string
+  mime_type: string
+  filename: string | null
+}
+
 export interface ThreadMessage {
   id: string
   thread_id: string
@@ -169,6 +175,7 @@ export interface ThreadMessage {
   // Backend persists this as an opaque JSON object (default `{}`); it is only
   // an array once real tool-call payloads are stored. Callers must narrow.
   tool_calls: ThreadMessageToolCall[] | Record<string, unknown> | null
+  attachments?: ThreadMessageAttachment[]
   created_at: string
 }
 

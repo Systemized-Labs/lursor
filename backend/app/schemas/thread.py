@@ -30,12 +30,21 @@ class ThreadRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MessageAttachment(BaseModel):
+    """A reference to media stored on disk (see app.media_store)."""
+
+    media_id: str
+    mime_type: str
+    filename: str | None = None
+
+
 class MessageRead(BaseModel):
     id: str
     thread_id: str
     role: str
     content: str
     tool_calls: dict[str, Any]
+    attachments: list[MessageAttachment] = []
     created_at: datetime
 
     model_config = {"from_attributes": True}

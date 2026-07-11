@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
@@ -29,6 +30,25 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+        await _apply_lightweight_migrations(conn)
+
+
+async def _apply_lightweight_migrations(conn) -> None:
+    """Add columns that ``create_all`` can't retrofit onto existing tables.
+
+    ``create_all`` only creates missing tables, never alters existing ones, so a
+    column added to a model after a table already exists needs an explicit
+    ``ADD COLUMN``. Kept idempotent (checked against ``PRAGMA table_info``) until
+    the schema graduates to Alembic.
+    """
+    cols = {
+        row[1]
+        for row in (await conn.exec_driver_sql("PRAGMA table_info(messages)")).all()
+    }
+    if "attachments" not in cols:
+        await conn.execute(
+            text("ALTER TABLE messages ADD COLUMN attachments JSON DEFAULT '[]'")
+        )
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

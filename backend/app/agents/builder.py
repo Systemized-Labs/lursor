@@ -17,6 +17,7 @@ from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 from pydantic_deep import Skill as DeepSkill
 
 from app.agents.tolerant_model import TolerantOpenAIChatModel
+from app.agents.vision import make_view_image_tool
 from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider
@@ -118,10 +119,17 @@ def build_deep_agent(
         {} if "subagents" in extra_config else {"subagents": subagent_configs or None}
     )
 
+    # view_image is always available so any agent can inspect user-attached
+    # media (and workspace images) via the dedicated vision model, regardless of
+    # whether its own chat model supports image input.
+    tools = list(extra_config.pop("tools", []) or [])
+    tools.append(make_view_image_tool(workspace_path))
+
     agent = create_deep_agent(
         model=resolve_model(row.model or settings.default_model, custom_providers or {}),
         instructions=row.instructions or None,
         backend=backend,
+        tools=tools,
         skills=skills or None,
         include_todo=row.include_todo,
         include_subagents=row.include_subagents,

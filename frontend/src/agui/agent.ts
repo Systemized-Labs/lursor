@@ -18,6 +18,11 @@ export function streamUrl(threadId: string): string {
   return `${API_BASE}/threads/${threadId}/stream`
 }
 
+/** URL that serves a persisted attachment's bytes for a thread. */
+export function mediaUrl(threadId: string, mediaId: string): string {
+  return `${API_BASE}/threads/${threadId}/media/${mediaId}`
+}
+
 /**
  * Creates an AG-UI `HttpAgent` bound to a thread's chat endpoint. Keeping this
  * isolated makes the streaming transport swappable behind `useChat`.

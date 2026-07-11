@@ -4,7 +4,7 @@ import { HttpAgent, type Message, randomUUID } from "@ag-ui/client"
 import type { Thread, ThreadMessage } from "@/api/types"
 import { threadsApi } from "@/api/threads"
 
-import { createThreadAgent } from "./agent"
+import { createThreadAgent, mediaUrl } from "./agent"
 import {
   addToolCall,
   finishStreaming,
@@ -14,10 +14,14 @@ import {
   upsertAssistant,
 } from "./reducer"
 import { consumeThreadStream, type ChatEventHandlers } from "./stream-reader"
-import type { ChatMessage } from "./types"
+import type { ChatMessage, PendingAttachment } from "./types"
 
-/** Maps persisted thread messages into the UI message shape. */
-export function toChatMessages(messages: ThreadMessage[]): ChatMessage[] {
+/** Maps persisted thread messages into the UI message shape. Attachments are
+ *  resolved to server media URLs scoped to the thread they belong to. */
+export function toChatMessages(
+  messages: ThreadMessage[],
+  threadId: string
+): ChatMessage[] {
   return messages.map((m) => ({
     id: m.id,
     role: m.role,
@@ -26,7 +30,40 @@ export function toChatMessages(messages: ThreadMessage[]): ChatMessage[] {
     toolCalls: Array.isArray(m.tool_calls)
       ? m.tool_calls.map((tc) => ({ id: tc.id, name: tc.name, args: tc.arguments }))
       : [],
+    attachments: m.attachments?.map((a) => ({
+      url: mediaUrl(threadId, a.media_id),
+      mimeType: a.mime_type,
+      name: a.filename ?? undefined,
+    })),
   }))
+}
+
+/** AG-UI multimodal content part shapes (subset we emit). */
+type AgUiContentPart =
+  | { type: "text"; text: string }
+  | {
+      type: "image"
+      source: { type: "data"; value: string; mimeType: string }
+      metadata?: { filename?: string }
+    }
+
+/** Builds the AG-UI user-message content: a plain string when there are no
+ *  attachments, otherwise a parts array carrying the inline images. */
+function buildUserContent(
+  text: string,
+  attachments: PendingAttachment[]
+): string | AgUiContentPart[] {
+  if (attachments.length === 0) return text
+  const parts: AgUiContentPart[] = []
+  if (text) parts.push({ type: "text", text })
+  for (const a of attachments) {
+    parts.push({
+      type: "image",
+      source: { type: "data", value: a.base64, mimeType: a.mimeType },
+      metadata: { filename: a.name },
+    })
+  }
+  return parts
 }
 
 /** Maps UI messages to AG-UI history (tool-role turns are UI-only). */
@@ -57,7 +94,7 @@ export interface UseChat {
   messages: ChatMessage[]
   isStreaming: boolean
   error: string | null
-  send: (text: string) => Promise<void>
+  send: (text: string, attachments?: PendingAttachment[]) => Promise<void>
   stop: () => void
   loadConversation: (threadId: string) => Promise<void>
   startNewConversation: () => void
@@ -193,7 +230,7 @@ export function useChat(options: UseChatOptions): UseChat {
       try {
         const persisted = await threadsApi.messages(threadId)
         if (loadSeq.current !== seq) return // superseded by a newer open
-        setMessages(toChatMessages(persisted))
+        setMessages(toChatMessages(persisted, threadId))
       } catch (err) {
         if (loadSeq.current !== seq) return
         setError(err instanceof Error ? err.message : "Failed to load conversation")
@@ -222,9 +259,9 @@ export function useChat(options: UseChatOptions): UseChat {
   }, [abortLocalStreams])
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments: PendingAttachment[] = []) => {
       const trimmed = text.trim()
-      if (!trimmed || isStreamingRef.current) return
+      if ((!trimmed && attachments.length === 0) || isStreamingRef.current) return
       const { workspaceId, agentId } = optionsRef.current
       if (!workspaceId || !agentId) {
         setError("Pick an agent before sending a message.")
@@ -268,9 +305,18 @@ export function useChat(options: UseChatOptions): UseChat {
         role: "user",
         content: trimmed,
         toolCalls: [],
+        attachments: attachments.map((a) => ({
+          url: a.dataUrl,
+          mimeType: a.mimeType,
+          name: a.name,
+        })),
       }
       setMessages((prev) => [...prev, userMessage])
-      agent.addMessage({ id: userMessage.id, role: "user", content: trimmed })
+      agent.addMessage({
+        id: userMessage.id,
+        role: "user",
+        content: buildUserContent(trimmed, attachments),
+      } as Message)
 
       currentAssistantId.current = null
       setIsStreaming(true)

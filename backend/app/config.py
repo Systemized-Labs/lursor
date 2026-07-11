@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     # Base URL for OpenRouter's REST API; "/models" is appended to list models.
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # --- Media / vision ---
+    # Where user-attached chat media (images) are stored, one subfolder per
+    # thread. Kept out of the DB so message rows stay small.
+    media_dir: Path = Path.home() / ".lursor" / "media"
+    # Vision-capable model the `view_image` tool calls (via OpenRouter) to answer
+    # questions about an image. Runs as an isolated one-shot sub-call so image
+    # bytes never enter a text-only agent's context, and lets any agent inspect
+    # images regardless of whether its own chat model supports image input. No
+    # "openrouter:" prefix — this hits OpenRouter's chat API directly.
+    vision_model: str = "google/gemini-2.5-flash-lite"
+
     # --- laios control plane ---
     # Used to auto-seed a "local" laios connection on startup when Lursor runs
     # alongside a daemon (the supervisor injects these). LAIOS_MASTER_KEY takes
@@ -59,6 +70,7 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         """Create on-disk directories the app relies on."""
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
+        self.media_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_env(self) -> None:
         """Export provider keys so Pydantic AI's model providers can read them."""

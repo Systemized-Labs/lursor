@@ -244,9 +244,40 @@ export function ChatMessageBubble({ message, renderIcons }: ChatMessageBubblePro
             </>
           )
         ) : (
-          <p className="whitespace-pre-wrap leading-relaxed break-words">
-            {renderIcons ? renderWithIcons(message.content, message.id) : message.content}
-          </p>
+          <>
+            {message.attachments && message.attachments.length > 0 && (
+              <div
+                className={cn(
+                  "flex flex-wrap gap-2",
+                  message.content !== "" && "mb-2"
+                )}
+              >
+                {message.attachments.map((att, i) => (
+                  <a
+                    key={`${att.url}-${i}`}
+                    href={att.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={att.name}
+                    className="block overflow-hidden rounded-lg border border-primary-foreground/20"
+                  >
+                    <img
+                      src={att.url}
+                      alt={att.name ?? "attachment"}
+                      className="max-h-48 max-w-[16rem] object-cover"
+                    />
+                  </a>
+                ))}
+              </div>
+            )}
+            {message.content !== "" && (
+              <p className="whitespace-pre-wrap leading-relaxed break-words">
+                {renderIcons
+                  ? renderWithIcons(message.content, message.id)
+                  : message.content}
+              </p>
+            )}
+          </>
         )}
       </div>
       {!isUser && actions}

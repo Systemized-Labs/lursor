@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.agents.chat_run_manager import chat_run_manager
 from app.db.models import Agent, Message, Thread, Workspace
 from app.db.session import get_session
+from app.media_store import MEDIA_ID_RE, media_path, mime_for_path
 from app.schemas.thread import MessageRead, ThreadCreate, ThreadRead, ThreadUpdate
 
 router = APIRouter(prefix="/threads", tags=["threads"])
@@ -83,6 +85,20 @@ async def list_messages(thread_id: str, session: AsyncSession = Depends(get_sess
         select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at)
     )
     return result.scalars().all()
+
+
+@router.get("/{thread_id}/media/{media_id}")
+async def get_media(thread_id: str, media_id: str) -> FileResponse:
+    """Serve a stored attachment inline. ``media_id`` is regex-checked so it
+    cannot escape the thread's media folder."""
+    if not MEDIA_ID_RE.match(media_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid media id")
+    path = media_path(thread_id, media_id)
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Media not found")
+    return FileResponse(
+        path, media_type=mime_for_path(path), headers={"Cache-Control": "max-age=31536000"}
+    )
 
 
 @router.delete("/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)

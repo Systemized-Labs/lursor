@@ -276,5 +276,8 @@ class Message(TimestampMixin, table=True):
     role: str  # "user" | "assistant" | "system" | "tool"
     content: str = ""
     tool_calls: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Media attached to this turn: list of {media_id, mime_type, filename}. The
+    # bytes live on disk (see app.media_store); this only holds references.
+    attachments: list = Field(default_factory=list, sa_column=Column(JSON))
 
     thread: Thread | None = Relationship(back_populates="messages")

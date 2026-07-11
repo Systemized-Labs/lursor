@@ -19,6 +19,7 @@ import {
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
+import type { PendingAttachment } from "@/agui/types"
 
 /**
  * The chat surface for a workspace. The conversation list lives in the left app
@@ -48,6 +49,7 @@ export function WorkspaceChatPage() {
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
   const [draft, setDraft] = useState("")
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
 
   const chat = useChat({
@@ -107,8 +109,10 @@ export function WorkspaceChatPage() {
 
   async function handleSend() {
     const text = draft
+    const atts = attachments
     setDraft("")
-    await chat.send(text)
+    setAttachments([])
+    await chat.send(text, atts)
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -246,6 +250,8 @@ export function WorkspaceChatPage() {
         onStop={chat.stop}
         isSending={chat.isStreaming}
         disabled={noAgents}
+        attachments={attachments}
+        onAttachmentsChange={setAttachments}
         mentionSources={mentionSources}
       />
     </div>
