@@ -151,6 +151,25 @@ class Agent(TimestampMixin, table=True):
     )
 
 
+class Subagent(TimestampMixin, table=True):
+    """A globally-defined subagent, delegatable by any agent with subagents on.
+
+    Rendered into a pydantic-deep ``SubAgentConfig`` at run time (see
+    ``agents/builder.py``) and offered to the parent agent's task tool as a
+    specialist it can hand work to. Unlike :class:`Skill`/:class:`Tool`, these
+    are not linked per-agent: the whole set applies globally so the harness
+    keeps one consistent roster of specialists. An agent only receives them
+    when its ``include_subagents`` flag is on.
+    """
+
+    __tablename__ = "subagents"
+
+    name: str = Field(index=True)
+    description: str = ""  # shown to the parent agent when choosing a specialist
+    instructions: str = ""  # the subagent's system prompt
+    model: str | None = None  # optional override; falls back to the parent's model
+
+
 class CustomProvider(TimestampMixin, table=True):
     """A user-added, locally-hosted OpenAI-compatible model endpoint.
 

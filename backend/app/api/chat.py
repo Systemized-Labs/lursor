@@ -26,7 +26,7 @@ from starlette.responses import StreamingResponse
 
 from app.agents.builder import build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
-from app.db.models import Agent, CustomProvider, Message, Thread, Workspace
+from app.db.models import Agent, CustomProvider, Message, Subagent, Thread, Workspace
 from app.db.session import async_session_factory, get_session
 
 router = APIRouter(prefix="/threads", tags=["chat"])
@@ -117,7 +117,12 @@ async def chat(
     # agent can be routed to the right base URL.
     providers = (await session.execute(select(CustomProvider))).scalars().all()
     custom_providers = {p.id: p for p in providers}
-    agent, deps = build_deep_agent(agent_row, workspace.path, custom_providers)
+    # Global subagent roster — the builder only applies it when the agent has
+    # include_subagents on.
+    subagents = list((await session.execute(select(Subagent))).scalars().all())
+    agent, deps = build_deep_agent(
+        agent_row, workspace.path, custom_providers, subagents
+    )
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.
     adapter = await AGUIAdapter.from_request(request, agent=agent)

@@ -52,6 +52,23 @@ export interface SkillInput {
   content: string
 }
 
+export interface Subagent {
+  id: string
+  name: string
+  description: string
+  instructions: string
+  model: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SubagentInput {
+  name: string
+  description: string
+  instructions: string
+  model: string | null
+}
+
 export interface PromptTemplate {
   id: string
   name: string

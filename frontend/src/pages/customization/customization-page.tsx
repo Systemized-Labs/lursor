@@ -5,9 +5,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AgentsPage } from "@/pages/agents/agents-page"
 import { PromptsPage } from "@/pages/prompts/prompts-page"
 import { SkillsPage } from "@/pages/skills/skills-page"
+import { SubagentsPage } from "@/pages/subagents/subagents-page"
 import { ToolsPage } from "@/pages/tools/tools-page"
 
-const TABS = ["agents", "prompts", "skills", "tools"] as const
+const TABS = ["agents", "prompts", "skills", "subagents", "tools"] as const
 type Tab = (typeof TABS)[number]
 
 function isTab(value: string | null): value is Tab {
@@ -47,6 +48,7 @@ export function CustomizationPage() {
           <TabsTrigger value="agents">Agents</TabsTrigger>
           <TabsTrigger value="prompts">Prompts</TabsTrigger>
           <TabsTrigger value="skills">Skills</TabsTrigger>
+          <TabsTrigger value="subagents">Subagents</TabsTrigger>
           <TabsTrigger value="tools">Tools</TabsTrigger>
         </TabsList>
 
@@ -58,6 +60,9 @@ export function CustomizationPage() {
         </TabsContent>
         <TabsContent value="skills">
           <SkillsPage embedded />
+        </TabsContent>
+        <TabsContent value="subagents">
+          <SubagentsPage embedded />
         </TabsContent>
         <TabsContent value="tools">
           <ToolsPage embedded />

@@ -20,6 +20,7 @@ from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider
+from app.db.models import Subagent as SubagentRow
 
 settings = get_settings()
 
@@ -70,6 +71,7 @@ def build_deep_agent(
     row: AgentRow,
     workspace_path: str | Path,
     custom_providers: dict[str, CustomProvider] | None = None,
+    subagents: list[SubagentRow] | None = None,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
 
@@ -80,6 +82,10 @@ def build_deep_agent(
     ``custom_providers`` maps provider id → row and is used to route runs that
     target a locally-hosted model; callers that never use custom models can omit
     it.
+
+    ``subagents`` is the global roster of specialists (see ``db.models.Subagent``).
+    They are only handed to the agent when ``row.include_subagents`` is on; the
+    deep-agent engine merges them with its built-in subagents.
     """
     backend = LocalBackend(root_dir=str(workspace_path))
 
@@ -89,6 +95,28 @@ def build_deep_agent(
     skills = [
         DeepSkill(name=s.name, description=s.description, content=s.content) for s in row.skills
     ]
+
+    # Global subagents apply only when the agent opts into subagents. Each row
+    # becomes a SubAgentConfig dict (name/description/instructions required, model
+    # optional — omit it so the subagent inherits the parent's model).
+    subagent_configs: list[dict] = []
+    if row.include_subagents:
+        for sa in subagents or []:
+            config: dict = {
+                "name": sa.name,
+                "description": sa.description,
+                "instructions": sa.instructions,
+            }
+            if sa.model:
+                config["model"] = resolve_model(sa.model, custom_providers or {})
+            subagent_configs.append(config)
+
+    # `subagents` may also be supplied via the extra_config escape hatch; don't
+    # pass the keyword twice if so.
+    extra_config = dict(row.extra_config)
+    subagents_kwarg = (
+        {} if "subagents" in extra_config else {"subagents": subagent_configs or None}
+    )
 
     agent = create_deep_agent(
         model=resolve_model(row.model or settings.default_model, custom_providers or {}),
@@ -102,7 +130,8 @@ def build_deep_agent(
         include_plan=row.include_plan,
         web_search=row.web_search,
         thinking=thinking,
-        **row.extra_config,
+        **subagents_kwarg,
+        **extra_config,
     )
     deps = create_default_deps(backend)
     return agent, deps

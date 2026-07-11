@@ -16,6 +16,7 @@ from app.api import (
     prompt_templates,
     providers,
     skills,
+    subagents,
     terminal,
     threads,
     tools,
@@ -59,6 +60,7 @@ async def health() -> dict[str, str]:
 for module in (
     agents,
     skills,
+    subagents,
     prompt_templates,
     tools,
     providers,
