@@ -137,10 +137,10 @@ export function ChatComposer({
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           className={cn(
-            "rounded-2xl border border-transparent bg-muted/50 px-2.5 py-2 shadow-sm",
+            "rounded-2xl border border-border/60 bg-muted/25 px-2.5 py-2",
             "transition-[border-color,box-shadow,background-color] duration-200",
-            "focus-within:border-ring/30 focus-within:bg-background focus-within:shadow-md focus-within:ring-2 focus-within:ring-ring/15",
-            isDragging && "border-ring/50 bg-background ring-2 ring-ring/20",
+            "focus-within:border-ring/40 focus-within:bg-muted/40 focus-within:shadow-sm focus-within:ring-2 focus-within:ring-ring/10",
+            isDragging && "border-ring/50 bg-muted/40 ring-2 ring-ring/20",
             disabled && "opacity-60"
           )}
         >

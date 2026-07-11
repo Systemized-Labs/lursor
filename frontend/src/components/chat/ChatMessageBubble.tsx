@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Robot, Copy, Check } from "@phosphor-icons/react"
+import { Copy, Check } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
@@ -22,13 +22,9 @@ function CopyButton({ text }: { text: string }) {
       }}
       title={copied ? "Copied" : "Copy"}
       aria-label="Copy message"
-      className="flex-shrink-0 rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:opacity-100"
+      className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
     >
-      {copied ? (
-        <Check className="h-3.5 w-3.5" />
-      ) : (
-        <Copy className="h-3.5 w-3.5" />
-      )}
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
   )
 }
@@ -73,7 +69,7 @@ function StreamingDots({ lead }: { lead?: boolean }) {
   const dot = lead ? "h-2 w-2" : "h-1 w-1"
   const delays = ["0ms", "150ms", "300ms"]
   return (
-    <div className={cn("flex items-center", lead ? "gap-1.5 py-1 px-0.5" : "gap-1")}>
+    <div className={cn("flex items-center", lead ? "gap-1.5 py-1" : "gap-1")}>
       {delays.map((d) => (
         <span
           key={d}
@@ -89,9 +85,9 @@ function StreamingDots({ lead }: { lead?: boolean }) {
 }
 
 /**
- * One assistant turn's segments (text and/or tool calls), rendered in order
- * inside a shared bubble body. Kept separate so a single bubble and a grouped
- * run of consecutive turns share identical segment layout.
+ * One assistant turn's segments (text and/or tool calls), rendered in order as a
+ * flowing document — no bubble, no avatar. Kept separate so a single message and
+ * a grouped run of consecutive turns share identical segment layout.
  */
 function AssistantSegments({ messages }: { messages: ChatMessage[] }) {
   const segments = messages.filter(
@@ -116,16 +112,16 @@ function AssistantSegments({ messages }: { messages: ChatMessage[] }) {
 }
 
 export interface ChatAssistantGroupProps {
-  /** Consecutive assistant turns (agent loop steps) shown as one bubble. */
+  /** Consecutive assistant turns (agent loop steps) shown as one document block. */
   messages: ChatMessage[]
 }
 
 /**
- * A run of consecutive assistant turns rendered under a single avatar and
- * bubble. The agent loop emits one assistant message per step (reason→tool→
- * reason→answer); grouping them presents the whole response as one turn instead
- * of a stack of look-alike bubbles, and mirrors how the run persists (one
- * assistant message) on reload.
+ * A run of consecutive assistant turns rendered as one flowing document block.
+ * The agent loop emits one assistant message per step (reason→tool→reason→
+ * answer); grouping them presents the whole response as a single turn instead of
+ * a stack of look-alike blocks, and mirrors how the run persists (one assistant
+ * message) on reload. No bubble/avatar — the transcript reads like a document.
  */
 export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
   const isStreaming = messages.some((m) => m.streaming)
@@ -136,41 +132,30 @@ export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
     .filter((c) => c !== "")
     .join("\n\n")
   const canCopy = !isStreaming && copyText.trim() !== ""
-  const actions = canCopy ? (
-    <div className="self-center flex-shrink-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-      <CopyButton text={copyText} />
-    </div>
-  ) : null
 
   return (
-    <div className="group flex justify-start gap-3 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
-      <div
-        className={cn(
-          "h-7 w-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-300",
-          isStreaming
-            ? "bg-primary/15 ring-2 ring-primary/30 shadow-sm shadow-primary/10"
-            : "bg-primary/10"
-        )}
-      >
-        <Robot className="h-3.5 w-3.5 text-primary" />
-      </div>
-      <div className="min-w-0 max-w-[72%] shadow-sm rounded-2xl rounded-bl-md bg-muted/60 px-4 py-2.5 text-sm text-foreground transition-shadow">
-        {isStreaming && !hasBody ? (
-          <StreamingDots lead />
-        ) : (
-          <>
-            <AssistantSegments messages={messages} />
-            {isStreaming ? (
-              <div className="mt-2 border-t border-border/20 pt-1.5">
-                <StreamingDots />
-              </div>
-            ) : (
+    <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+      {isStreaming && !hasBody ? (
+        <StreamingDots lead />
+      ) : (
+        <div className="min-w-0 text-sm text-foreground">
+          <AssistantSegments messages={messages} />
+          {isStreaming ? (
+            <div className="mt-2">
+              <StreamingDots />
+            </div>
+          ) : (
+            <>
               <ChatFilesChanged messages={messages} />
-            )}
-          </>
-        )}
-      </div>
-      {actions}
+              {canCopy && (
+                <div className="-ml-1.5 mt-1.5 flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                  <CopyButton text={copyText} />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -181,106 +166,54 @@ export interface ChatMessageBubbleProps {
   renderIcons?: boolean
 }
 
-/** Unified user/assistant message bubble. */
+/**
+ * A single message. Assistant messages render as a document block (delegating to
+ * {@link ChatAssistantGroup}); user messages render as a subtle, unshadowed card
+ * so the prompt is distinguishable without breaking the document flow.
+ */
 export function ChatMessageBubble({ message, renderIcons }: ChatMessageBubbleProps) {
-  const isUser = message.role === "user"
-  const isStreaming = Boolean(message.streaming)
-  const hasToolCalls = message.toolCalls.length > 0
-  const hasBody = message.content !== "" || hasToolCalls
+  if (message.role !== "user") {
+    return <ChatAssistantGroup messages={[message]} />
+  }
 
-  const canCopy = !isStreaming && message.content.trim() !== ""
-  const actions = canCopy ? (
-    <div className="self-center flex-shrink-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-      <CopyButton text={message.content} />
-    </div>
-  ) : null
+  const hasAttachments = message.attachments && message.attachments.length > 0
 
   return (
-    <div
-      className={cn(
-        "group flex gap-3 animate-in fade-in-0 slide-in-from-bottom-1 duration-300",
-        isUser ? "justify-end" : "justify-start"
-      )}
-    >
-      {isUser && actions}
-      {!isUser && (
-        <div
-          className={cn(
-            "h-7 w-7 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 transition-all duration-300",
-            isStreaming
-              ? "bg-primary/15 ring-2 ring-primary/30 shadow-sm shadow-primary/10"
-              : "bg-primary/10"
-          )}
-        >
-          <Robot className="h-3.5 w-3.5 text-primary" />
-        </div>
-      )}
-      <div
-        className={cn(
-          "min-w-0 max-w-[72%] shadow-sm rounded-2xl px-4 py-2.5 text-sm transition-shadow",
-          isUser
-            ? "bg-primary text-primary-foreground rounded-br-md"
-            : "bg-muted/60 text-foreground rounded-bl-md"
-        )}
-      >
-        {!isUser ? (
-          isStreaming && !hasBody ? (
-            <StreamingDots lead />
-          ) : (
-            <>
-              {message.content !== "" && (
-                <StreamingMarkdown text={message.content} animate={isStreaming} />
-              )}
-              {hasToolCalls && (
-                <div className={message.content !== "" ? "mt-3" : undefined}>
-                  <ChatToolCalls toolCalls={message.toolCalls} />
-                </div>
-              )}
-              {isStreaming && (
-                <div className="mt-2 border-t border-border/20 pt-1.5">
-                  <StreamingDots />
-                </div>
-              )}
-            </>
-          )
-        ) : (
-          <>
-            {message.attachments && message.attachments.length > 0 && (
-              <div
-                className={cn(
-                  "flex flex-wrap gap-2",
-                  message.content !== "" && "mb-2"
-                )}
+    <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+      <div className="rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+        {hasAttachments && (
+          <div
+            className={cn(
+              "flex flex-wrap gap-2",
+              message.content !== "" && "mb-2"
+            )}
+          >
+            {message.attachments!.map((att, i) => (
+              <a
+                key={`${att.url}-${i}`}
+                href={att.url}
+                target="_blank"
+                rel="noreferrer"
+                title={att.name}
+                className="block overflow-hidden rounded-lg border border-border/60"
               >
-                {message.attachments.map((att, i) => (
-                  <a
-                    key={`${att.url}-${i}`}
-                    href={att.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={att.name}
-                    className="block overflow-hidden rounded-lg border border-primary-foreground/20"
-                  >
-                    <img
-                      src={att.url}
-                      alt={att.name ?? "attachment"}
-                      className="max-h-48 max-w-[16rem] object-cover"
-                    />
-                  </a>
-                ))}
-              </div>
-            )}
-            {message.content !== "" && (
-              <p className="whitespace-pre-wrap leading-relaxed break-words">
-                {renderIcons
-                  ? renderWithIcons(message.content, message.id)
-                  : message.content}
-              </p>
-            )}
-          </>
+                <img
+                  src={att.url}
+                  alt={att.name ?? "attachment"}
+                  className="max-h-48 max-w-[16rem] object-cover"
+                />
+              </a>
+            ))}
+          </div>
+        )}
+        {message.content !== "" && (
+          <p className="whitespace-pre-wrap leading-relaxed break-words">
+            {renderIcons
+              ? renderWithIcons(message.content, message.id)
+              : message.content}
+          </p>
         )}
       </div>
-      {!isUser && actions}
     </div>
   )
 }

@@ -16,7 +16,7 @@ type Segment =
 
 /**
  * Collapses runs of consecutive assistant turns into one group so the agent
- * loop's steps render as a single bubble. Everything else passes through as its
+ * loop's steps render as a single block. Everything else passes through as its
  * own message.
  */
 function groupMessages(messages: ChatMessage[]): Segment[] {
@@ -36,7 +36,36 @@ function groupMessages(messages: ChatMessage[]): Segment[] {
   return segments
 }
 
-/** Shimmer placeholder shown while a conversation's history loads. */
+/** A conversational exchange: a user prompt and the assistant reply it drew. */
+interface Turn {
+  id: string
+  user?: Extract<Segment, { kind: "message" }>
+  assistant?: Extract<Segment, { kind: "assistant-group" }>
+}
+
+/**
+ * Pairs each user prompt with the assistant reply that follows it into a "turn".
+ * Rendering turns (rather than a flat segment list) lets the reply hug its
+ * prompt while turns sit far apart — the exchange-based rhythm that reads as a
+ * conversation instead of an undifferentiated stream.
+ */
+function groupTurns(segments: Segment[]): Turn[] {
+  const turns: Turn[] = []
+  for (const seg of segments) {
+    const last = turns[turns.length - 1]
+    if (seg.kind === "message") {
+      turns.push({ id: seg.message.id, user: seg })
+    } else if (last && last.assistant === undefined) {
+      last.assistant = seg
+    } else {
+      turns.push({ id: seg.id, assistant: seg })
+    }
+  }
+  return turns
+}
+
+/** Shimmer placeholder shown while a conversation's history loads. Mirrors the
+ *  document layout: assistant turns are plain text lines, user turns a card. */
 function ChatSkeleton() {
   const rows: { role: "assistant" | "user"; widths: string[] }[] = [
     { role: "assistant", widths: ["w-3/4", "w-1/2"] },
@@ -45,25 +74,18 @@ function ChatSkeleton() {
     { role: "user", widths: ["w-1/3"] },
   ]
   return (
-    <div className="space-y-5" aria-hidden>
+    <div className="mx-auto w-full max-w-3xl space-y-6" aria-hidden>
       {rows.map((row, i) => (
         <div
           key={i}
-          className={cn("flex gap-3", row.role === "user" ? "justify-end" : "justify-start")}
-        >
-          {row.role === "assistant" && (
-            <Skeleton className="h-7 w-7 rounded-full flex-shrink-0" />
+          className={cn(
+            "flex flex-col gap-2",
+            row.role === "user" && "rounded-xl bg-muted/40 px-4 py-3"
           )}
-          <div
-            className={cn(
-              "flex max-w-[72%] flex-col gap-1.5 rounded-2xl px-4 py-3",
-              row.role === "user" ? "bg-primary/10 items-end" : "bg-muted/50"
-            )}
-          >
-            {row.widths.map((w, j) => (
-              <Skeleton key={j} className={cn("h-3.5", w, "min-w-24")} />
-            ))}
-          </div>
+        >
+          {row.widths.map((w, j) => (
+            <Skeleton key={j} className={cn("h-3.5", w, "min-w-24")} />
+          ))}
         </div>
       ))}
     </div>
@@ -109,17 +131,21 @@ export function ChatMessageList({
         empty
       ) : (
         <>
-          {groupMessages(messages).map((segment) =>
-            segment.kind === "assistant-group" ? (
-              <ChatAssistantGroup key={segment.id} messages={segment.messages} />
-            ) : (
-              <ChatMessageBubble
-                key={segment.message.id}
-                message={segment.message}
-                renderIcons={renderIcons}
-              />
-            )
-          )}
+          <div className="mx-auto w-full max-w-3xl space-y-10">
+            {groupTurns(groupMessages(messages)).map((turn) => (
+              <div key={turn.id} className="space-y-4">
+                {turn.user && (
+                  <ChatMessageBubble
+                    message={turn.user.message}
+                    renderIcons={renderIcons}
+                  />
+                )}
+                {turn.assistant && (
+                  <ChatAssistantGroup messages={turn.assistant.messages} />
+                )}
+              </div>
+            ))}
+          </div>
           {onScrollToBottom && showScrollToBottom && (
             <div className="sticky bottom-0 z-10 h-0">
               <Button
