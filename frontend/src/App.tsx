@@ -4,7 +4,6 @@ import { AppShell } from "@/components/layout/app-shell"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
 import { SettingsPage } from "@/pages/settings/settings-page"
-import { WorkspacesPage } from "@/pages/workspaces/workspaces-page"
 
 /**
  * Opening a workspace now drops straight into its chat surface. The old
@@ -58,7 +57,6 @@ function App() {
           path="tools"
           element={<Navigate to="/customization?tab=tools" replace />}
         />
-        <Route path="workspaces" element={<WorkspacesPage />} />
         <Route
           path="workspaces/:workspaceId"
           element={<WorkspaceIndexRedirect />}

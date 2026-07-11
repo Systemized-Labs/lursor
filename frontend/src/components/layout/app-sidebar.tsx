@@ -7,6 +7,7 @@ import {
   MoreHorizontal,
   Palette,
   Pencil,
+  Plus,
   Settings,
   SlidersHorizontal,
   Trash2,
@@ -76,6 +77,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ThemePicker } from "@/components/ui/theme-picker"
+import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
 import { cn } from "@/lib/utils"
 
 interface NavItem {
@@ -148,6 +150,7 @@ export function AppSidebar() {
   const [deleteWsTarget, setDeleteWsTarget] = useState<WorkspaceTarget | null>(
     null
   )
+  const [workspaceFormOpen, setWorkspaceFormOpen] = useState(false)
 
   const updateThread = useUpdateThread()
   const deleteThread = useMutation({
@@ -173,6 +176,14 @@ export function AppSidebar() {
       else next.add(id)
       return next
     })
+  }
+
+  const newConversation = (workspaceId: string) => {
+    setOpenWorkspaces((prev) =>
+      prev.has(workspaceId) ? prev : new Set(prev).add(workspaceId)
+    )
+    navigate(`/workspaces/${workspaceId}/chat`)
+    closeMobile()
   }
 
   async function handleRename() {
@@ -226,7 +237,7 @@ export function AppSidebar() {
       setDeleteWsTarget(null)
       // If the open workspace was deleted, leave the chat surface.
       if (activeWorkspaceId === ws.id) {
-        navigate("/workspaces")
+        navigate("/customization")
       }
       toast.success("Workspace deleted")
     } catch (err) {
@@ -279,25 +290,17 @@ export function AppSidebar() {
         </SidebarGroup>
 
         <SidebarGroup>
-          <div className="flex items-center">
-            <SidebarGroupLabel className="flex-1 p-0" asChild>
-              <Link
-                to="/workspaces"
-                onClick={closeMobile}
-                title="View all workspaces"
-                className="px-2 hover:text-sidebar-accent-foreground"
-              >
-                Workspaces
-              </Link>
-            </SidebarGroupLabel>
-            <Link
-              to="/workspaces"
-              onClick={closeMobile}
-              title="Manage workspaces"
-              className="mr-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:hidden"
+          <div className="group/workspaces flex items-center">
+            <SidebarGroupLabel className="flex-1">Workspaces</SidebarGroupLabel>
+            <button
+              type="button"
+              onClick={() => setWorkspaceFormOpen(true)}
+              title="New workspace"
+              aria-label="New workspace"
+              className="mr-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/workspaces:opacity-100 group-data-[collapsible=icon]:hidden"
             >
               <FolderPlus className="size-4" />
-            </Link>
+            </button>
           </div>
           <SidebarGroupContent>
             <SidebarMenu>
@@ -320,6 +323,7 @@ export function AppSidebar() {
                     activeThreadId={activeThreadId}
                     activeRuns={activeRuns}
                     onToggle={() => toggleWorkspace(ws.id)}
+                    onNewConversation={() => newConversation(ws.id)}
                     onNavigate={closeMobile}
                     onRename={(t) => {
                       setRenameTarget(t)
@@ -377,6 +381,12 @@ export function AppSidebar() {
       </SidebarFooter>
 
       <SidebarRail />
+
+      {/* New workspace dialog */}
+      <WorkspaceFormDialog
+        open={workspaceFormOpen}
+        onOpenChange={setWorkspaceFormOpen}
+      />
 
       {/* Rename dialog */}
       <Dialog
@@ -492,6 +502,7 @@ interface WorkspaceRowProps {
   activeThreadId: string | null
   activeRuns: Set<string>
   onToggle: () => void
+  onNewConversation: () => void
   onNavigate: () => void
   onRename: (thread: Thread) => void
   onDelete: (thread: Thread) => void
@@ -507,6 +518,7 @@ function WorkspaceRow({
   activeThreadId,
   activeRuns,
   onToggle,
+  onNewConversation,
   onNavigate,
   onRename,
   onDelete,
@@ -514,7 +526,7 @@ function WorkspaceRow({
   onDeleteWorkspace,
 }: WorkspaceRowProps) {
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem className="group/workspace relative">
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <SidebarMenuButton isActive={isActive} tooltip={name} onClick={onToggle}>
@@ -523,7 +535,7 @@ function WorkspaceRow({
             ) : (
               <Folder className="size-4" />
             )}
-            <span>{name}</span>
+            <span className="flex-1 truncate">{name}</span>
           </SidebarMenuButton>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -540,6 +552,19 @@ function WorkspaceRow({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
+      <button
+        type="button"
+        aria-label="New conversation"
+        title="New conversation"
+        onClick={(e) => {
+          e.stopPropagation()
+          onNewConversation()
+        }}
+        className="absolute right-1 top-1.5 flex size-5 items-center justify-center rounded-md text-sidebar-foreground opacity-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/workspace:opacity-100 group-data-[collapsible=icon]:hidden"
+      >
+        <Plus className="size-4" />
+      </button>
 
       {isOpen ? (
         <WorkspaceThreads
