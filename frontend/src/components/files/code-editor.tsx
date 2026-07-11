@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef } from "react"
 import Editor from "@monaco-editor/react"
+import type * as Monaco from "monaco-editor"
 
 import "./monaco-setup"
+import { defineMonacoTheme, MONACO_THEME_NAME } from "./monaco-theme"
 import { languageForFilename } from "./language"
 
 interface CodeEditorProps {
@@ -16,10 +18,14 @@ interface CodeEditorProps {
 }
 
 /**
- * A Monaco editor pane themed to follow the app's light/dark mode. One Monaco
+ * A Monaco editor pane themed to follow the app's active theme. One Monaco
  * instance is reused across files: switching the `path` swaps the underlying
  * model (preserving per-file undo/scroll), and a changed `value` is pushed in
  * so live agent edits replace stale content.
+ *
+ * The editor colors are derived from the active theme's CSS variables (see
+ * {@link defineMonacoTheme}), so it tracks every theme — not just `.dark` —
+ * and re-syncs whenever the theme class on `<html>` changes.
  */
 export function CodeEditor({
   path,
@@ -28,16 +34,13 @@ export function CodeEditor({
   onChange,
   onSave,
 }: CodeEditorProps) {
-  const [theme, setTheme] = useState(() =>
-    document.documentElement.classList.contains("dark") ? "vs-dark" : "vs"
-  )
+  const monacoRef = useRef<typeof Monaco | null>(null)
 
-  // Follow next-themes' `.dark` class toggle on <html>.
+  // Re-derive the Monaco theme whenever the theme class on <html> changes.
   useEffect(() => {
     const observer = new MutationObserver(() => {
-      setTheme(
-        document.documentElement.classList.contains("dark") ? "vs-dark" : "vs"
-      )
+      const monaco = monacoRef.current
+      if (monaco) monaco.editor.setTheme(defineMonacoTheme(monaco))
     })
     observer.observe(document.documentElement, {
       attributes: true,
@@ -50,9 +53,13 @@ export function CodeEditor({
     <Editor
       path={path}
       value={value}
-      theme={theme}
+      theme={MONACO_THEME_NAME}
       language={languageForFilename(path.split("/").pop() ?? path)}
       onChange={(next) => onChange(next ?? "")}
+      beforeMount={(monaco) => {
+        monacoRef.current = monaco
+        defineMonacoTheme(monaco)
+      }}
       onMount={(editor, monaco) => {
         editor.addCommand(
           monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,

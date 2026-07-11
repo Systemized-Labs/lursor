@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, FileX, Save, X } from "lucide-react"
+import {
+  AlertTriangle,
+  ChevronRight,
+  FileImage,
+  FileX,
+  FolderOpen,
+  Save,
+  Scaling,
+  X,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { fileWatchWsUrl, filesApi } from "@/api/files"
@@ -14,6 +23,13 @@ import { cn } from "@/lib/utils"
 
 import { CodeEditor } from "./code-editor"
 import { FileExplorer } from "./file-explorer"
+import { fileKind } from "./file-icon"
+
+/** Platform-aware save shortcut, resolved once for header hints. */
+const SAVE_HINT =
+  typeof navigator !== "undefined" && /Mac|iP/.test(navigator.platform)
+    ? "⌘S"
+    : "Ctrl+S"
 
 /** One file open in a tab, with its buffer, on-disk baseline, and load state. */
 interface OpenFile {
@@ -255,7 +271,8 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
       className="flex-1 min-h-0"
     >
       <ResizablePanel defaultSize={28} minSize={15} className="flex flex-col min-w-0">
-        <div className="flex h-8 shrink-0 items-center px-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <div className="flex h-8 shrink-0 items-center gap-2 px-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          <FolderOpen className="h-3.5 w-3.5" />
           Explorer
         </div>
         <FileExplorer
@@ -264,12 +281,10 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
           onOpenFile={openFile}
         />
       </ResizablePanel>
-      <ResizableHandle withHandle />
+      <ResizableHandle />
       <ResizablePanel minSize={30} className="flex flex-col min-w-0">
         {openFiles.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
-            Select a file to open.
-          </div>
+          <EmptyEditor />
         ) : (
           <>
             <TabStrip
@@ -316,9 +331,10 @@ interface TabStripProps {
 
 function TabStrip({ files, activePath, onActivate, onClose }: TabStripProps) {
   return (
-    <div className="flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/60 px-1">
+    <div className="flex h-9 min-w-0 shrink-0 items-stretch overflow-x-auto border-b border-border/60">
       {files.map((f) => {
         const isActive = f.path === activePath
+        const { Icon: Glyph } = fileKind(f.name)
         return (
           <div
             key={f.path}
@@ -331,29 +347,44 @@ function TabStrip({ files, activePath, onActivate, onClose }: TabStripProps) {
             }}
             title={f.path}
             className={cn(
-              "group flex items-center gap-1.5 rounded-md px-2 py-1 text-xs whitespace-nowrap cursor-pointer",
+              "group relative flex items-center gap-1.5 border-r border-border/60 px-3 text-xs whitespace-nowrap cursor-pointer outline-none",
+              "focus-visible:bg-accent/60",
               isActive
                 ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                : "text-muted-foreground hover:bg-accent/40 hover:text-foreground"
             )}
           >
+            {/* Active rail — mirrors the tree's left rail across the top of the tab. */}
+            {isActive && (
+              <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />
+            )}
+            <Glyph
+              className={cn(
+                "h-3.5 w-3.5 shrink-0",
+                isActive ? "text-foreground" : "text-muted-foreground/80"
+              )}
+            />
             <span>{f.name}</span>
-            {f.dirty ? (
-              <span
-                className="h-1.5 w-1.5 rounded-full bg-foreground/70"
-                aria-label="Unsaved changes"
-              />
-            ) : null}
-            <span
-              role="button"
-              aria-label={`Close ${f.name}`}
-              onClick={(e) => {
-                e.stopPropagation()
-                onClose(f.path)
-              }}
-              className="ml-0.5 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-background/60"
-            >
-              <X className="h-3 w-3" />
+            {/* Fixed trailing slot: a dirty dot that becomes the close target on
+                hover/focus — so the tab width never jumps. */}
+            <span className="relative ml-0.5 flex h-4 w-4 items-center justify-center">
+              {f.dirty && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-foreground/70 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
+                  aria-label="Unsaved changes"
+                />
+              )}
+              <button
+                type="button"
+                aria-label={`Close ${f.name}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClose(f.path)
+                }}
+                className="absolute inset-0 flex items-center justify-center rounded opacity-0 outline-none hover:bg-background/60 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+              >
+                <X className="h-3 w-3" />
+              </button>
             </span>
           </div>
         )
@@ -378,25 +409,39 @@ function EditorBody({
   onDismissConflict,
 }: EditorBodyProps) {
   if (file.status === "loading") {
-    return <Centered>Loading {file.name}…</Centered>
+    return <Centered title={`Opening ${file.name}`}>Reading from disk…</Centered>
   }
   if (file.status === "error") {
-    return <Centered>{file.error ?? "Failed to open file."}</Centered>
+    return (
+      <Centered icon={AlertTriangle} title="Couldn’t open this file">
+        {file.error ?? "The file couldn’t be read. Try opening it again."}
+      </Centered>
+    )
   }
   if (file.status === "deleted") {
     return (
-      <Centered>
-        <FileX className="mb-2 h-6 w-6" />
-        This file was deleted on disk.
+      <Centered icon={FileX} title="Deleted on disk">
+        {file.name} no longer exists. Close the tab, or save to write it back.
       </Centered>
     )
   }
   if (file.isBinary) {
-    return <Centered>Binary file — not shown.</Centered>
+    return (
+      <Centered icon={FileImage} title="Binary file">
+        This file isn’t text, so it can’t be shown in the editor.
+      </Centered>
+    )
   }
   if (file.truncated) {
-    return <Centered>File is too large to open in the editor.</Centered>
+    return (
+      <Centered icon={Scaling} title="File too large">
+        This file is too big to open here. Use the terminal to work with it.
+      </Centered>
+    )
   }
+
+  const { label: language } = fileKind(file.name)
+  const lineCount = file.content.length ? file.content.split("\n").length : 0
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -404,36 +449,56 @@ function EditorBody({
         <div className="flex items-center gap-2 border-b border-border/60 bg-accent/40 px-3 py-1.5 text-xs text-foreground">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="flex-1">
-            Changed on disk while you had unsaved edits.
+            This file changed on disk while you had unsaved edits.
           </span>
           <button
             type="button"
             onClick={onReloadConflict}
             className="rounded px-1.5 py-0.5 font-medium hover:bg-background/60"
           >
-            Reload
+            Use disk version
           </button>
           <button
             type="button"
             onClick={onDismissConflict}
             className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-background/60 hover:text-foreground"
           >
-            Keep mine
+            Keep my edits
           </button>
         </div>
       )}
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-border/60 px-3 text-xs text-muted-foreground">
-        <span className="truncate font-mono">{file.path}</span>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={!file.dirty || file.saving}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent"
-          title="Save (Ctrl/Cmd+S)"
-        >
-          <Save className="h-3.5 w-3.5" />
-          {file.saving ? "Saving…" : "Save"}
-        </button>
+      <div className="flex h-8 min-w-0 shrink-0 items-center justify-between gap-3 border-b border-border/60 pl-3 pr-2">
+        <Breadcrumb path={file.path} name={file.name} />
+        <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+          <span className="hidden font-mono uppercase tracking-wide sm:inline">
+            {language}
+          </span>
+          {lineCount > 0 && (
+            <span className="hidden font-mono tabular-nums sm:inline">
+              {lineCount} {lineCount === 1 ? "line" : "lines"}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={!file.dirty || file.saving}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+              "hover:bg-accent hover:text-foreground",
+              "disabled:pointer-events-none disabled:opacity-40",
+              file.dirty && !file.saving && "text-foreground"
+            )}
+            title={`Save (${SAVE_HINT})`}
+          >
+            <Save className="h-3.5 w-3.5" />
+            {file.saving ? "Saving…" : "Save"}
+            {file.dirty && !file.saving && (
+              <kbd className="hidden rounded border border-border/60 bg-muted px-1 font-mono text-[10px] leading-tight text-muted-foreground md:inline">
+                {SAVE_HINT}
+              </kbd>
+            )}
+          </button>
+        </div>
       </div>
       <div className="flex-1 min-h-0">
         <CodeEditor
@@ -447,10 +512,62 @@ function EditorBody({
   )
 }
 
-function Centered({ children }: { children: React.ReactNode }) {
+/**
+ * The active file's path as an accent-tipped breadcrumb: muted folder segments
+ * separated by chevrons, then the filename with its type glyph — the header's
+ * echo of the "you are here" rail carried by the tree and tabs.
+ */
+function Breadcrumb({ path, name }: { path: string; name: string }) {
+  const segments = path.split("/")
+  const folders = segments.slice(0, -1)
+  const { Icon: Glyph } = fileKind(name)
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-sm text-muted-foreground">
-      {children}
+    <nav
+      aria-label="File path"
+      className="flex min-w-0 items-center gap-1 overflow-hidden font-mono text-xs"
+    >
+      {folders.map((seg, i) => (
+        <span key={i} className="flex shrink-0 items-center gap-1">
+          <span className="text-muted-foreground">{seg}</span>
+          <ChevronRight className="h-3 w-3 text-muted-foreground/50" />
+        </span>
+      ))}
+      <span className="flex min-w-0 items-center gap-1.5 text-foreground">
+        <Glyph className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{name}</span>
+      </span>
+    </nav>
+  )
+}
+
+/** Resting state before any file is open — an invitation, not a dead end. */
+function EmptyEditor() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+      <FolderOpen className="h-7 w-7 text-muted-foreground/60" />
+      <p className="text-sm font-medium text-foreground">No file open</p>
+      <p className="max-w-xs text-xs text-muted-foreground">
+        Pick a file from the explorer to read or edit it. Changes an agent makes
+        show up here live.
+      </p>
+    </div>
+  )
+}
+
+function Centered({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon?: React.ElementType
+  title?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-1.5 p-6 text-center">
+      {Icon && <Icon className="mb-1 h-6 w-6 text-muted-foreground/60" />}
+      {title && <p className="text-sm font-medium text-foreground">{title}</p>}
+      <p className="max-w-xs text-xs text-muted-foreground">{children}</p>
     </div>
   )
 }

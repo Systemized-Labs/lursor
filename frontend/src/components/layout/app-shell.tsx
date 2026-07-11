@@ -57,7 +57,10 @@ export function AppShell() {
   return (
     <SidebarProvider>
       <AppSidebar />
-      <SidebarInset>
+      {/* `min-w-0` lets this flex child shrink below its content's intrinsic
+          width; without it, widening the dock grows the whole inset past the
+          viewport instead of redistributing space within it. */}
+      <SidebarInset className="min-w-0">
         {/* Mobile-only floating trigger to open the off-canvas sidebar (the
             sidebar's own toggle is off-screen while it's collapsed on phones). */}
         <SidebarTrigger className="absolute left-2 top-2 z-40 h-8 w-8 rounded-md border border-border bg-background/80 shadow-sm backdrop-blur md:hidden" />
@@ -76,7 +79,7 @@ export function AppShell() {
                 <ResizablePanel minSize={30} className="flex flex-col min-w-0">
                   {center}
                 </ResizablePanel>
-                <ResizableHandle withHandle />
+                <ResizableHandle />
                 <ResizablePanel
                   defaultSize={40}
                   minSize={22}
