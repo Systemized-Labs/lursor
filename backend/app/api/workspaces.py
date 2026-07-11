@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.db.models import Workspace
 from app.db.session import get_session
 from app.schemas.workspace import WorkspaceCreate, WorkspaceRead, WorkspaceUpdate
+from app.workspace_paths import unique_workspace_dir
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 settings = get_settings()
@@ -87,10 +88,11 @@ def _pick_folder_dialog() -> str | None:
     return path.rstrip("/") or "/"
 
 
-def _materialize(path: str | None, workspace_id: str) -> str:
+def _materialize(path: str | None, name: str) -> str:
     """Resolve and create a workspace directory, returning its absolute path.
 
-    A blank/omitted ``path`` defaults to ``<workspaces_dir>/<id>``; a custom
+    A blank/omitted ``path`` defaults to a slug of ``name`` under the workspaces
+    root (e.g. ``<workspaces_dir>/swarmcore``), deduped on collision; a custom
     path has ``~`` expanded and is made absolute.
     """
     if path and path.strip():
@@ -98,7 +100,7 @@ def _materialize(path: str | None, workspace_id: str) -> str:
         if not directory.is_absolute():
             directory = directory.resolve()
     else:
-        directory = settings.workspaces_dir / workspace_id
+        directory = unique_workspace_dir(settings.workspaces_dir, name)
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -120,7 +122,7 @@ async def create_workspace(
 ):
     ws = Workspace(name=payload.name, description=payload.description)
     # Materialize the workspace directory (agent filesystem root).
-    ws.path = _materialize(payload.path, ws.id)
+    ws.path = _materialize(payload.path, ws.name)
 
     session.add(ws)
     await session.commit()
@@ -159,7 +161,7 @@ async def update_workspace(
     # Relocating: materialize the new directory. The old one is left in place to
     # avoid destroying user files.
     if payload.path is not None:
-        ws.path = _materialize(payload.path, ws.id)
+        ws.path = _materialize(payload.path, ws.name)
 
     session.add(ws)
     await session.commit()

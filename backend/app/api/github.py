@@ -35,6 +35,7 @@ from app.schemas.github import (
     GitHubRepo,
 )
 from app.schemas.workspace import WorkspaceRead
+from app.workspace_paths import unique_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,7 @@ async def clone_repo(payload: GitHubCloneInput, session: AsyncSession = Depends(
 
     # Resolve the on-disk target. A custom path must be absent or empty (git
     # refuses to clone into a non-empty directory); the default is a fresh dir
-    # named by the new workspace id under the workspaces root.
+    # named by a slug of the repo name under the workspaces root.
     ws = Workspace(name=name)
     if payload.path and payload.path.strip():
         target = Path(payload.path.strip()).expanduser()
@@ -264,7 +265,7 @@ async def clone_repo(payload: GitHubCloneInput, session: AsyncSession = Depends(
                 f"Target directory is not empty: {target}",
             )
     else:
-        target = settings.workspaces_dir / ws.id
+        target = unique_workspace_dir(settings.workspaces_dir, name)
 
     target.parent.mkdir(parents=True, exist_ok=True)
 
