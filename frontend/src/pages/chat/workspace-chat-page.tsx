@@ -192,7 +192,7 @@ export function WorkspaceChatPage() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {/* Header */}
-      <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border/40 bg-background/70 px-3 backdrop-blur-sm">
+      <div className="flex h-9 shrink-0 items-center gap-3 bg-background/70 px-3 backdrop-blur-sm">
         {/* Conversation title + live status */}
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="truncate text-sm font-medium text-foreground">

@@ -14,23 +14,42 @@ function terminalWsUrl(workspaceId?: string): string {
   return url.toString()
 }
 
-/** Read an `H S% L%` CSS token off :root and wrap it as an `hsl(...)` color. */
-function hslToken(name: string): string {
+// Shared scratch canvas: the 2D context normalizes any browser-valid CSS color
+// (oklch, hex, hsl, rgb, …) into an sRGB `#rrggbb`/`rgba(...)` string that
+// xterm.js can parse. Our theme tokens come in all of those formats.
+let colorCanvasCtx: CanvasRenderingContext2D | null | undefined
+
+/** Resolve a semantic CSS token off :root to an xterm-parseable color string. */
+function readToken(name: string, fallback: string): string {
   const raw = getComputedStyle(document.documentElement)
     .getPropertyValue(name)
     .trim()
-  return raw ? `hsl(${raw})` : "#000"
+  if (!raw) return fallback
+
+  if (colorCanvasCtx === undefined) {
+    colorCanvasCtx = document.createElement("canvas").getContext("2d")
+  }
+  if (!colorCanvasCtx) return fallback
+
+  // A rejected assignment leaves fillStyle unchanged, so seed a known sentinel
+  // and treat "value didn't take" as a parse failure.
+  colorCanvasCtx.fillStyle = "#000"
+  colorCanvasCtx.fillStyle = raw
+  const normalized = colorCanvasCtx.fillStyle
+  return typeof normalized === "string" ? normalized : fallback
 }
 
 /** Derive an xterm theme from the app's semantic CSS tokens (light/dark aware). */
 function readTheme() {
+  // Ride on `--card` (the same surface Monaco uses) rather than the canvas
+  // `--background`, so the terminal reads as a distinct, more legible panel.
   return {
-    background: hslToken("--background"),
-    foreground: hslToken("--foreground"),
-    cursor: hslToken("--foreground"),
-    cursorAccent: hslToken("--background"),
-    selectionBackground: hslToken("--accent"),
-    selectionForeground: hslToken("--accent-foreground"),
+    background: readToken("--card", "#000"),
+    foreground: readToken("--card-foreground", "#fff"),
+    cursor: readToken("--card-foreground", "#fff"),
+    cursorAccent: readToken("--card", "#000"),
+    selectionBackground: readToken("--accent", "#3b3b3b"),
+    selectionForeground: readToken("--accent-foreground", "#fff"),
   }
 }
 
@@ -129,5 +148,7 @@ export function TerminalPanel({ workspaceId }: TerminalPanelProps) {
     }
   }, [workspaceId])
 
-  return <div ref={hostRef} className="h-full w-full overflow-hidden p-2" />
+  // `bg-card` matches the xterm background so xterm's leftover partial-cell
+  // space (and the small left inset) reads as one continuous surface.
+  return <div ref={hostRef} className="h-full w-full overflow-hidden bg-card pl-2" />
 }

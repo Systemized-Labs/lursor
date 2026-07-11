@@ -1,6 +1,5 @@
 import {
   ChatCentered,
-  DotsThree,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -55,12 +54,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -634,7 +627,7 @@ function WorkspaceThreads({
   const threads = threadsQuery.data ?? []
 
   return (
-    <SidebarMenuSub>
+    <SidebarMenuSub className="mx-2 px-1.5">
       {threadsQuery.isLoading ? (
         <li className="px-2 py-1 text-[11px] text-muted-foreground">Loading…</li>
       ) : threads.length === 0 ? (
@@ -676,7 +669,7 @@ function SessionRow({
   onDelete,
 }: SessionRowProps) {
   return (
-    <SidebarMenuSubItem className="group/session relative">
+    <SidebarMenuSubItem className="group/session">
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <SidebarMenuSubButton asChild isActive={isActive}>
@@ -696,7 +689,7 @@ function SessionRow({
               <span className={cn("flex-1 truncate", running && "text-primary")}>
                 {thread.title || "Untitled"}
               </span>
-              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground group-hover/session:hidden">
+              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
                 {timeAgo(thread.updated_at)}
               </span>
             </Link>
@@ -716,31 +709,6 @@ function SessionRow({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
-
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label="Conversation options"
-            className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-md text-sidebar-foreground opacity-0 hover:bg-sidebar-accent focus-visible:opacity-100 group-hover/session:opacity-100 data-[state=open]:opacity-100"
-          >
-            <DotsThree className="size-4" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => onRename(thread)}>
-            <Pencil className="size-4" />
-            Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="text-destructive focus:text-destructive"
-            onClick={() => onDelete(thread)}
-          >
-            <Trash className="size-4" />
-            Delete
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
     </SidebarMenuSubItem>
   )
 }
