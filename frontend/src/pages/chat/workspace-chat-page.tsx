@@ -1,4 +1,4 @@
-import { Robot, ChatCenteredDots } from "@phosphor-icons/react"
+import { Robot, NotePencil } from "@phosphor-icons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useParams, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
@@ -192,47 +192,59 @@ export function WorkspaceChatPage() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {/* Header */}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/40 bg-background/70 px-3 backdrop-blur-sm">
-        <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-          <span className="truncate text-[13px] font-medium text-foreground">
+      <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border/40 bg-background/70 px-3 backdrop-blur-sm">
+        {/* Conversation title + live status */}
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="truncate text-sm font-medium text-foreground">
             {currentThread?.title ?? "New conversation"}
           </span>
-          <span className="shrink-0 text-muted-foreground/40">·</span>
-          <span className="truncate text-[11px] text-muted-foreground">
-            {chat.isStreaming ? "Thinking…" : workspace.name}
-          </span>
+          {chat.isStreaming && (
+            <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+              </span>
+              Thinking…
+            </span>
+          )}
         </div>
 
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-muted-foreground hover:text-foreground"
-          onClick={handleNewConversation}
-          aria-label="New conversation"
-          title="New conversation"
-        >
-          <ChatCenteredDots className="h-3.5 w-3.5" />
-        </Button>
+        {/* Controls */}
+        <div className="flex shrink-0 items-center gap-0.5">
+          {noAgents ? (
+            <span className="text-xs text-muted-foreground">No agents</span>
+          ) : (
+            <Select
+              value={selectedAgentId}
+              onValueChange={(v) => void handleAgentChange(v)}
+            >
+              <SelectTrigger
+                aria-label="Agent"
+                className="h-7 gap-1.5 rounded-md border-0 bg-transparent px-2 text-xs font-medium text-muted-foreground shadow-none hover:bg-accent hover:text-foreground focus:ring-0 data-[state=open]:bg-accent data-[state=open]:text-foreground"
+              >
+                <SelectValue placeholder="Select agent" />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {agents.map((agent) => (
+                  <SelectItem key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
-        {noAgents ? (
-          <span className="text-xs text-muted-foreground">No agents</span>
-        ) : (
-          <Select
-            value={selectedAgentId}
-            onValueChange={(v) => void handleAgentChange(v)}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            onClick={handleNewConversation}
+            aria-label="New conversation"
+            title="New conversation"
           >
-            <SelectTrigger className="h-6 w-40 text-xs" aria-label="Agent">
-              <SelectValue placeholder="Select agent" />
-            </SelectTrigger>
-            <SelectContent>
-              {agents.map((agent) => (
-                <SelectItem key={agent.id} value={agent.id}>
-                  {agent.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+            <NotePencil className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <ChatMessageList
