@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer"
 import { ChatToolCalls } from "@/components/chat/ChatToolCalls"
+import { ChatFilesChanged } from "@/components/chat/ChatFilesChanged"
 import type { ChatMessage } from "@/agui/types"
 
 /** Hover action button that copies a message's text to the clipboard. */
@@ -159,10 +160,12 @@ export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
         ) : (
           <>
             <AssistantSegments messages={messages} />
-            {isStreaming && (
+            {isStreaming ? (
               <div className="mt-2 border-t border-border/20 pt-1.5">
                 <StreamingDots />
               </div>
+            ) : (
+              <ChatFilesChanged messages={messages} />
             )}
           </>
         )}
