@@ -1,5 +1,4 @@
 import {
-  Pulse,
   GitDiff,
   FileCode,
   Globe,
@@ -40,7 +39,6 @@ const TAB_META: Record<DockKind, { title: string; icon: ElementType }> = {
   file: { title: "Files", icon: FileCode },
   preview: { title: "Preview", icon: Globe },
   terminal: { title: "Terminal", icon: Terminal },
-  activity: { title: "Activity", icon: Pulse },
 }
 
 interface RightDockProps {
@@ -60,10 +58,9 @@ interface RightDockProps {
 /**
  * The right-side, editor-style panel dock — the Cursor "agent view" right pane.
  *
- * Hosts closeable tabs with a `+` menu and an empty state of panel cards. Files,
- * preview, and terminal host real content; remaining kinds (activity) are
- * placeholders until those features land. Tab/collapse state is owned by the
- * shell so it can be persisted per workspace.
+ * Hosts closeable tabs with a `+` menu and an empty state of panel cards.
+ * Changes, files, preview, and terminal host real content. Tab/collapse state is
+ * owned by the shell so it can be persisted per workspace.
  */
 export function RightDock({
   workspaceId,
