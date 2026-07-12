@@ -7,12 +7,12 @@ the AG-UI client for streaming chat over SSE.
 ## Prerequisites
 
 - Node 18+ (developed against Node 23)
-- pnpm
+- bun
 
 ## Setup
 
 ```bash
-pnpm install
+bun install
 cp .env.example .env   # adjust VITE_API_BASE if needed
 ```
 
@@ -21,10 +21,19 @@ cp .env.example .env   # adjust VITE_API_BASE if needed
 ## Scripts
 
 ```bash
-pnpm dev      # start the dev server
-pnpm build    # type-check (tsc -b) and build for production
-pnpm preview  # preview the production build
-pnpm lint     # run oxlint
+bun run dev      # start the dev server
+bun run build    # type-check (tsc -b) and build for production
+bun run preview  # preview the production build
+bun run lint     # run oxlint
+```
+
+## Desktop app (Electron)
+
+The same UI ships as an Electron desktop app. See [../docs/ELECTRON.md](../docs/ELECTRON.md).
+
+```bash
+bun run electron:dev     # Vite + Electron together (backend must be running)
+bun run electron:build   # package a distributable into release/
 ```
 
 ## Structure

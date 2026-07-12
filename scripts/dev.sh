@@ -15,6 +15,6 @@ echo "Starting backend on :8000 ..."
 (cd "$ROOT_DIR/backend" && uv run uvicorn app.main:app --reload --port 8000) &
 
 echo "Starting frontend on :5173 ..."
-(cd "$ROOT_DIR/frontend" && pnpm dev) &
+(cd "$ROOT_DIR/frontend" && bun run dev) &
 
 wait

@@ -34,9 +34,9 @@ uv run uvicorn app.main:app --reload --port 8000
 **Frontend**
 ```bash
 cd frontend
-pnpm install
+bun install
 cp .env.example .env      # VITE_API_BASE defaults to http://localhost:8000/api
-pnpm dev
+bun run dev
 ```
 
 Then open the Vite URL (default `http://localhost:5173`).
