@@ -75,6 +75,7 @@ import { ThemePicker } from "@/components/ui/theme-picker"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { cn } from "@/lib/utils"
+import { isMacElectron } from "@/lib/platform"
 
 interface NavItem {
   to: string
@@ -246,11 +247,17 @@ export function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader>
+      <SidebarHeader
+        className={cn(
+          // On macOS Electron, drop the header below the overlaid traffic
+          // lights and let the empty strip drag the window.
+          isMacElectron && "pt-8 [-webkit-app-region:drag]"
+        )}
+      >
         <Link
           to="/"
           onClick={closeMobile}
-          className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+          className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0 [-webkit-app-region:no-drag]"
         >
           <img
             src="/lursor_icon.png"

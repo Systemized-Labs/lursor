@@ -21,6 +21,9 @@ node_modules/
 dist/
 *.local
 
+# Electron packaging output
+release/
+
 # Editor / OS
 .DS_Store
 .idea/

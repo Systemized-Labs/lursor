@@ -10,8 +10,12 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
-release
 *.local
+
+# Electron packaging
+release/
+*.iconset/
+# note: build/ holds the committed app icons (icon.png/.icns/.ico) — keep it
 
 # Editor directories and files
 .vscode/*
