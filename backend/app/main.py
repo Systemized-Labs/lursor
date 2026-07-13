@@ -28,7 +28,8 @@ from app.api import (
     settings as settings_api,
 )
 from app.config import get_settings
-from app.db.session import init_db
+from app.db.prompt_seed import seed_prompt_templates
+from app.db.session import async_session_factory, init_db
 
 settings = get_settings()
 
@@ -38,6 +39,9 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     settings.apply_env()
     await init_db()
+    # Ship the curated built-in prompt templates on every start (idempotent).
+    async with async_session_factory() as session:
+        await seed_prompt_templates(session)
     # Apply any UI-saved settings (e.g. OpenRouter key) over the env defaults.
     await settings_api.load_app_config()
     # Seed a "local" laios connection when running alongside a daemon.

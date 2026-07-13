@@ -24,6 +24,7 @@ import {
   useLaiosConnections,
   useLaiosInstances,
   useLaiosStatus,
+  useRemoveInstance,
   useServeManager,
   useStopInstance,
 } from "@/api/laios"
@@ -106,6 +107,7 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [serveOpen, setServeOpen] = useState(false)
   const [logsFor, setLogsFor] = useState<LaiosInstance | undefined>()
   const [toStop, setToStop] = useState<LaiosInstance | undefined>()
+  const [toRemove, setToRemove] = useState<LaiosInstance | undefined>()
 
   // Keep the active selection valid as connections load / change.
   useEffect(() => {
@@ -215,6 +217,7 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
               onServe={() => setServeOpen(true)}
               onLogs={setLogsFor}
               onStop={setToStop}
+              onRemove={setToRemove}
             />
           ) : null}
         </>
@@ -244,6 +247,11 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
             connectionId={activeConnection.id}
             instance={toStop}
             onDone={() => setToStop(undefined)}
+          />
+          <RemoveInstanceDialog
+            connectionId={activeConnection.id}
+            instance={toRemove}
+            onDone={() => setToRemove(undefined)}
           />
         </>
       ) : null}
@@ -390,6 +398,7 @@ function ConnectionPanel({
   onServe,
   onLogs,
   onStop,
+  onRemove,
 }: {
   connection: LaiosConnection
   pending: PendingServe[]
@@ -397,6 +406,7 @@ function ConnectionPanel({
   onServe: () => void
   onLogs: (i: LaiosInstance) => void
   onStop: (i: LaiosInstance) => void
+  onRemove: (i: LaiosInstance) => void
 }) {
   const {
     data: instances,
@@ -453,6 +463,7 @@ function ConnectionPanel({
               instance={inst}
               onLogs={() => onLogs(inst)}
               onStop={() => onStop(inst)}
+              onRemove={() => onRemove(inst)}
             />
           ))}
           {/* Alongside real models the serve action is one more tile in the
@@ -571,10 +582,12 @@ function InstanceCard({
   instance,
   onLogs,
   onStop,
+  onRemove,
 }: {
   instance: LaiosInstance
   onLogs: () => void
   onStop: () => void
+  onRemove: () => void
 }) {
   const terminal =
     instance.status === "stopped" || instance.status === "failed"
@@ -623,15 +636,24 @@ function InstanceCard({
             <FileText className="h-4 w-4" />
             Logs
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onStop}
-            disabled={terminal || instance.status === "stopping"}
-          >
-            <Square className="h-4 w-4" />
-            Stop
-          </Button>
+          {/* A terminal card (a failed spin-up, or a stopped model still shown)
+              is dead weight — offer Remove to clear it. A live one gets Stop. */}
+          {terminal ? (
+            <Button variant="outline" size="sm" onClick={onRemove}>
+              <Trash className="h-4 w-4" />
+              Remove
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onStop}
+              disabled={instance.status === "stopping"}
+            >
+              <Square className="h-4 w-4" />
+              Stop
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -1004,6 +1026,51 @@ function StopInstanceDialog({
       confirmLabel="Stop"
       destructive
       loading={stop.isPending}
+      onConfirm={confirm}
+    />
+  )
+}
+
+function RemoveInstanceDialog({
+  connectionId,
+  instance,
+  onDone,
+}: {
+  connectionId: string
+  instance: LaiosInstance | undefined
+  onDone: () => void
+}) {
+  const remove = useRemoveInstance(connectionId)
+
+  async function confirm() {
+    if (!instance) return
+    try {
+      await remove.mutateAsync(instance.id)
+      toast.success(`Removed ${instance.served_name}`)
+      onDone()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to remove model")
+    }
+  }
+
+  // Stopped models are already torn down; a failed one may have leftovers the
+  // daemon clears best-effort. Either way the record is forgotten after this.
+  const failed = instance?.status === "failed"
+  return (
+    <ConfirmDialog
+      open={Boolean(instance)}
+      onOpenChange={(open) => !open && onDone()}
+      title="Remove model"
+      description={
+        instance
+          ? failed
+            ? `Remove "${instance.served_name}"? This clears the failed spin-up and frees any VRAM it still holds.`
+            : `Remove "${instance.served_name}" from the list? This forgets the record; the model is already stopped.`
+          : undefined
+      }
+      confirmLabel="Remove"
+      destructive
+      loading={remove.isPending}
       onConfirm={confirm}
     />
   )

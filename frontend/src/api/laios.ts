@@ -66,6 +66,10 @@ export const laiosApi = {
       `/laios/connections/${id}/instances/${instanceId}/stop`,
       {}
     ),
+  remove: (id: string, instanceId: string) =>
+    api.delete<LaiosInstance>(
+      `/laios/connections/${id}/instances/${instanceId}`
+    ),
   logs: (id: string, instanceId: string, tail = 200, signal?: AbortSignal) =>
     api.get<LaiosInstanceLogs>(
       `/laios/connections/${id}/instances/${instanceId}/logs?tail=${tail}`,
@@ -228,6 +232,33 @@ export function useStopInstance(connectionId: string) {
         old?.map((i) =>
           i.id === instanceId ? { ...i, status: "stopping" } : i
         )
+      )
+      return { previous }
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.previous) qc.setQueryData(key, ctx.previous)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: key })
+      qc.invalidateQueries({ queryKey: laiosKeys.budget(connectionId) })
+    },
+  })
+}
+
+// Forget an instance record entirely (best-effort teardown on the daemon).
+// Used to clear terminal cards — a failed spin-up or a stopped model — that we
+// otherwise keep visible. Optimistically drops the card, rolling back on error.
+export function useRemoveInstance(connectionId: string) {
+  const qc = useQueryClient()
+  const key = laiosKeys.instances(connectionId)
+  return useMutation({
+    mutationFn: (instanceId: string) =>
+      laiosApi.remove(connectionId, instanceId),
+    onMutate: async (instanceId) => {
+      await qc.cancelQueries({ queryKey: key })
+      const previous = qc.getQueryData<LaiosInstance[]>(key)
+      qc.setQueryData<LaiosInstance[]>(key, (old) =>
+        old?.filter((i) => i.id !== instanceId)
       )
       return { previous }
     },
