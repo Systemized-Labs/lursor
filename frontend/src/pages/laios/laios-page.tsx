@@ -506,7 +506,9 @@ function PendingCard({
       </CardHeader>
       <CardContent className="mt-auto space-y-3">
         {failed && pending.error ? (
-          <p className="text-xs text-destructive">{pending.error}</p>
+          <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs text-destructive">
+            {pending.error}
+          </p>
         ) : null}
         {failed ? (
           <Button variant="outline" size="sm" onClick={onDismiss}>
@@ -578,7 +580,9 @@ function InstanceCard({
           </p>
         ) : null}
         {instance.error ? (
-          <p className="text-xs text-destructive">{instance.error}</p>
+          <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs text-destructive">
+            {instance.error}
+          </p>
         ) : null}
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={onLogs}>
