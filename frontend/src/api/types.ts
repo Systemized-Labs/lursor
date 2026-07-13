@@ -416,6 +416,41 @@ export interface LaiosBudget {
   allocated_mb: number
 }
 
+/** Per-node resource line in the cluster rollup. */
+export interface LaiosNodeResources {
+  node_id: string
+  name: string
+  role: "head" | "worker"
+  status: string
+  online: boolean
+  gpus: number
+  total_vram_mb: number
+  free_vram_mb: number
+}
+
+/** Cluster-wide resource rollup; only online nodes contribute to totals. */
+export interface LaiosClusterResources {
+  node_count: number
+  ready_node_count: number
+  total_nodes_known: number
+  total_gpus: number
+  total_vram_mb: number
+  free_vram_mb: number
+  nodes: LaiosNodeResources[]
+}
+
+/** Response of the daemon's cluster/status, proxied through the backend. */
+export interface LaiosClusterStatus {
+  head_id: string
+  role: string
+  advertise: string
+  workers: unknown[]
+  join_token_set: boolean
+  remotes: unknown[]
+  heartbeat_timeout_secs: number
+  resources: LaiosClusterResources
+}
+
 /** Serve knobs POSTed to the daemon (all optional except recipe). */
 export interface LaiosServeInput {
   recipe: string

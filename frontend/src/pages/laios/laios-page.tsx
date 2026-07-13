@@ -7,6 +7,7 @@ import {
   Pencil,
   Plus,
   Square,
+  Stack,
   Trash,
   X,
 } from "@phosphor-icons/react"
@@ -18,6 +19,7 @@ import {
   type PendingServe,
   useDeleteLaiosConnection,
   useLaiosBudget,
+  useLaiosCluster,
   useLaiosConnections,
   useLaiosInstances,
   useLaiosStatus,
@@ -28,6 +30,7 @@ import type {
   LaiosConnection,
   LaiosInstance,
   LaiosInstanceStatus,
+  LaiosNodeResources,
 } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
@@ -196,7 +199,10 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
               onDelete={setConnToDelete}
             />
             {activeConnection ? (
-              <VramBar connectionId={activeConnection.id} />
+              <>
+                <VramBar connectionId={activeConnection.id} />
+                <ClusterPanel connectionId={activeConnection.id} />
+              </>
             ) : null}
           </div>
 
@@ -612,37 +618,79 @@ function InstanceCard({
   )
 }
 
-// A color-coded breakdown of the daemon's VRAM: allocated (models), reserved
-// (OS/engine headroom the daemon keeps), and the free remainder. Rendered as one
-// segmented bar with per-segment tooltips plus a legend so the numbers are
-// legible at a glance and precise on hover.
-function VramBar({ connectionId }: { connectionId: string }) {
-  const { data } = useLaiosBudget(connectionId)
-  if (!data) return null
+type VramSegment = {
+  key: string
+  label: string
+  value: number
+  bar: string
+  dot: string
+  hint: string
+}
 
-  const total = Math.max(0, data.total_mb)
-  const reserved = Math.max(0, Math.min(data.reserved_mb, total))
-  const allocated = Math.max(0, Math.min(data.allocated_mb, total - reserved))
-  const available = Math.max(0, total - reserved - allocated)
+// A color-coded breakdown of VRAM — what's in use vs. the free remainder —
+// rendered as one segmented bar with per-segment tooltips plus a legend so the
+// numbers are legible at a glance and precise on hover.
+//
+// Scope follows the setup. In a cluster (more than one node known) the bar
+// reflects the whole cluster: aggregate free/total across online nodes, so the
+// headline matches the capacity you can actually serve into. The per-node
+// breakdown lives in the Cluster panel below, and since only free/total are
+// known per node, the used portion is a single aggregate segment. On a single
+// node the daemon's budget gives the finer allocated/reserved split.
+function VramBar({ connectionId }: { connectionId: string }) {
+  const { data: budget } = useLaiosBudget(connectionId)
+  const { data: cluster } = useLaiosCluster(connectionId)
+
+  const res = cluster?.resources
+  const isCluster = !!res && res.total_nodes_known > 1
+
+  let total: number
+  let available: number
+  let usedSegments: VramSegment[]
+
+  if (isCluster && res) {
+    total = Math.max(0, res.total_vram_mb)
+    available = Math.max(0, Math.min(res.free_vram_mb, total))
+    usedSegments = [
+      {
+        key: "inUse",
+        label: "In use",
+        value: Math.max(0, total - available),
+        bar: "bg-primary",
+        dot: "bg-primary",
+        hint: "VRAM held across all online nodes",
+      },
+    ]
+  } else {
+    if (!budget) return null
+    total = Math.max(0, budget.total_mb)
+    const reserved = Math.max(0, Math.min(budget.reserved_mb, total))
+    const allocated = Math.max(0, Math.min(budget.allocated_mb, total - reserved))
+    available = Math.max(0, total - reserved - allocated)
+    usedSegments = [
+      {
+        key: "allocated",
+        label: "Allocated",
+        value: allocated,
+        bar: "bg-primary",
+        dot: "bg-primary",
+        hint: "Held by running models",
+      },
+      {
+        key: "reserved",
+        label: "Reserved",
+        value: reserved,
+        bar: "bg-warning",
+        dot: "bg-warning",
+        hint: "Headroom the daemon keeps for the OS and engine",
+      },
+    ]
+  }
+
   const pct = (v: number) => (total > 0 ? (v / total) * 100 : 0)
 
-  const segments = [
-    {
-      key: "allocated",
-      label: "Allocated",
-      value: allocated,
-      bar: "bg-primary",
-      dot: "bg-primary",
-      hint: "Held by running models",
-    },
-    {
-      key: "reserved",
-      label: "Reserved",
-      value: reserved,
-      bar: "bg-warning",
-      dot: "bg-warning",
-      hint: "Headroom the daemon keeps for the OS and engine",
-    },
+  const segments: VramSegment[] = [
+    ...usedSegments,
     {
       key: "available",
       label: "Available",
@@ -652,7 +700,7 @@ function VramBar({ connectionId }: { connectionId: string }) {
       dot: "border border-border bg-background",
       hint: "Free VRAM you can serve into",
     },
-  ] as const
+  ]
 
   return (
     <TooltipProvider delayDuration={100}>
@@ -669,6 +717,13 @@ function VramBar({ connectionId }: { connectionId: string }) {
             free of {fmtGb(total)}
           </div>
         </div>
+
+        {isCluster && res ? (
+          <div className="-mt-1.5 text-xs text-muted-foreground">
+            Aggregate across {res.node_count} online node
+            {res.node_count === 1 ? "" : "s"}
+          </div>
+        ) : null}
 
         <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
           {segments
@@ -713,6 +768,78 @@ function VramBar({ connectionId }: { connectionId: string }) {
         </div>
       </div>
     </TooltipProvider>
+  )
+}
+
+// Multi-node rollup. Rendered only when the daemon reports more than one node
+// so single-node setups stay uncluttered. Totals cover online nodes only; a
+// stale/offline worker is listed (dimmed) but excluded from the aggregate, so
+// the numbers reflect capacity you can actually serve into right now.
+function ClusterPanel({ connectionId }: { connectionId: string }) {
+  const { data } = useLaiosCluster(connectionId)
+  const res = data?.resources
+  if (!res || res.total_nodes_known <= 1) return null
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border p-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Stack className="h-4 w-4 text-muted-foreground" />
+          Cluster
+        </div>
+        <div className="text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">
+            {res.node_count}
+          </span>{" "}
+          of {res.total_nodes_known} node{res.total_nodes_known === 1 ? "" : "s"}{" "}
+          online · {res.total_gpus} GPU{res.total_gpus === 1 ? "" : "s"} ·{" "}
+          <span className="font-medium text-foreground">
+            {fmtGb(res.free_vram_mb)}
+          </span>{" "}
+          free of {fmtGb(res.total_vram_mb)}
+        </div>
+      </div>
+
+      <div className="divide-y divide-border rounded-md border border-border">
+        {res.nodes.map((n) => (
+          <ClusterNodeRow key={n.node_id} node={n} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ClusterNodeRow({ node }: { node: LaiosNodeResources }) {
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-between gap-3 px-3 py-2 text-xs",
+        !node.online && "opacity-50"
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className={cn(
+            "h-2 w-2 shrink-0 rounded-full",
+            node.online ? "bg-success" : "bg-muted-foreground"
+          )}
+        />
+        <span className="truncate font-medium text-foreground">
+          {node.name}
+        </span>
+        <Badge variant="outline" className="shrink-0 font-normal">
+          {node.role}
+        </Badge>
+        <span className="text-muted-foreground">{node.status}</span>
+      </div>
+      <div className="shrink-0 text-muted-foreground">
+        {node.gpus} GPU{node.gpus === 1 ? "" : "s"} ·{" "}
+        <span className="font-medium text-foreground">
+          {fmtGb(node.free_vram_mb)}
+        </span>{" "}
+        free / {fmtGb(node.total_vram_mb)}
+      </div>
+    </div>
   )
 }
 

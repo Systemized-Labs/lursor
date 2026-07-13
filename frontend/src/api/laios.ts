@@ -9,6 +9,7 @@ import { toast } from "sonner"
 import { api } from "./client"
 import type {
   LaiosBudget,
+  LaiosClusterStatus,
   LaiosConnection,
   LaiosConnectionInput,
   LaiosConnectionStatus,
@@ -52,6 +53,8 @@ export const laiosApi = {
     api.get<LaiosRecipeSummary[]>(`/laios/connections/${id}/catalog`, signal),
   budget: (id: string, signal?: AbortSignal) =>
     api.get<LaiosBudget>(`/laios/connections/${id}/budget`, signal),
+  cluster: (id: string, signal?: AbortSignal) =>
+    api.get<LaiosClusterStatus>(`/laios/connections/${id}/cluster`, signal),
   pull: (id: string, recipe: string) =>
     api.post<LaiosJob>(`/laios/connections/${id}/pull`, { recipe }),
   job: (id: string, jobId: string, signal?: AbortSignal) =>
@@ -77,6 +80,7 @@ export const laiosKeys = {
   instances: (id: string) => ["laios", id, "instances"] as const,
   catalog: (id: string) => ["laios", id, "catalog"] as const,
   budget: (id: string) => ["laios", id, "budget"] as const,
+  cluster: (id: string) => ["laios", id, "cluster"] as const,
   logs: (id: string, instanceId: string) =>
     ["laios", id, "logs", instanceId] as const,
 }
@@ -133,6 +137,19 @@ export function useLaiosBudget(id: string | undefined) {
   return useQuery({
     queryKey: id ? laiosKeys.budget(id) : laiosKeys.all,
     queryFn: ({ signal }) => laiosApi.budget(id as string, signal),
+    enabled: Boolean(id),
+    refetchInterval: 8_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+// Cluster resources: aggregate VRAM / node rollup across head + live workers.
+// Polled on the same cadence as budget so the panel tracks membership changes.
+export function useLaiosCluster(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.cluster(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.cluster(id as string, signal),
     enabled: Boolean(id),
     refetchInterval: 8_000,
     refetchOnWindowFocus: false,

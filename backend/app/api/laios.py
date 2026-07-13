@@ -427,6 +427,17 @@ async def doctor(cid: str, session: AsyncSession = Depends(get_session)):
     return await _forward(await _get_conn(cid, session), "GET", "/v1/doctor")
 
 
+@router.get("/connections/{cid}/cluster")
+async def cluster_status(cid: str, session: AsyncSession = Depends(get_session)):
+    """Cluster membership + aggregate resources across head and live workers.
+
+    The daemon's ``/v1/cluster/status`` embeds a ``resources`` rollup that only
+    counts online (recently-heartbeating) nodes, so a stale worker never
+    inflates the reported capacity shown in the UI.
+    """
+    return await _forward(await _get_conn(cid, session), "GET", "/v1/cluster/status")
+
+
 # --- Auto-seed a "local" connection ---------------------------------------------
 
 
