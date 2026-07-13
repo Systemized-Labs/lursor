@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator
 
-from ag_ui.core import EventType
+from ag_ui.core import CustomEvent, EventType
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,38 @@ settings = get_settings()
 
 _KEEPALIVE_TIMEOUT = 25.0  # seconds between ": keepalive" comments on an idle stream
 _TEXT_DELTA_TYPES = {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_CHUNK}
+
+# Name of the AG-UI CUSTOM event that carries the agent's live todo list. The
+# deep agent's todo tools mutate ``deps.todos`` in place; we snapshot it after
+# each streamed event and emit this whenever it changes so the UI can render a
+# live task panel (see frontend `stream-reader`/`ChatTodoList`).
+_TODOS_EVENT_NAME = "todos"
+
+
+def _todos_snapshot(deps) -> list[dict]:
+    """Serialize the run's current todo list into a JSON-friendly shape.
+
+    Each item mirrors ``pydantic_ai_todo.Todo`` with the fields the UI needs,
+    using ``activeForm`` (camelCase) to match the AG-UI wire convention.
+    """
+    todos = getattr(deps, "todos", None) or []
+    return [
+        {
+            "id": t.id,
+            "content": t.content,
+            "status": t.status,
+            "activeForm": t.active_form,
+        }
+        for t in todos
+    ]
+
+
+def _encode_todos_event(todos: list[dict]) -> str:
+    """Encode a todo snapshot as an SSE-framed AG-UI CUSTOM event."""
+    event = CustomEvent(
+        type=EventType.CUSTOM, name=_TODOS_EVENT_NAME, value={"todos": todos}
+    )
+    return f"data: {event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
 
 
 def _parse_user_turn(run_input: dict) -> tuple[str, list[dict]]:
@@ -267,9 +300,20 @@ async def chat(
         stream = adapter.run_stream(
             deps=deps, on_complete=on_complete, instructions=media_instructions
         )
+        # Track the last emitted todo snapshot so we only publish on change.
+        last_todos_json: str | None = None
         try:
             async for encoded in adapter.encode_stream(_tee(stream)):
                 chat_run_manager.publish(thread_id, encoded)
+                # A todo tool call mutated deps.todos in place — surface the new
+                # list to subscribers as a CUSTOM event when it actually changed.
+                snapshot = _todos_snapshot(deps)
+                snapshot_json = json.dumps(snapshot, sort_keys=True)
+                if snapshot_json != last_todos_json and (
+                    snapshot or last_todos_json is not None
+                ):
+                    last_todos_json = snapshot_json
+                    chat_run_manager.publish(thread_id, _encode_todos_event(snapshot))
         except asyncio.CancelledError:
             # Stopped mid-run: on_complete never fired, so keep the partial answer.
             await _persist_message(thread_id, "assistant", "".join(accumulated))

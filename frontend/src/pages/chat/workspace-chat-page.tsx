@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
+import { ChatTodoList } from "@/components/chat/ChatTodoList"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
@@ -328,6 +329,12 @@ export function WorkspaceChatPage() {
           </div>
         }
       />
+
+      {chat.todos.length > 0 && (
+        <div className="px-4 pb-1 sm:px-6">
+          <ChatTodoList todos={chat.todos} />
+        </div>
+      )}
 
       {chat.error ? (
         <p className="px-4 pb-1 text-sm text-destructive">{chat.error}</p>

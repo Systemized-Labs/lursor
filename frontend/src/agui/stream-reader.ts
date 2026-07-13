@@ -1,4 +1,46 @@
 import { streamUrl } from "./agent"
+import type { AgentTodo, TodoStatus } from "./types"
+
+const TODO_STATUSES: TodoStatus[] = [
+  "pending",
+  "in_progress",
+  "completed",
+  "blocked",
+]
+
+/** The name of the AG-UI CUSTOM event carrying the agent's live todo list. */
+export const TODOS_EVENT_NAME = "todos"
+
+/**
+ * Normalizes the `value` of a `todos` CUSTOM event into a list of {@link AgentTodo}.
+ * Tolerant of missing/extra fields so a wire change can't crash the stream: an
+ * unrecognized status falls back to "pending", and non-conforming entries are
+ * dropped. Returns `null` when the payload isn't a todo list at all.
+ */
+export function parseTodos(value: unknown): AgentTodo[] | null {
+  const raw =
+    value && typeof value === "object" && "todos" in value
+      ? (value as { todos: unknown }).todos
+      : value
+  if (!Array.isArray(raw)) return null
+  const todos: AgentTodo[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue
+    const t = item as Record<string, unknown>
+    const content = typeof t.content === "string" ? t.content : ""
+    if (!content) continue
+    const status = TODO_STATUSES.includes(t.status as TodoStatus)
+      ? (t.status as TodoStatus)
+      : "pending"
+    todos.push({
+      id: typeof t.id === "string" ? t.id : content,
+      content,
+      activeForm: typeof t.activeForm === "string" ? t.activeForm : undefined,
+      status,
+    })
+  }
+  return todos
+}
 
 /**
  * Sink for AG-UI stream events, expressed in terms of *accumulated* values so a
@@ -17,6 +59,7 @@ export interface ChatEventHandlers {
   ) => void
   onToolArgs: (toolCallId: string, args: string) => void
   onToolResult: (toolCallId: string, result: string) => void
+  onTodos: (todos: AgentTodo[]) => void
   onError: (message: string) => void
 }
 
@@ -29,6 +72,8 @@ interface AguiWireEvent {
   delta?: string
   content?: string
   message?: string
+  name?: string
+  value?: unknown
 }
 
 /**
@@ -138,6 +183,13 @@ function dispatch(
     case "TOOL_CALL_RESULT": {
       if (event.toolCallId) {
         handlers.onToolResult(event.toolCallId, event.content ?? "")
+      }
+      break
+    }
+    case "CUSTOM": {
+      if (event.name === TODOS_EVENT_NAME) {
+        const todos = parseTodos(event.value)
+        if (todos) handlers.onTodos(todos)
       }
       break
     }

@@ -25,6 +25,18 @@ export interface PendingAttachment {
   base64: string
 }
 
+export type TodoStatus = "pending" | "in_progress" | "completed" | "blocked"
+
+/** A single task from the agent's live todo list, mirrored from the backend's
+ *  `todos` CUSTOM event (see `stream-reader`). */
+export interface AgentTodo {
+  id: string
+  content: string
+  /** Present-continuous label shown while the task is in progress. */
+  activeForm?: string
+  status: TodoStatus
+}
+
 export interface ChatMessage {
   id: string
   role: ChatRole

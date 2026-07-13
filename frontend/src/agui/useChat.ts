@@ -13,8 +13,13 @@ import {
   setToolCallResult,
   upsertAssistant,
 } from "./reducer"
-import { consumeThreadStream, type ChatEventHandlers } from "./stream-reader"
-import type { ChatMessage, PendingAttachment } from "./types"
+import {
+  consumeThreadStream,
+  parseTodos,
+  TODOS_EVENT_NAME,
+  type ChatEventHandlers,
+} from "./stream-reader"
+import type { AgentTodo, ChatMessage, PendingAttachment } from "./types"
 
 /** Maps persisted thread messages into the UI message shape. Attachments are
  *  resolved to server media URLs scoped to the thread they belong to. */
@@ -92,6 +97,8 @@ export interface UseChatOptions {
 export interface UseChat {
   selectedThreadId: string | null
   messages: ChatMessage[]
+  /** The agent's live todo list for the open conversation (empty when none). */
+  todos: AgentTodo[]
   isStreaming: boolean
   error: string | null
   send: (text: string, attachments?: PendingAttachment[]) => Promise<void>
@@ -109,6 +116,7 @@ export interface UseChat {
  */
 export function useChat(options: UseChatOptions): UseChat {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [todos, setTodos] = useState<AgentTodo[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
@@ -166,6 +174,7 @@ export function useChat(options: UseChatOptions): UseChat {
       onToolResult: (toolCallId, result) => {
         setMessages((prev) => setToolCallResult(prev, toolCallId, result))
       },
+      onTodos: (next) => setTodos(next),
       onError: (message) => setError(message),
     }),
     [resolveAssistantId]
@@ -222,6 +231,9 @@ export function useChat(options: UseChatOptions): UseChat {
       setError(null)
       setIsStreaming(false)
       setMessages([])
+      // A reconnect replays this thread's buffered `todos` events and rebuilds
+      // the list; clear first so a stale list from the previous thread can't linger.
+      setTodos([])
       currentAssistantId.current = null
       // Point the send transport at the opened thread.
       agentRef.current = createThreadAgent(threadId)
@@ -254,6 +266,7 @@ export function useChat(options: UseChatOptions): UseChat {
     sendingThreadRef.current = null
     setSelectedThreadId(null)
     setMessages([])
+    setTodos([])
     setError(null)
     setIsStreaming(false)
   }, [abortLocalStreams])
@@ -340,6 +353,11 @@ export function useChat(options: UseChatOptions): UseChat {
               handlers.onToolArgs(event.toolCallId, toolCallBuffer),
             onToolCallResultEvent: ({ event }) =>
               handlers.onToolResult(event.toolCallId, event.content),
+            onCustomEvent: ({ event }) => {
+              if (event.name !== TODOS_EVENT_NAME) return
+              const parsed = parseTodos(event.value)
+              if (parsed) handlers.onTodos(parsed)
+            },
             onRunErrorEvent: ({ event }) => handlers.onError(event.message),
           }
         )
@@ -379,6 +397,7 @@ export function useChat(options: UseChatOptions): UseChat {
   return {
     selectedThreadId,
     messages,
+    todos,
     isStreaming,
     error,
     send,
