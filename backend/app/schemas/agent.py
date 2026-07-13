@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
 from app.agents.prompt_author import AgentPromptContext
 from app.db.models import Agent, ThinkingLevel
+from app.schemas._types import UTCDatetime
 
 __all__ = [
     "AgentCreate",
@@ -83,8 +83,8 @@ class AgentRead(BaseModel):
     extra_config: dict[str, Any]
     skill_ids: list[str]
     tool_ids: list[str]
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
 
     @classmethod
     def from_agent(cls, agent: Agent) -> AgentRead:

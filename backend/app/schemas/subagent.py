@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel
+
+from app.schemas._types import UTCDatetime
 
 
 class SubagentCreate(BaseModel):
@@ -26,8 +26,8 @@ class SubagentRead(BaseModel):
     instructions: str
     model: str | None
     builtin_name: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
 
     model_config = {"from_attributes": True}
 

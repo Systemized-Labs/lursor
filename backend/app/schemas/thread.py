@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
+
+from app.schemas._types import UTCDatetime
 
 
 class ThreadCreate(BaseModel):
@@ -24,8 +25,8 @@ class ThreadRead(BaseModel):
     title: str
     workspace_id: str
     agent_id: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
 
     model_config = {"from_attributes": True}
 
@@ -45,6 +46,6 @@ class MessageRead(BaseModel):
     content: str
     tool_calls: dict[str, Any]
     attachments: list[MessageAttachment] = []
-    created_at: datetime
+    created_at: UTCDatetime
 
     model_config = {"from_attributes": True}

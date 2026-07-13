@@ -8,10 +8,11 @@ whether one is configured without leaking the secret to the browser.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
+
+from app.schemas._types import UTCDatetime
 
 
 class LaiosConnectionCreate(BaseModel):
@@ -31,8 +32,8 @@ class LaiosConnectionRead(BaseModel):
     name: str
     base_url: str
     has_master_key: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
 
 
 class LaiosConnectionStatus(BaseModel):

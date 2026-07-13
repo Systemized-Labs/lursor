@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
+
+from app.schemas._types import UTCDatetime
 
 
 class ProviderCreate(BaseModel):
@@ -31,7 +32,7 @@ class ProviderRead(BaseModel):
     name: str
     base_url: str
     api_key: str | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
 
     model_config = {"from_attributes": True}

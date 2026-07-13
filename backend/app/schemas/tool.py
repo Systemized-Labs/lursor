@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
 from app.db.models import ToolKind
+from app.schemas._types import UTCDatetime
 
 
 class ToolCreate(BaseModel):
@@ -28,7 +28,7 @@ class ToolRead(BaseModel):
     description: str
     kind: ToolKind
     config: dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
 
     model_config = {"from_attributes": True}

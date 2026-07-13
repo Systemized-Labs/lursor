@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel
+
+from app.schemas._types import UTCDatetime
 
 
 class PromptTemplateCreate(BaseModel):
@@ -26,7 +26,7 @@ class PromptTemplateRead(BaseModel):
     category: str
     content: str
     is_builtin: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
 
     model_config = {"from_attributes": True}

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel
 
 from app.db.models import GitHubConfig
+from app.schemas._types import UTCDatetime
 
 
 class GitHubConfigInput(BaseModel):
@@ -26,7 +25,7 @@ class GitHubConfigRead(BaseModel):
     email: str | None = None
     avatar_url: str | None = None
     token_hint: str | None = None  # last 4 chars, e.g. "…a1b2"
-    updated_at: datetime | None = None
+    updated_at: UTCDatetime | None = None
 
     @classmethod
     def disconnected(cls) -> GitHubConfigRead:
@@ -55,7 +54,7 @@ class GitHubRepo(BaseModel):
     private: bool = False
     clone_url: str
     default_branch: str = "main"
-    updated_at: datetime | None = None
+    updated_at: UTCDatetime | None = None
 
 
 class GitHubCloneInput(BaseModel):
