@@ -94,6 +94,14 @@ export interface UseChatOptions {
   onThreadCreated?: (thread: Thread) => void
 }
 
+/** A message the user submitted while a run was still streaming. Queued
+ *  messages auto-send (FIFO) once the active run settles. */
+export interface QueuedMessage {
+  id: string
+  text: string
+  attachments: PendingAttachment[]
+}
+
 export interface UseChat {
   selectedThreadId: string | null
   messages: ChatMessage[]
@@ -101,8 +109,20 @@ export interface UseChat {
   todos: AgentTodo[]
   isStreaming: boolean
   error: string | null
+  /** Messages waiting to send after the current run settles (FIFO). */
+  queue: QueuedMessage[]
+  /** The queue holds messages but won't auto-drain (set when a run is stopped). */
+  queuePaused: boolean
   send: (text: string, attachments?: PendingAttachment[]) => Promise<void>
   stop: () => void
+  /** Drop a queued message before it sends. */
+  removeQueued: (id: string) => void
+  /** Replace a queued message's text in place. */
+  editQueued: (id: string, text: string) => void
+  /** Resume a paused queue, firing it now. */
+  resumeQueue: () => void
+  /** Drop every queued message. */
+  clearQueue: () => void
   loadConversation: (threadId: string) => Promise<void>
   startNewConversation: () => void
 }
@@ -120,6 +140,10 @@ export function useChat(options: UseChatOptions): UseChat {
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  const [queue, setQueue] = useState<QueuedMessage[]>([])
+  // Paused: the queue holds messages but won't auto-fire when a run settles
+  // (set when the user stops a run); the user resumes it explicitly.
+  const [queuePaused, setQueuePaused] = useState(false)
 
   const agentRef = useRef<HttpAgent | null>(null)
   const agentThreadRef = useRef<string | null>(null)
@@ -141,6 +165,55 @@ export function useChat(options: UseChatOptions): UseChat {
   isStreamingRef.current = isStreaming
   // Monotonic token so a slow history load can't clobber a newer conversation.
   const loadSeq = useRef(0)
+
+  // Authoritative queue mirror so the run-settle handler (a stale closure) can
+  // drain the latest queue, plus a self-ref so it can re-enter the send path,
+  // and a pause mirror the drain reads synchronously.
+  const queueRef = useRef<QueuedMessage[]>([])
+  const pausedRef = useRef(false)
+  const performSendRef = useRef<((msg: QueuedMessage) => Promise<void>) | null>(
+    null
+  )
+  const mountedRef = useRef(true)
+  useEffect(() => () => void (mountedRef.current = false), [])
+
+  // Write both the queue mirror and state; an empty queue can't stay paused, so
+  // reset the flag when it drains or is cleared.
+  const setQueueSynced = useCallback((next: QueuedMessage[]) => {
+    queueRef.current = next
+    setQueue(next)
+    if (next.length === 0 && pausedRef.current) {
+      pausedRef.current = false
+      setQueuePaused(false)
+    }
+  }, [])
+
+  const removeQueued = useCallback(
+    (id: string) =>
+      setQueueSynced(queueRef.current.filter((m) => m.id !== id)),
+    [setQueueSynced]
+  )
+
+  const editQueued = useCallback(
+    (id: string, text: string) =>
+      setQueueSynced(
+        queueRef.current.map((m) => (m.id === id ? { ...m, text } : m))
+      ),
+    [setQueueSynced]
+  )
+
+  const clearQueue = useCallback(() => setQueueSynced([]), [setQueueSynced])
+
+  // Send the next queued message (FIFO), re-entering the send path via the ref.
+  // Reads pausedRef (not state) so a run's settle handler sees a pause set
+  // mid-stream by stop().
+  const drainQueue = useCallback(() => {
+    if (!mountedRef.current || pausedRef.current) return
+    const [next, ...rest] = queueRef.current
+    if (!next) return
+    setQueueSynced(rest)
+    void performSendRef.current?.(next)
+  }, [setQueueSynced])
 
   const resolveAssistantId = useCallback((messageId?: string) => {
     if (messageId) {
@@ -211,9 +284,10 @@ export function useChat(options: UseChatOptions): UseChat {
           currentAssistantId.current = null
           setIsStreaming(false)
           setMessages((prev) => finishStreaming(prev))
+          drainQueue()
         })
     },
-    [handlers]
+    [handlers, drainQueue]
   )
 
   const loadConversation = useCallback(
@@ -231,6 +305,8 @@ export function useChat(options: UseChatOptions): UseChat {
       setError(null)
       setIsStreaming(false)
       setMessages([])
+      // Queued messages belong to the conversation they were typed in.
+      setQueueSynced([])
       // A reconnect replays this thread's buffered `todos` events and rebuilds
       // the list; clear first so a stale list from the previous thread can't linger.
       setTodos([])
@@ -253,7 +329,7 @@ export function useChat(options: UseChatOptions): UseChat {
         reconnectToRun(threadId)
       }
     },
-    [abortLocalStreams, reconnectToRun]
+    [abortLocalStreams, reconnectToRun, setQueueSynced]
   )
 
   const startNewConversation = useCallback(() => {
@@ -269,12 +345,14 @@ export function useChat(options: UseChatOptions): UseChat {
     setTodos([])
     setError(null)
     setIsStreaming(false)
-  }, [abortLocalStreams])
+    setQueueSynced([])
+  }, [abortLocalStreams, setQueueSynced])
 
-  const send = useCallback(
-    async (text: string, attachments: PendingAttachment[] = []) => {
-      const trimmed = text.trim()
-      if ((!trimmed && attachments.length === 0) || isStreamingRef.current) return
+  // Streams a single message end to end. Reads no composer state, so it serves
+  // both a live submit and a message drained off the queue. Drains the next
+  // queued message once this run settles.
+  const performSend = useCallback(
+    async ({ text: trimmed, attachments }: QueuedMessage) => {
       const { workspaceId, agentId } = optionsRef.current
       if (!workspaceId || !agentId) {
         setError("Pick an agent before sending a message.")
@@ -378,12 +456,46 @@ export function useChat(options: UseChatOptions): UseChat {
           currentAssistantId.current = null
           setMessages((prev) => finishStreaming(prev))
         }
+        // Chain the next queued message once this run settles. A no-op when the
+        // queue is empty, paused (stopped run), or cleared by a conversation
+        // switch, so it never leaks into another thread.
+        drainQueue()
       }
     },
-    [handlers]
+    [handlers, drainQueue]
+  )
+  performSendRef.current = performSend
+
+  const send = useCallback(
+    async (text: string, attachments: PendingAttachment[] = []) => {
+      const trimmed = text.trim()
+      if (!trimmed && attachments.length === 0) return
+      const msg: QueuedMessage = { id: randomUUID(), text: trimmed, attachments }
+      // Append while a run is streaming, or while a pending queue already exists,
+      // so new messages join the batch in order rather than jumping ahead.
+      if (isStreamingRef.current || queueRef.current.length > 0) {
+        setQueueSynced([...queueRef.current, msg])
+        return
+      }
+      await performSend(msg)
+    },
+    [performSend, setQueueSynced]
   )
 
+  // Resume a paused queue: fire it now (the rest auto-drain as each run settles).
+  const resumeQueue = useCallback(() => {
+    pausedRef.current = false
+    setQueuePaused(false)
+    drainQueue()
+  }, [drainQueue])
+
   const stop = useCallback(() => {
+    // Pause (don't drop) any queued messages so the settling stream's drain
+    // doesn't auto-fire them; the user resumes the queue explicitly.
+    if (queueRef.current.length > 0) {
+      pausedRef.current = true
+      setQueuePaused(true)
+    }
     abortLocalStreams()
     setIsStreaming(false)
     setMessages((prev) => finishStreaming(prev))
@@ -400,8 +512,14 @@ export function useChat(options: UseChatOptions): UseChat {
     todos,
     isStreaming,
     error,
+    queue,
+    queuePaused,
     send,
     stop,
+    removeQueued,
+    editQueued,
+    resumeQueue,
+    clearQueue,
     loadConversation,
     startNewConversation,
   }

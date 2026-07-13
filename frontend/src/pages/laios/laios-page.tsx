@@ -1,5 +1,6 @@
 import {
   WarningCircle,
+  CaretDown,
   Check,
   CaretUpDown,
   Cpu,
@@ -431,6 +432,10 @@ function ConnectionPanel({
         <p className="text-sm text-destructive">
           {error instanceof Error ? error.message : "Failed to load models"}
         </p>
+      ) : empty ? (
+        // Nothing running — a slim full-width CTA rather than a lone tall tile
+        // stranded in a wide grid.
+        <ServeModelBar onClick={onServe} />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {/* In-flight serves first — a downloading/starting model has no daemon
@@ -450,8 +455,8 @@ function ConnectionPanel({
               onStop={() => onStop(inst)}
             />
           ))}
-          {/* The "serve" action lives as a tile in the grid rather than a header
-              button, so it doubles as the empty-state CTA when nothing runs. */}
+          {/* Alongside real models the serve action is one more tile in the
+              grid; on its own (empty) it becomes the slim bar above instead. */}
           <NewModelCard onClick={onServe} />
         </div>
       )}
@@ -459,9 +464,24 @@ function ConnectionPanel({
   )
 }
 
+// The empty-state serve prompt: a slim full-width dashed bar. Used when nothing
+// is running so the CTA doesn't stretch into a lone oversized tile; once models
+// exist the grid uses NewModelCard instead.
+function ServeModelBar({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-border py-3 text-sm font-medium text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+    >
+      <Plus className="h-4 w-4" />
+      Serve a model
+    </button>
+  )
+}
+
 // Dashed placeholder tile that kicks off the serve flow. Sits in the models
-// grid so adding a model reads as "one more card", and is the sole tile (and
-// thus the empty-state prompt) when nothing is running yet.
+// grid alongside running models so adding one reads as "one more card".
 function NewModelCard({ onClick }: { onClick: () => void }) {
   return (
     <button
@@ -777,13 +797,30 @@ function VramBar({ connectionId }: { connectionId: string }) {
 // the numbers reflect capacity you can actually serve into right now.
 function ClusterPanel({ connectionId }: { connectionId: string }) {
   const { data } = useLaiosCluster(connectionId)
+  const [open, setOpen] = useState(false)
   const res = data?.resources
   if (!res || res.total_nodes_known <= 1) return null
 
   return (
-    <div className="space-y-3 rounded-lg border border-border p-4">
-      <div className="flex items-baseline justify-between gap-2">
+    // A section within the node card (not its own boxed panel) — a top border
+    // separates it from the VRAM bar. Collapsed by default so the card stays
+    // compact; the header keeps the at-a-glance node/GPU summary visible and
+    // expands to the per-node breakdown. The aggregate free/total lives once,
+    // in the GPU memory header directly above, so it isn't repeated here.
+    <div className="border-t border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-baseline justify-between gap-2 p-4 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
         <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <CaretDown
+            className={cn(
+              "h-3.5 w-3.5 text-muted-foreground transition-transform",
+              open ? "rotate-0" : "-rotate-90"
+            )}
+          />
           <Stack className="h-4 w-4 text-muted-foreground" />
           Cluster
         </div>
@@ -792,19 +829,17 @@ function ClusterPanel({ connectionId }: { connectionId: string }) {
             {res.node_count}
           </span>{" "}
           of {res.total_nodes_known} node{res.total_nodes_known === 1 ? "" : "s"}{" "}
-          online · {res.total_gpus} GPU{res.total_gpus === 1 ? "" : "s"} ·{" "}
-          <span className="font-medium text-foreground">
-            {fmtGb(res.free_vram_mb)}
-          </span>{" "}
-          free of {fmtGb(res.total_vram_mb)}
+          online · {res.total_gpus} GPU{res.total_gpus === 1 ? "" : "s"}
         </div>
-      </div>
+      </button>
 
-      <div className="divide-y divide-border rounded-md border border-border">
-        {res.nodes.map((n) => (
-          <ClusterNodeRow key={n.node_id} node={n} />
-        ))}
-      </div>
+      {open ? (
+        <div className="divide-y divide-border px-4 pb-4">
+          {res.nodes.map((n) => (
+            <ClusterNodeRow key={n.node_id} node={n} />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -813,7 +848,7 @@ function ClusterNodeRow({ node }: { node: LaiosNodeResources }) {
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-3 px-3 py-2 text-xs",
+        "flex items-center justify-between gap-3 py-2 text-xs",
         !node.online && "opacity-50"
       )}
     >

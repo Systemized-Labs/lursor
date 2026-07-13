@@ -1,5 +1,5 @@
 import { useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react"
-import { Paperclip, PaperPlaneTilt, Square, X } from "@phosphor-icons/react"
+import { Clock, Paperclip, PaperPlaneTilt, Play, Square, X } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { MentionMenu } from "@/components/chat/mentions/MentionMenu"
 import { useMentions } from "@/components/chat/mentions/use-mentions"
 import type { MentionSource, ResolvedMention } from "@/components/chat/mentions/types"
+import type { QueuedMessage } from "@/agui/useChat"
 import type { PendingAttachment } from "@/agui/types"
 
 const NOOP_SOURCES: MentionSource[] = []
@@ -47,6 +48,16 @@ export interface ChatComposerProps {
   mentionSources?: MentionSource[]
   /** Called when the user commits a mention (for optional backend resolution). */
   onMentionAdd?: (mention: ResolvedMention) => void
+  /** Messages waiting to send after the current run settles (FIFO). */
+  queuedMessages?: QueuedMessage[]
+  /** Whether the queue is paused (won't auto-drain until resumed). */
+  queuePaused?: boolean
+  /** Drop a queued message. */
+  onRemoveQueued?: (id: string) => void
+  /** Edit a queued message's text in place. */
+  onEditQueued?: (id: string, text: string) => void
+  /** Send the queued messages now (resume a paused queue). */
+  onResumeQueue?: () => void
 }
 
 /** Message composer: a growing textarea inside a rounded card, with send/stop,
@@ -64,9 +75,17 @@ export function ChatComposer({
   onAttachmentsChange,
   mentionSources,
   onMentionAdd,
+  queuedMessages = [],
+  queuePaused = false,
+  onRemoveQueued,
+  onEditQueued,
+  onResumeQueue,
 }: ChatComposerProps) {
   const canAttach = !!onAttachmentsChange && !disabled
   const hasContent = !!input.trim() || attachments.length > 0
+  // Submitting now would queue rather than send: a run is streaming, or a
+  // pending queue already exists that this message should join.
+  const willQueue = isSending || queuedMessages.length > 0
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
@@ -144,6 +163,40 @@ export function ChatComposer({
             disabled && "opacity-60"
           )}
         >
+          {queuedMessages.length > 0 && (
+            <div className="mb-1.5 flex flex-col gap-1">
+              <div className="flex items-center justify-between gap-2 px-1">
+                <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <Clock className="h-3 w-3 flex-shrink-0" />
+                  <span>
+                    {queuedMessages.length} queued ·{" "}
+                    {queuePaused ? "paused" : "sends top to bottom"}
+                  </span>
+                </div>
+                {queuePaused && onResumeQueue && (
+                  <button
+                    type="button"
+                    onClick={onResumeQueue}
+                    title="Send the queued messages now"
+                    className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary hover:bg-primary/10"
+                  >
+                    <Play className="h-2.5 w-2.5" weight="fill" />
+                    Send queue
+                  </button>
+                )}
+              </div>
+              {queuedMessages.map((q, i) => (
+                <QueuedMessageRow
+                  key={q.id}
+                  index={i}
+                  text={q.text}
+                  attachmentCount={q.attachments.length}
+                  onEdit={onEditQueued ? (text) => onEditQueued(q.id, text) : undefined}
+                  onRemove={onRemoveQueued ? () => onRemoveQueued(q.id) : undefined}
+                />
+              ))}
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="mb-1.5 flex flex-wrap gap-2 px-1">
               {attachments.map((a) => (
@@ -208,7 +261,7 @@ export function ChatComposer({
               onClick={mentions.refresh}
               onSelect={mentions.refresh}
               onPaste={handlePaste}
-              placeholder={placeholder}
+              placeholder={willQueue ? "Add to queue…" : placeholder}
               disabled={disabled}
               rows={1}
               className={cn(
@@ -217,21 +270,34 @@ export function ChatComposer({
               )}
             />
             {isSending ? (
-              <Button
-                onClick={onStop}
-                variant="destructive"
-                size="icon"
-                title="Stop"
-                className="h-8 w-8 flex-shrink-0 rounded-full"
-              >
-                <Square className="h-4 w-4" />
-              </Button>
+              <div className="flex flex-shrink-0 items-center gap-1.5">
+                {hasContent && (
+                  <Button
+                    onClick={onSend}
+                    size="icon"
+                    title="Add to queue"
+                    aria-label="Add to queue"
+                    className="h-8 w-8 rounded-full"
+                  >
+                    <PaperPlaneTilt className="h-4 w-4" />
+                  </Button>
+                )}
+                <Button
+                  onClick={onStop}
+                  variant="destructive"
+                  size="icon"
+                  title="Stop"
+                  className="h-8 w-8 rounded-full"
+                >
+                  <Square className="h-4 w-4" />
+                </Button>
+              </div>
             ) : (
               <Button
                 onClick={onSend}
                 disabled={disabled || !hasContent}
                 size="icon"
-                title="Send"
+                title={willQueue ? "Add to queue" : "Send"}
                 className={cn(
                   "h-8 w-8 flex-shrink-0 rounded-full transition-transform duration-150",
                   hasContent && !disabled && "hover:scale-105 active:scale-95"
@@ -243,6 +309,104 @@ export function ChatComposer({
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+interface QueuedMessageRowProps {
+  index: number
+  text: string
+  attachmentCount: number
+  onEdit?: (text: string) => void
+  onRemove?: () => void
+}
+
+/** One queued message: a numbered badge makes send order explicit (the top row
+ *  is "Next"), and clicking the text edits it in place. */
+function QueuedMessageRow({
+  index,
+  text,
+  attachmentCount,
+  onEdit,
+  onRemove,
+}: QueuedMessageRowProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const isEditing = draft !== null
+  const isNext = index === 0
+  const label = text || (attachmentCount > 0 ? `${attachmentCount} attachment(s)` : "")
+
+  function commit() {
+    const next = draft?.trim()
+    if (next && next !== text) onEdit?.(next)
+    setDraft(null)
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs",
+        isNext
+          ? "bg-primary/10 text-foreground ring-1 ring-primary/20"
+          : "bg-muted/50 text-muted-foreground"
+      )}
+    >
+      <span
+        className={cn(
+          "flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums",
+          isNext
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted-foreground/20 text-muted-foreground"
+        )}
+      >
+        {index + 1}
+      </span>
+      {isEditing ? (
+        <input
+          autoFocus
+          value={draft ?? ""}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault()
+              commit()
+            }
+            if (e.key === "Escape") {
+              e.preventDefault()
+              setDraft(null)
+            }
+          }}
+          onBlur={commit}
+          className="min-w-0 flex-1 border-b border-primary/40 bg-transparent py-0.5 text-foreground outline-none"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => onEdit && setDraft(text)}
+          title={onEdit ? "Click to edit" : undefined}
+          className={cn(
+            "min-w-0 flex-1 truncate text-left",
+            onEdit && "cursor-text hover:text-foreground"
+          )}
+        >
+          {label}
+        </button>
+      )}
+      {isNext && !isEditing && (
+        <span className="flex-shrink-0 text-[10px] uppercase tracking-wide text-primary">
+          Next
+        </span>
+      )}
+      {onRemove && !isEditing && (
+        <button
+          type="button"
+          onClick={onRemove}
+          title="Remove from queue"
+          aria-label="Remove from queue"
+          className="flex-shrink-0 text-muted-foreground hover:text-destructive"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
     </div>
   )
 }

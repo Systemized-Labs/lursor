@@ -6,6 +6,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
+    "postinstall": "node electron/patch-dev-name.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",

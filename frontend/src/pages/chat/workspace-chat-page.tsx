@@ -351,6 +351,11 @@ export function WorkspaceChatPage() {
         attachments={attachments}
         onAttachmentsChange={setAttachments}
         mentionSources={mentionSources}
+        queuedMessages={chat.queue}
+        queuePaused={chat.queuePaused}
+        onRemoveQueued={chat.removeQueued}
+        onEditQueued={chat.editQueued}
+        onResumeQueue={chat.resumeQueue}
       />
     </div>
   )
