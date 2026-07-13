@@ -4045,6 +4045,22 @@
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
+
+  /* Reveal-on-hover scrollbar: the track stays clear and the thumb only
+     paints while the pointer is over the scroll container. Keeps scrollable
+     lists (e.g. the sidebar workspaces) from showing a persistent bar. */
+  .scrollbar-hover {
+    scrollbar-color: transparent transparent;
+  }
+  .scrollbar-hover:hover {
+    scrollbar-color: var(--border) transparent;
+  }
+  .scrollbar-hover::-webkit-scrollbar-thumb {
+    background-color: transparent;
+  }
+  .scrollbar-hover:hover::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+  }
 }
 
 /* Chat typing indicator — soft pulse used by the streaming dots. */

@@ -270,8 +270,8 @@ export function AppSidebar() {
         </Link>
       </SidebarHeader>
 
-      <SidebarContent>
-        <SidebarGroup>
+      <SidebarContent className="overflow-hidden">
+        <SidebarGroup className="shrink-0">
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
@@ -321,7 +321,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup>
+        <SidebarGroup className="flex min-h-0 flex-1 flex-col">
           <div className="group/workspaces flex items-center">
             <SidebarGroupLabel className="flex-1">Workspaces</SidebarGroupLabel>
             <button
@@ -334,7 +334,7 @@ export function AppSidebar() {
               <FolderPlus className="size-4" />
             </button>
           </div>
-          <SidebarGroupContent>
+          <SidebarGroupContent className="scrollbar-hover min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:overflow-hidden">
             <SidebarMenu>
               {workspacesQuery.isLoading ? (
                 <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
