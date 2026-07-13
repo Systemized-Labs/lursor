@@ -28,10 +28,61 @@ export function argsPreview(args: unknown): string {
   return s.length > 90 ? `${s.slice(0, 90)}…` : s
 }
 
+/** A single tool call: name + argument preview, expandable to reveal its result. */
+function ToolCallRow({
+  toolCall,
+  compact,
+}: {
+  toolCall: ChatToolCall
+  compact?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const preview = argsPreview(toolCall.args)
+  const hasResult = toolCall.result !== undefined && toolCall.result !== ""
+
+  return (
+    <div className="min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={!hasResult}
+        className="flex w-full min-w-0 items-baseline gap-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground disabled:hover:text-muted-foreground"
+      >
+        <Wrench
+          className={cn(
+            "shrink-0 self-center",
+            compact ? "h-3 w-3" : "h-3.5 w-3.5"
+          )}
+        />
+        <span className="shrink-0 font-mono text-foreground">{toolCall.name}</span>
+        {preview && (
+          <span className="truncate font-mono text-[11px] text-muted-foreground">
+            {preview}
+          </span>
+        )}
+        {hasResult && (
+          <CaretDown
+            className={cn(
+              "ml-auto h-3 w-3 shrink-0 self-center transition-transform",
+              open && "rotate-180"
+            )}
+          />
+        )}
+      </button>
+
+      {open && hasResult && (
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-[11px] text-muted-foreground">
+          {toolCall.result}
+        </pre>
+      )}
+    </div>
+  )
+}
+
 /**
- * Collapsible transcript of the tools an agent invoked during a turn. The
- * header shows the count; expanding reveals each tool's name, argument preview,
- * and (when present) its result.
+ * Transcript of the tools an agent invoked during a turn. Each tool renders as
+ * its own row showing the tool's name and an argument preview; a row with a
+ * result can be expanded to reveal it.
  */
 export function ChatToolCalls({
   toolCalls,
@@ -40,51 +91,13 @@ export function ChatToolCalls({
   toolCalls: ChatToolCall[]
   compact?: boolean
 }) {
-  const [open, setOpen] = useState(false)
   if (!toolCalls.length) return null
 
   return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <Wrench className={cn(compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
-        <span>
-          {toolCalls.length} tool{toolCalls.length === 1 ? "" : "s"} used
-        </span>
-        <CaretDown
-          className={cn("h-3 w-3 transition-transform", open && "rotate-180")}
-        />
-      </button>
-
-      {open && (
-        <div className="mt-1.5 space-y-2">
-          {toolCalls.map((tc) => {
-            const preview = argsPreview(tc.args)
-            return (
-              <div key={tc.id} className="min-w-0">
-                <div className="flex items-baseline gap-2 min-w-0">
-                  <span className="font-mono text-xs text-foreground shrink-0">
-                    {tc.name}
-                  </span>
-                  {preview && (
-                    <span className="truncate font-mono text-[11px] text-muted-foreground">
-                      {preview}
-                    </span>
-                  )}
-                </div>
-                {tc.result !== undefined && tc.result !== "" && (
-                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/40 p-2 font-mono text-[11px] text-muted-foreground">
-                    {tc.result}
-                  </pre>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
+    <div className="space-y-1.5">
+      {toolCalls.map((tc) => (
+        <ToolCallRow key={tc.id} toolCall={tc} compact={compact} />
+      ))}
     </div>
   )
 }
