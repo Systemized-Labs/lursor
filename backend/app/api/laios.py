@@ -388,6 +388,18 @@ async def stop_instance(
     )
 
 
+@router.delete("/connections/{cid}/instances/{instance_id}")
+async def remove_instance(
+    cid: str, instance_id: str, session: AsyncSession = Depends(get_session)
+):
+    return await _forward(
+        await _get_conn(cid, session),
+        "DELETE",
+        f"/v1/instances/{instance_id}",
+        timeout=httpx.Timeout(60.0),
+    )
+
+
 @router.get("/connections/{cid}/instances/{instance_id}/logs")
 async def instance_logs(
     cid: str,
