@@ -29,7 +29,15 @@ from app.agents.builder import build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
-from app.db.models import Agent, CustomProvider, Message, Subagent, Thread, Workspace
+from app.db.models import (
+    Agent,
+    AppConfig,
+    CustomProvider,
+    Message,
+    Subagent,
+    Thread,
+    Workspace,
+)
 from app.db.session import async_session_factory, get_session
 from app.media_store import media_path, save_base64_image
 
@@ -257,8 +265,12 @@ async def chat(
     # Global subagent roster — the builder only applies it when the agent has
     # include_subagents on.
     subagents = list((await session.execute(select(Subagent))).scalars().all())
+    # Global overrides for the pydantic-deep subagent defaults (max nesting depth,
+    # disabled built-ins). Absent → the builder falls back to library defaults.
+    app_config = (await session.execute(select(AppConfig))).scalars().first()
+    deep_defaults = app_config.deep_defaults if app_config else None
     agent, deps = build_deep_agent(
-        agent_row, workspace.path, custom_providers, subagents
+        agent_row, workspace.path, custom_providers, subagents, deep_defaults
     )
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.

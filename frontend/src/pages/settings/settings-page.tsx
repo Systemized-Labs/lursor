@@ -1,13 +1,18 @@
+import { useState } from "react"
 import { useSearchParams } from "react-router-dom"
 
 import { PageHeader } from "@/components/page-header"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GitHubPage } from "@/pages/github/github-page"
-import { LaiosPage } from "@/pages/laios/laios-page"
-import { ProvidersPage } from "@/pages/providers/providers-page"
-import { OpenRouterSection } from "./openrouter-section"
+import { AgentDefaultsSection } from "./agent-defaults-section"
+import {
+  PROVIDER_TABS,
+  ProvidersSection,
+  isProviderTab,
+  type ProviderTab,
+} from "./providers-section"
 
-const TABS = ["openrouter", "providers", "laios", "github"] as const
+const TABS = ["general", "providers"] as const
 type Tab = (typeof TABS)[number]
 
 function isTab(value: string | null): value is Tab {
@@ -15,14 +20,21 @@ function isTab(value: string | null): value is Tab {
 }
 
 /**
- * App-level settings: model provider credentials (OpenRouter key + custom
- * providers) and the GitHub connection. The active tab is mirrored to `?tab=`
- * so it survives reloads and is deep-linkable.
+ * App-level settings. "General" holds the GitHub connection and agent runtime
+ * defaults; "Providers" groups every model source (OpenRouter key, custom
+ * endpoints, LAIOS), picked via a segmented control that sits inline on the tab
+ * row so the section keeps the full page width. The active tab is mirrored to
+ * `?tab=` so it survives reloads and is deep-linkable.
  */
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get("tab")
-  const active: Tab = isTab(tabParam) ? tabParam : "openrouter"
+  const active: Tab = isTab(tabParam) ? tabParam : "general"
+
+  const subParam = searchParams.get("sub")
+  const provider: ProviderTab =
+    subParam && isProviderTab(subParam) ? subParam : "laios"
+  const [providerTab, setProviderTab] = useState<ProviderTab>(provider)
 
   function handleTabChange(value: string) {
     setSearchParams(
@@ -43,24 +55,36 @@ export function SettingsPage() {
       />
 
       <Tabs value={active} onValueChange={handleTabChange} className="space-y-6">
-        <TabsList>
-          <TabsTrigger value="openrouter">OpenRouter</TabsTrigger>
-          <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="laios">laios</TabsTrigger>
-          <TabsTrigger value="github">GitHub</TabsTrigger>
-        </TabsList>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TabsList>
+            <TabsTrigger value="general">General</TabsTrigger>
+            <TabsTrigger value="providers">Providers</TabsTrigger>
+          </TabsList>
 
-        <TabsContent value="openrouter">
-          <OpenRouterSection />
+          {/* Provider sub-selector lives inline here (rather than a second tab
+              row) so the Providers body keeps the full width and height. */}
+          {active === "providers" && (
+            <Tabs
+              value={providerTab}
+              onValueChange={(v) => setProviderTab(v as ProviderTab)}
+            >
+              <TabsList>
+                {PROVIDER_TABS.map((t) => (
+                  <TabsTrigger key={t.value} value={t.value}>
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          )}
+        </div>
+
+        <TabsContent value="general" className="space-y-6">
+          <GitHubPage embedded />
+          <AgentDefaultsSection />
         </TabsContent>
         <TabsContent value="providers">
-          <ProvidersPage embedded />
-        </TabsContent>
-        <TabsContent value="laios">
-          <LaiosPage embedded />
-        </TabsContent>
-        <TabsContent value="github">
-          <GitHubPage embedded />
+          <ProvidersSection value={providerTab} />
         </TabsContent>
       </Tabs>
     </div>

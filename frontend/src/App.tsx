@@ -43,7 +43,7 @@ function App() {
         />
         <Route
           path="github"
-          element={<Navigate to="/settings?tab=github" replace />}
+          element={<Navigate to="/settings?tab=general" replace />}
         />
         {/* Back-compat: the old top-level pages now live as tabs. */}
         <Route

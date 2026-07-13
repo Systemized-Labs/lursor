@@ -102,21 +102,33 @@ function SubagentCard({ call }: { call: ChatToolCall }) {
         </span>
       </button>
 
-      {description && (
-        <p className="border-t border-border/60 px-3 py-2 text-xs leading-5 text-muted-foreground">
-          {description}
-        </p>
-      )}
-
-      {open && call.result !== undefined && call.result !== "" && (
-        <pre
-          className={cn(
-            "max-h-56 overflow-auto whitespace-pre-wrap break-words border-t border-border/60 bg-muted/40 px-3 py-2 font-mono text-[11px]",
-            state === "error" ? "text-destructive" : "text-muted-foreground"
+      {open && (
+        <>
+          {description && (
+            <div className="border-t border-border/60 px-3 py-2">
+              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                Task
+              </p>
+              <p className="text-xs leading-5 text-muted-foreground">{description}</p>
+            </div>
           )}
-        >
-          {call.result}
-        </pre>
+
+          {call.result !== undefined && call.result !== "" && (
+            <div className="border-t border-border/60 px-3 py-2">
+              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                Result
+              </p>
+              <pre
+                className={cn(
+                  "max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-2 py-1.5 font-mono text-[11px]",
+                  state === "error" ? "text-destructive" : "text-muted-foreground"
+                )}
+              >
+                {call.result}
+              </pre>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

@@ -92,7 +92,7 @@ export function GitHubRepoPickerDialog({
               Connect a GitHub account to browse your repositories.
             </p>
             <Button asChild variant="secondary" onClick={() => onOpenChange(false)}>
-              <Link to="/settings?tab=github">Connect GitHub</Link>
+              <Link to="/settings?tab=general">Connect GitHub</Link>
             </Button>
           </div>
         ) : (

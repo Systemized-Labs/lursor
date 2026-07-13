@@ -94,7 +94,7 @@ export function LaiosConnectionDialog({
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
-            {isEdit ? "Edit laios connection" : "Add laios connection"}
+            {isEdit ? "Edit LAIOS connection" : "Add LAIOS connection"}
           </DialogTitle>
           <DialogDescription>
             Point at a laios daemon control plane (usually port 7420). The

@@ -64,7 +64,7 @@ import { LaiosStatusBadge } from "./laios-status-badge"
 import { ServeModelDialog } from "./serve-model-dialog"
 
 const DESCRIPTION =
-  "Connect to laios daemons to see what's running, spin models up and down, and monitor VRAM — across one or more local or remote nodes."
+  "Connect to LAIOS daemons to see what's running, spin models up and down, and monitor VRAM — across one or more local or remote nodes."
 
 const ACTIVE_KEY = "laios.activeConnectionId"
 
@@ -159,7 +159,7 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
           the description/add row entirely — adding a connection lives in the
           switcher and the empty state. Standalone still gets a page header. */}
       {embedded ? null : (
-        <PageHeader title="laios" description={DESCRIPTION} actions={action} />
+        <PageHeader title="LAIOS" description={DESCRIPTION} actions={action} />
       )}
 
       {isLoading ? (
@@ -170,8 +170,8 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
         </p>
       ) : !connections || connections.length === 0 ? (
         <EmptyState
-          title="No laios connections yet"
-          description="Add a laios daemon URL and master key to manage models from here."
+          title="No LAIOS connections yet"
+          description="Add a LAIOS daemon URL and master key to manage models from here."
           action={
             <Button onClick={openAddConnection}>
               <Plus className="h-4 w-4" />
@@ -181,17 +181,24 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
         />
       ) : (
         <>
-          <ConnectionBar
-            connections={connections}
-            activeId={activeConnection?.id}
-            onSelect={setActiveId}
-            onAdd={openAddConnection}
-            onEdit={(c) => {
-              setEditingConn(c)
-              setConnFormOpen(true)
-            }}
-            onDelete={setConnToDelete}
-          />
+          {/* One node card: the connection switcher/status as its header and the
+              node's GPU memory as its body — VRAM belongs to the selected node. */}
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <ConnectionBar
+              connections={connections}
+              activeId={activeConnection?.id}
+              onSelect={setActiveId}
+              onAdd={openAddConnection}
+              onEdit={(c) => {
+                setEditingConn(c)
+                setConnFormOpen(true)
+              }}
+              onDelete={setConnToDelete}
+            />
+            {activeConnection ? (
+              <VramBar connectionId={activeConnection.id} />
+            ) : null}
+          </div>
 
           {activeConnection ? (
             <ConnectionPanel
@@ -287,10 +294,9 @@ function ConnectionBar({
 }) {
   const active = connections.find((c) => c.id === activeId)
   return (
-    // One bordered unit that groups everything about the active connection —
-    // switcher, live status, URL, and its actions — so it reads as a single
-    // "current connection" panel rather than scattered controls.
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-card px-3 py-2">
+    // The header of the node card: switcher, live status, URL, and actions for
+    // the active connection. The card body (its GPU memory) sits directly below.
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3 py-2">
       {/* A proper switcher instead of a bare select: each entry shows its live
           reachability and URL, and adding a connection lives in the same menu. */}
       <DropdownMenu>
@@ -406,8 +412,6 @@ function ConnectionPanel({
 
   return (
     <div className="space-y-5">
-      <VramBar connectionId={connection.id} />
-
       {updating ? (
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <DotGridLoader size="2xs" />
@@ -486,7 +490,11 @@ function PendingCard({
         ? "Starting engine…"
         : "Failed to start"
   return (
-    <Card className={failed ? "flex flex-col" : "flex flex-col ring-1 ring-border"}>
+    <Card
+      className={
+        failed ? "flex h-full flex-col" : "flex h-full flex-col ring-1 ring-border"
+      }
+    >
       <CardHeader>
         <div className="flex items-start justify-between gap-2">
           <CardTitle className="truncate">{pending.name}</CardTitle>
@@ -549,8 +557,8 @@ function InstanceCard({
     <Card
       className={
         transitioning
-          ? "flex flex-col ring-1 ring-border transition-shadow"
-          : "flex flex-col"
+          ? "flex h-full flex-col ring-1 ring-border transition-shadow"
+          : "flex h-full flex-col"
       }
     >
       <CardHeader>
@@ -648,7 +656,7 @@ function VramBar({ connectionId }: { connectionId: string }) {
 
   return (
     <TooltipProvider delayDuration={100}>
-      <div className="space-y-3 rounded-lg border border-border p-4">
+      <div className="space-y-3 p-4">
         <div className="flex items-baseline justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Cpu className="h-4 w-4 text-muted-foreground" />
@@ -689,7 +697,11 @@ function VramBar({ connectionId }: { connectionId: string }) {
         </div>
 
         <div className="flex flex-wrap gap-x-5 gap-y-1.5">
-          {segments.map((s) => (
+          {/* "Available" is already stated top-right ("… free of …"), so the
+              legend only needs the used segments. */}
+          {segments
+            .filter((s) => s.key !== "available")
+            .map((s) => (
             <div key={s.key} className="flex items-center gap-1.5 text-xs">
               <span className={cn("h-2.5 w-2.5 rounded-full", s.dot)} />
               <span className="text-muted-foreground">{s.label}</span>

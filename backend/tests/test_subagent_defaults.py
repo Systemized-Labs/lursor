@@ -1,0 +1,130 @@
+"""Tests for viewing / overriding the pydantic-deep subagent defaults."""
+
+from __future__ import annotations
+
+import os
+import tempfile
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+_tmp = tempfile.mkdtemp(prefix="lursor-test-sub-")
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
+os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
+os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
+
+from app.agents.builder import build_deep_agent  # noqa: E402
+from app.db.models import Agent, Subagent  # noqa: E402
+from app.db.session import init_db  # noqa: E402
+from app.main import app  # noqa: E402
+
+
+@pytest.fixture
+async def client():
+    await init_db()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test/api") as c:
+        yield c
+
+
+async def test_defaults_expose_library_builtins(client: AsyncClient):
+    r = await client.get("/subagents/defaults")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    names = {b["name"] for b in body["builtins"]}
+    assert names == {"general-purpose", "research"}
+    assert all(b["enabled"] for b in body["builtins"])
+    assert all(b["override"] is None for b in body["builtins"])
+    assert all(b["default_instructions"] for b in body["builtins"])
+
+    assert body["max_nesting_depth"] == {
+        "library_default": 1,
+        "override": None,
+        "effective": 1,
+    }
+
+
+async def test_max_nesting_depth_override_and_clear(client: AsyncClient):
+    r = await client.put("/subagents/defaults", json={"max_nesting_depth": 3})
+    assert r.status_code == 200, r.text
+    assert r.json()["max_nesting_depth"] == {
+        "library_default": 1,
+        "override": 3,
+        "effective": 3,
+    }
+
+    r = await client.put("/subagents/defaults", json={"clear_max_nesting_depth": True})
+    assert r.json()["max_nesting_depth"]["override"] is None
+    assert r.json()["max_nesting_depth"]["effective"] == 1
+
+    r = await client.put("/subagents/defaults", json={"max_nesting_depth": -1})
+    assert r.status_code == 422
+
+
+async def test_disable_builtin(client: AsyncClient):
+    r = await client.put("/subagents/defaults", json={"disabled_builtins": ["research"]})
+    assert r.status_code == 200, r.text
+    by_name = {b["name"]: b for b in r.json()["builtins"]}
+    assert by_name["research"]["enabled"] is False
+    assert by_name["general-purpose"]["enabled"] is True
+
+    # Unknown built-in is rejected.
+    r = await client.put("/subagents/defaults", json={"disabled_builtins": ["bogus"]})
+    assert r.status_code == 422
+
+    # Re-enable.
+    r = await client.put("/subagents/defaults", json={"disabled_builtins": []})
+    assert all(b["enabled"] for b in r.json()["builtins"])
+
+
+async def test_override_builtin_and_hidden_from_roster(client: AsyncClient):
+    r = await client.put(
+        "/subagents/builtins/general-purpose",
+        json={"description": "my gp", "instructions": "do it my way", "model": None},
+    )
+    assert r.status_code == 200, r.text
+    gp = next(b for b in r.json()["builtins"] if b["name"] == "general-purpose")
+    assert gp["override"] is not None
+    assert gp["override"]["description"] == "my gp"
+    assert gp["override"]["builtin_name"] == "general-purpose"
+
+    # The override row must not leak into the normal roster listing.
+    roster = (await client.get("/subagents")).json()
+    assert all(s.get("builtin_name") is None for s in roster)
+    assert "general-purpose" not in {s["name"] for s in roster}
+
+    # Reset reverts to the library default.
+    r = await client.delete("/subagents/builtins/general-purpose")
+    assert r.status_code == 200, r.text
+    gp = next(b for b in r.json()["builtins"] if b["name"] == "general-purpose")
+    assert gp["override"] is None
+
+    # Unknown built-in -> 404.
+    assert (
+        await client.put(
+            "/subagents/builtins/nope", json={"description": "x", "instructions": "y"}
+        )
+    ).status_code == 404
+
+
+def _agent(**kw) -> Agent:
+    return Agent(name="A", include_subagents=True, **kw)
+
+
+async def test_builder_roster_respects_disable_and_override(tmp_path):
+    ws = str(tmp_path)
+
+    # Baseline: both built-ins present, plus a user subagent — builds cleanly.
+    user = Subagent(name="writer", description="d", instructions="i")
+    agent, _ = build_deep_agent(_agent(), ws, {}, [user], {})
+    assert agent is not None
+
+    # Disabled built-in + override should still build without error.
+    override = Subagent(
+        name="research", builtin_name="research", description="d", instructions="i"
+    )
+    agent2, _ = build_deep_agent(
+        _agent(), ws, {}, [user, override], {"disabled_builtins": ["general-purpose"]}
+    )
+    assert agent2 is not None

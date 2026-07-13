@@ -41,13 +41,24 @@ async def _apply_lightweight_migrations(conn) -> None:
     ``ADD COLUMN``. Kept idempotent (checked against ``PRAGMA table_info``) until
     the schema graduates to Alembic.
     """
-    cols = {
-        row[1]
-        for row in (await conn.exec_driver_sql("PRAGMA table_info(messages)")).all()
-    }
-    if "attachments" not in cols:
+    async def columns(table: str) -> set[str]:
+        rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).all()
+        return {row[1] for row in rows}
+
+    message_cols = await columns("messages")
+    if "attachments" not in message_cols:
         await conn.execute(
             text("ALTER TABLE messages ADD COLUMN attachments JSON DEFAULT '[]'")
+        )
+
+    subagent_cols = await columns("subagents")
+    if "builtin_name" not in subagent_cols:
+        await conn.execute(text("ALTER TABLE subagents ADD COLUMN builtin_name VARCHAR"))
+
+    app_config_cols = await columns("app_config")
+    if "deep_defaults" not in app_config_cols:
+        await conn.execute(
+            text("ALTER TABLE app_config ADD COLUMN deep_defaults JSON DEFAULT '{}'")
         )
 
 

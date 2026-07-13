@@ -169,6 +169,12 @@ class Subagent(TimestampMixin, table=True):
     instructions: str = ""  # the subagent's system prompt
     model: str | None = None  # optional override; falls back to the parent's model
 
+    # When set, this row is not a user-authored subagent but an *override* of a
+    # pydantic-deep built-in of the same name (e.g. "general-purpose", "research").
+    # Override rows are managed in the Subagents "Defaults" area, hidden from the
+    # normal roster listing, and win over the library default at build time.
+    builtin_name: str | None = Field(default=None, index=True)
+
 
 class CustomProvider(TimestampMixin, table=True):
     """A user-added, locally-hosted OpenAI-compatible model endpoint.
@@ -222,6 +228,13 @@ class AppConfig(TimestampMixin, table=True):
     __tablename__ = "app_config"
 
     openrouter_api_key: str | None = None
+
+    # Global overrides for pydantic-deep defaults. Currently scoped to subagents:
+    #   {"max_nesting_depth": int, "disabled_builtins": ["research", ...]}
+    # A key that is absent means "inherit the library default" (see
+    # ``agents/deep_defaults.py``). Kept as a free-form JSON blob so new knobs can
+    # be exposed without a schema migration.
+    deep_defaults: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class GitHubConfig(TimestampMixin, table=True):

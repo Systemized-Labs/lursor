@@ -295,7 +295,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       { label: "Tools", icon: Wrench, to: "/customization?tab=tools" },
       { label: "Settings", icon: Gear, to: "/settings" },
       { label: "Providers", icon: Plug, to: "/settings?tab=providers" },
-      { label: "GitHub", icon: GitBranch, to: "/settings?tab=github" },
+      { label: "GitHub", icon: GitBranch, to: "/settings?tab=general" },
     ]
     const actionRows: Row[] = actionDefs
       .filter((a) => !q || a.label.toLowerCase().includes(q))

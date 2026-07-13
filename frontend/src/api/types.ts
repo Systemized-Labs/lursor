@@ -58,12 +58,47 @@ export interface Subagent {
   description: string
   instructions: string
   model: string | null
+  /** Set when this row overrides a pydantic-deep built-in of the same name. */
+  builtin_name: string | null
   created_at: string
   updated_at: string
 }
 
 export interface SubagentInput {
   name: string
+  description: string
+  instructions: string
+  model: string | null
+}
+
+/** A single integer default knob: what the library ships vs. the effective value. */
+export interface ResolvedInt {
+  library_default: number
+  override: number | null
+  effective: number
+}
+
+/** A pydantic-deep built-in subagent: its library default plus current state. */
+export interface BuiltinSubagent {
+  name: string
+  default_description: string
+  default_instructions: string
+  enabled: boolean
+  override: Subagent | null
+}
+
+export interface SubagentDefaults {
+  max_nesting_depth: ResolvedInt
+  builtins: BuiltinSubagent[]
+}
+
+export interface SubagentDefaultsUpdate {
+  max_nesting_depth?: number | null
+  clear_max_nesting_depth?: boolean
+  disabled_builtins?: string[]
+}
+
+export interface BuiltinOverrideInput {
   description: string
   instructions: string
   model: string | null

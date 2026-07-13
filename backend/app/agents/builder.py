@@ -16,6 +16,10 @@ from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 from pydantic_deep import Skill as DeepSkill
 
+from app.agents.deep_defaults import (
+    builtin_subagent_defaults,
+    resolve_subagent_defaults,
+)
 from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.agents.vision import make_view_image_tool
 from app.config import get_settings
@@ -68,11 +72,30 @@ def resolve_model(
     return model
 
 
+def _subagent_config(
+    sa: SubagentRow, custom_providers: dict[str, CustomProvider]
+) -> dict:
+    """Turn a stored subagent row into a pydantic-deep ``SubAgentConfig`` dict.
+
+    ``model`` is only set when the row pins one; omitting it lets the subagent
+    inherit the parent agent's model.
+    """
+    config: dict = {
+        "name": sa.name,
+        "description": sa.description,
+        "instructions": sa.instructions,
+    }
+    if sa.model:
+        config["model"] = resolve_model(sa.model, custom_providers)
+    return config
+
+
 def build_deep_agent(
     row: AgentRow,
     workspace_path: str | Path,
     custom_providers: dict[str, CustomProvider] | None = None,
     subagents: list[SubagentRow] | None = None,
+    deep_defaults: dict | None = None,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
 
@@ -85,8 +108,17 @@ def build_deep_agent(
     it.
 
     ``subagents`` is the global roster of specialists (see ``db.models.Subagent``).
-    They are only handed to the agent when ``row.include_subagents`` is on; the
-    deep-agent engine merges them with its built-in subagents.
+    They are only handed to the agent when ``row.include_subagents`` is on. Rows
+    with ``builtin_name`` set are overrides of a pydantic-deep built-in and win
+    over the library default.
+
+    ``deep_defaults`` is the ``AppConfig.deep_defaults`` override blob (subagent
+    defaults — max nesting depth, disabled built-ins). We take explicit control of
+    the built-in subagent roster here (``include_builtin_subagents=False``) rather
+    than letting the library inject them, so built-ins can be viewed, overridden,
+    or disabled from the UI. This is behaviour-preserving: the library treats
+    built-ins as ordinary ``SubAgentConfig`` dicts and applies the same default
+    deep-agent factory to every config.
     """
     backend = LocalBackend(root_dir=str(workspace_path))
 
@@ -97,27 +129,46 @@ def build_deep_agent(
         DeepSkill(name=s.name, description=s.description, content=s.content) for s in row.skills
     ]
 
-    # Global subagents apply only when the agent opts into subagents. Each row
-    # becomes a SubAgentConfig dict (name/description/instructions required, model
-    # optional — omit it so the subagent inherits the parent's model).
+    # Global subagents apply only when the agent opts into subagents. We assemble
+    # the full roster ourselves — user subagents plus the pydantic-deep built-ins
+    # (general-purpose, research) — so built-ins can be overridden or disabled from
+    # the UI. See ``agents/deep_defaults.py`` for the resolution rules.
+    resolved_defaults = resolve_subagent_defaults(deep_defaults)
     subagent_configs: list[dict] = []
     if row.include_subagents:
-        for sa in subagents or []:
-            config: dict = {
-                "name": sa.name,
-                "description": sa.description,
-                "instructions": sa.instructions,
-            }
-            if sa.model:
-                config["model"] = resolve_model(sa.model, custom_providers or {})
-            subagent_configs.append(config)
+        providers = custom_providers or {}
+        rows = subagents or []
+        # Built-in override rows (builtin_name set) win over the library default;
+        # everything else is an ordinary user subagent.
+        overrides = {sa.builtin_name: sa for sa in rows if sa.builtin_name}
+        subagent_configs = [
+            _subagent_config(sa, providers) for sa in rows if not sa.builtin_name
+        ]
 
-    # `subagents` may also be supplied via the extra_config escape hatch; don't
-    # pass the keyword twice if so.
+        disabled = set(resolved_defaults["disabled_builtins"])
+        for builtin in builtin_subagent_defaults():
+            name = builtin["name"]
+            if name in disabled:
+                continue
+            override = overrides.get(name)
+            subagent_configs.append(
+                _subagent_config(override, providers) if override else dict(builtin)
+            )
+
+    # `subagents` and the managed subagent-default knobs may also be supplied via
+    # the extra_config escape hatch; where they are, let it win rather than passing
+    # the keyword twice.
     extra_config = dict(row.extra_config)
     subagents_kwarg = (
         {} if "subagents" in extra_config else {"subagents": subagent_configs or None}
     )
+    managed_kwargs: dict = {}
+    if "include_builtin_subagents" not in extra_config:
+        # We build the built-in roster ourselves (above) so it can be viewed,
+        # overridden, or disabled from the UI; don't let the library re-add it.
+        managed_kwargs["include_builtin_subagents"] = False
+    if "max_nesting_depth" not in extra_config:
+        managed_kwargs["max_nesting_depth"] = resolved_defaults["max_nesting_depth"]
 
     # view_image is always available so any agent can inspect user-attached
     # media (and workspace images) via the dedicated vision model, regardless of
@@ -138,6 +189,7 @@ def build_deep_agent(
         include_plan=row.include_plan,
         web_search=row.web_search,
         thinking=thinking,
+        **managed_kwargs,
         **subagents_kwarg,
         **extra_config,
     )
