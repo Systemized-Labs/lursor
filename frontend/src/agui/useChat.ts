@@ -175,7 +175,12 @@ export function useChat(options: UseChatOptions): UseChat {
     null
   )
   const mountedRef = useRef(true)
-  useEffect(() => () => void (mountedRef.current = false), [])
+  // Set on (re)mount too: StrictMode's mount→unmount→remount would otherwise
+  // leave this false forever, so drainQueue would bail on every run settle.
+  useEffect(() => {
+    mountedRef.current = true
+    return () => void (mountedRef.current = false)
+  }, [])
 
   // Write both the queue mirror and state; an empty queue can't stay paused, so
   // reset the flag when it drains or is cleared.
