@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Check, Copy } from '@phosphor-icons/react'
-import { cn } from '@/lib/utils'
+import { cn, copyToClipboard } from '@/lib/utils'
 import { processChildrenWithIcons } from '@/lib/emoji-icons'
 
 interface MarkdownRendererProps {
@@ -40,7 +40,8 @@ function CodeBlock({ children }: { children: ReactNode }) {
   const raw = nodeToText(codeEl.props.children)
 
   const copy = () => {
-    navigator.clipboard.writeText(raw).then(() => {
+    copyToClipboard(raw).then((ok) => {
+      if (!ok) return
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })

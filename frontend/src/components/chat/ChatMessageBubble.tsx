@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { Copy, Check } from "@phosphor-icons/react"
 
-import { cn } from "@/lib/utils"
+import { cn, copyToClipboard } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer"
 import { ChatToolCalls } from "@/components/chat/ChatToolCalls"
@@ -19,7 +19,8 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
+        copyToClipboard(text).then((ok) => {
+          if (!ok) return
           setCopied(true)
           setTimeout(() => setCopied(false), 1500)
         })
