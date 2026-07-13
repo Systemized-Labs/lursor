@@ -5,6 +5,10 @@ import { cn } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer"
 import { ChatToolCalls } from "@/components/chat/ChatToolCalls"
+import {
+  ChatSubagentCalls,
+  SUBAGENT_TOOL_NAME,
+} from "@/components/chat/ChatSubagentCalls"
 import { ChatFilesChanged } from "@/components/chat/ChatFilesChanged"
 import type { ChatMessage } from "@/agui/types"
 
@@ -95,18 +99,33 @@ function AssistantSegments({ messages }: { messages: ChatMessage[] }) {
   )
   return (
     <>
-      {segments.map((seg, i) => (
-        <div key={seg.id} className={i > 0 ? "mt-3" : undefined}>
-          {seg.content !== "" && (
-            <StreamingMarkdown text={seg.content} animate={Boolean(seg.streaming)} />
-          )}
-          {seg.toolCalls.length > 0 && (
-            <div className={seg.content !== "" ? "mt-3" : undefined}>
-              <ChatToolCalls toolCalls={seg.toolCalls} />
-            </div>
-          )}
-        </div>
-      ))}
+      {segments.map((seg, i) => {
+        // Subagent delegations (`task`) get their own cards; the rest stay in
+        // the collapsed tool transcript.
+        const subagentCalls = seg.toolCalls.filter(
+          (t) => t.name === SUBAGENT_TOOL_NAME
+        )
+        const otherCalls = seg.toolCalls.filter(
+          (t) => t.name !== SUBAGENT_TOOL_NAME
+        )
+        return (
+          <div key={seg.id} className={i > 0 ? "mt-3" : undefined}>
+            {seg.content !== "" && (
+              <StreamingMarkdown text={seg.content} animate={Boolean(seg.streaming)} />
+            )}
+            {subagentCalls.length > 0 && (
+              <div className={seg.content !== "" ? "mt-3" : undefined}>
+                <ChatSubagentCalls calls={subagentCalls} />
+              </div>
+            )}
+            {otherCalls.length > 0 && (
+              <div className={seg.content !== "" || subagentCalls.length > 0 ? "mt-3" : undefined}>
+                <ChatToolCalls toolCalls={otherCalls} />
+              </div>
+            )}
+          </div>
+        )
+      })}
     </>
   )
 }
