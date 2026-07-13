@@ -647,6 +647,18 @@ type VramSegment = {
   hint: string
 }
 
+// Distinct, theme-aware colors cycled per running model so each model's slice
+// of the "in use" bar is individually legible. System/overhead and the free
+// remainder use the muted/track styles below, not this palette.
+const MODEL_BARS: ReadonlyArray<{ bar: string; dot: string }> = [
+  { bar: "bg-primary", dot: "bg-primary" },
+  { bar: "bg-info", dot: "bg-info" },
+  { bar: "bg-success", dot: "bg-success" },
+  { bar: "bg-warning", dot: "bg-warning" },
+  { bar: "bg-chart-2", dot: "bg-chart-2" },
+  { bar: "bg-chart-4", dot: "bg-chart-4" },
+]
+
 // A color-coded breakdown of VRAM — what's in use vs. the free remainder —
 // rendered as one segmented bar with per-segment tooltips plus a legend so the
 // numbers are legible at a glance and precise on hover.
@@ -660,6 +672,7 @@ type VramSegment = {
 function VramBar({ connectionId }: { connectionId: string }) {
   const { data: budget } = useLaiosBudget(connectionId)
   const { data: cluster } = useLaiosCluster(connectionId)
+  const { data: instances } = useLaiosInstances(connectionId)
 
   const res = cluster?.resources
   const isCluster = !!res && res.total_nodes_known > 1
@@ -671,16 +684,64 @@ function VramBar({ connectionId }: { connectionId: string }) {
   if (isCluster && res) {
     total = Math.max(0, res.total_vram_mb)
     available = Math.max(0, Math.min(res.free_vram_mb, total))
-    usedSegments = [
-      {
-        key: "inUse",
-        label: "In use",
-        value: Math.max(0, total - available),
-        bar: "bg-primary",
-        dot: "bg-primary",
-        hint: "VRAM held across all online nodes",
-      },
-    ]
+    const inUse = Math.max(0, total - available)
+
+    // Break "in use" down by running model. Only free/total are measured per
+    // node, so each model's slice is its declared allocation, clamped so the
+    // slices never exceed measured in-use; whatever is left over is system and
+    // engine overhead (OS, CUDA context, KV pool not attributed to a model).
+    const nodeName = (id: string) =>
+      res.nodes.find((n) => n.node_id === id)?.name ?? id
+    const running = (instances ?? []).filter(
+      (i) => i.status === "running" && i.vram_allocated_mb > 0
+    )
+
+    let budgetLeft = inUse
+    const modelSegments: VramSegment[] = running.map((inst, idx) => {
+      const value = Math.max(0, Math.min(inst.vram_allocated_mb, budgetLeft))
+      budgetLeft -= value
+      const color = MODEL_BARS[idx % MODEL_BARS.length]
+      return {
+        key: `model:${inst.id}`,
+        label: inst.served_name,
+        value,
+        bar: color.bar,
+        dot: color.dot,
+        hint: `Held by ${inst.served_name} on ${nodeName(inst.node_id)}`,
+      }
+    })
+
+    if (modelSegments.length > 0) {
+      const system = Math.max(0, budgetLeft)
+      usedSegments = [
+        ...modelSegments,
+        ...(system > 0
+          ? [
+              {
+                key: "system",
+                label: "System & overhead",
+                value: system,
+                bar: "bg-muted-foreground",
+                dot: "bg-muted-foreground",
+                hint: "OS, engine runtime, and memory not attributed to a model",
+              },
+            ]
+          : []),
+      ]
+    } else {
+      // No running models tracked (or still loading) — keep the single opaque
+      // segment rather than mislabeling baseline usage.
+      usedSegments = [
+        {
+          key: "inUse",
+          label: "In use",
+          value: inUse,
+          bar: "bg-primary",
+          dot: "bg-primary",
+          hint: "VRAM held across all online nodes",
+        },
+      ]
+    }
   } else {
     if (!budget) return null
     total = Math.max(0, budget.total_mb)
@@ -797,9 +858,14 @@ function VramBar({ connectionId }: { connectionId: string }) {
 // the numbers reflect capacity you can actually serve into right now.
 function ClusterPanel({ connectionId }: { connectionId: string }) {
   const { data } = useLaiosCluster(connectionId)
+  const { data: instances } = useLaiosInstances(connectionId)
   const [open, setOpen] = useState(false)
   const res = data?.resources
   if (!res || res.total_nodes_known <= 1) return null
+
+  const running = (instances ?? []).filter((i) => i.status === "running")
+  const modelsForNode = (nodeId: string) =>
+    running.filter((i) => i.node_id === nodeId)
 
   return (
     // A section within the node card (not its own boxed panel) — a top border
@@ -836,7 +902,11 @@ function ClusterPanel({ connectionId }: { connectionId: string }) {
       {open ? (
         <div className="divide-y divide-border px-4 pb-4">
           {res.nodes.map((n) => (
-            <ClusterNodeRow key={n.node_id} node={n} />
+            <ClusterNodeRow
+              key={n.node_id}
+              node={n}
+              models={modelsForNode(n.node_id)}
+            />
           ))}
         </div>
       ) : null}
@@ -844,36 +914,57 @@ function ClusterPanel({ connectionId }: { connectionId: string }) {
   )
 }
 
-function ClusterNodeRow({ node }: { node: LaiosNodeResources }) {
+function ClusterNodeRow({
+  node,
+  models,
+}: {
+  node: LaiosNodeResources
+  models: LaiosInstance[]
+}) {
   return (
-    <div
-      className={cn(
-        "flex items-center justify-between gap-3 py-2 text-xs",
-        !node.online && "opacity-50"
-      )}
-    >
-      <div className="flex min-w-0 items-center gap-2">
-        <span
-          className={cn(
-            "h-2 w-2 shrink-0 rounded-full",
-            node.online ? "bg-success" : "bg-muted-foreground"
-          )}
-        />
-        <span className="truncate font-medium text-foreground">
-          {node.name}
-        </span>
-        <Badge variant="outline" className="shrink-0 font-normal">
-          {node.role}
-        </Badge>
-        <span className="text-muted-foreground">{node.status}</span>
+    <div className={cn("py-2 text-xs", !node.online && "opacity-50")}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              node.online ? "bg-success" : "bg-muted-foreground"
+            )}
+          />
+          <span className="truncate font-medium text-foreground">
+            {node.name}
+          </span>
+          <Badge variant="outline" className="shrink-0 font-normal">
+            {node.role}
+          </Badge>
+          <span className="text-muted-foreground">{node.status}</span>
+        </div>
+        <div className="shrink-0 text-muted-foreground">
+          {node.gpus} GPU{node.gpus === 1 ? "" : "s"} ·{" "}
+          <span className="font-medium text-foreground">
+            {fmtGb(node.free_vram_mb)}
+          </span>{" "}
+          free / {fmtGb(node.total_vram_mb)}
+        </div>
       </div>
-      <div className="shrink-0 text-muted-foreground">
-        {node.gpus} GPU{node.gpus === 1 ? "" : "s"} ·{" "}
-        <span className="font-medium text-foreground">
-          {fmtGb(node.free_vram_mb)}
-        </span>{" "}
-        free / {fmtGb(node.total_vram_mb)}
-      </div>
+
+      {/* What's holding this node's VRAM: one line per running model. Indented
+          under the node so the attribution reads as a child of the node row. */}
+      {models.length > 0 ? (
+        <div className="mt-1.5 space-y-1 pl-4">
+          {models.map((m) => (
+            <div
+              key={m.id}
+              className="flex items-center justify-between gap-3 text-muted-foreground"
+            >
+              <span className="truncate">{m.served_name}</span>
+              <span className="shrink-0 font-medium text-foreground">
+                {fmtGb(m.vram_allocated_mb)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
