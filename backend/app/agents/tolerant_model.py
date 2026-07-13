@@ -6,6 +6,18 @@ served through vLLM/llama.cpp/LM Studio, often behind a LiteLLM proxy) reject.
 This subclass normalizes the mapped OpenAI messages just before they go on the
 wire so the same agent runs unchanged against a local backend.
 
+Besides message normalization, the class also declares (via its model profile)
+that forced tool choice is unsupported. Local vLLM/llama.cpp servers activate a
+guided-decoding backend (e.g. vLLM's xgrammar) whenever the client forces a tool
+call — ``tool_choice="required"`` or a named function — which pydantic-ai emits
+for every structured-output step (``output_type=...``). On a *reasoning* model
+(e.g. GLM-5.2) that grammar rejects the model's reasoning/control special tokens
+and the server hard-terminates the request with a 500. Setting
+``openai_supports_tool_choice_required=False`` makes pydantic-ai downgrade those
+forced choices to ``tool_choice="auto"`` (filtering the visible tools to the one
+requested): the call is then parsed out of the model's free text by the server's
+tool parser, no grammar is engaged, and chain-of-thought stays on for plain chat.
+
 Normalizers, all applied in :meth:`_map_messages` (which fires for both the
 streaming and non-streaming paths, since it builds the *request*):
 
@@ -32,8 +44,9 @@ from collections.abc import Sequence
 
 from openai.types import chat
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.models import ModelProfileSpec, ModelRequestParameters
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.settings import ModelSettings
 
 logger = logging.getLogger(__name__)
@@ -51,6 +64,25 @@ class TolerantOpenAIChatModel(OpenAIChatModel):
     # request. Cloud providers tolerate the absence; strict local templates
     # reject it. Set per-instance at construction; defaults off.
     _ensure_user_message: bool = False
+
+    def __init__(
+        self, *args: object, profile: ModelProfileSpec | None = None, **kwargs: object
+    ) -> None:
+        # Declare forced tool choice unsupported so pydantic-ai downgrades every
+        # structured-output/forced-tool request to tool_choice="auto", keeping the
+        # local server's guided-decoding backend (which hard-terminates reasoning
+        # models) out of the loop. See the module docstring for the full rationale.
+        # This is merged as a partial override, so all other profile defaults the
+        # provider infers from the model name are preserved.
+        no_forcing = OpenAIModelProfile(openai_supports_tool_choice_required=False)
+        if profile is None:
+            profile = no_forcing
+        elif callable(profile):
+            inner = profile
+            profile = lambda default: {**inner(default), **no_forcing}  # noqa: E731
+        else:
+            profile = {**profile, **no_forcing}
+        super().__init__(*args, profile=profile, **kwargs)  # type: ignore[arg-type]
 
     async def _map_messages(
         self,
