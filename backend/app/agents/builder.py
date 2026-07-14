@@ -16,7 +16,6 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
-from pydantic_deep import Skill as DeepSkill
 
 from app.agents.deep_defaults import (
     builtin_subagent_defaults,
@@ -28,6 +27,7 @@ from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider
 from app.db.models import Subagent as SubagentRow
+from app.skills import store as skill_store
 
 settings = get_settings()
 
@@ -156,7 +156,8 @@ def build_deep_agent(
     filtered out via a ``PrepareTools`` capability, so the agent can read and
     search the workspace but never modify it.
 
-    Skills attached to the agent are passed through as deep-agent skills. Tool
+    Skills attached to the agent are handed to the deep agent as skill
+    directories (on-disk SKILL.md folders with bundled resources/scripts). Tool
     rows are catalogued in the DB but not yet wired into execution (see
     docs/PLAN.md — deferred); the deep agent ships its own builtin toolset.
 
@@ -182,8 +183,16 @@ def build_deep_agent(
     # thinking is stored as an enum: "off" disables, otherwise pass the level string.
     thinking: bool | str = False if row.thinking.value == "off" else row.thinking.value
 
-    skills = [
-        DeepSkill(name=s.name, description=s.description, content=s.content) for s in row.skills
+    # Skills are on-disk folders (SKILL.md + resources + scripts). Hand the deep
+    # agent each attached skill's directory so it discovers the full standard —
+    # bundled resources (`read_skill_resource`) and scripts (`run_skill_script`) —
+    # not just the markdown body. See app/skills/store.py. Folders are guaranteed
+    # to exist by reconcile (startup + on every skills API call); skip any that
+    # are somehow missing rather than failing the whole run.
+    skill_dirs = [
+        str(skill_store.path_for(s.slug))
+        for s in row.skills
+        if s.slug and skill_store.exists(s.slug)
     ]
 
     # Global subagents apply only when the agent opts into subagents. We assemble
@@ -245,7 +254,7 @@ def build_deep_agent(
         instructions=row.instructions or None,
         backend=backend,
         tools=tools,
-        skills=skills or None,
+        skill_directories=skill_dirs or None,
         include_todo=row.include_todo,
         include_subagents=row.include_subagents,
         include_skills=row.include_skills,

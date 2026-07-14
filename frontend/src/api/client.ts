@@ -23,10 +23,17 @@ interface RequestOptions {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, signal } = options
 
+  // FormData is sent as multipart; let the browser set the boundary header and
+  // pass the body through unserialized. Everything else goes as JSON.
+  const isForm = typeof FormData !== "undefined" && body instanceof FormData
+
   const res = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers:
+      body !== undefined && !isForm
+        ? { "Content-Type": "application/json" }
+        : undefined,
+    body: body !== undefined ? (isForm ? (body as FormData) : JSON.stringify(body)) : undefined,
     signal,
   })
 
@@ -59,6 +66,8 @@ export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
   post: <T>(path: string, body: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: "POST", body, signal }),
+  upload: <T>(path: string, form: FormData, signal?: AbortSignal) =>
+    request<T>(path, { method: "POST", body: form, signal }),
   put: <T>(path: string, body: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: "PUT", body, signal }),
   patch: <T>(path: string, body: unknown, signal?: AbortSignal) =>

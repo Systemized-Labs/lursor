@@ -75,10 +75,12 @@ export function MarkdownRenderer({ children, className }: MarkdownRendererProps)
     <div
       className={cn(
         'prose prose-invert min-w-0 max-w-full break-words',
-        // Comfortable reading size — ~15px on a generous line-height, the single
-        // biggest lever for the calm, document-like feel. Collapse the leading
-        // element's top margin so a turn doesn't open with a big gap.
-        'text-[15px] leading-7 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
+        // Comfortable reading size — ~15px (0.9375rem) on a generous line-height,
+        // the single biggest lever for the calm, document-like feel. Expressed in
+        // rem so it scales with the root font-size (the app-wide UI scale) instead
+        // of staying pinned at a fixed px. Collapse the leading element's top
+        // margin so a turn doesn't open with a big gap.
+        'text-[0.9375rem] leading-7 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
         // Body — slightly muted for a calm read; headings/strong stay full
         // strength to carry the hierarchy.
         '[&_p]:text-foreground/85 [&_p]:my-3 [&_p]:leading-7',
@@ -89,13 +91,13 @@ export function MarkdownRenderer({ children, className }: MarkdownRendererProps)
         // Headings — a clear step above body, with air above each.
         '[&_h1]:text-foreground [&_h2]:text-foreground [&_h3]:text-foreground [&_h4]:text-foreground',
         '[&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_h4]:font-semibold',
-        '[&_h1]:text-xl [&_h2]:text-lg [&_h3]:text-base [&_h4]:text-[15px]',
+        '[&_h1]:text-xl [&_h2]:text-lg [&_h3]:text-base [&_h4]:text-[0.9375rem]',
         '[&_h1]:mt-6 [&_h1]:mb-3 [&_h2]:mt-6 [&_h2]:mb-2 [&_h3]:mt-5 [&_h3]:mb-2 [&_h4]:mt-4 [&_h4]:mb-1.5',
         // Inline code — soft chip, slightly smaller than the surrounding text.
         '[&_:not(pre)>code]:text-foreground/90 [&_:not(pre)>code]:bg-muted/70 [&_:not(pre)>code]:px-1.5 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:rounded-md [&_:not(pre)>code]:text-[0.85em] [&_:not(pre)>code]:font-mono',
         '[&_:not(pre)>code]:before:content-none [&_:not(pre)>code]:after:content-none',
         // Code blocks (chrome owned by CodeBlock; just style the inner code)
-        '[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-foreground [&_pre_code]:text-[13px]',
+        '[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-foreground [&_pre_code]:text-[0.8125rem]',
         // Tables
         '[&_table]:w-full [&_table]:border-collapse [&_table]:text-sm [&_table]:my-3',
         '[&_th]:text-foreground [&_th]:font-semibold [&_th]:text-left [&_th]:px-3 [&_th]:py-2 [&_th]:border [&_th]:border-border [&_th]:bg-muted/60',

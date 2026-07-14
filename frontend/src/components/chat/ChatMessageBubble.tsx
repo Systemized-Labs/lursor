@@ -200,7 +200,7 @@ export function ChatMessageBubble({ message, renderIcons }: ChatMessageBubblePro
 
   return (
     <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
-      <div className="rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+      <div className="rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-[0.9375rem] leading-relaxed text-foreground">
         {hasAttachments && (
           <div
             className={cn(

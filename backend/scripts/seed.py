@@ -17,6 +17,7 @@ from sqlmodel import select
 from app.db.models import Agent, Skill, ThinkingLevel
 from app.db.prompt_seed import seed_prompt_templates as _seed_prompt_templates
 from app.db.session import async_session_factory, init_db
+from app.skills import store as skill_store
 
 
 async def seed_prompt_templates(session) -> None:
@@ -32,15 +33,16 @@ async def seed_example_agent(session) -> None:
         print("Agents already exist; skipping example agent.")
         return
 
-    skill = Skill(
-        name="Concise Answers",
-        description="Answer directly and briefly, no filler.",
-        content=(
-            "# Concise Answers\n\n"
-            "When responding, lead with the answer. Avoid preamble and "
-            "restating the question. Prefer short paragraphs and lists.\n"
-        ),
+    name = "Concise Answers"
+    description = "Answer directly and briefly, no filler."
+    content = (
+        "# Concise Answers\n\n"
+        "When responding, lead with the answer. Avoid preamble and "
+        "restating the question. Prefer short paragraphs and lists.\n"
     )
+    slug = skill_store.slugify(name, taken=set(skill_store.list_slugs()))
+    skill_store.write_skill(slug, name=name, description=description, content=content)
+    skill = Skill(slug=slug, name=name, description=description, content=content)
     agent = Agent(
         name="Assistant",
         description="A general-purpose helper agent.",

@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 _tmp = tempfile.mkdtemp(prefix="lursor-test-")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
 os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
+os.environ["SKILLS_DIR"] = f"{_tmp}/skills"
 # Dummy key so provider construction succeeds offline (no network call is made).
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
 
@@ -37,6 +38,11 @@ async def test_skill_and_tool_crud(client: AsyncClient):
     r = await client.post("/skills", json={"name": "Summarize", "content": "# how to"})
     assert r.status_code == 201
     skill = r.json()
+    # Skills are stored as standard folders: a slug is assigned and content is
+    # sourced from the on-disk SKILL.md.
+    assert skill["slug"] == "summarize"
+    assert skill["content"] == "# how to"
+    assert skill["resources"] == [] and skill["scripts"] == []
 
     r = await client.post("/tools", json={"name": "search", "kind": "http"})
     assert r.status_code == 201
@@ -45,6 +51,135 @@ async def test_skill_and_tool_crud(client: AsyncClient):
     assert (await client.get("/skills")).json()[0]["id"] == skill["id"]
     assert (await client.get("/tools")).json()[0]["kind"] == "http"
     return skill, tool
+
+
+async def test_skill_bundled_resources(client: AsyncClient):
+    """A skill supports the full standard: bundled resource files and scripts."""
+    skill = (
+        await client.post("/skills", json={"name": "PDF Tools", "content": "body"})
+    ).json()
+    sid = skill["id"]
+
+    # Write a resource and a script into the skill folder.
+    assert (
+        await client.put(
+            f"/skills/{sid}/files/references/FORMS.md",
+            json={"content": "# Forms"},
+        )
+    ).status_code == 200
+    r = await client.put(
+        f"/skills/{sid}/files/scripts/fill.py", json={"content": "print('hi')"}
+    )
+    assert r.status_code == 200
+    updated = r.json()
+    assert "references/FORMS.md" in updated["resources"]
+    assert "scripts/fill.py" in updated["scripts"]
+
+    # Read it back.
+    got = await client.get(f"/skills/{sid}/files/references/FORMS.md")
+    assert got.status_code == 200 and got.json()["content"] == "# Forms"
+
+    # Path traversal is rejected at the store layer (URLs normalize `..` away).
+    from app.skills import store
+
+    with pytest.raises(ValueError):
+        store.write_file(skill["slug"], "../escape.md", "x")
+
+    # Deleting the skill removes the folder and its bundled files.
+    assert (await client.delete(f"/skills/{sid}")).status_code == 204
+    assert (await client.get(f"/skills/{sid}")).status_code == 404
+
+
+async def test_import_skill_from_zip(client: AsyncClient):
+    """A standard skill archive (SKILL.md + resources/scripts) imports intact."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "pdf-tools/SKILL.md",
+            "---\nname: PDF Tools\ndescription: work with pdfs\n---\n\nDo the thing.",
+        )
+        zf.writestr("pdf-tools/references/FORMS.md", "# Forms")
+        zf.writestr("pdf-tools/scripts/fill.py", "print('hi')")
+    buf.seek(0)
+
+    r = await client.post(
+        "/skills/import",
+        files={"files": ("pdf-tools.zip", buf.read(), "application/zip")},
+    )
+    assert r.status_code == 201, r.text
+    created = r.json()
+    assert len(created) == 1
+    skill = created[0]
+    assert skill["slug"] == "pdf-tools"
+    assert skill["description"] == "work with pdfs"
+    assert "references/FORMS.md" in skill["resources"]
+    assert "scripts/fill.py" in skill["scripts"]
+
+    # It shows up in the list and is attachable like any other skill.
+    listed = {s["id"] for s in (await client.get("/skills")).json()}
+    assert skill["id"] in listed
+
+
+async def test_import_skill_from_markdown(client: AsyncClient):
+    """A lone SKILL.md / .md document imports as a skill."""
+    doc = b"---\nname: Terse\ndescription: be brief\n---\n\nLead with the answer."
+    r = await client.post(
+        "/skills/import",
+        files={"files": ("SKILL.md", doc, "text/markdown")},
+    )
+    assert r.status_code == 201, r.text
+    skill = r.json()[0]
+    assert skill["slug"] == "terse"
+    assert skill["content"] == "Lead with the answer."
+
+    # A non-skill file type is rejected.
+    bad = await client.post(
+        "/skills/import", files={"files": ("art.png", b"\x89PNG", "image/png")}
+    )
+    assert bad.status_code == 400
+
+
+async def test_import_skill_from_folder(client: AsyncClient):
+    """A folder upload (files carrying relative paths) rebuilds the skill tree."""
+    r = await client.post(
+        "/skills/import",
+        files=[
+            (
+                "files",
+                (
+                    "my-skill/SKILL.md",
+                    b"---\nname: My Skill\ndescription: folder import\n---\n\nBody.",
+                    "text/markdown",
+                ),
+            ),
+            (
+                "files",
+                ("my-skill/references/NOTES.md", b"# Notes", "text/markdown"),
+            ),
+            (
+                "files",
+                ("my-skill/scripts/run.py", b"print('go')", "text/x-python"),
+            ),
+        ],
+    )
+    assert r.status_code == 201, r.text
+    created = r.json()
+    assert len(created) == 1
+    skill = created[0]
+    assert skill["slug"] == "my-skill"
+    assert skill["description"] == "folder import"
+    assert "references/NOTES.md" in skill["resources"]
+    assert "scripts/run.py" in skill["scripts"]
+
+    # A folder with no SKILL.md is rejected.
+    bad = await client.post(
+        "/skills/import",
+        files=[("files", ("notes/readme.txt", b"hi", "text/plain"))],
+    )
+    assert bad.status_code == 400
 
 
 async def test_agent_with_links_and_workspace_thread(client: AsyncClient):

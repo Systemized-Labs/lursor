@@ -39,9 +39,12 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     settings.apply_env()
     await init_db()
-    # Ship the curated built-in prompt templates on every start (idempotent).
+    # Ship the curated built-in prompt templates on every start (idempotent), and
+    # reconcile the skills index against the on-disk skill folders so agent runs
+    # always see up-to-date skill directories (and pre-folder rows migrate).
     async with async_session_factory() as session:
         await seed_prompt_templates(session)
+        await skills.reconcile(session)
     # Apply any UI-saved settings (e.g. OpenRouter key) over the env defaults.
     await settings_api.load_app_config()
     # Seed a "local" laios connection when running alongside a daemon.

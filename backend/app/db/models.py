@@ -94,13 +94,21 @@ class GoalStatus(StrEnum):
 
 
 class Skill(TimestampMixin, table=True):
-    """Reusable domain knowledge, stored as SKILL.md-style markdown."""
+    """Index row for an on-disk skill folder (Anthropic skill standard).
+
+    The source of truth is the folder ``<skills_dir>/<slug>/`` containing a
+    ``SKILL.md`` (+ optional resources and ``scripts/``); see ``app/skills/store.py``.
+    This row exists so agents can link to a skill by a stable id and so listing is
+    cheap. ``name``/``description``/``content`` are a cache of the folder's
+    contents, refreshed from disk on reconcile (``api/skills.py``).
+    """
 
     __tablename__ = "skills"
 
+    slug: str = Field(default="", index=True)  # folder name; disk identity
     name: str = Field(index=True)
     description: str = ""
-    content: str = ""  # markdown body
+    content: str = ""  # cached markdown body (disk is authoritative)
 
     agents: list["Agent"] = Relationship(
         back_populates="skills",

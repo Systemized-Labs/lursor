@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # agent's filesystem root when it runs.
     workspaces_dir: Path = Path.home() / ".lursor" / "workspaces"
 
+    # --- Skills ---
+    # Root directory under which each skill is a self-contained folder following
+    # the Anthropic skill standard: a ``SKILL.md`` (YAML frontmatter + markdown
+    # body) plus optional bundled resource files and ``scripts/``. This directory
+    # is the source of truth for skill content; the ``skills`` DB table is a
+    # rebuildable index (see ``app/skills/store.py`` and ``api/skills.py``).
+    skills_dir: Path = Path.home() / ".lursor" / "skills"
+
     # --- Agents ---
     # Default model used when an agent row does not specify one.
     # Models are served through OpenRouter (prefix "openrouter:").
@@ -71,6 +79,7 @@ class Settings(BaseSettings):
         """Create on-disk directories the app relies on."""
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
         self.media_dir.mkdir(parents=True, exist_ok=True)
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_env(self) -> None:
         """Export provider keys so Pydantic AI's model providers can read them."""

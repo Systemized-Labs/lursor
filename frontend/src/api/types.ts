@@ -39,9 +39,14 @@ export interface AgentInput {
 
 export interface Skill {
   id: string
+  slug: string
   name: string
   description: string
   content: string
+  // Bundled files discovered in the skill folder (relative paths). These are
+  // what the agent can load via read_skill_resource / run_skill_script.
+  resources: string[]
+  scripts: string[]
   created_at: string
   updated_at: string
 }
