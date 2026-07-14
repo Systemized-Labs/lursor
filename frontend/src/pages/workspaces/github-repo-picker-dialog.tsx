@@ -1,5 +1,5 @@
 import { GitBranch, Lock, MagnifyingGlass } from "@phosphor-icons/react"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 
@@ -38,25 +38,55 @@ export function GitHubRepoPickerDialog({
 }: GitHubRepoPickerDialogProps) {
   const { data: config } = useGitHubConfig()
   const connected = Boolean(config?.connected)
-  const { data: repos, isLoading, isError, error } = useGitHubRepos(
-    open && connected
-  )
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useGitHubRepos(open && connected)
   const clone = useCloneRepo()
   const navigate = useNavigate()
 
   const [query, setQuery] = useState("")
   const [cloning, setCloning] = useState<string | null>(null)
 
+  // Flatten the paginated pages into a single list. Search filters over the
+  // repos loaded so far; scrolling to the bottom pulls the next page.
+  const repos = useMemo(
+    () => data?.pages.flat() ?? [],
+    [data]
+  )
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const list = repos ?? []
-    if (!q) return list
-    return list.filter(
+    if (!q) return repos
+    return repos.filter(
       (r) =>
         r.full_name.toLowerCase().includes(q) ||
         (r.description ?? "").toLowerCase().includes(q)
     )
   }, [repos, query])
+
+  // Sentinel at the bottom of the list; loading the next page when it scrolls
+  // into view keeps the initial render light for large accounts.
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const node = sentinelRef.current
+    if (!node || !hasNextPage) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && !isFetchingNextPage) {
+          void fetchNextPage()
+        }
+      },
+      { root: node.parentElement, rootMargin: "200px" }
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, filtered.length])
 
   async function handleClone(repo: GitHubRepo) {
     setCloning(repo.full_name)
@@ -156,6 +186,17 @@ export function GitHubRepoPickerDialog({
                   </button>
                 ))
               )}
+
+              {/* Infinite-scroll trigger + spinner for the next page. Only
+                  active when not filtering, since search runs over loaded
+                  repos and shouldn't keep paging in the background. */}
+              {!query.trim() && hasNextPage ? (
+                <div ref={sentinelRef} className="flex justify-center py-2">
+                  {isFetchingNextPage ? (
+                    <DotGridLoader size="xs" />
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </>
         )}

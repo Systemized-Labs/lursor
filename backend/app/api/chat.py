@@ -30,6 +30,7 @@ from ag_ui.core import (
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.ui.ag_ui import AGUIAdapter
+from pydantic_ai.usage import UsageLimits
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from starlette.responses import StreamingResponse
@@ -67,6 +68,10 @@ router = APIRouter(prefix="/threads", tags=["chat"])
 settings = get_settings()
 
 _KEEPALIVE_TIMEOUT = 25.0  # seconds between ": keepalive" comments on an idle stream
+# Cap on model request/tool-call rounds within a single agent turn. Overrides
+# pydantic-ai's default of 50, which trips deep agents on tool-heavy turns before
+# they can finish the work.
+_MAX_TURN_REQUESTS = 150
 _TEXT_DELTA_TYPES = {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_CHUNK}
 # Run-lifecycle events. A goal run drives many agent turns through one SSE
 # stream, but the AG-UI client requires exactly one RUN_STARTED…RUN_FINISHED per
@@ -294,6 +299,7 @@ async def _stream_turn(
         deps=deps,
         on_complete=on_complete,
         instructions=instructions,
+        usage_limits=UsageLimits(request_limit=_MAX_TURN_REQUESTS),
     )
     async for encoded in turn_adapter.encode_stream(
         _tee_events(stream, accumulated, strip_lifecycle=strip_lifecycle)

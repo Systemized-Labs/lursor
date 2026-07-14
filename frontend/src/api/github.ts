@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query"
 
 import { api } from "./client"
 import { workspaceKeys } from "./workspaces"
@@ -14,7 +19,11 @@ export const githubApi = {
   config: (signal?: AbortSignal) => api.get<GitHubConfig>("/github/config", signal),
   save: (input: GitHubConfigInput) => api.put<GitHubConfig>("/github/config", input),
   disconnect: () => api.delete<void>("/github/config"),
-  repos: (signal?: AbortSignal) => api.get<GitHubRepo[]>("/github/repos", signal),
+  repos: (page: number, perPage: number, signal?: AbortSignal) =>
+    api.get<GitHubRepo[]>(
+      `/github/repos?page=${page}&per_page=${perPage}`,
+      signal
+    ),
   clone: (input: GitHubCloneInput) => api.post<Workspace>("/github/clone", input),
 }
 
@@ -52,13 +61,21 @@ export function useDisconnectGitHub() {
   })
 }
 
+export const REPOS_PAGE_SIZE = 30
+
 // Repos are fetched from GitHub on demand — only while a connection exists, and
 // not refetched on window focus (each call hits the GitHub API and counts
-// against the token's rate limit).
+// against the token's rate limit). Paginated so a large account loads a page at
+// a time (infinite scroll) rather than all repos up front.
 export function useGitHubRepos(enabled: boolean) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: githubKeys.repos,
-    queryFn: ({ signal }) => githubApi.repos(signal),
+    queryFn: ({ pageParam, signal }) =>
+      githubApi.repos(pageParam, REPOS_PAGE_SIZE, signal),
+    initialPageParam: 1,
+    // A short (non-full) page means GitHub has no more repos to give.
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.length === REPOS_PAGE_SIZE ? allPages.length + 1 : undefined,
     enabled,
     staleTime: 60_000,
     refetchOnWindowFocus: false,

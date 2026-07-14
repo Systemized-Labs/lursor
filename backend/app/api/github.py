@@ -85,55 +85,54 @@ async def _validate_token(token: str) -> dict:
     return resp.json()
 
 
-async def _fetch_repos(token: str) -> list[GitHubRepo]:
-    """List repositories the token can access, most-recently-updated first."""
-    repos: list[GitHubRepo] = []
+async def _fetch_repos(token: str, *, page: int, per_page: int) -> list[GitHubRepo]:
+    """List a single page of repositories, most-recently-updated first.
+
+    Fetching one page at a time keeps the request fast and lets the UI load
+    repos incrementally (infinite scroll) instead of pulling a huge account's
+    entire repo list up front.
+    """
     params = {
-        "per_page": "100",
+        "per_page": str(per_page),
+        "page": str(page),
         "sort": "updated",
         "affiliation": "owner,collaborator,organization_member",
     }
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            # Walk pages until GitHub returns a short (or empty) page. Cap at 5
-            # pages (500 repos) so a huge account can't hang the request.
-            for page in range(1, 6):
-                resp = await client.get(
-                    f"{GITHUB_API}/user/repos",
-                    headers=_headers(token),
-                    params={**params, "page": str(page)},
-                )
-                if resp.status_code == 401:
-                    raise HTTPException(
-                        status.HTTP_400_BAD_REQUEST,
-                        "GitHub rejected the token. Reconnect your account.",
-                    )
-                if resp.status_code >= 400:
-                    raise HTTPException(
-                        status.HTTP_502_BAD_GATEWAY,
-                        f"GitHub returned HTTP {resp.status_code} while listing repos.",
-                    )
-                batch = resp.json()
-                for r in batch:
-                    repos.append(
-                        GitHubRepo(
-                            full_name=r["full_name"],
-                            name=r["name"],
-                            description=r.get("description"),
-                            private=bool(r.get("private")),
-                            clone_url=r["clone_url"],
-                            default_branch=r.get("default_branch") or "main",
-                            updated_at=r.get("updated_at"),
-                        )
-                    )
-                if len(batch) < 100:
-                    break
+            resp = await client.get(
+                f"{GITHUB_API}/user/repos",
+                headers=_headers(token),
+                params=params,
+            )
     except httpx.RequestError as exc:
         logger.warning("github: /user/repos unreachable: %s", exc)
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, "Could not reach GitHub. Check your connection."
         ) from exc
-    return repos
+
+    if resp.status_code == 401:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "GitHub rejected the token. Reconnect your account.",
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"GitHub returned HTTP {resp.status_code} while listing repos.",
+        )
+    return [
+        GitHubRepo(
+            full_name=r["full_name"],
+            name=r["name"],
+            description=r.get("description"),
+            private=bool(r.get("private")),
+            clone_url=r["clone_url"],
+            default_branch=r.get("default_branch") or "main",
+            updated_at=r.get("updated_at"),
+        )
+        for r in resp.json()
+    ]
 
 
 # --- git configuration ----------------------------------------------------------
@@ -230,9 +229,16 @@ async def disconnect(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/repos", response_model=list[GitHubRepo])
-async def list_repos(session: AsyncSession = Depends(get_session)):
+async def list_repos(
+    page: int = 1,
+    per_page: int = 30,
+    session: AsyncSession = Depends(get_session),
+):
     cfg = await _require_config(session)
-    return await _fetch_repos(cfg.token)
+    # Clamp to GitHub's bounds; the UI pages through with infinite scroll.
+    page = max(page, 1)
+    per_page = min(max(per_page, 1), 100)
+    return await _fetch_repos(cfg.token, page=page, per_page=per_page)
 
 
 @router.post("/clone", response_model=WorkspaceRead, status_code=status.HTTP_201_CREATED)
