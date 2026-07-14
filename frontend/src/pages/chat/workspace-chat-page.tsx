@@ -501,7 +501,7 @@ export function WorkspaceChatPage() {
       />
 
       {goalView && (
-        <div className="px-4 pb-1 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl px-4 pb-1 sm:px-6">
           <GoalBanner
             status={goalView.status}
             condition={goalView.condition}
@@ -515,7 +515,7 @@ export function WorkspaceChatPage() {
       )}
 
       {chat.todos.length > 0 && (
-        <div className="px-4 pb-1 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl px-4 pb-1 sm:px-6">
           <ChatTodoList todos={chat.todos} />
         </div>
       )}

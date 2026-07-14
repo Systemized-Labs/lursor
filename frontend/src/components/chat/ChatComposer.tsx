@@ -1,4 +1,6 @@
 import {
+  useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -125,14 +127,39 @@ export function ChatComposer({
   })
 
   // Grow the prompt with its content (e.g. a pasted paragraph) up to a fixed
-  // cap, then scroll internally. Runs whenever the value changes — including
-  // programmatic changes like clearing after send or a mention insert.
-  useLayoutEffect(() => {
+  // cap, then scroll internally. Measuring from "auto" collapses the box back
+  // down when the text shrinks, so an empty prompt always returns to one row.
+  const resizeTextarea = useCallback(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = "auto"
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`
-  }, [input])
+  }, [])
+
+  // Recompute whenever the value changes — including programmatic changes like
+  // clearing after send or a mention insert.
+  useLayoutEffect(() => {
+    resizeTextarea()
+  }, [input, resizeTextarea])
+
+  // The row count also depends on the box's width, which the value change above
+  // can't see: opening/closing the Builder dock or resizing the window rewraps
+  // the text. Re-measure on width changes so the height never gets stranded at a
+  // stale (too-tall) value once the content reflows. Track the last width and
+  // ignore height deltas — those are the ones resizeTextarea itself causes, so
+  // reacting to them would feed back into an observer loop.
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    let lastWidth = el.clientWidth
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === lastWidth) return
+      lastWidth = el.clientWidth
+      resizeTextarea()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [resizeTextarea])
 
   async function addFiles(files: FileList | File[]) {
     if (!onAttachmentsChange) return
@@ -171,7 +198,7 @@ export function ChatComposer({
 
   return (
     <div className="px-4 pb-4 pt-2 flex-shrink-0">
-      <div className="relative">
+      <div className="relative mx-auto w-full max-w-3xl">
         <MentionMenu
           open={mentions.open}
           rows={mentions.rows}
