@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState, type KeyboardEvent } from "react"
 import {
   CheckCircle,
   Prohibit,
@@ -11,8 +11,13 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { MentionMenu } from "@/components/chat/mentions/MentionMenu"
+import { useMentions } from "@/components/chat/mentions/use-mentions"
+import type { MentionSource } from "@/components/chat/mentions/types"
 import { cn } from "@/lib/utils"
 import type { GoalStatus } from "@/api/types"
+
+const NOOP_SOURCES: MentionSource[] = []
 
 /** Config the user fills in to start a goal-mode conversation. */
 export interface GoalDraft {
@@ -62,12 +67,31 @@ function statusMeta(status: GoalStatus): { label: string; className: string } {
 export function GoalSetup({
   disabled,
   onStart,
+  mentionSources,
 }: {
   disabled?: boolean
   onStart: (draft: GoalDraft) => void
+  /** Categories offered by the `@` reference menu on the objective field. */
+  mentionSources?: MentionSource[]
 }) {
   const [draft, setDraft] = useState<GoalDraft>(DEFAULT_DRAFT)
   const canStart = draft.goal.trim().length > 0 && !disabled
+
+  const objectiveRef = useRef<HTMLTextAreaElement>(null)
+  const setGoal = (goal: string) => setDraft((d) => ({ ...d, goal }))
+  const mentions = useMentions({
+    value: draft.goal,
+    setValue: setGoal,
+    textareaRef: objectiveRef,
+    sources: mentionSources ?? NOOP_SOURCES,
+    enabled: (mentionSources?.length ?? 0) > 0,
+  })
+
+  // The mention menu claims arrows/enter/tab/escape first so its typeahead
+  // works inside the objective field; otherwise the key falls through normally.
+  const handleObjectiveKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    mentions.onKeyDown(e)
+  }
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-3 rounded-xl border border-border/60 bg-muted/30 p-4">
@@ -80,15 +104,35 @@ export function GoalSetup({
         <Label htmlFor="goal-objective" className="text-xs text-muted-foreground">
           Objective
         </Label>
-        <Textarea
-          id="goal-objective"
-          value={draft.goal}
-          onChange={(e) => setDraft((d) => ({ ...d, goal: e.target.value }))}
-          placeholder="What should the agent accomplish? e.g. 'Add a health-check endpoint and make its test pass.'"
-          rows={3}
-          disabled={disabled}
-          className="resize-none text-sm"
-        />
+        <div className="relative">
+          <MentionMenu
+            open={mentions.open}
+            rows={mentions.rows}
+            mode={mentions.mode}
+            category={mentions.category}
+            loading={mentions.loading}
+            activeIndex={mentions.activeIndex}
+            onHover={mentions.setActiveIndex}
+            onSelect={mentions.selectRow}
+          />
+          <Textarea
+            ref={objectiveRef}
+            id="goal-objective"
+            value={draft.goal}
+            onChange={(e) => {
+              setGoal(e.target.value)
+              mentions.refresh()
+            }}
+            onKeyDown={handleObjectiveKeyDown}
+            onKeyUp={mentions.refresh}
+            onClick={mentions.refresh}
+            onSelect={mentions.refresh}
+            placeholder="What should the agent accomplish? Reference files with @. e.g. 'Add a health-check endpoint and make its test pass.'"
+            rows={3}
+            disabled={disabled}
+            className="resize-none text-sm"
+          />
+        </div>
       </div>
 
       <div className="space-y-1.5">

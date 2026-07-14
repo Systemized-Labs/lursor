@@ -595,6 +595,13 @@ export function useChat(options: UseChatOptions): UseChat {
     abortLocalStreams()
     setIsStreaming(false)
     setMessages((prev) => finishStreaming(prev))
+    // Aborting the local stream drops us before the server's `stopped` status
+    // event lands, so optimistically mark a live goal as stopped — otherwise the
+    // "Stop goal" button (gated on status === "running") never clears and the run
+    // looks like it's still going. The server confirms via the persisted state.
+    setGoalStatus((prev) =>
+      prev && prev.status === "running" ? { ...prev, status: "stopped" } : prev
+    )
     const threadId = selectedThreadIdRef.current
     if (threadId) {
       // Tell the server to cancel the decoupled run; 404 means nothing running.

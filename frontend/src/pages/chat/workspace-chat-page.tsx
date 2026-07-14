@@ -538,7 +538,11 @@ export function WorkspaceChatPage() {
               disabled={noAgents}
             />
           </div>
-          <GoalSetup disabled={noAgents} onStart={(d) => void handleStartGoal(d)} />
+          <GoalSetup
+            disabled={noAgents}
+            onStart={(d) => void handleStartGoal(d)}
+            mentionSources={mentionSources}
+          />
         </div>
       ) : isGoalThread && goalExecuting ? (
         // Autonomous execution is running: offer Stop, not the composer.
