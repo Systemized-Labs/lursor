@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.capabilities import PrepareTools
 from pydantic_ai.models import Model
@@ -35,6 +36,26 @@ settings = get_settings()
 # Format: "custom:{provider_id}:{model_name}" (model_name may itself contain
 # colons, e.g. Ollama's "llama3:8b", so we only split on the first colon).
 CUSTOM_PREFIX = "custom:"
+
+# Process-shared HTTP client for every local (custom) provider. pydantic-ai's
+# default client caps read/write/pool at 600s, which aborts a single long local
+# generation (big reasoning outputs, slow prefill) mid-stream. We disable the
+# read timeout (`read=None`) so streaming has no wall-clock ceiling here — the
+# LiteLLM gateway's own `request_timeout` is the authoritative backstop against a
+# genuinely stuck upstream. Connect/write/pool stay finite so setup faults still
+# surface. Shared (not per-request): OpenAIProvider does NOT own/close a
+# passed-in client, and the agent is rebuilt per turn, so a fresh client each
+# time would leak connections. Lazily created to stay off the import path.
+_LOCAL_HTTP_TIMEOUT = httpx.Timeout(timeout=30.0, connect=15.0, read=None)
+_local_http_client: httpx.AsyncClient | None = None
+
+
+def _shared_local_http_client() -> httpx.AsyncClient:
+    """Return the process-wide client used for local OpenAI-compatible providers."""
+    global _local_http_client
+    if _local_http_client is None or _local_http_client.is_closed:
+        _local_http_client = httpx.AsyncClient(timeout=_LOCAL_HTTP_TIMEOUT)
+    return _local_http_client
 
 # Tools the agent may keep in read-only ("ask") mode. This is an ALLOWLIST, not
 # a blocklist: the deep-agent toolset exposes many mutation/execution paths
@@ -116,6 +137,9 @@ def resolve_model(
             # Local servers usually need no key; OpenAIProvider requires a
             # non-null value, so send a placeholder when none is configured.
             api_key=provider.api_key or "api-key-not-set",
+            # Long-lived streaming: no client-side read cap (see
+            # _shared_local_http_client); the gateway's request_timeout bounds it.
+            http_client=_shared_local_http_client(),
         ),
     )
     # Strict local templates reject a request with no user turn; guarantee one.
