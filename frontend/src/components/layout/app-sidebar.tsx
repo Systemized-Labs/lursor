@@ -5,11 +5,11 @@ import {
   FolderPlus,
   Gear,
   MagnifyingGlass,
+  NotePencil,
   Palette,
   Pencil,
   Plus,
   SlidersHorizontal,
-  Sparkle,
   Trash,
 } from "@phosphor-icons/react"
 import { type ComponentType, useEffect, useMemo, useState } from "react"
@@ -278,12 +278,12 @@ export function AppSidebar() {
               <SidebarMenuItem>
                 <SidebarMenuButton
                   isActive={pathname === "/"}
-                  tooltip="New Agent"
+                  tooltip="New Chat"
                   asChild
                 >
                   <Link to="/" onClick={closeMobile}>
-                    <Sparkle className="size-4" />
-                    <span>New Agent</span>
+                    <NotePencil className="size-4" />
+                    <span>New Chat</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
