@@ -25,7 +25,9 @@ import {
 
 const SIDEBAR_COOKIE_NAME = "sidebar:state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const SIDEBAR_WIDTH_MOBILE = "18rem"
+// Fluid on phones: fill most of the viewport but cap on larger handsets so it
+// never becomes an awkwardly wide panel.
+const SIDEBAR_WIDTH_MOBILE = "min(20rem, 86vw)"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
@@ -249,7 +251,11 @@ const Sidebar = React.forwardRef<
               <SheetTitle>Sidebar</SheetTitle>
               <SheetDescription>Displays the mobile sidebar.</SheetDescription>
             </SheetHeader>
-            <div className="flex h-full w-full flex-col">{children}</div>
+            {/* Safe-area insets so the header clears the status bar and the
+                footer clears the home indicator in standalone mode. */}
+            <div className="flex h-full w-full flex-col pt-safe pb-safe">
+              {children}
+            </div>
           </SheetContent>
         </Sheet>
       )

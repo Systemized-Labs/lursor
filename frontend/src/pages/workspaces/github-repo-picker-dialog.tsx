@@ -13,7 +13,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@/components/ui/responsive-dialog"
 import { Input } from "@/components/ui/input"
 
 interface GitHubRepoPickerDialogProps {

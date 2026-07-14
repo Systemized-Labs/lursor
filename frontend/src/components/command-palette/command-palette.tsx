@@ -86,7 +86,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
         <DialogPortal>
           <DialogOverlay />
           <DialogPrimitive.Content
-            className="fixed left-1/2 top-[12%] z-50 w-[92vw] max-w-2xl -translate-x-1/2 overflow-hidden rounded-xl border border-border/60 bg-popover text-popover-foreground shadow-2xl duration-150 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
+            className="fixed left-1/2 top-[6%] z-50 w-[94vw] max-w-2xl -translate-x-1/2 overflow-hidden rounded-xl border border-border/60 bg-popover text-popover-foreground shadow-2xl duration-150 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:top-[12%] sm:w-[92vw]"
             aria-label="Search"
           >
             <DialogTitle className="sr-only">Search</DialogTitle>
@@ -399,7 +399,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         ))}
       </div>
 
-      <div className="max-h-[52vh] overflow-y-auto py-2">
+      <div className="max-h-[65dvh] overflow-y-auto py-2 sm:max-h-[52vh]">
         {flatRows.length === 0 ? (
           <p className="px-4 py-8 text-center text-sm text-muted-foreground">
             No matches
@@ -452,7 +452,8 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         )}
       </div>
 
-      <div className="flex items-center gap-4 border-t border-border/60 px-4 py-2.5 text-xs text-muted-foreground">
+      {/* Keyboard hints are meaningless on touch — hide them on phones. */}
+      <div className="hidden items-center gap-4 border-t border-border/60 px-4 py-2.5 text-xs text-muted-foreground sm:flex">
         <span className="flex items-center gap-1">
           <kbd className="font-sans">↑↓</kbd> Select
         </span>

@@ -174,8 +174,10 @@ export function RightDock({
   )
 }
 
-/** Panel body: real content where wired up, a placeholder otherwise. */
-function DockPanelContent({
+/** Panel body: real content where wired up, a placeholder otherwise. Exported
+ *  so the mobile shell can render a single panel full-screen (the phone layout
+ *  swaps the whole view via the bottom bar rather than a side-by-side dock). */
+export function DockPanelContent({
   kind,
   workspaceId,
 }: {

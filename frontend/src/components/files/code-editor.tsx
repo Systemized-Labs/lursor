@@ -5,6 +5,25 @@ import type * as Monaco from "monaco-editor"
 import "./monaco-setup"
 import { defineMonacoTheme, MONACO_THEME_NAME } from "./monaco-theme"
 import { languageForFilename } from "./language"
+import { useIsMobile } from "@/hooks/use-mobile"
+
+/**
+ * Touch-friendly editor tweaks on phones: a larger font (Monaco's 13px is hard
+ * to hit on touch), word wrap on and the minimap off (no room, and the minimap
+ * steals horizontal space), plus a slim `lineNumbersMinChars` so numbers don't
+ * eat the narrow gutter. Layered over the user's display toggles.
+ */
+function mobileEditorOptions(isMobile: boolean) {
+  if (!isMobile) return {}
+  return {
+    fontSize: 15,
+    wordWrap: "on" as const,
+    minimap: { enabled: false },
+    lineNumbersMinChars: 3,
+    // Monaco's on-screen scrollbars are easier to grab on touch when wider.
+    scrollbar: { verticalScrollbarSize: 12, horizontalScrollbarSize: 12 },
+  }
+}
 
 /** Editor font stack, shared by the plain and diff editors. */
 const EDITOR_FONT =
@@ -77,6 +96,7 @@ export function CodeEditor({
 }: CodeEditorProps) {
   const monacoRef = useRef<typeof Monaco | null>(null)
   useThemeSync(monacoRef)
+  const isMobile = useIsMobile()
 
   return (
     <Editor
@@ -106,6 +126,7 @@ export function CodeEditor({
         smoothScrolling: true,
         padding: { top: 8 },
         ...displayOptions(display),
+        ...mobileEditorOptions(isMobile),
       }}
       loading={
         <p className="text-xs text-muted-foreground">Loading editor…</p>
@@ -139,6 +160,7 @@ export function DiffCodeEditor({
 }: DiffCodeEditorProps) {
   const monacoRef = useRef<typeof Monaco | null>(null)
   useThemeSync(monacoRef)
+  const isMobile = useIsMobile()
 
   return (
     <DiffEditor
@@ -159,10 +181,12 @@ export function DiffCodeEditor({
         fontFamily: EDITOR_FONT,
         scrollBeyondLastLine: false,
         automaticLayout: true,
-        renderSideBySide: true,
+        // Side-by-side needs width phones don't have — go inline on mobile.
+        renderSideBySide: !isMobile,
         originalEditable: false,
         padding: { top: 8 },
         ...displayOptions(display),
+        ...mobileEditorOptions(isMobile),
       }}
       loading={
         <p className="text-xs text-muted-foreground">Loading diff…</p>

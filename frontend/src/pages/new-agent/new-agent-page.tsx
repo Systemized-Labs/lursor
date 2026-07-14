@@ -241,7 +241,7 @@ export function NewAgentPage() {
       </div>
 
       {/* Footer hint */}
-      <p className="shrink-0 pb-6 text-center text-sm text-muted-foreground">
+      <p className="shrink-0 px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 text-center text-sm text-muted-foreground">
         Plugins help you customize your workflows — use{" "}
         <code className="rounded bg-muted px-1 py-0.5 text-xs text-foreground">
           /add-plugin

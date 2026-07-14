@@ -3998,6 +3998,31 @@
   --shadow-lg: var(--sh-lg);
 }
 
+/* ── Safe-area utilities ──────────────────────────────────────────────────────
+   Phones with a notch / home indicator expose the inset via
+   `env(safe-area-inset-*)` (needs `viewport-fit=cover` in the viewport meta).
+   These utilities add the inset ON TOP of any padding the element already has,
+   so a bottom-pinned composer or tab bar clears the home indicator. The `-only`
+   variants set the inset as the whole padding value. */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right);
+}
+@utility mb-safe {
+  margin-bottom: env(safe-area-inset-bottom);
+}
+@utility h-safe-bottom {
+  height: env(safe-area-inset-bottom);
+}
+
 @layer base {
   * {
     border-color: var(--border);
@@ -4006,6 +4031,22 @@
     background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
+  }
+
+  /* iOS Safari zooms the viewport when a focused form control has a font-size
+     below 16px. Our inputs are `text-sm` (14px), which triggers that jarring
+     zoom on every tap. Floor form controls at 16px on phones only — desktop
+     keeps the denser sizing. Monaco owns its own (offscreen) textarea sizing,
+     so exclude it. `!important` is needed to beat the utility classes. */
+  @media (max-width: 767px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
+    .monaco-editor textarea {
+      font-size: inherit !important;
+    }
   }
 
   /* Scrollbars — theme-aware, thin, and unobtrusive.

@@ -10,7 +10,9 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+        {/* The global mobile header already shows this title, so hide the large
+            in-page heading on phones (kept for screen readers / desktop). */}
+        <h1 className="sr-only text-2xl font-semibold tracking-tight text-foreground sm:not-sr-only">
           {title}
         </h1>
         {description ? (

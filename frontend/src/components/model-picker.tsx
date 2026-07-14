@@ -311,7 +311,11 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
           className="gap-0 overflow-hidden p-0"
-          style={isMobile ? undefined : { width: "62vw", maxWidth: "62vw", height: "80vh" }}
+          style={
+            isMobile
+              ? { width: "94vw", maxWidth: "94vw", height: "85dvh" }
+              : { width: "62vw", maxWidth: "62vw", height: "80vh" }
+          }
         >
           <DialogTitle className="sr-only">Select model</DialogTitle>
           <div className="flex h-full min-h-0 flex-col">

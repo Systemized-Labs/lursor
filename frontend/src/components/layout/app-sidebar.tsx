@@ -11,6 +11,7 @@ import {
   Plus,
   SlidersHorizontal,
   Trash,
+  X,
 } from "@phosphor-icons/react"
 import { type ComponentType, useEffect, useMemo, useState } from "react"
 import {
@@ -254,20 +255,34 @@ export function AppSidebar() {
           isMacElectron && "pt-8 [-webkit-app-region:drag]"
         )}
       >
-        <Link
-          to="/"
-          onClick={closeMobile}
-          className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0 [-webkit-app-region:no-drag]"
-        >
-          <img
-            src="/lursor_icon.png"
-            alt="Lursor"
-            className="size-11 shrink-0 rounded-md object-contain"
-          />
-          <span className="truncate text-lg font-bold tracking-tight text-foreground group-data-[collapsible=icon]:hidden">
-            Lursor
-          </span>
-        </Link>
+        <div className="flex items-center justify-between gap-1">
+          <Link
+            to="/"
+            onClick={closeMobile}
+            className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0 [-webkit-app-region:no-drag]"
+          >
+            <img
+              src="/lursor_icon.png"
+              alt="Lursor"
+              className="size-11 shrink-0 rounded-md object-contain"
+            />
+            <span className="truncate text-lg font-bold tracking-tight text-foreground group-data-[collapsible=icon]:hidden">
+              Lursor
+            </span>
+          </Link>
+          {/* Explicit close on mobile — the off-canvas sheet's own close is
+              hidden, so give the drawer a clear dismiss affordance. */}
+          {isMobile && (
+            <button
+              type="button"
+              onClick={() => setOpenMobile(false)}
+              aria-label="Close menu"
+              className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [-webkit-app-region:no-drag]"
+            >
+              <X className="size-5" />
+            </button>
+          )}
+        </div>
       </SidebarHeader>
 
       <SidebarContent className="overflow-hidden">
@@ -406,7 +421,9 @@ export function AppSidebar() {
                   </Button>
                 )}
               />
-              <SidebarTrigger className="shrink-0" />
+              {/* The collapse-to-rail toggle only makes sense for the desktop
+                  docked sidebar; the mobile drawer closes via the header X. */}
+              {!isMobile && <SidebarTrigger className="shrink-0" />}
             </div>
           </SidebarMenuItem>
         </SidebarMenu>
