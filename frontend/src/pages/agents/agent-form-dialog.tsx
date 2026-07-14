@@ -413,9 +413,7 @@ export function AgentFormDialog({
                   ) : (
                     templateGroups.map(([category, items]) => (
                       <SelectGroup key={category}>
-                        <SelectLabel className="capitalize">
-                          {category}
-                        </SelectLabel>
+                        <SelectLabel>{category}</SelectLabel>
                         {items.map((t) => (
                           <SelectItem key={t.id} value={t.id}>
                             {t.name}
