@@ -60,6 +60,32 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE app_config ADD COLUMN deep_defaults JSON DEFAULT '{}'")
         )
+    if "goal_evaluator_model" not in app_config_cols:
+        await conn.execute(
+            text("ALTER TABLE app_config ADD COLUMN goal_evaluator_model VARCHAR")
+        )
+
+    # Goal-mode columns on threads (all default to a benign "chat"/idle state so
+    # existing rows keep behaving exactly as before).
+    thread_cols = await columns("threads")
+    thread_additions = {
+        "mode": "ALTER TABLE threads ADD COLUMN mode VARCHAR DEFAULT 'chat'",
+        "goal": "ALTER TABLE threads ADD COLUMN goal VARCHAR DEFAULT ''",
+        "success_criteria": (
+            "ALTER TABLE threads ADD COLUMN success_criteria VARCHAR DEFAULT ''"
+        ),
+        "goal_status": "ALTER TABLE threads ADD COLUMN goal_status VARCHAR DEFAULT 'idle'",
+        "iteration": "ALTER TABLE threads ADD COLUMN iteration INTEGER DEFAULT 0",
+        "max_iterations": "ALTER TABLE threads ADD COLUMN max_iterations INTEGER DEFAULT 25",
+        "require_plan_approval": (
+            "ALTER TABLE threads ADD COLUMN require_plan_approval BOOLEAN DEFAULT 1"
+        ),
+        "last_reason": "ALTER TABLE threads ADD COLUMN last_reason VARCHAR DEFAULT ''",
+        "todos_snapshot": "ALTER TABLE threads ADD COLUMN todos_snapshot JSON DEFAULT '[]'",
+    }
+    for col, ddl in thread_additions.items():
+        if col not in thread_cols:
+            await conn.execute(text(ddl))
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

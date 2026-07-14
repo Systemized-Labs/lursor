@@ -27,6 +27,9 @@ export const threadsApi = {
     api.get<string[]>("/threads/active-runs", signal),
   // Cancel the in-flight run for a thread (204/404 when nothing is running).
   stop: (id: string) => api.post<{ stopped: boolean }>(`/threads/${id}/stop`, {}),
+  // Release a goal run parked at the plan-approval checkpoint.
+  approveGoal: (id: string) =>
+    api.post<{ approved: boolean }>(`/threads/${id}/goal/approve`, {}),
 }
 
 export const threadKeys = {

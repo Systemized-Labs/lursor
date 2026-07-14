@@ -1,5 +1,5 @@
 import { streamUrl } from "./agent"
-import type { AgentTodo, TodoStatus } from "./types"
+import type { AgentGoalStatus, AgentTodo, GoalRunStatus, TodoStatus } from "./types"
 
 const TODO_STATUSES: TodoStatus[] = [
   "pending",
@@ -8,8 +8,39 @@ const TODO_STATUSES: TodoStatus[] = [
   "blocked",
 ]
 
+const GOAL_STATUSES: GoalRunStatus[] = [
+  "planning",
+  "awaiting_approval",
+  "running",
+  "completed",
+  "blocked",
+  "failed",
+  "stopped",
+]
+
 /** The name of the AG-UI CUSTOM event carrying the agent's live todo list. */
 export const TODOS_EVENT_NAME = "todos"
+
+/** The name of the AG-UI CUSTOM event carrying goal lifecycle updates. */
+export const GOAL_STATUS_EVENT_NAME = "goal_status"
+
+/**
+ * Normalizes the `value` of a `goal_status` CUSTOM event. Tolerant of missing
+ * fields so a wire change can't crash the stream; returns `null` when the
+ * payload doesn't carry a recognized status.
+ */
+export function parseGoalStatus(value: unknown): AgentGoalStatus | null {
+  if (!value || typeof value !== "object") return null
+  const v = value as Record<string, unknown>
+  if (!GOAL_STATUSES.includes(v.status as GoalRunStatus)) return null
+  return {
+    status: v.status as GoalRunStatus,
+    condition: typeof v.condition === "string" ? v.condition : "",
+    iteration: typeof v.iteration === "number" ? v.iteration : 0,
+    maxIterations: typeof v.maxIterations === "number" ? v.maxIterations : 0,
+    reason: typeof v.reason === "string" ? v.reason : "",
+  }
+}
 
 /**
  * Normalizes the `value` of a `todos` CUSTOM event into a list of {@link AgentTodo}.
@@ -60,6 +91,7 @@ export interface ChatEventHandlers {
   onToolArgs: (toolCallId: string, args: string) => void
   onToolResult: (toolCallId: string, result: string) => void
   onTodos: (todos: AgentTodo[]) => void
+  onGoalStatus: (status: AgentGoalStatus) => void
   onError: (message: string) => void
 }
 
@@ -190,6 +222,9 @@ function dispatch(
       if (event.name === TODOS_EVENT_NAME) {
         const todos = parseTodos(event.value)
         if (todos) handlers.onTodos(todos)
+      } else if (event.name === GOAL_STATUS_EVENT_NAME) {
+        const goal = parseGoalStatus(event.value)
+        if (goal) handlers.onGoalStatus(goal)
       }
       break
     }

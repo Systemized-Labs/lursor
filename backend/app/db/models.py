@@ -65,6 +65,34 @@ class ThinkingLevel(StrEnum):
     high = "high"
 
 
+class ThreadMode(StrEnum):
+    """How a thread is driven. ``chat`` is the classic turn-based conversation;
+    ``goal`` runs the self-continuing goal loop (see ``agents/goal_loop.py``)."""
+
+    chat = "chat"
+    goal = "goal"
+
+
+class GoalStatus(StrEnum):
+    """Lifecycle of a goal-mode thread's objective.
+
+    ``idle`` — not pursuing a goal (or a chat thread). Then, in order:
+    ``planning`` (first turn drafts the checklist) → ``awaiting_approval``
+    (paused for the user to approve the plan) → ``running`` (autonomous loop).
+    Terminal: ``completed`` (evaluator confirmed), ``blocked`` (judged
+    impossible / needs a human), ``failed`` (hit the iteration cap), ``stopped``
+    (cancelled by the user)."""
+
+    idle = "idle"
+    planning = "planning"
+    awaiting_approval = "awaiting_approval"
+    running = "running"
+    completed = "completed"
+    blocked = "blocked"
+    failed = "failed"
+    stopped = "stopped"
+
+
 class Skill(TimestampMixin, table=True):
     """Reusable domain knowledge, stored as SKILL.md-style markdown."""
 
@@ -229,6 +257,12 @@ class AppConfig(TimestampMixin, table=True):
 
     openrouter_api_key: str | None = None
 
+    # Model that judges goal-mode completion (see ``agents/goal_loop.py``). The
+    # pydantic-deep default is an ``anthropic:`` model that needs a key Lursor
+    # may not have, so this overrides it with something on the OpenRouter/custom
+    # stack. When null the loop falls back to the thread agent's own model.
+    goal_evaluator_model: str | None = None
+
     # Global overrides for pydantic-deep defaults. Currently scoped to subagents:
     #   {"max_nesting_depth": int, "disabled_builtins": ["research", ...]}
     # A key that is absent means "inherit the library default" (see
@@ -273,6 +307,24 @@ class Thread(TimestampMixin, table=True):
     title: str = "New conversation"
     workspace_id: str = Field(foreign_key="workspaces.id", index=True)
     agent_id: str = Field(foreign_key="agents.id", index=True)
+
+    # --- Goal mode -----------------------------------------------------------
+    # A ``chat`` thread ignores every field below. A ``goal`` thread runs the
+    # self-continuing loop in ``agents/goal_loop.py``: plan → (approve) → work
+    # → evaluate → repeat, until ``goal_status`` reaches a terminal state.
+    mode: ThreadMode = Field(default=ThreadMode.chat)
+    goal: str = ""  # the objective the agent works toward
+    # The completion condition handed to the evaluator; falls back to ``goal``
+    # when empty. Kept separate so "what to do" and "what "done" means" can differ.
+    success_criteria: str = ""
+    goal_status: GoalStatus = Field(default=GoalStatus.idle)
+    iteration: int = 0  # evaluation turns spent (mirrors GoalState.turns)
+    max_iterations: int = 25  # hard safety cap → GoalState.max_turns
+    require_plan_approval: bool = True  # pause after planning for user approval
+    last_reason: str = ""  # evaluator's latest one-sentence verdict, for the UI
+    # Latest todo checklist snapshot, persisted so goal progress survives a
+    # reconnect (the live list otherwise lives only in transient run deps).
+    todos_snapshot: list = Field(default_factory=list, sa_column=Column(JSON))
 
     messages: list["Message"] = Relationship(
         back_populates="thread",

@@ -45,3 +45,22 @@ export interface ChatMessage {
   attachments?: ChatAttachment[]
   streaming?: boolean
 }
+
+/** Goal lifecycle mirrored from the backend `goal_status` CUSTOM event. */
+export type GoalRunStatus =
+  | "planning"
+  | "awaiting_approval"
+  | "running"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "stopped"
+
+/** Live goal state for the open conversation (see `stream-reader`). */
+export interface AgentGoalStatus {
+  status: GoalRunStatus
+  condition: string
+  iteration: number
+  maxIterations: number
+  reason: string
+}

@@ -5,7 +5,13 @@ import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import { useAgents } from "@/api/agents"
-import { threadKeys, useActiveRuns, useThreads, useUpdateThread } from "@/api/threads"
+import {
+  threadKeys,
+  threadsApi,
+  useActiveRuns,
+  useThreads,
+  useUpdateThread,
+} from "@/api/threads"
 import { useWorkspace } from "@/api/workspaces"
 import { useChat } from "@/agui/useChat"
 import { Button } from "@/components/ui/button"
@@ -16,12 +22,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { cn } from "@/lib/utils"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
 import { ChatTodoList } from "@/components/chat/ChatTodoList"
+import { GoalBanner, GoalSetup, type GoalDraft } from "@/components/chat/GoalPanel"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
+import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
+import type { GoalStatus, ThreadMode } from "@/api/types"
+
+/** Workspace-relative path the goal agent writes its plan to (see backend
+ *  `goal_loop.PLAN_DOC`); opened in the file panel during plan review. */
+const GOAL_PLAN_DOC = "GOAL_PLAN.md"
 
 /**
  * The chat surface for a workspace. The conversation list lives in the left app
@@ -55,6 +69,9 @@ export function WorkspaceChatPage() {
   const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  // Chat vs. goal mode for a *new* conversation; an open thread's mode wins.
+  const [mode, setMode] = useState<ThreadMode>("chat")
+  const [approving, setApproving] = useState(false)
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
 
   const chat = useChat({
@@ -91,11 +108,15 @@ export function WorkspaceChatPage() {
     if (launch?.agentId) setSelectedAgentId(launch.agentId)
   }, [location.state])
 
-  // Keep the agent picker in sync with the open thread (or the default for a new one).
+  // Keep the agent picker + mode toggle in sync with the open thread (or the
+  // defaults for a new one).
   useEffect(() => {
     if (selectedThreadId) {
       const t = threads.find((x) => x.id === selectedThreadId)
-      if (t) setSelectedAgentId(t.agent_id)
+      if (t) {
+        setSelectedAgentId(t.agent_id)
+        setMode(t.mode)
+      }
     } else {
       setSelectedAgentId((prev) => prev || agents[0]?.id || "")
     }
@@ -133,7 +154,38 @@ export function WorkspaceChatPage() {
   }
 
   function handleNewConversation() {
+    setMode("chat")
     setSearchParams({})
+  }
+
+  async function handleStartGoal(goalDraft: GoalDraft) {
+    if (!workspaceId || !selectedAgentId) {
+      toast.error("Pick an agent before starting a goal.")
+      return
+    }
+    // startGoal lazily creates the goal thread and sends the objective in one
+    // path (see useChat), so the plan and messages aren't wiped by a concurrent
+    // conversation load. onThreadCreated syncs the URL to the new thread.
+    await chat.startGoal(goalDraft.goal, {
+      goal: goalDraft.goal,
+      successCriteria: goalDraft.successCriteria,
+      maxIterations: goalDraft.maxIterations,
+      requirePlanApproval: goalDraft.requirePlanApproval,
+    })
+  }
+
+  async function handleApproveGoal() {
+    if (!selectedThreadId) return
+    setApproving(true)
+    try {
+      // Approval starts a fresh execution run server-side; follow its stream.
+      await threadsApi.approveGoal(selectedThreadId)
+      chat.followRun()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to approve plan")
+    } finally {
+      setApproving(false)
+    }
   }
 
   function startEditingTitle() {
@@ -215,6 +267,55 @@ export function WorkspaceChatPage() {
   const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
 
+  // A goal thread once opened, or the toggle set to Goal on a fresh conversation.
+  // The `mode && selectedThreadId` arm covers the gap between creating a goal
+  // thread and its first status event, so the chat composer never flashes.
+  const isGoalThread =
+    currentThread?.mode === "goal" ||
+    chat.goalStatus !== null ||
+    (mode === "goal" && Boolean(selectedThreadId))
+  const showGoalSetup = mode === "goal" && !selectedThreadId && !isGoalThread
+  // Prefer the live stream status; fall back to the thread's persisted goal state
+  // (e.g. reopening a finished/paused goal that isn't currently streaming).
+  const goalView: {
+    status: GoalStatus
+    condition: string
+    iteration: number
+    maxIterations: number
+    reason: string
+  } | null = chat.goalStatus
+    ? { ...chat.goalStatus }
+    : currentThread?.mode === "goal"
+      ? {
+          status: currentThread.goal_status,
+          condition: currentThread.success_criteria || currentThread.goal,
+          iteration: currentThread.iteration,
+          maxIterations: currentThread.max_iterations,
+          reason: currentThread.last_reason,
+        }
+      : null
+  const modeLocked = Boolean(selectedThreadId)
+  // The agent is actively executing (autonomous loop) — offer Stop, not chat.
+  const goalExecuting = goalView?.status === "running"
+
+  // When a goal thread enters plan review, open its plan doc in the file panel
+  // so the user can read the plan while iterating. Once per thread.
+  const planOpenedForRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!workspaceId || !selectedThreadId) return
+    if (
+      goalView?.status === "awaiting_approval" &&
+      planOpenedForRef.current !== selectedThreadId
+    ) {
+      planOpenedForRef.current = selectedThreadId
+      requestOpenFile({
+        workspaceId,
+        path: GOAL_PLAN_DOC,
+        name: GOAL_PLAN_DOC,
+      })
+    }
+  }, [goalView?.status, workspaceId, selectedThreadId])
+
   if (workspaceQuery.isLoading) {
     return <p className="p-6 text-sm text-muted-foreground">Loading workspace…</p>
   }
@@ -265,6 +366,27 @@ export function WorkspaceChatPage() {
 
         {/* Controls */}
         <div className="flex shrink-0 items-center gap-0.5">
+          {/* Chat vs. Goal mode. Locked once a conversation is open (a thread's
+              mode is fixed at creation); switch via New conversation. */}
+          <div className="mr-1 flex items-center rounded-md bg-muted/60 p-0.5">
+            {(["chat", "goal"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                disabled={modeLocked && mode !== m}
+                onClick={() => !modeLocked && setMode(m)}
+                className={cn(
+                  "rounded px-2 py-0.5 text-xs font-medium capitalize transition-colors",
+                  mode === m
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                  modeLocked && mode !== m && "cursor-not-allowed opacity-40"
+                )}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
           {noAgents ? (
             <span className="text-xs text-muted-foreground">No agents</span>
           ) : (
@@ -330,6 +452,20 @@ export function WorkspaceChatPage() {
         }
       />
 
+      {goalView && (
+        <div className="px-4 pb-1 sm:px-6">
+          <GoalBanner
+            status={goalView.status}
+            condition={goalView.condition}
+            iteration={goalView.iteration}
+            maxIterations={goalView.maxIterations}
+            reason={goalView.reason}
+            approving={approving}
+            onApprove={() => void handleApproveGoal()}
+          />
+        </div>
+      )}
+
       {chat.todos.length > 0 && (
         <div className="px-4 pb-1 sm:px-6">
           <ChatTodoList todos={chat.todos} />
@@ -340,23 +476,41 @@ export function WorkspaceChatPage() {
         <p className="px-4 pb-1 text-sm text-destructive">{chat.error}</p>
       ) : null}
 
-      <ChatComposer
-        input={draft}
-        onInputChange={setDraft}
-        onKeyDown={handleKeyDown}
-        onSend={() => void handleSend()}
-        onStop={chat.stop}
-        isSending={chat.isStreaming}
-        disabled={noAgents}
-        attachments={attachments}
-        onAttachmentsChange={setAttachments}
-        mentionSources={mentionSources}
-        queuedMessages={chat.queue}
-        queuePaused={chat.queuePaused}
-        onRemoveQueued={chat.removeQueued}
-        onEditQueued={chat.editQueued}
-        onResumeQueue={chat.resumeQueue}
-      />
+      {showGoalSetup ? (
+        <div className="px-4 pb-4 pt-1 sm:px-6">
+          <GoalSetup disabled={noAgents} onStart={(d) => void handleStartGoal(d)} />
+        </div>
+      ) : isGoalThread && goalExecuting ? (
+        // Autonomous execution is running: offer Stop, not the composer.
+        <div className="flex items-center justify-center px-4 pb-4 pt-1 sm:px-6">
+          <Button variant="outline" size="sm" onClick={chat.stop}>
+            Stop goal
+          </Button>
+        </div>
+      ) : (
+        // Plain chat, or goal planning/review — the composer stays available so
+        // the user can iterate on the plan before approving.
+        <ChatComposer
+          input={draft}
+          onInputChange={setDraft}
+          onKeyDown={handleKeyDown}
+          onSend={() => void handleSend()}
+          onStop={chat.stop}
+          isSending={chat.isStreaming}
+          disabled={noAgents}
+          placeholder={
+            isGoalThread ? "Refine the plan, then approve to run…" : undefined
+          }
+          attachments={attachments}
+          onAttachmentsChange={setAttachments}
+          mentionSources={mentionSources}
+          queuedMessages={chat.queue}
+          queuePaused={chat.queuePaused}
+          onRemoveQueued={chat.removeQueued}
+          onEditQueued={chat.editQueued}
+          onResumeQueue={chat.resumeQueue}
+        />
+      )}
     </div>
   )
 }

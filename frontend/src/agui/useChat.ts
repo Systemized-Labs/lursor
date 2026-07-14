@@ -15,11 +15,18 @@ import {
 } from "./reducer"
 import {
   consumeThreadStream,
+  GOAL_STATUS_EVENT_NAME,
+  parseGoalStatus,
   parseTodos,
   TODOS_EVENT_NAME,
   type ChatEventHandlers,
 } from "./stream-reader"
-import type { AgentTodo, ChatMessage, PendingAttachment } from "./types"
+import type {
+  AgentGoalStatus,
+  AgentTodo,
+  ChatMessage,
+  PendingAttachment,
+} from "./types"
 
 /** Maps persisted thread messages into the UI message shape. Attachments are
  *  resolved to server media URLs scoped to the thread they belong to. */
@@ -102,11 +109,21 @@ export interface QueuedMessage {
   attachments: PendingAttachment[]
 }
 
+/** Goal config applied when a goal thread is lazily created via `startGoal`. */
+export interface GoalThreadConfig {
+  goal: string
+  successCriteria: string
+  maxIterations: number
+  requirePlanApproval: boolean
+}
+
 export interface UseChat {
   selectedThreadId: string | null
   messages: ChatMessage[]
   /** The agent's live todo list for the open conversation (empty when none). */
   todos: AgentTodo[]
+  /** Live goal state for the open conversation, or null in plain chat. */
+  goalStatus: AgentGoalStatus | null
   isStreaming: boolean
   error: string | null
   /** Messages waiting to send after the current run settles (FIFO). */
@@ -114,6 +131,12 @@ export interface UseChat {
   /** The queue holds messages but won't auto-drain (set when a run is stopped). */
   queuePaused: boolean
   send: (text: string, attachments?: PendingAttachment[]) => Promise<void>
+  /** Start a goal: lazily creates a goal thread (via the same path as `send`,
+   *  avoiding the load/clobber race) and sends the objective as the first turn. */
+  startGoal: (objective: string, config: GoalThreadConfig) => Promise<void>
+  /** Attach to the open thread's in-flight run (used after approving a plan,
+   *  when the backend starts a fresh execution run to follow). */
+  followRun: () => void
   stop: () => void
   /** Drop a queued message before it sends. */
   removeQueued: (id: string) => void
@@ -137,6 +160,7 @@ export interface UseChat {
 export function useChat(options: UseChatOptions): UseChat {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [todos, setTodos] = useState<AgentTodo[]>([])
+  const [goalStatus, setGoalStatus] = useState<AgentGoalStatus | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
@@ -147,6 +171,8 @@ export function useChat(options: UseChatOptions): UseChat {
 
   const agentRef = useRef<HttpAgent | null>(null)
   const agentThreadRef = useRef<string | null>(null)
+  // Set by `startGoal` and consumed by the next lazy thread-create in performSend.
+  const pendingGoalConfigRef = useRef<GoalThreadConfig | null>(null)
   const reconnectAbortRef = useRef<AbortController | null>(null)
   const currentAssistantId = useRef<string | null>(null)
   // Thread `send` is actively driving via the live POST stream. Set synchronously
@@ -253,6 +279,7 @@ export function useChat(options: UseChatOptions): UseChat {
         setMessages((prev) => setToolCallResult(prev, toolCallId, result))
       },
       onTodos: (next) => setTodos(next),
+      onGoalStatus: (next) => setGoalStatus(next),
       onError: (message) => setError(message),
     }),
     [resolveAssistantId]
@@ -315,6 +342,7 @@ export function useChat(options: UseChatOptions): UseChat {
       // A reconnect replays this thread's buffered `todos` events and rebuilds
       // the list; clear first so a stale list from the previous thread can't linger.
       setTodos([])
+      setGoalStatus(null)
       currentAssistantId.current = null
       // Point the send transport at the opened thread.
       agentRef.current = createThreadAgent(threadId)
@@ -348,6 +376,7 @@ export function useChat(options: UseChatOptions): UseChat {
     setSelectedThreadId(null)
     setMessages([])
     setTodos([])
+    setGoalStatus(null)
     setError(null)
     setIsStreaming(false)
     setQueueSynced([])
@@ -365,14 +394,28 @@ export function useChat(options: UseChatOptions): UseChat {
       }
 
       // Lazily create the thread on first send so "New conversation" leaves no
-      // orphan threads behind if the user never sends anything.
+      // orphan threads behind if the user never sends anything. A pending goal
+      // config (set by `startGoal`) makes the new thread a goal thread.
       let threadId = selectedThreadIdRef.current
       if (!threadId) {
+        const goalConfig = pendingGoalConfigRef.current
+        pendingGoalConfigRef.current = null
         try {
           const thread = await threadsApi.create({
             workspace_id: workspaceId,
             agent_id: agentId,
-            title: "New conversation",
+            title: goalConfig
+              ? goalConfig.goal.slice(0, 60) || "New goal"
+              : "New conversation",
+            ...(goalConfig
+              ? {
+                  mode: "goal" as const,
+                  goal: goalConfig.goal,
+                  success_criteria: goalConfig.successCriteria,
+                  max_iterations: goalConfig.maxIterations,
+                  require_plan_approval: goalConfig.requirePlanApproval,
+                }
+              : {}),
           })
           threadId = thread.id
           selectedThreadIdRef.current = thread.id
@@ -437,9 +480,13 @@ export function useChat(options: UseChatOptions): UseChat {
             onToolCallResultEvent: ({ event }) =>
               handlers.onToolResult(event.toolCallId, event.content),
             onCustomEvent: ({ event }) => {
-              if (event.name !== TODOS_EVENT_NAME) return
-              const parsed = parseTodos(event.value)
-              if (parsed) handlers.onTodos(parsed)
+              if (event.name === TODOS_EVENT_NAME) {
+                const parsed = parseTodos(event.value)
+                if (parsed) handlers.onTodos(parsed)
+              } else if (event.name === GOAL_STATUS_EVENT_NAME) {
+                const goal = parseGoalStatus(event.value)
+                if (goal) handlers.onGoalStatus(goal)
+              }
             },
             onRunErrorEvent: ({ event }) => handlers.onError(event.message),
           }
@@ -487,6 +534,27 @@ export function useChat(options: UseChatOptions): UseChat {
     [performSend, setQueueSynced]
   )
 
+  // Follow a run that started server-side (e.g. execution after plan approval)
+  // by attaching the GET SSE reader to the open thread.
+  const followRun = useCallback(() => {
+    const id = selectedThreadIdRef.current
+    if (id) reconnectToRun(id)
+  }, [reconnectToRun])
+
+  // Start a goal on a fresh conversation. Routes through `performSend`'s
+  // lazy-create so the thread is created and claimed (sendingThreadRef) before
+  // the URL updates — the same guard that stops `loadConversation` from wiping
+  // the just-sent objective and streamed plan.
+  const startGoal = useCallback(
+    async (objective: string, config: GoalThreadConfig) => {
+      const trimmed = objective.trim()
+      if (!trimmed) return
+      pendingGoalConfigRef.current = config
+      await performSend({ id: randomUUID(), text: trimmed, attachments: [] })
+    },
+    [performSend]
+  )
+
   // Resume a paused queue: fire it now (the rest auto-drain as each run settles).
   const resumeQueue = useCallback(() => {
     pausedRef.current = false
@@ -515,11 +583,14 @@ export function useChat(options: UseChatOptions): UseChat {
     selectedThreadId,
     messages,
     todos,
+    goalStatus,
     isStreaming,
     error,
     queue,
     queuePaused,
     send,
+    startGoal,
+    followRun,
     stop,
     removeQueued,
     editQueued,

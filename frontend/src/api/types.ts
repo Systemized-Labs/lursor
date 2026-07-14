@@ -214,11 +214,34 @@ export interface ThreadMessage {
   created_at: string
 }
 
+export type ThreadMode = "chat" | "goal"
+
+/** Lifecycle of a goal-mode thread (mirrors backend `GoalStatus`). */
+export type GoalStatus =
+  | "idle"
+  | "planning"
+  | "awaiting_approval"
+  | "running"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "stopped"
+
 export interface Thread {
   id: string
   workspace_id: string
   agent_id: string
   title: string
+  // Goal mode (a plain chat thread leaves these at their defaults).
+  mode: ThreadMode
+  goal: string
+  success_criteria: string
+  goal_status: GoalStatus
+  iteration: number
+  max_iterations: number
+  require_plan_approval: boolean
+  last_reason: string
+  todos_snapshot: unknown[]
   created_at: string
   updated_at: string
 }
@@ -227,12 +250,23 @@ export interface ThreadInput {
   workspace_id: string
   agent_id: string
   title: string
+  // Optional goal-mode config supplied when starting a goal thread.
+  mode?: ThreadMode
+  goal?: string
+  success_criteria?: string
+  max_iterations?: number
+  require_plan_approval?: boolean
 }
 
 export interface ThreadUpdate {
   title?: string
   // Swap the agent this conversation talks to; the next message uses it.
   agent_id?: string
+  mode?: ThreadMode
+  goal?: string
+  success_criteria?: string
+  max_iterations?: number
+  require_plan_approval?: boolean
 }
 
 export interface HealthResponse {
