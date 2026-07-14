@@ -205,15 +205,10 @@ function DockPanelContent({
     )
   }
 
-  const meta = TAB_META[kind]
-  const Icon = meta.icon
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-2 p-6 text-center">
-      <Icon className="h-8 w-8 text-muted-foreground" />
-      <p className="text-sm font-medium text-foreground">{meta.title}</p>
-      <p className="text-xs text-muted-foreground">Not wired up yet.</p>
-    </div>
-  )
+  // Every DockKind above returns its own panel, so `kind` is `never` here.
+  // Kept as an exhaustiveness guard: a newly added kind will surface as a type
+  // error until it gets a branch above.
+  return null
 }
 
 /** Panel cards shown when the dock has no open tabs. */
