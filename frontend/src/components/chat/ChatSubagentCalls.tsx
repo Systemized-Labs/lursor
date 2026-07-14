@@ -69,7 +69,10 @@ function SubagentCard({ call }: { call: ChatToolCall }) {
   const [open, setOpen] = useState(false)
   const { subagentType, description } = parseTask(call.args)
   const state = taskState(call)
-  const label = subagentType || "subagent"
+  // `subagent_type` is the last arg to stream in (it's declared after the
+  // free-text `description`), so early in a delegation we don't yet know the
+  // name. Show a neutral "Delegating…" placeholder rather than a misleading
+  // generic label, and swap to the real name the moment it parses.
   const statusText =
     state === "running" ? "Running…" : state === "error" ? "Failed" : "Done"
 
@@ -81,8 +84,16 @@ function SubagentCard({ call }: { call: ChatToolCall }) {
         className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/50"
       >
         <TreeStructure className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="text-xs text-muted-foreground">Delegated to</span>
-        <span className="font-mono text-xs font-medium text-foreground">{label}</span>
+        {subagentType ? (
+          <>
+            <span className="text-xs text-muted-foreground">Delegated to</span>
+            <span className="font-mono text-xs font-medium text-foreground">
+              {subagentType}
+            </span>
+          </>
+        ) : (
+          <span className="text-xs text-muted-foreground">Delegating…</span>
+        )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <TaskStatusIcon state={state} />
           <span
