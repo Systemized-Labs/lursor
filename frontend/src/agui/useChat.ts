@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { HttpAgent, type Message, randomUUID } from "@ag-ui/client"
 
-import type { Thread, ThreadMessage } from "@/api/types"
+import type { Thread, ThreadMessage, TurnMode } from "@/api/types"
 import { threadsApi } from "@/api/threads"
 
 import { createThreadAgent, mediaUrl } from "./agent"
@@ -107,6 +107,9 @@ export interface QueuedMessage {
   id: string
   text: string
   attachments: PendingAttachment[]
+  /** Per-turn mode captured when the message was submitted (defaults "edit").
+   *  Read at send time so a queued turn keeps the mode it was typed in. */
+  turnMode: TurnMode
 }
 
 /** Goal config applied when a goal thread is lazily created via `startGoal`. */
@@ -130,7 +133,11 @@ export interface UseChat {
   queue: QueuedMessage[]
   /** The queue holds messages but won't auto-drain (set when a run is stopped). */
   queuePaused: boolean
-  send: (text: string, attachments?: PendingAttachment[]) => Promise<void>
+  send: (
+    text: string,
+    attachments?: PendingAttachment[],
+    turnMode?: TurnMode
+  ) => Promise<void>
   /** Start a goal: lazily creates a goal thread (via the same path as `send`,
    *  avoiding the load/clobber race) and sends the objective as the first turn. */
   startGoal: (objective: string, config: GoalThreadConfig) => Promise<void>
@@ -386,7 +393,7 @@ export function useChat(options: UseChatOptions): UseChat {
   // both a live submit and a message drained off the queue. Drains the next
   // queued message once this run settles.
   const performSend = useCallback(
-    async ({ text: trimmed, attachments }: QueuedMessage) => {
+    async ({ text: trimmed, attachments, turnMode }: QueuedMessage) => {
       const { workspaceId, agentId } = optionsRef.current
       if (!workspaceId || !agentId) {
         setError("Pick an agent before sending a message.")
@@ -463,7 +470,9 @@ export function useChat(options: UseChatOptions): UseChat {
 
       try {
         await agent.runAgent(
-          {},
+          // Carry the per-turn mode so the backend can build a read-only
+          // ("ask") agent for this turn. Goal threads ignore it.
+          { forwardedProps: { turn_mode: turnMode } },
           {
             onTextMessageStartEvent: ({ event }) =>
               handlers.onTextStart(event.messageId),
@@ -519,10 +528,19 @@ export function useChat(options: UseChatOptions): UseChat {
   performSendRef.current = performSend
 
   const send = useCallback(
-    async (text: string, attachments: PendingAttachment[] = []) => {
+    async (
+      text: string,
+      attachments: PendingAttachment[] = [],
+      turnMode: TurnMode = "edit"
+    ) => {
       const trimmed = text.trim()
       if (!trimmed && attachments.length === 0) return
-      const msg: QueuedMessage = { id: randomUUID(), text: trimmed, attachments }
+      const msg: QueuedMessage = {
+        id: randomUUID(),
+        text: trimmed,
+        attachments,
+        turnMode,
+      }
       // Append while a run is streaming, or while a pending queue already exists,
       // so new messages join the batch in order rather than jumping ahead.
       if (isStreamingRef.current || queueRef.current.length > 0) {
@@ -550,7 +568,12 @@ export function useChat(options: UseChatOptions): UseChat {
       const trimmed = objective.trim()
       if (!trimmed) return
       pendingGoalConfigRef.current = config
-      await performSend({ id: randomUUID(), text: trimmed, attachments: [] })
+      await performSend({
+        id: randomUUID(),
+        text: trimmed,
+        attachments: [],
+        turnMode: "edit",
+      })
     },
     [performSend]
   )

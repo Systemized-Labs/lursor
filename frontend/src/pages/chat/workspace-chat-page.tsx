@@ -22,16 +22,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { cn } from "@/lib/utils"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
+import { ChatModeSelect } from "@/components/chat/ChatModeSelect"
 import { ChatTodoList } from "@/components/chat/ChatTodoList"
 import { GoalBanner, GoalSetup, type GoalDraft } from "@/components/chat/GoalPanel"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
-import type { GoalStatus, ThreadMode } from "@/api/types"
+import type { ChatMode, GoalStatus, TurnMode } from "@/api/types"
 
 /** Workspace-relative path the goal agent writes its plan to (see backend
  *  `goal_loop.PLAN_DOC`); opened in the file panel during plan review. */
@@ -69,8 +69,10 @@ export function WorkspaceChatPage() {
   const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
-  // Chat vs. goal mode for a *new* conversation; an open thread's mode wins.
-  const [mode, setMode] = useState<ThreadMode>("chat")
+  // Composer mode dropdown. `ask`/`edit` are per-turn modifiers on a chat
+  // thread; `plan` starts (or reflects) a goal thread. Defaults to `edit` and
+  // resets on New conversation. An open goal thread forces `plan`.
+  const [chatMode, setChatMode] = useState<ChatMode>("edit")
   const [approving, setApproving] = useState(false)
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
 
@@ -115,7 +117,12 @@ export function WorkspaceChatPage() {
       const t = threads.find((x) => x.id === selectedThreadId)
       if (t) {
         setSelectedAgentId(t.agent_id)
-        setMode(t.mode)
+        // A goal thread pins the dropdown to Plan. A chat thread keeps the
+        // user's current Ask/Edit choice (it's per-turn, not persisted) — don't
+        // clobber it when the thread row loads after the first send; only coerce
+        // away from Plan, which isn't valid on a chat thread.
+        if (t.mode === "goal") setChatMode("plan")
+        else setChatMode((prev) => (prev === "plan" ? "edit" : prev))
       }
     } else {
       setSelectedAgentId((prev) => prev || agents[0]?.id || "")
@@ -154,13 +161,36 @@ export function WorkspaceChatPage() {
   }
 
   function handleNewConversation() {
-    setMode("chat")
+    setChatMode("edit")
     setSearchParams({})
   }
 
   async function handleStartGoal(goalDraft: GoalDraft) {
     if (!workspaceId || !selectedAgentId) {
       toast.error("Pick an agent before starting a goal.")
+      return
+    }
+    // Entering Plan mid-conversation: promote the open chat thread into a goal
+    // thread (keeping its history), then send the objective — the backend sees
+    // mode=goal and runs the planning driver. On a fresh conversation there is
+    // no thread yet, so use startGoal's lazy-create path instead.
+    if (selectedThreadId) {
+      try {
+        await updateThread.mutateAsync({
+          id: selectedThreadId,
+          input: {
+            mode: "goal",
+            goal: goalDraft.goal,
+            success_criteria: goalDraft.successCriteria,
+            max_iterations: goalDraft.maxIterations,
+            require_plan_approval: goalDraft.requirePlanApproval,
+          },
+        })
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to start plan")
+        return
+      }
+      await chat.send(goalDraft.goal)
       return
     }
     // startGoal lazily creates the goal thread and sends the objective in one
@@ -227,7 +257,11 @@ export function WorkspaceChatPage() {
     isUserScrolledUpRef.current = false
     setIsAtBottom(true)
     setHasNewBelow(false)
-    await chat.send(text, atts)
+    // Composer sends are ask/edit turns. `plan` on a fresh conversation goes
+    // through GoalSetup instead; once a goal thread exists these turns refine
+    // the plan and the backend ignores the turn mode.
+    const turnMode: TurnMode = chatMode === "ask" ? "ask" : "edit"
+    await chat.send(text, atts, turnMode)
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -297,14 +331,14 @@ export function WorkspaceChatPage() {
   const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
 
-  // A goal thread once opened, or the toggle set to Goal on a fresh conversation.
-  // The `mode && selectedThreadId` arm covers the gap between creating a goal
-  // thread and its first status event, so the chat composer never flashes.
-  const isGoalThread =
-    currentThread?.mode === "goal" ||
-    chat.goalStatus !== null ||
-    (mode === "goal" && Boolean(selectedThreadId))
-  const showGoalSetup = mode === "goal" && !selectedThreadId && !isGoalThread
+  // A goal ("plan") thread: mode persisted as goal, or a live goal stream.
+  // Picking Plan in the dropdown does NOT itself make the thread a goal thread —
+  // it first shows the setup form; the thread is promoted only once planning
+  // starts (fresh create or mid-conversation conversion).
+  const isGoalThread = currentThread?.mode === "goal" || chat.goalStatus !== null
+  // Plan selected but not yet running a goal → collect objective/criteria. Works
+  // on a fresh conversation and mid-chat (Plan can be entered at any time).
+  const showGoalSetup = chatMode === "plan" && !isGoalThread
   // Prefer the live stream status; fall back to the thread's persisted goal state
   // (e.g. reopening a finished/paused goal that isn't currently streaming).
   const goalView: {
@@ -324,7 +358,11 @@ export function WorkspaceChatPage() {
           reason: currentThread.last_reason,
         }
       : null
-  const modeLocked = Boolean(selectedThreadId)
+  // A goal thread is pinned to Plan (its lifecycle can't switch back). Otherwise
+  // all three modes are selectable — Ask/Edit are per-turn, and Plan can be
+  // entered at any time (promotes the current chat thread into a plan).
+  const modeLocked = isGoalThread
+  const availableModes: ChatMode[] = isGoalThread ? ["plan"] : ["ask", "edit", "plan"]
   // The agent is actively executing (autonomous loop) — offer Stop, not chat.
   const goalExecuting = goalView?.status === "running"
 
@@ -396,27 +434,6 @@ export function WorkspaceChatPage() {
 
         {/* Controls */}
         <div className="flex shrink-0 items-center gap-0.5">
-          {/* Chat vs. Goal mode. Locked once a conversation is open (a thread's
-              mode is fixed at creation); switch via New conversation. */}
-          <div className="mr-1 flex items-center rounded-md bg-muted/60 p-0.5">
-            {(["chat", "goal"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                disabled={modeLocked && mode !== m}
-                onClick={() => !modeLocked && setMode(m)}
-                className={cn(
-                  "rounded px-2 py-0.5 text-xs font-medium capitalize transition-colors",
-                  mode === m
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                  modeLocked && mode !== m && "cursor-not-allowed opacity-40"
-                )}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
           {noAgents ? (
             <span className="text-xs text-muted-foreground">No agents</span>
           ) : (
@@ -508,7 +525,19 @@ export function WorkspaceChatPage() {
       ) : null}
 
       {showGoalSetup ? (
+        // Plan selected: collect the objective. The mode dropdown sits above the
+        // form so the user can still switch back to Ask/Edit.
         <div className="px-4 pb-4 pt-1 sm:px-6">
+          {/* Align the mode dropdown with the (centered, max-w-3xl) goal card. */}
+          <div className="mx-auto mb-2 w-full max-w-3xl">
+            <ChatModeSelect
+              mode={chatMode}
+              onModeChange={setChatMode}
+              availableModes={availableModes}
+              locked={modeLocked}
+              disabled={noAgents}
+            />
+          </div>
           <GoalSetup disabled={noAgents} onStart={(d) => void handleStartGoal(d)} />
         </div>
       ) : isGoalThread && goalExecuting ? (
@@ -520,7 +549,8 @@ export function WorkspaceChatPage() {
         </div>
       ) : (
         // Plain chat, or goal planning/review — the composer stays available so
-        // the user can iterate on the plan before approving.
+        // the user can iterate on the plan before approving. The mode dropdown
+        // lives in the composer's own toolbar.
         <ChatComposer
           input={draft}
           onInputChange={setDraft}
@@ -540,6 +570,10 @@ export function WorkspaceChatPage() {
           onRemoveQueued={chat.removeQueued}
           onEditQueued={chat.editQueued}
           onResumeQueue={chat.resumeQueue}
+          mode={chatMode}
+          onModeChange={setChatMode}
+          availableModes={availableModes}
+          modeLocked={modeLocked}
         />
       )}
     </div>

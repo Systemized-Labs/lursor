@@ -10,8 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic_ai import Agent as PydanticAgent
+from pydantic_ai.capabilities import PrepareTools
 from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 from pydantic_deep import Skill as DeepSkill
@@ -33,6 +35,55 @@ settings = get_settings()
 # Format: "custom:{provider_id}:{model_name}" (model_name may itself contain
 # colons, e.g. Ollama's "llama3:8b", so we only split on the first colon).
 CUSTOM_PREFIX = "custom:"
+
+# Tools the agent may keep in read-only ("ask") mode. This is an ALLOWLIST, not
+# a blocklist: the deep-agent toolset exposes many mutation/execution paths
+# beyond the obvious write/edit — `task` (spawns a full-write subagent),
+# `run_in_background`/`run_skill_script` (shell/script execution), monitors, etc.
+# Allowlisting keeps the read surface and fails safe when new tools appear.
+#
+# Allowed: workspace reads + search, web reads, skill *inspection* (not
+# `run_skill_script`), conversation utilities, and the internal todo list (which
+# lives in agent state, not the workspace filesystem, so it can't edit files).
+_READONLY_TOOL_ALLOWLIST = frozenset(
+    {
+        # workspace read + navigation
+        "ls",
+        "read_file",
+        "glob",
+        "grep",
+        "view_image",
+        # web (read-only)
+        "web_fetch",
+        "web_search",
+        # skills: inspect only — `run_skill_script` executes and is excluded
+        "list_skills",
+        "load_skill",
+        "read_skill_resource",
+        # conversation utilities (touch history/state, not the workspace)
+        "search_conversation_history",
+        "compact_conversation",
+        # todo planning is internal agent state, not files
+        "read_todos",
+        "write_todos",
+        "add_todo",
+        "remove_todo",
+        "update_todo_status",
+        "update_todo_statuses",
+    }
+)
+
+
+def _readonly_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+    """A ``ToolsPrepareFunc`` that keeps only read-safe tools each step.
+
+    Enforces read-only ("ask") mode at the tool layer: everything that can
+    mutate the workspace or execute code — including subagent delegation
+    (``task``) and shell/script tools — is removed before the model sees it, so
+    there is no write path (direct or delegated). Runs every step, so tools
+    loaded on demand (tool-search deferral) are filtered too.
+    """
+    return [t for t in tool_defs if t.name in _READONLY_TOOL_ALLOWLIST]
 
 
 def resolve_model(
@@ -96,8 +147,14 @@ def build_deep_agent(
     custom_providers: dict[str, CustomProvider] | None = None,
     subagents: list[SubagentRow] | None = None,
     deep_defaults: dict | None = None,
+    read_only: bool = False,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
+
+    ``read_only`` gates the agent to "ask" mode: the file-mutating and shell
+    tools (``write_file``/``edit_file``/``hashline_edit``/``execute``) are
+    filtered out via a ``PrepareTools`` capability, so the agent can read and
+    search the workspace but never modify it.
 
     Skills attached to the agent are passed through as deep-agent skills. Tool
     rows are catalogued in the DB but not yet wired into execution (see
@@ -176,6 +233,13 @@ def build_deep_agent(
     tools = list(extra_config.pop("tools", []) or [])
     tools.append(make_view_image_tool(workspace_path))
 
+    # Read-only ("ask") mode filters the mutating tools via a PrepareTools
+    # capability. Merge with any capabilities supplied through the escape hatch
+    # so we never pass the keyword twice.
+    capabilities = list(extra_config.pop("capabilities", []) or [])
+    if read_only:
+        capabilities.append(PrepareTools(_readonly_tool_filter))
+
     agent = create_deep_agent(
         model=resolve_model(row.model or settings.default_model, custom_providers or {}),
         instructions=row.instructions or None,
@@ -189,6 +253,7 @@ def build_deep_agent(
         include_plan=row.include_plan,
         web_search=row.web_search,
         thinking=thinking,
+        capabilities=capabilities or None,
         **managed_kwargs,
         **subagents_kwarg,
         **extra_config,

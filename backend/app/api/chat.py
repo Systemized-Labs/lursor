@@ -313,11 +313,17 @@ async def _stream_turn(
     return result.all_messages() if result is not None else (message_history or [])
 
 
-async def _build_agent_and_context(session: AsyncSession, agent_row: Agent, workspace: Workspace):
+async def _build_agent_and_context(
+    session: AsyncSession,
+    agent_row: Agent,
+    workspace: Workspace,
+    read_only: bool = False,
+):
     """Build the deep agent + deps for a thread and load the app-wide context.
 
     Shared by the chat/planning endpoint and the goal-execution start so both
-    resolve providers, subagents, and deep-defaults identically.
+    resolve providers, subagents, and deep-defaults identically. ``read_only``
+    gates the agent to "ask" mode (no file writes / shell).
     """
     providers = (await session.execute(select(CustomProvider))).scalars().all()
     custom_providers = {p.id: p for p in providers}
@@ -325,7 +331,12 @@ async def _build_agent_and_context(session: AsyncSession, agent_row: Agent, work
     app_config = (await session.execute(select(AppConfig))).scalars().first()
     deep_defaults = app_config.deep_defaults if app_config else None
     agent, deps = build_deep_agent(
-        agent_row, workspace.path, custom_providers, subagents, deep_defaults
+        agent_row,
+        workspace.path,
+        custom_providers,
+        subagents,
+        deep_defaults,
+        read_only=read_only,
     )
     return agent, deps, custom_providers, app_config
 
@@ -518,8 +529,15 @@ async def chat(
     # attached images are written to the media store and referenced on the row.
     user_text = ""
     attachments: list[dict] = []
+    # Per-turn mode ("ask"/"edit") rides on the AG-UI request as a forwarded
+    # prop; "edit" (full tools) is the default. Only meaningful for chat threads
+    # — goal threads run the plan lifecycle regardless.
+    turn_mode = "edit"
     with contextlib.suppress(Exception):
         body = await request.json()
+        forwarded = body.get("forwardedProps") or {}
+        if isinstance(forwarded, dict):
+            turn_mode = forwarded.get("turn_mode") or "edit"
         user_text, images = _parse_user_turn(body)
         for img in images:
             with contextlib.suppress(Exception):
@@ -549,8 +567,10 @@ async def chat(
     # of them via view_image, regardless of the model's own vision support.
     media_instructions = await _thread_media_instructions(session, thread_id)
 
+    # "Ask" mode on a chat thread builds a read-only agent (no write/edit/shell).
+    read_only = thread.mode == ThreadMode.chat and turn_mode == "ask"
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace
+        session, agent_row, workspace, read_only=read_only
     )
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.

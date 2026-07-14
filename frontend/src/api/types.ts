@@ -216,6 +216,14 @@ export interface ThreadMessage {
 
 export type ThreadMode = "chat" | "goal"
 
+/** The mode selected in the composer dropdown. `ask`/`edit` are per-turn
+ *  modifiers on a chat thread; `plan` starts a goal thread (see `ThreadMode`). */
+export type ChatMode = "ask" | "edit" | "plan"
+
+/** Per-turn modifier sent with a chat message (`plan` is expressed by the
+ *  thread being a goal thread, so it is not a TurnMode). */
+export type TurnMode = "ask" | "edit"
+
 /** Lifecycle of a goal-mode thread (mirrors backend `GoalStatus`). */
 export type GoalStatus =
   | "idle"

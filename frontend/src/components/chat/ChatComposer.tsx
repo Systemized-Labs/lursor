@@ -1,16 +1,29 @@
-import { useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react"
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react"
 import { Clock, Paperclip, PaperPlaneTilt, Play, Square, X } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { ChatModeSelect } from "@/components/chat/ChatModeSelect"
 import { MentionMenu } from "@/components/chat/mentions/MentionMenu"
 import { useMentions } from "@/components/chat/mentions/use-mentions"
 import type { MentionSource, ResolvedMention } from "@/components/chat/mentions/types"
 import type { QueuedMessage } from "@/agui/useChat"
 import type { PendingAttachment } from "@/agui/types"
+import type { ChatMode } from "@/api/types"
 
 const NOOP_SOURCES: MentionSource[] = []
+
+/** Tallest the prompt grows before it starts scrolling internally (px). Big
+ *  enough to read a pasted paragraph without the box eating the whole screen. */
+const MAX_TEXTAREA_HEIGHT = 240
 
 /** Read an image File into a staged attachment (data URL for preview + raw
  *  base64 payload for the wire). */
@@ -58,6 +71,14 @@ export interface ChatComposerProps {
   onEditQueued?: (id: string, text: string) => void
   /** Send the queued messages now (resume a paused queue). */
   onResumeQueue?: () => void
+  /** Current composer mode. Omit to hide the in-toolbar mode dropdown. */
+  mode?: ChatMode
+  /** Called when the user picks a different mode. */
+  onModeChange?: (mode: ChatMode) => void
+  /** Modes selectable right now; others render disabled. Defaults to all. */
+  availableModes?: ChatMode[]
+  /** Lock the dropdown to the current mode (e.g. an open goal/plan thread). */
+  modeLocked?: boolean
 }
 
 /** Message composer: a growing textarea inside a rounded card, with send/stop,
@@ -80,6 +101,10 @@ export function ChatComposer({
   onRemoveQueued,
   onEditQueued,
   onResumeQueue,
+  mode,
+  onModeChange,
+  availableModes,
+  modeLocked = false,
 }: ChatComposerProps) {
   const canAttach = !!onAttachmentsChange && !disabled
   const hasContent = !!input.trim() || attachments.length > 0
@@ -98,6 +123,16 @@ export function ChatComposer({
     onResolve: onMentionAdd,
     enabled: (mentionSources?.length ?? 0) > 0,
   })
+
+  // Grow the prompt with its content (e.g. a pasted paragraph) up to a fixed
+  // cap, then scroll internally. Runs whenever the value changes — including
+  // programmatic changes like clearing after send or a mention insert.
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`
+  }, [input])
 
   async function addFiles(files: FileList | File[]) {
     if (!onAttachmentsChange) return
@@ -156,10 +191,12 @@ export function ChatComposer({
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           className={cn(
-            "rounded-2xl border border-border/60 bg-muted/25 px-2.5 py-2",
-            "transition-[border-color,box-shadow,background-color] duration-200",
-            "focus-within:border-ring/40 focus-within:bg-muted/40 focus-within:shadow-sm focus-within:ring-2 focus-within:ring-ring/10",
-            isDragging && "border-ring/50 bg-muted/40 ring-2 ring-ring/20",
+            // One flat fill for the whole input (matches the app's other inputs
+            // and the toolbar controls) — no focus-driven colour shift.
+            "rounded-2xl border border-border/60 bg-muted/60 px-2.5 py-2",
+            "transition-[border-color,box-shadow] duration-200",
+            "focus-within:border-ring/40 focus-within:shadow-sm focus-within:ring-2 focus-within:ring-ring/10",
+            isDragging && "border-ring/50 ring-2 ring-ring/20",
             disabled && "opacity-60"
           )}
         >
@@ -222,7 +259,38 @@ export function ChatComposer({
               ))}
             </div>
           )}
-          <div className="flex items-center gap-1.5">
+          {/* Prompt on its own line so it spans the card width. */}
+          <Textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => {
+              onInputChange(e.target.value)
+              mentions.refresh()
+            }}
+            onKeyDown={handleKeyDown}
+            onKeyUp={mentions.refresh}
+            onClick={mentions.refresh}
+            onSelect={mentions.refresh}
+            onPaste={handlePaste}
+            placeholder={willQueue ? "Add to queue…" : placeholder}
+            disabled={disabled}
+            rows={1}
+            className={cn(
+              "min-h-[34px] resize-none overflow-y-auto border-0 bg-transparent px-1 py-1.5 text-sm leading-relaxed shadow-none",
+              "focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent disabled:bg-transparent dark:disabled:bg-transparent"
+            )}
+          />
+          {/* Toolbar: mode + attach on the left, send/stop on the right. */}
+          <div className="mt-1 flex items-center gap-1">
+            {mode && onModeChange && (
+              <ChatModeSelect
+                mode={mode}
+                onModeChange={onModeChange}
+                availableModes={availableModes}
+                locked={modeLocked}
+                disabled={disabled}
+              />
+            )}
             {canAttach && (
               <>
                 <input
@@ -243,69 +311,51 @@ export function ChatComposer({
                   title="Attach image"
                   aria-label="Attach image"
                   disabled={disabled}
-                  className="h-8 w-8 flex-shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+                  className="h-7 w-7 flex-shrink-0 rounded-full text-muted-foreground hover:text-foreground"
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>
               </>
             )}
-            <Textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => {
-                onInputChange(e.target.value)
-                mentions.refresh()
-              }}
-              onKeyDown={handleKeyDown}
-              onKeyUp={mentions.refresh}
-              onClick={mentions.refresh}
-              onSelect={mentions.refresh}
-              onPaste={handlePaste}
-              placeholder={willQueue ? "Add to queue…" : placeholder}
-              disabled={disabled}
-              rows={1}
-              className={cn(
-                "min-h-[34px] max-h-44 resize-none border-0 bg-transparent px-1 py-1.5 text-sm leading-relaxed shadow-none",
-                "focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent disabled:bg-transparent dark:disabled:bg-transparent"
-              )}
-            />
-            {isSending ? (
-              <div className="flex flex-shrink-0 items-center gap-1.5">
-                {hasContent && (
+            <div className="ml-auto flex flex-shrink-0 items-center gap-1.5">
+              {isSending ? (
+                <>
+                  {hasContent && (
+                    <Button
+                      onClick={onSend}
+                      size="icon"
+                      title="Add to queue"
+                      aria-label="Add to queue"
+                      className="h-8 w-8 rounded-full"
+                    >
+                      <PaperPlaneTilt className="h-4 w-4" />
+                    </Button>
+                  )}
                   <Button
-                    onClick={onSend}
+                    onClick={onStop}
+                    variant="destructive"
                     size="icon"
-                    title="Add to queue"
-                    aria-label="Add to queue"
+                    title="Stop"
                     className="h-8 w-8 rounded-full"
                   >
-                    <PaperPlaneTilt className="h-4 w-4" />
+                    <Square className="h-4 w-4" />
                   </Button>
-                )}
+                </>
+              ) : (
                 <Button
-                  onClick={onStop}
-                  variant="destructive"
+                  onClick={onSend}
+                  disabled={disabled || !hasContent}
                   size="icon"
-                  title="Stop"
-                  className="h-8 w-8 rounded-full"
+                  title={willQueue ? "Add to queue" : "Send"}
+                  className={cn(
+                    "h-8 w-8 rounded-full transition-transform duration-150",
+                    hasContent && !disabled && "hover:scale-105 active:scale-95"
+                  )}
                 >
-                  <Square className="h-4 w-4" />
+                  <PaperPlaneTilt className="h-4 w-4" />
                 </Button>
-              </div>
-            ) : (
-              <Button
-                onClick={onSend}
-                disabled={disabled || !hasContent}
-                size="icon"
-                title={willQueue ? "Add to queue" : "Send"}
-                className={cn(
-                  "h-8 w-8 flex-shrink-0 rounded-full transition-transform duration-150",
-                  hasContent && !disabled && "hover:scale-105 active:scale-95"
-                )}
-              >
-                <PaperPlaneTilt className="h-4 w-4" />
-              </Button>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </div>

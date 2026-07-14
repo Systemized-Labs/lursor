@@ -118,6 +118,26 @@ async def test_thread_update_and_run_endpoints(client: AsyncClient):
     # Stopping a thread with no live run is a 404.
     assert (await client.post(f"/threads/{thread['id']}/stop")).status_code == 404
 
+    # A plain chat thread can be promoted to a goal ("plan") thread mid-life so
+    # Plan can be entered at any time (see workspace-chat-page handleStartGoal).
+    assert thread["mode"] == "chat"
+    r = await client.patch(
+        f"/threads/{thread['id']}",
+        json={
+            "mode": "goal",
+            "goal": "ship the feature",
+            "success_criteria": "tests pass",
+            "max_iterations": 10,
+            "require_plan_approval": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["mode"] == "goal"
+    assert body["goal"] == "ship the feature"
+    assert body["success_criteria"] == "tests pass"
+    assert body["max_iterations"] == 10
+
 
 async def test_pick_folder_and_custom_path(client: AsyncClient, monkeypatch):
     """The pick-folder endpoint returns the native dialog's choice, and a custom
@@ -169,6 +189,66 @@ async def test_build_deep_agent_offline(client: AsyncClient):
     agent, deps = build_deep_agent(row, _tmp)
     assert agent is not None
     assert deps is not None
+
+
+async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient):
+    """Ask mode (read_only) exposes ONLY read-safe tools to the model.
+
+    Guards against the whole class of write paths — not just write_file/edit, but
+    subagent delegation (`task`) and shell/script execution — by driving a real
+    agent run through a FunctionModel and asserting on the tools it is offered.
+    """
+    from app.agents.builder import (
+        _READONLY_TOOL_ALLOWLIST,
+        _readonly_tool_filter,
+        build_deep_agent,
+    )
+    from app.db.models import Agent as AgentRow
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
+    row.skills = []
+    row.include_subagents = True  # ensure the `task` delegation tool is present
+
+    # The pure filter keeps only allowlisted names.
+    class _Def:
+        def __init__(self, name):
+            self.name = name
+
+    kept = {
+        d.name
+        for d in _readonly_tool_filter(
+            None, [_Def(n) for n in ["ls", "read_file", "write_file", "task", "execute"]]
+        )
+    }
+    assert kept == {"ls", "read_file"}
+
+    # End-to-end: the tools the model actually sees in read_only mode must be a
+    # subset of the allowlist and must not include any write/exec/delegate tool.
+    seen: dict[str, list[str]] = {}
+
+    def _capture(_messages, info: AgentInfo):
+        seen["tools"] = [t.name for t in info.function_tools]
+        return ModelResponse(parts=[TextPart("ok")])
+
+    agent, deps = build_deep_agent(row, _tmp, read_only=True)
+    with agent.override(model=FunctionModel(_capture)):
+        await agent.run("hi", deps=deps)
+
+    tools = set(seen["tools"])
+    assert tools <= _READONLY_TOOL_ALLOWLIST, f"leaked: {tools - _READONLY_TOOL_ALLOWLIST}"
+    forbidden = {
+        "task",
+        "write_file",
+        "edit_file",
+        "hashline_edit",
+        "execute",
+        "run_in_background",
+        "run_skill_script",
+        "send_message_to_subagent",
+    }
+    assert not (tools & forbidden), f"read-only agent exposed write paths: {tools & forbidden}"
 
 
 async def test_prompt_template_crud_and_builtin_protection(client: AsyncClient):
