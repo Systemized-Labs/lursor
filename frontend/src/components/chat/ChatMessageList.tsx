@@ -106,6 +106,8 @@ export interface ChatMessageListProps {
   renderIcons?: boolean
   /** Show the floating "jump to latest" button (user has scrolled away). */
   showScrollToBottom?: boolean
+  /** Highlight the button: content streamed in while the user was scrolled up. */
+  hasNewMessages?: boolean
   /** Re-pin to the bottom and resume auto-scroll. */
   onScrollToBottom?: () => void
 }
@@ -121,6 +123,7 @@ export function ChatMessageList({
   empty,
   renderIcons,
   showScrollToBottom,
+  hasNewMessages,
   onScrollToBottom,
 }: ChatMessageListProps) {
   return (
@@ -156,7 +159,7 @@ export function ChatMessageList({
                 className="absolute bottom-4 left-1/2 -translate-x-1/2 gap-1.5 whitespace-nowrap rounded-full border-0 shadow-md animate-in fade-in-0 slide-in-from-bottom-2"
               >
                 <ArrowDown className="h-3.5 w-3.5" />
-                Jump to latest
+                {hasNewMessages ? "New messages" : "Jump to latest"}
               </Button>
             </div>
           )}

@@ -223,6 +223,10 @@ export function WorkspaceChatPage() {
     const atts = attachments
     setDraft("")
     setAttachments([])
+    // Sending re-pins to the bottom so the user sees their turn and its reply.
+    isUserScrolledUpRef.current = false
+    setIsAtBottom(true)
+    setHasNewBelow(false)
     await chat.send(text, atts)
   }
 
@@ -234,11 +238,17 @@ export function WorkspaceChatPage() {
   }
 
   // --- auto-scroll plumbing --------------------------------------------------
+  // The timeline follows new content by default. Once the user scrolls away
+  // from the bottom they "detach": auto-scroll pauses and a floating button
+  // offers to re-pin ("reattach"). Content streaming in while detached lights
+  // the button up as "New messages".
   const containerRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const isUserScrolledUpRef = useRef(false)
   const [isAtBottom, setIsAtBottom] = useState(true)
+  const [hasNewBelow, setHasNewBelow] = useState(false)
 
+  // Track whether the user has scrolled away from the bottom.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -247,20 +257,40 @@ export function WorkspaceChatPage() {
       const scrolledUp = distFromBottom > 150
       isUserScrolledUpRef.current = scrolledUp
       setIsAtBottom(!scrolledUp)
+      if (!scrolledUp) setHasNewBelow(false)
     }
     el.addEventListener("scroll", onScroll, { passive: true })
     return () => el.removeEventListener("scroll", onScroll)
-  }, [])
+    // Re-bind once messages first render (the container may be empty initially).
+  }, [chat.messages.length > 0])
 
+  // Auto-scroll to bottom unless the user has detached.
+  const prevMessageCountRef = useRef(0)
   useEffect(() => {
+    const prevCount = prevMessageCountRef.current
+    prevMessageCountRef.current = chat.messages.length
+    if (prevCount === 0 && chat.messages.length > 0) {
+      // First render of a conversation: jump straight to the latest turn.
+      endRef.current?.scrollIntoView({ behavior: "instant" })
+      isUserScrolledUpRef.current = false
+      setIsAtBottom(true)
+      setHasNewBelow(false)
+      return
+    }
     if (!isUserScrolledUpRef.current) {
       endRef.current?.scrollIntoView({ behavior: "smooth" })
+    } else {
+      // Content arrived while the user is reading older messages — flag it on
+      // the "jump to latest" button.
+      setHasNewBelow(true)
     }
   }, [chat.messages])
 
+  // Re-pin to the bottom and resume auto-scroll (the "reattach" action).
   const scrollToBottom = useCallback(() => {
     isUserScrolledUpRef.current = false
     setIsAtBottom(true)
+    setHasNewBelow(false)
     endRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [])
 
@@ -430,6 +460,7 @@ export function WorkspaceChatPage() {
         className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6"
         renderIcons
         showScrollToBottom={!isAtBottom}
+        hasNewMessages={hasNewBelow}
         onScrollToBottom={scrollToBottom}
         empty={
           <div className="flex h-full items-center justify-center">
