@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/page-header"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GitHubPage } from "@/pages/github/github-page"
 import { AgentDefaultsSection } from "./agent-defaults-section"
+import { AppearanceSection } from "./appearance-section"
 import {
   PROVIDER_TABS,
   ProvidersSection,
@@ -12,7 +13,7 @@ import {
   type ProviderTab,
 } from "./providers-section"
 
-const TABS = ["general", "providers"] as const
+const TABS = ["general", "appearance", "providers"] as const
 type Tab = (typeof TABS)[number]
 
 function isTab(value: string | null): value is Tab {
@@ -58,6 +59,7 @@ export function SettingsPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
             <TabsTrigger value="general">General</TabsTrigger>
+            <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="providers">Providers</TabsTrigger>
           </TabsList>
 
@@ -82,6 +84,9 @@ export function SettingsPage() {
         <TabsContent value="general" className="space-y-6">
           <GitHubPage embedded />
           <AgentDefaultsSection />
+        </TabsContent>
+        <TabsContent value="appearance" className="space-y-6">
+          <AppearanceSection />
         </TabsContent>
         <TabsContent value="providers">
           <ProvidersSection value={providerTab} />

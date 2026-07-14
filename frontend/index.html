@@ -7,10 +7,65 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Geist+Pixel&display=swap"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Figtree:wght@400;500;600;700&family=Fira+Code:wght@400;500;600;700&family=Fraunces:wght@400;500;600;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&family=Geist+Pixel&family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500;600;700&family=Instrument+Serif&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Lexend:wght@400;500;600;700&family=Lora:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&family=Playfair+Display:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&family=Sora:wght@400;500;600;700&family=Source+Serif+4:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&family=Victor+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <title>Lursor</title>
+    <!-- Apply the persisted font family/size before first paint to avoid a
+         flash. Keep the maps in sync with src/lib/appearance.ts. -->
+    <script>
+      (function () {
+        try {
+          var SANS = ", ui-sans-serif, system-ui, sans-serif"
+          var SERIF = ', Georgia, Cambria, "Times New Roman", serif'
+          var MONO = ", ui-monospace, SFMono-Regular, Menlo, monospace"
+          var families = {
+            geist: '"Geist Variable"' + SANS,
+            inter: '"Inter"' + SANS,
+            "geist-google": '"Geist"' + SANS,
+            "space-grotesk": '"Space Grotesk"' + SANS,
+            sora: '"Sora"' + SANS,
+            outfit: '"Outfit"' + SANS,
+            lexend: '"Lexend"' + SANS,
+            manrope: '"Manrope"' + SANS,
+            "dm-sans": '"DM Sans"' + SANS,
+            "plus-jakarta": '"Plus Jakarta Sans"' + SANS,
+            "ibm-plex-sans": '"IBM Plex Sans"' + SANS,
+            poppins: '"Poppins"' + SANS,
+            figtree: '"Figtree"' + SANS,
+            system:
+              'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+            "instrument-serif": '"Instrument Serif"' + SERIF,
+            playfair: '"Playfair Display"' + SERIF,
+            fraunces: '"Fraunces"' + SERIF,
+            lora: '"Lora"' + SERIF,
+            "source-serif": '"Source Serif 4"' + SERIF,
+            "ibm-plex-serif": '"IBM Plex Serif"' + SERIF,
+            georgia: 'Georgia, Cambria, "Times New Roman", Times, serif',
+            "jetbrains-mono": '"JetBrains Mono"' + MONO,
+            "fira-code": '"Fira Code"' + MONO,
+            "space-mono": '"Space Mono"' + MONO,
+            "ibm-plex-mono": '"IBM Plex Mono"' + MONO,
+            "geist-mono": '"Geist Mono"' + MONO,
+            "victor-mono": '"Victor Mono"' + MONO,
+            mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+          }
+          // Legacy preset keys map to px; new values are stored as raw px.
+          var legacy = { sm: 14, md: 16, lg: 18, xl: 20 }
+          var fam = localStorage.getItem("lursor-font-family")
+          if (fam && families[fam]) {
+            document.documentElement.style.setProperty("--font-sans", families[fam])
+          }
+          var size = localStorage.getItem("lursor-font-size")
+          if (size) {
+            var px = size in legacy ? legacy[size] : parseInt(size, 10)
+            if (px >= 12 && px <= 24) {
+              document.documentElement.style.fontSize = px + "px"
+            }
+          }
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>
