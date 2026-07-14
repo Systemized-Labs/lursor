@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import mimetypes
 import os
 import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
@@ -289,6 +291,26 @@ async def read_file(
     return FileContent(
         path=path, content=text, is_binary=False, size=size, truncated=False
     )
+
+
+@router.get("/raw")
+async def read_raw(
+    workspace_id: str,
+    path: str,
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """Serve a file's raw bytes with a guessed content type.
+
+    Used for inline previews the JSON ``/read`` endpoint can't carry — chiefly
+    images, which ``/read`` reports as binary. Path safety is identical to
+    ``/read``: the client-supplied path is confined to the workspace root.
+    """
+    root = await _workspace_root(workspace_id, session)
+    target = _safe_join(root, path)
+    if not target.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    media_type, _ = mimetypes.guess_type(target.name)
+    return FileResponse(target, media_type=media_type or "application/octet-stream")
 
 
 @router.put("/write", response_model=WriteFileResponse)

@@ -36,6 +36,9 @@ export const filesApi = {
       `/workspaces/${workspaceId}/files/read?path=${encodeURIComponent(path)}`,
       signal
     ),
+  /** Absolute URL to a file's raw bytes — usable directly as an `<img src>`. */
+  rawUrl: (workspaceId: string, path: string) =>
+    `${API_BASE}/workspaces/${workspaceId}/files/raw?path=${encodeURIComponent(path)}`,
   search: (workspaceId: string, query = "", limit = 50, signal?: AbortSignal) =>
     api.get<DirEntry[]>(
       `/workspaces/${workspaceId}/files/search?q=${encodeURIComponent(query)}&limit=${limit}`,
