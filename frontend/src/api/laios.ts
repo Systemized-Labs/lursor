@@ -264,6 +264,74 @@ export function useDaemonUpdate(id: string) {
   return useMutation({ mutationFn: () => laiosApi.daemonUpdate(id) })
 }
 
+// Track a daemon through a restart from wherever this hook is mounted (a page,
+// not the dialog that triggered it) so the indicator outlives that dialog.
+// Polls /status until the daemon is healthy again — clearing the instant a
+// daemon we saw go down returns, or after a short settle window for a restart
+// too fast to observe a drop. `start(id)` begins tracking that connection.
+export function useDaemonReconnect() {
+  const qc = useQueryClient()
+  const [reconnectingId, setReconnectingId] = useState<string | undefined>()
+
+  useEffect(() => {
+    const id = reconnectingId
+    if (!id) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const startedAt = Date.now()
+    const POLL_MS = 800
+    const DEADLINE_MS = 90_000
+    const MIN_SETTLE_MS = 3_000
+    let sawDown = false
+
+    const finish = (ok: boolean) => {
+      if (cancelled) return
+      cancelled = true
+      clearTimeout(timer)
+      setReconnectingId(undefined)
+      qc.invalidateQueries({ queryKey: laiosKeys.daemonVersion(id) })
+      qc.invalidateQueries({ queryKey: laiosKeys.status(id) })
+      if (ok) toast.success("Daemon back online")
+      else
+        toast.error(
+          "Daemon hasn't come back yet — check its logs (it may still be starting)."
+        )
+    }
+
+    const tick = async () => {
+      if (cancelled) return
+      let healthy = false
+      try {
+        const s = await laiosApi.status(id)
+        healthy = s.status === "ok" && s.reachable
+      } catch {
+        healthy = false
+      }
+      if (cancelled) return
+      if (!healthy) {
+        sawDown = true
+      } else if (sawDown || Date.now() - startedAt > MIN_SETTLE_MS) {
+        finish(true)
+        return
+      }
+      if (Date.now() - startedAt > DEADLINE_MS) {
+        finish(false)
+        return
+      }
+      timer = setTimeout(tick, POLL_MS)
+    }
+
+    timer = setTimeout(tick, POLL_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [reconnectingId, qc])
+
+  const start = useCallback((id: string) => setReconnectingId(id), [])
+  return { reconnectingId, start }
+}
+
 // Tail an in-progress update log. Polls while the daemon reports it active
 // (recently written), then stops — the daemon restarts mid-update, so the log
 // (on disk) is the durable source of truth across the gap.

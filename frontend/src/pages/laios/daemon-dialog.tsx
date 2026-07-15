@@ -25,6 +25,8 @@ interface DaemonDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   connectionId: string
+  /** Called after a restart is accepted; the parent owns the reconnect UI. */
+  onRestartInitiated: () => void
 }
 
 /**
@@ -38,6 +40,7 @@ export function DaemonDialog({
   open,
   onOpenChange,
   connectionId,
+  onRestartInitiated,
 }: DaemonDialogProps) {
   const scoped = open ? connectionId : undefined
   const { data: version } = useLaiosDaemonVersion(scoped)
@@ -65,8 +68,11 @@ export function DaemonDialog({
   async function doRestart() {
     try {
       await restart.mutateAsync()
-      toast.success("Restarting daemon — it will drop offline briefly")
       setConfirmRestart(false)
+      // Hand off to the parent: close this dialog and let it own the
+      // "restarting…" indicator while the daemon cycles.
+      onOpenChange(false)
+      onRestartInitiated()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to restart daemon")
     }

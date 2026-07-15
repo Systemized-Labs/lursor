@@ -22,6 +22,7 @@ import { toast } from "sonner"
 import {
   isTransitional,
   type DownloadCard,
+  useDaemonReconnect,
   useDeleteLaiosConnection,
   useLaiosBudget,
   useLaiosCluster,
@@ -151,6 +152,10 @@ export function LaiosPage() {
   // Models even after the serve dialog closes.
   const serveManager = useServeManager(activeConnection?.id)
 
+  // Owns the daemon-restart reconnect indicator at the page level, so it
+  // outlives the (now-closing) daemon dialog that triggers the restart.
+  const reconnect = useDaemonReconnect()
+
   const deleteConnection = useDeleteLaiosConnection()
 
   function openAddConnection() {
@@ -215,6 +220,7 @@ export function LaiosPage() {
               }}
               onManage={() => setDaemonOpen(true)}
               onDelete={setConnToDelete}
+              reconnectingId={reconnect.reconnectingId}
             />
             {activeConnection ? (
               <>
@@ -262,6 +268,7 @@ export function LaiosPage() {
             open={daemonOpen}
             onOpenChange={setDaemonOpen}
             connectionId={activeConnection.id}
+            onRestartInitiated={() => reconnect.start(activeConnection.id)}
           />
           <StopInstanceDialog
             connectionId={activeConnection.id}
@@ -385,6 +392,7 @@ function ConnectionBar({
   onEdit,
   onManage,
   onDelete,
+  reconnectingId,
 }: {
   connections: LaiosConnection[]
   activeId: string | undefined
@@ -393,6 +401,7 @@ function ConnectionBar({
   onEdit: (c: LaiosConnection) => void
   onManage: (c: LaiosConnection) => void
   onDelete: (c: LaiosConnection) => void
+  reconnectingId: string | undefined
 }) {
   const active = connections.find((c) => c.id === activeId)
   return (
@@ -447,7 +456,17 @@ function ConnectionBar({
       {active ? (
         <>
           <Separator orientation="vertical" className="hidden h-5 sm:block" />
-          <LaiosStatusBadge connectionId={active.id} />
+          {/* While the daemon is cycling through a restart, replace the status
+              badge (which would just read "Unreachable") with a clear
+              restarting indicator. */}
+          {reconnectingId === active.id ? (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <DotGridLoader size="2xs" />
+              Restarting…
+            </span>
+          ) : (
+            <LaiosStatusBadge connectionId={active.id} />
+          )}
           <span className="hidden truncate font-mono text-xs text-muted-foreground lg:inline">
             {active.base_url}
           </span>
