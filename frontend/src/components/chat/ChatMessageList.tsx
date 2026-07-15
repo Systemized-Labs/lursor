@@ -103,7 +103,7 @@ function ChatSkeleton() {
  *  click reveals. Rendering the whole array for very long conversations pins
  *  the main thread laying out thousands of bubbles; windowing to the tail keeps
  *  the DOM small while still letting the user page back through history. */
-const DEFAULT_WINDOW_SIZE = 50
+const DEFAULT_WINDOW_SIZE = 10
 
 export interface ChatMessageListProps {
   messages: ChatMessage[]
