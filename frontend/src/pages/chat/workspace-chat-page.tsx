@@ -508,6 +508,7 @@ export function WorkspaceChatPage() {
         messages={chat.messages}
         endRef={endRef}
         containerRef={containerRef}
+        resetKey={selectedThreadId ?? undefined}
         className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6"
         renderIcons
         showScrollToBottom={!isAtBottom}

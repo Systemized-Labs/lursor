@@ -1,5 +1,12 @@
-import { type RefObject, type ReactNode } from "react"
-import { ArrowDown } from "@phosphor-icons/react"
+import {
+  type RefObject,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
+import { ArrowDown, CaretUp } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -92,12 +99,22 @@ function ChatSkeleton() {
   )
 }
 
+/** How many messages to render initially, and how many more each "show older"
+ *  click reveals. Rendering the whole array for very long conversations pins
+ *  the main thread laying out thousands of bubbles; windowing to the tail keeps
+ *  the DOM small while still letting the user page back through history. */
+const DEFAULT_WINDOW_SIZE = 50
+
 export interface ChatMessageListProps {
   messages: ChatMessage[]
   /** Sentinel at the bottom of the list used for auto-scroll. */
   endRef: RefObject<HTMLDivElement>
   /** Scroll container ref. */
   containerRef?: RefObject<HTMLDivElement>
+  /** Number of trailing messages rendered before the user pages back. */
+  windowSize?: number
+  /** Changing this (e.g. the thread id) resets the window to the tail. */
+  resetKey?: string
   /** Applied to the list root (scroll + vertical spacing). */
   className?: string
   isLoadingMessages?: boolean
@@ -118,6 +135,8 @@ export function ChatMessageList({
   messages,
   endRef,
   containerRef,
+  windowSize = DEFAULT_WINDOW_SIZE,
+  resetKey,
   className,
   isLoadingMessages,
   empty,
@@ -126,6 +145,34 @@ export function ChatMessageList({
   hasNewMessages,
   onScrollToBottom,
 }: ChatMessageListProps) {
+  const [visibleCount, setVisibleCount] = useState(windowSize)
+
+  // Re-pin to the tail when the conversation changes (thread switch / reset).
+  useEffect(() => {
+    setVisibleCount(windowSize)
+  }, [resetKey, windowSize])
+
+  const hasOlder = messages.length > visibleCount
+  const visibleMessages = hasOlder ? messages.slice(-visibleCount) : messages
+
+  // Revealing older messages prepends content above the viewport, which would
+  // otherwise shove everything the user is reading downward. Capture the
+  // scroll offset before the extra bubbles mount and restore it after, so the
+  // currently-read message stays put under the cursor.
+  const pendingScrollRef = useRef<{ height: number; top: number } | null>(null)
+  function showOlder() {
+    const el = containerRef?.current
+    if (el) pendingScrollRef.current = { height: el.scrollHeight, top: el.scrollTop }
+    setVisibleCount((n) => n + windowSize)
+  }
+  useLayoutEffect(() => {
+    const el = containerRef?.current
+    const pending = pendingScrollRef.current
+    if (!el || !pending) return
+    pendingScrollRef.current = null
+    el.scrollTop = pending.top + (el.scrollHeight - pending.height)
+  }, [visibleCount, containerRef])
+
   return (
     <div ref={containerRef} className={className}>
       {isLoadingMessages ? (
@@ -135,7 +182,21 @@ export function ChatMessageList({
       ) : (
         <>
           <div className="mx-auto w-full max-w-3xl space-y-10">
-            {groupTurns(groupMessages(messages)).map((turn) => (
+            {hasOlder && (
+              <div className="flex justify-center">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={showOlder}
+                  className="gap-1.5 text-muted-foreground"
+                >
+                  <CaretUp className="h-3.5 w-3.5" />
+                  Show older messages
+                </Button>
+              </div>
+            )}
+            {groupTurns(groupMessages(visibleMessages)).map((turn) => (
               <div key={turn.id} className="space-y-4">
                 {turn.user && (
                   <ChatMessageBubble
