@@ -265,6 +265,14 @@ class AppConfig(TimestampMixin, table=True):
 
     openrouter_api_key: str | None = None
 
+    # App-wide web-search backend used by every agent that has web search
+    # enabled. One of "native" | "duckduckgo" | "tavily" | "exa" (see
+    # ``agents/web_search.py``). Null means the default (DuckDuckGo). Tavily/Exa
+    # additionally need an API key below.
+    web_search_provider: str | None = None
+    tavily_api_key: str | None = None
+    exa_api_key: str | None = None
+
     # Model that judges goal-mode completion (see ``agents/goal_loop.py``). The
     # pydantic-deep default is an ``anthropic:`` model that needs a key Lursor
     # may not have, so this overrides it with something on the OpenRouter/custom

@@ -6,6 +6,8 @@ import type {
   OpenRouterSettings,
   OpenRouterSettingsInput,
   OpenRouterTestResult,
+  WebSearchSettings,
+  WebSearchSettingsInput,
 } from "./types"
 
 export const settingsApi = {
@@ -16,10 +18,15 @@ export const settingsApi = {
   clearOpenRouter: () => api.delete<void>("/settings/openrouter"),
   testOpenRouter: (input: OpenRouterSettingsInput) =>
     api.post<OpenRouterTestResult>("/settings/openrouter/test", input),
+  getWebSearch: (signal?: AbortSignal) =>
+    api.get<WebSearchSettings>("/settings/web-search", signal),
+  setWebSearch: (input: WebSearchSettingsInput) =>
+    api.put<WebSearchSettings>("/settings/web-search", input),
 }
 
 export const settingsKeys = {
   openrouter: ["settings", "openrouter"] as const,
+  webSearch: ["settings", "web-search"] as const,
 }
 
 export function useOpenRouterSettings() {
@@ -50,4 +57,21 @@ export function useSaveOpenRouterKey() {
 
 export function useClearOpenRouterKey() {
   return useOpenRouterMutation(() => settingsApi.clearOpenRouter())
+}
+
+export function useWebSearchSettings() {
+  return useQuery({
+    queryKey: settingsKeys.webSearch,
+    queryFn: ({ signal }) => settingsApi.getWebSearch(signal),
+  })
+}
+
+export function useSaveWebSearchSettings() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: WebSearchSettingsInput) => settingsApi.setWebSearch(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: settingsKeys.webSearch })
+    },
+  })
 }

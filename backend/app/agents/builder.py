@@ -24,6 +24,10 @@ from app.agents.deep_defaults import (
 )
 from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.agents.vision import make_view_image_tool
+from app.agents.web_search import (
+    DEFAULT_WEB_SEARCH_PROVIDER,
+    build_web_search_capability,
+)
 from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider
@@ -204,6 +208,9 @@ def build_deep_agent(
     deep_defaults: dict | None = None,
     read_only: bool = False,
     model_override: str | None = None,
+    web_search_provider: str | None = None,
+    tavily_api_key: str | None = None,
+    exa_api_key: str | None = None,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
 
@@ -224,6 +231,13 @@ def build_deep_agent(
     ``custom_providers`` maps provider id → row and is used to route runs that
     target a locally-hosted model; callers that never use custom models can omit
     it.
+
+    ``web_search_provider`` (with ``tavily_api_key`` / ``exa_api_key``) is the
+    app-wide web-search backend (see ``AppConfig.web_search_provider`` and
+    ``agents/web_search.py``). It only matters when ``row.web_search`` is on. The
+    default (DuckDuckGo) is handled by the library's own ``web_search=`` flag; any
+    other provider is built here as an explicit ``WebSearch`` capability and the
+    library flag is suppressed so there is no duplicate ``web_search`` tool.
 
     ``subagents`` is the global roster of specialists (see ``db.models.Subagent``).
     They are only handed to the agent when ``row.include_subagents`` is on. Rows
@@ -309,6 +323,24 @@ def build_deep_agent(
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
 
+    # Web search: the per-agent flag decides whether the agent can search; the
+    # app-wide provider decides which backend. The library's ``web_search=`` flag
+    # only wires DuckDuckGo, so for any non-default provider we build the
+    # capability ourselves and suppress the library's (``library_web_search`` →
+    # False) to avoid registering the ``web_search`` tool twice. The default
+    # provider stays on the library path, unchanged from before.
+    provider = web_search_provider or DEFAULT_WEB_SEARCH_PROVIDER
+    use_custom_web_search = row.web_search and provider != DEFAULT_WEB_SEARCH_PROVIDER
+    if use_custom_web_search:
+        capabilities.append(
+            build_web_search_capability(
+                provider,
+                tavily_api_key=tavily_api_key,
+                exa_api_key=exa_api_key,
+            )
+        )
+    library_web_search = row.web_search and not use_custom_web_search
+
     model = resolve_model(
         model_override or row.model or settings.default_model, custom_providers or {}
     )
@@ -338,7 +370,7 @@ def build_deep_agent(
         include_skills=row.include_skills,
         include_memory=row.include_memory,
         include_plan=row.include_plan,
-        web_search=row.web_search,
+        web_search=library_web_search,
         thinking=thinking,
         capabilities=capabilities or None,
         **managed_kwargs,

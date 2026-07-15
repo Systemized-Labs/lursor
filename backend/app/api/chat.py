@@ -346,6 +346,12 @@ async def _build_agent_and_context(
         deep_defaults,
         read_only=read_only,
         model_override=model_override,
+        web_search_provider=app_config.web_search_provider if app_config else None,
+        # A UI-saved key (on AppConfig) wins over the environment fallback.
+        tavily_api_key=(app_config.tavily_api_key if app_config else None)
+        or settings.tavily_api_key,
+        exa_api_key=(app_config.exa_api_key if app_config else None)
+        or settings.exa_api_key,
     )
     return agent, deps, custom_providers, app_config
 

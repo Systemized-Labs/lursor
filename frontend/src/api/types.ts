@@ -390,6 +390,26 @@ export interface OpenRouterTestResult {
   error: string | null
 }
 
+/** App-wide web-search backend used by agents that have web search enabled. */
+export type WebSearchProvider = "native" | "duckduckgo" | "tavily" | "exa"
+
+/** Web-search configuration status (raw API keys are never returned). */
+export interface WebSearchSettings {
+  provider: WebSearchProvider
+  tavily_configured: boolean
+  tavily_key_hint: string | null
+  tavily_source: "database" | "env" | "none"
+  exa_configured: boolean
+  exa_key_hint: string | null
+  exa_source: "database" | "env" | "none"
+}
+
+export interface WebSearchSettingsInput {
+  provider?: WebSearchProvider
+  tavily_api_key?: string | null
+  exa_api_key?: string | null
+}
+
 // --- laios control plane --------------------------------------------------------
 
 /** A connection to a laios daemon control plane (`:7420`). */

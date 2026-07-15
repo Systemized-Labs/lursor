@@ -1,9 +1,11 @@
 import { ProvidersPage } from "@/pages/providers/providers-page"
 import { OpenRouterSection } from "./openrouter-section"
+import { WebSearchSection } from "./web-search-section"
 
 export const PROVIDER_TABS = [
   { value: "openrouter", label: "OpenRouter" },
   { value: "custom", label: "Custom" },
+  { value: "web-search", label: "Web search" },
 ] as const
 
 export type ProviderTab = (typeof PROVIDER_TABS)[number]["value"]
@@ -20,5 +22,6 @@ export function isProviderTab(value: string): value is ProviderTab {
  */
 export function ProvidersSection({ value }: { value: ProviderTab }) {
   if (value === "custom") return <ProvidersPage embedded />
+  if (value === "web-search") return <WebSearchSection />
   return <OpenRouterSection />
 }

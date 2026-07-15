@@ -68,6 +68,16 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE app_config ADD COLUMN goal_evaluator_model VARCHAR")
         )
+    app_config_additions = {
+        "web_search_provider": (
+            "ALTER TABLE app_config ADD COLUMN web_search_provider VARCHAR"
+        ),
+        "tavily_api_key": "ALTER TABLE app_config ADD COLUMN tavily_api_key VARCHAR",
+        "exa_api_key": "ALTER TABLE app_config ADD COLUMN exa_api_key VARCHAR",
+    }
+    for col, ddl in app_config_additions.items():
+        if col not in app_config_cols:
+            await conn.execute(text(ddl))
 
     # Goal-mode columns on threads (all default to a benign "chat"/idle state so
     # existing rows keep behaving exactly as before).

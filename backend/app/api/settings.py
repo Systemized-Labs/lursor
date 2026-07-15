@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.agents.web_search import DEFAULT_WEB_SEARCH_PROVIDER
 from app.config import get_settings
 from app.db.models import AppConfig
 from app.db.session import async_session_factory, get_session
@@ -25,6 +26,8 @@ from app.schemas.settings import (
     OpenRouterSettingsRead,
     OpenRouterSettingsUpdate,
     OpenRouterTestResult,
+    WebSearchSettingsRead,
+    WebSearchSettingsUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,3 +147,56 @@ async def clear_openrouter(session: AsyncSession = Depends(get_session)):
         session.add(cfg)
         await session.commit()
     _apply_key(_env_key)
+
+
+# --- Web search ---------------------------------------------------------------
+# The provider is applied at agent-build time (see ``agents/builder.py``), so —
+# unlike the OpenRouter key — there is nothing to push into the running process
+# here: reads happen per run straight from the DB row / environment.
+
+
+@router.get("/web-search", response_model=WebSearchSettingsRead)
+async def get_web_search(session: AsyncSession = Depends(get_session)):
+    cfg = await _get_config(session)
+    provider = (cfg.web_search_provider if cfg else None) or DEFAULT_WEB_SEARCH_PROVIDER
+
+    tavily_db = cfg.tavily_api_key if cfg else None
+    tavily_env = get_settings().tavily_api_key
+    tavily_eff = tavily_db or tavily_env
+
+    exa_db = cfg.exa_api_key if cfg else None
+    exa_env = get_settings().exa_api_key
+    exa_eff = exa_db or exa_env
+
+    return WebSearchSettingsRead(
+        provider=provider,
+        tavily_configured=bool(tavily_eff),
+        tavily_key_hint=_hint(tavily_eff),
+        tavily_source="database" if tavily_db else ("env" if tavily_env else "none"),
+        exa_configured=bool(exa_eff),
+        exa_key_hint=_hint(exa_eff),
+        exa_source="database" if exa_db else ("env" if exa_env else "none"),
+    )
+
+
+@router.put("/web-search", response_model=WebSearchSettingsRead)
+async def set_web_search(
+    payload: WebSearchSettingsUpdate, session: AsyncSession = Depends(get_session)
+):
+    cfg = await _get_config(session)
+    if cfg is None:
+        cfg = AppConfig()
+
+    # Only touch fields the caller actually sent, so the provider and each key
+    # can be saved independently without clobbering the others.
+    fields = payload.model_fields_set
+    if "provider" in fields:
+        cfg.web_search_provider = payload.provider
+    if "tavily_api_key" in fields:
+        cfg.tavily_api_key = (payload.tavily_api_key or "").strip() or None
+    if "exa_api_key" in fields:
+        cfg.exa_api_key = (payload.exa_api_key or "").strip() or None
+
+    session.add(cfg)
+    await session.commit()
+    return await get_web_search(session)

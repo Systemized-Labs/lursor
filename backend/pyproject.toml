@@ -13,7 +13,7 @@ dependencies = [
     "pydantic-ai>=0.0.20",
     "ag-ui-protocol>=0.1.7",
     "pydantic-deep @ git+https://github.com/vstorm-co/pydantic-deepagents.git",
-    "pydantic-ai-slim[duckduckgo]>=2.8.0",
+    "pydantic-ai-slim[duckduckgo,exa,tavily]>=2.8.0",
 ]
 
 [project.optional-dependencies]

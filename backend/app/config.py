@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # Base URL for OpenRouter's REST API; "/models" is appended to list models.
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # --- Web search ---
+    # Optional API-key fallbacks for the paid search providers. A key saved on
+    # the Settings page (stored on ``AppConfig``) takes precedence over these.
+    # The active provider itself is chosen in the UI, not here.
+    tavily_api_key: str | None = None
+    exa_api_key: str | None = None
+
     # --- Media / vision ---
     # Where user-attached chat media (images) are stored, one subfolder per
     # thread. Kept out of the DB so message rows stay small.
