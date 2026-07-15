@@ -12,7 +12,7 @@ import {
   useThreads,
   useUpdateThread,
 } from "@/api/threads"
-import { useDefaultModels } from "@/api/settings"
+import { useDefaultAgents } from "@/api/settings"
 import { useWorkspace } from "@/api/workspaces"
 import { useChat } from "@/agui/useChat"
 import { Button } from "@/components/ui/button"
@@ -83,7 +83,7 @@ export function WorkspaceChatPage() {
   const [approving, setApproving] = useState(false)
   const [gameOpen, setGameOpen] = useState(false)
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
-  const { data: defaultModels } = useDefaultModels()
+  const { data: defaultAgents } = useDefaultAgents()
 
   const chat = useChat({
     workspaceId,
@@ -136,12 +136,20 @@ export function WorkspaceChatPage() {
         else setChatMode((prev) => (prev === "plan" ? "edit" : prev))
       }
     } else {
-      setSelectedAgentId((prev) => prev || agents[0]?.id || "")
+      // A fresh conversation seeds the agent from the Edit mode default (its
+      // starting mode) when set, else the first agent. `prev ||` avoids
+      // clobbering a selection the user already made.
+      const editDefault = defaultAgents?.edit
+      const seedable =
+        editDefault && agents.some((a) => a.id === editDefault)
+          ? editDefault
+          : agents[0]?.id
+      setSelectedAgentId((prev) => prev || seedable || "")
       // A fresh conversation inherits the agent's default model until the user
       // picks one.
       setSelectedModel("")
     }
-  }, [selectedThreadId, threads, agents])
+  }, [selectedThreadId, threads, agents, defaultAgents])
 
   // Auto-launch the first turn when we arrive from the New Agent home surface.
   // Guarded so a refresh/back-nav (which drops the router state) can't resend.
@@ -174,8 +182,24 @@ export function WorkspaceChatPage() {
     }
   }
 
+  // The default agent configured for a mode, but only if it still exists.
+  function defaultAgentFor(mode: ChatMode): string | undefined {
+    const id = defaultAgents?.[mode]
+    return id && agents.some((a) => a.id === id) ? id : undefined
+  }
+
+  // Switching chat mode also switches to (and reassigns the open thread to) that
+  // mode's default agent when one is configured — "this mode uses this agent".
+  function handleModeChange(mode: ChatMode) {
+    setChatMode(mode)
+    const target = defaultAgentFor(mode)
+    if (target && target !== selectedAgentId) void handleAgentChange(target)
+  }
+
   function handleNewConversation() {
     setChatMode("edit")
+    const editDefault = defaultAgentFor("edit")
+    if (editDefault) setSelectedAgentId(editDefault)
     setSearchParams({})
   }
 
@@ -393,14 +417,10 @@ export function WorkspaceChatPage() {
   // entered at any time (promotes the current chat thread into a plan).
   const modeLocked = isGoalThread
   const availableModes: ChatMode[] = isGoalThread ? ["plan"] : ["ask", "edit", "plan"]
-  // What the model picker resolves to when no per-thread model is set. Mirrors
-  // the backend chain (per-mode default → agent model → app-wide default) and
-  // reacts to the current mode, so switching Ask/Edit/Plan reveals that mode's
-  // configured default without pinning a per-thread override.
-  const modeDefaultModel = defaultModels?.[chatMode] ?? ""
+  // What the model picker resolves to when no per-thread model is set: the
+  // selected agent's own model. Shown on the trigger so an empty (inherit)
+  // selection still reveals the effective model.
   const agentModel = agents.find((a) => a.id === selectedAgentId)?.model ?? ""
-  const resolvedDefaultModel =
-    modeDefaultModel || agentModel || defaultModels?.fallback || ""
   // The agent is actively executing (autonomous loop) — offer Stop, not chat.
   const goalExecuting = goalView?.status === "running"
 
@@ -499,7 +519,7 @@ export function WorkspaceChatPage() {
             <ModelPicker
               value={selectedModel}
               onChange={(v) => void handleModelChange(v)}
-              resolvedDefault={resolvedDefaultModel}
+              resolvedDefault={agentModel}
               triggerClassName="flex h-7 max-w-[18rem] items-center justify-between gap-1.5 rounded-md bg-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none data-[state=open]:bg-accent"
             />
           )}
@@ -614,7 +634,7 @@ export function WorkspaceChatPage() {
           <div className="mx-auto mb-2 w-full max-w-3xl">
             <ChatModeSelect
               mode={chatMode}
-              onModeChange={setChatMode}
+              onModeChange={handleModeChange}
               availableModes={availableModes}
               locked={modeLocked}
               disabled={noAgents}
@@ -657,7 +677,7 @@ export function WorkspaceChatPage() {
           onEditQueued={chat.editQueued}
           onResumeQueue={chat.resumeQueue}
           mode={chatMode}
-          onModeChange={setChatMode}
+          onModeChange={handleModeChange}
           availableModes={availableModes}
           modeLocked={modeLocked}
         />

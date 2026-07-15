@@ -61,25 +61,18 @@ class WebSearchSettingsUpdate(BaseModel):
 ChatMode = Literal["ask", "edit", "plan"]
 
 
-class DefaultModelsRead(BaseModel):
-    """Per-chat-mode default models plus the app-wide fallback (read-only).
-
-    Each mode value is the stored model string ("" when unset). ``fallback`` is
-    ``settings.default_model`` — what a mode with no value resolves to — shown so
-    the UI can label the empty state.
-    """
+class DefaultAgentsRead(BaseModel):
+    """Per-chat-mode default agent id ("" when a mode has no default agent)."""
 
     ask: str = ""
     edit: str = ""
     plan: str = ""
-    fallback: str = ""
 
 
-class DefaultModelsUpdate(BaseModel):
+class DefaultAgentsUpdate(BaseModel):
     # Only fields present in the request body are applied (tracked via
     # ``model_fields_set``), so each mode can be set independently. A
-    # present-but-blank value clears that mode's default (reverts to the global
-    # ``settings.default_model``).
+    # present-but-blank value clears that mode's default agent.
     ask: str | None = None
     edit: str | None = None
     plan: str | None = None

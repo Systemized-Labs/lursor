@@ -440,20 +440,17 @@ export interface WebSearchSettingsInput {
 }
 
 /**
- * Per-chat-mode default models. Each value is a stored model string ("" when
- * unset, meaning that mode inherits `fallback`). `fallback` is the app-wide
- * default (`settings.default_model`), shown so the UI can label the empty
- * state. A set mode default replaces the fallback for threads run in that mode
- * but never overrides an explicit per-thread or per-agent model.
+ * Default agent per chat mode. Each value is an agent id ("" when the mode has
+ * no default agent). Selecting a mode in the composer switches to (and, for an
+ * open thread, reassigns) that mode's agent.
  */
-export interface DefaultModelsSettings {
+export interface DefaultAgentsSettings {
   ask: string
   edit: string
   plan: string
-  fallback: string
 }
 
-export interface DefaultModelsInput {
+export interface DefaultAgentsInput {
   ask?: string
   edit?: string
   plan?: string

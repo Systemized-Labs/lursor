@@ -350,14 +350,13 @@ class AppConfig(TimestampMixin, table=True):
     # stack. When null the loop falls back to the thread agent's own model.
     goal_evaluator_model: str | None = None
 
-    # Per-chat-mode default model, keyed by the composer mode: "ask" | "edit" |
-    # "plan". A set value replaces ``settings.default_model`` as the global
-    # fallback for threads run in that mode; it does NOT override an explicit
-    # per-thread or per-agent model (see the resolution chain in
-    # ``agents/builder.py`` / ``api/chat.py``). A missing/blank key means "use
-    # ``settings.default_model``". Kept as a free-form JSON blob so the set of
-    # modes can grow without a schema migration.
-    default_models: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Default agent per composer chat mode, keyed by mode ("ask" | "edit" |
+    # "plan") → agent id. When a mode has an entry, selecting that mode in the
+    # composer switches to (and, for an open thread, reassigns) that agent; the
+    # agent brings its own model/tools/instructions. A missing/blank key means
+    # "no default — keep the current agent". Kept as a free-form JSON blob so the
+    # set of modes can grow without a schema migration.
+    default_agents: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
     # Global overrides for pydantic-deep defaults. Currently scoped to subagents:
     #   {"max_nesting_depth": int, "disabled_builtins": ["research", ...]}

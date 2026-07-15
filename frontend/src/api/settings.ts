@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "./client"
 import { modelKeys } from "./models"
 import type {
-  DefaultModelsInput,
-  DefaultModelsSettings,
+  DefaultAgentsInput,
+  DefaultAgentsSettings,
   OpenRouterSettings,
   OpenRouterSettingsInput,
   OpenRouterTestResult,
@@ -24,16 +24,16 @@ export const settingsApi = {
     api.get<WebSearchSettings>("/settings/web-search", signal),
   setWebSearch: (input: WebSearchSettingsInput) =>
     api.put<WebSearchSettings>("/settings/web-search", input),
-  getDefaultModels: (signal?: AbortSignal) =>
-    api.get<DefaultModelsSettings>("/settings/default-models", signal),
-  setDefaultModels: (input: DefaultModelsInput) =>
-    api.put<DefaultModelsSettings>("/settings/default-models", input),
+  getDefaultAgents: (signal?: AbortSignal) =>
+    api.get<DefaultAgentsSettings>("/settings/default-agents", signal),
+  setDefaultAgents: (input: DefaultAgentsInput) =>
+    api.put<DefaultAgentsSettings>("/settings/default-agents", input),
 }
 
 export const settingsKeys = {
   openrouter: ["settings", "openrouter"] as const,
   webSearch: ["settings", "web-search"] as const,
-  defaultModels: ["settings", "default-models"] as const,
+  defaultAgents: ["settings", "default-agents"] as const,
 }
 
 export function useOpenRouterSettings() {
@@ -83,19 +83,19 @@ export function useSaveWebSearchSettings() {
   })
 }
 
-export function useDefaultModels() {
+export function useDefaultAgents() {
   return useQuery({
-    queryKey: settingsKeys.defaultModels,
-    queryFn: ({ signal }) => settingsApi.getDefaultModels(signal),
+    queryKey: settingsKeys.defaultAgents,
+    queryFn: ({ signal }) => settingsApi.getDefaultAgents(signal),
   })
 }
 
-export function useSaveDefaultModels() {
+export function useSaveDefaultAgents() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: DefaultModelsInput) => settingsApi.setDefaultModels(input),
+    mutationFn: (input: DefaultAgentsInput) => settingsApi.setDefaultAgents(input),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: settingsKeys.defaultModels })
+      qc.invalidateQueries({ queryKey: settingsKeys.defaultAgents })
     },
   })
 }

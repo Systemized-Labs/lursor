@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GitHubPage } from "@/pages/github/github-page"
 import { AgentDefaultsSection } from "./agent-defaults-section"
 import { AppearanceSection } from "./appearance-section"
-import { DefaultModelsSection } from "./default-models-section"
+import { DefaultAgentsSection } from "./default-agents-section"
 import {
   PROVIDER_TABS,
   ProvidersSection,
@@ -85,7 +85,7 @@ export function SettingsPage() {
 
         <TabsContent value="general" className="space-y-6">
           <GitHubPage embedded />
-          <DefaultModelsSection />
+          <DefaultAgentsSection />
           <AgentDefaultsSection />
         </TabsContent>
         <TabsContent value="appearance" className="space-y-6">

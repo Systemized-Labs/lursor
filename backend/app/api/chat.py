@@ -325,7 +325,6 @@ async def _build_agent_and_context(
     workspace: Workspace,
     read_only: bool = False,
     model_override: str | None = None,
-    mode: str | None = None,
 ):
     """Build the deep agent + deps for a thread and load the app-wide context.
 
@@ -333,9 +332,6 @@ async def _build_agent_and_context(
     resolve providers, subagents, and deep-defaults identically. ``read_only``
     gates the agent to "ask" mode (no file writes / shell). ``model_override``
     (a thread's per-conversation model) wins over the agent's stored model.
-    ``mode`` ("ask" | "edit" | "plan") selects the per-mode default model from
-    ``AppConfig.default_models``, which replaces the global default when neither
-    a thread nor an agent model is set.
     """
     providers = (await session.execute(select(CustomProvider))).scalars().all()
     custom_providers = {p.id: p for p in providers}
@@ -350,7 +346,6 @@ async def _build_agent_and_context(
         deep_defaults,
         read_only=read_only,
         model_override=model_override,
-        default_model=_mode_default_model(app_config, mode),
         web_search_provider=app_config.web_search_provider if app_config else None,
         # A UI-saved key (on AppConfig) wins over the environment fallback.
         tavily_api_key=(app_config.tavily_api_key if app_config else None)
@@ -361,31 +356,17 @@ async def _build_agent_and_context(
     return agent, deps, custom_providers, app_config
 
 
-def _mode_default_model(app_config: AppConfig | None, mode: str | None) -> str | None:
-    """The per-chat-mode default model, or None to use ``settings.default_model``.
-
-    ``mode`` is the composer mode ("ask" | "edit" | "plan"). A blank/missing
-    entry in ``AppConfig.default_models`` means "inherit the global default".
-    """
-    if app_config is None or not mode:
-        return None
-    return (app_config.default_models or {}).get(mode) or None
-
-
 def _resolve_evaluator_model(
     app_config: AppConfig | None, thread: Thread, agent_row: Agent
 ) -> str:
     """The model that judges goal completion.
 
     Explicit ``goal_evaluator_model`` wins; otherwise it follows the thread's
-    effective chat model — per-thread override → the "plan" mode default →
-    agent's model → app-wide default — matching the driver's resolution for a
-    goal (plan) thread.
+    effective chat model (per-thread override → agent's model → default).
     """
     return (
         (app_config.goal_evaluator_model if app_config else None)
         or thread.model
-        or _mode_default_model(app_config, "plan")
         or agent_row.model
         or settings.default_model
     )
@@ -619,16 +600,8 @@ async def chat(
 
     # "Ask" mode on a chat thread builds a read-only agent (no write/edit/shell).
     read_only = thread.mode == ThreadMode.chat and turn_mode == "ask"
-    # The composer mode selects the per-mode default model: a goal thread is
-    # "plan"; a chat thread is its per-turn "ask"/"edit".
-    mode = "plan" if thread.mode == ThreadMode.goal else turn_mode
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session,
-        agent_row,
-        workspace,
-        read_only=read_only,
-        model_override=thread.model,
-        mode=mode,
+        session, agent_row, workspace, read_only=read_only, model_override=thread.model
     )
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.
@@ -640,12 +613,7 @@ async def chat(
     # to view_image via the on-disk copies instead. Mutating run_input.messages
     # here is safe: the adapter parses .messages lazily, only once run_stream runs.
     if attachments:
-        model_str = (
-            thread.model
-            or _mode_default_model(app_config, mode)
-            or agent_row.model
-            or settings.default_model
-        )
+        model_str = thread.model or agent_row.model or settings.default_model
         if not await model_supports_vision(model_str):
             paths = [str(media_path(thread_id, a["media_id"])) for a in attachments]
             note = user_text + (
@@ -804,7 +772,7 @@ async def approve_goal_plan(
 
     media_instructions = await _thread_media_instructions(session, thread_id)
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace, model_override=thread.model, mode="plan"
+        session, agent_row, workspace, model_override=thread.model
     )
     evaluator = build_goal_evaluator(
         _resolve_evaluator_model(app_config, thread, agent_row), custom_providers
