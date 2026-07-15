@@ -4,6 +4,8 @@ import { HttpAgent, type Message, randomUUID } from "@ag-ui/client"
 import type { Thread, ThreadMessage, TurnMode } from "@/api/types"
 import { threadsApi } from "@/api/threads"
 
+import { expandMentionTokens } from "@/components/chat/mentions/types"
+
 import { createThreadAgent, mediaUrl } from "./agent"
 import {
   addToolCall,
@@ -446,10 +448,13 @@ export function useChat(options: UseChatOptions): UseChat {
       // Seed the transport with the current history, then append the new turn.
       agent.setMessages(toAgentMessages(messagesRef.current))
 
+      // Expand `@/files/…` mention tokens into plain workspace-relative paths so
+      // the agent reads them as references, not an absolute `/files/` path.
+      const outgoing = expandMentionTokens(trimmed)
       const userMessage: ChatMessage = {
         id: randomUUID(),
         role: "user",
-        content: trimmed,
+        content: outgoing,
         toolCalls: [],
         attachments: attachments.map((a) => ({
           url: a.dataUrl,
@@ -461,7 +466,7 @@ export function useChat(options: UseChatOptions): UseChat {
       agent.addMessage({
         id: userMessage.id,
         role: "user",
-        content: buildUserContent(trimmed, attachments),
+        content: buildUserContent(outgoing, attachments),
       } as Message)
 
       currentAssistantId.current = null

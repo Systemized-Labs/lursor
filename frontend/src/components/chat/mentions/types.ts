@@ -86,6 +86,21 @@ export function findActiveMention(text: string, caret: number): ActiveMention | 
   return null
 }
 
+/** Rewrite committed mention tokens into plain references the agent can act on.
+ *  A file mention is inserted as `@/files/<workspace-relative-path>`; the leading
+ *  `/files/` makes the model read it as an absolute path and (e.g.) create the
+ *  file under `/files/`. Collapse it to the bare, backticked workspace path so
+ *  the agent resolves it against the workspace root it's already scoped to. */
+export function expandMentionTokens(text: string): string {
+  return text.replace(/(^|\s)@\/files\/(\S+)/g, (_m, lead: string, path: string) => {
+    // Preserve any trailing punctuation (e.g. a sentence-ending period) outside
+    // the backticks so it isn't mistaken for part of the path.
+    const trail = path.match(/[.,;:!?)]+$/)?.[0] ?? ""
+    const clean = trail ? path.slice(0, -trail.length) : path
+    return `${lead}\`${clean}\`${trail}`
+  })
+}
+
 /** Split a mention query into its category key and the remaining sub-query.
  *  A leading slash is optional, so `@/agents/co` and `@agents/co` are equal. */
 export function parseMentionQuery(query: string): { categoryKey: string | null; sub: string } {
