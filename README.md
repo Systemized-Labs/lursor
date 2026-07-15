@@ -7,7 +7,7 @@ real time.
 Built on:
 - **[pydantic-deepagents](https://github.com/vstorm-co/pydantic-deepagents)** — the deep-agent engine (planning, filesystem, subagents, skills), on Pydantic AI.
 - **FastAPI + SQLite** backend.
-- **Vite + React + Tailwind + shadcn/ui** frontend.
+- **Vite + React + Tailwind + shadcn/ui** frontend, which also ships as an **Electron** desktop app.
 - **[AG-UI](https://github.com/ag-ui-protocol/ag-ui)** protocol for streaming chat (via Pydantic AI's first-party adapter).
 
 ## Structure
@@ -16,7 +16,9 @@ Built on:
 lursor/
   backend/     FastAPI + pydantic-deepagents + SQLite   (see backend/README.md)
   frontend/    Vite + React + Tailwind + shadcn/ui       (see frontend/README.md)
+               also runs as an Electron desktop app     (see docs/ELECTRON.md)
   docs/        Plans and design notes (docs/PLAN.md)
+  scripts/     dev.sh — run backend + frontend together
 ```
 
 ## Quick start
@@ -44,8 +46,12 @@ Then open the Vite URL (default `http://localhost:5173`).
 ### One command
 
 ```bash
-./scripts/dev.sh          # runs backend + frontend together
+./scripts/dev.sh              # backend + frontend in the browser
+./scripts/dev.sh --electron   # backend + frontend in the Electron desktop shell
 ```
+
+Ctrl-C stops both processes. See [docs/ELECTRON.md](docs/ELECTRON.md) for how the
+desktop app is wired and how to package a distributable.
 
 ## Status
 
