@@ -1,11 +1,17 @@
-"""Tests for local (custom-provider) model capability profiles.
+"""Tests for local (custom-provider) model reasoning wiring in ``builder``.
 
 Local models are served through a generic ``OpenAIProvider``, which profiles by
-OpenAI's own model-name allowlist. Without an explicit profile, a non-OpenAI
-reasoning model (e.g. DeepSeek-V4) is treated as non-reasoning: its unified
-``thinking`` setting is stripped before the request and its ``reasoning_content``
-output is not mapped. ``builder._local_model_profile`` fixes that by reusing the
-vendor profiles pydantic-ai ships.
+OpenAI's own model-name allowlist. Without help, a non-OpenAI reasoning model
+(e.g. DeepSeek-V4) is treated as non-reasoning: its unified ``thinking`` setting
+is stripped before the request and its ``reasoning_content`` output is not
+mapped. Two pieces cooperate to fix this:
+
+- ``tolerant_model._local_family_profile`` (exercised here via ``resolve_model``)
+  restores the vendor profile so ``supports_thinking`` / ``reasoning_content`` are
+  honored. Its per-family unit coverage lives in ``test_tolerant_model.py``.
+- ``builder._reasoning_chat_template_kwargs`` translates the UI thinking level
+  into ``extra_body.chat_template_kwargs`` — the control knob a DeepSeek-V4 vLLM
+  actually reads (the top-level ``reasoning_effort`` is ignored on this cluster).
 """
 
 from __future__ import annotations
@@ -19,7 +25,6 @@ os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
 
 from app.agents.builder import (  # noqa: E402
-    _local_model_profile,
     _reasoning_chat_template_kwargs,
     build_deep_agent,
     resolve_model,
@@ -28,48 +33,39 @@ from app.agents.tolerant_model import TolerantOpenAIChatModel  # noqa: E402
 from app.db.models import Agent, CustomProvider, ThinkingLevel  # noqa: E402
 
 
-def test_deepseek_v4_profile_enables_reasoning():
-    profile = _local_model_profile("deepseek-v4-flash")
-    assert profile is not None
-    # Reasoning is honored (so the UI thinking level reaches the server) ...
-    assert profile.get("supports_thinking") is True
-    # ... thinking is parsed from DeepSeek's non-standard field ...
-    assert profile.get("openai_chat_thinking_field") == "reasoning_content"
-    # ... and tool_choice=required is disabled (DeepSeek-V4 rejects it).
-    assert profile.get("openai_supports_tool_choice_required") is False
-
-
-def test_deepseek_reasoner_profile():
-    profile = _local_model_profile("deepseek-r1")
-    assert profile is not None
-    assert profile.get("supports_thinking") is True
-
-
-def test_non_deepseek_models_use_provider_default():
-    # Unrecognized models return None, preserving prior provider-default behavior.
-    assert _local_model_profile("glm-5.2-quanttrio") is None
-    assert _local_model_profile("qwen3-coder") is None
-    assert _local_model_profile("gpt-4o") is None
-
-
 def test_resolve_model_attaches_deepseek_profile():
     providers = {
         "p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")
     }
     model = resolve_model("custom:p1:deepseek-v4-flash", providers)
     assert isinstance(model, TolerantOpenAIChatModel)
-    # The attached profile — not OpenAI's name-allowlist default — governs it.
+    # The restored family profile — not OpenAI's name-allowlist default — governs
+    # it: reasoning on, reasoning tokens parsed, forced tool choice disabled.
     assert model.profile.get("supports_thinking") is True
+    assert model.profile.get("openai_chat_thinking_field") == "reasoning_content"
     assert model.profile.get("openai_supports_tool_choice_required") is False
 
 
-def test_resolve_model_non_deepseek_unchanged():
+def test_resolve_model_attaches_glm_profile():
     providers = {
         "p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")
     }
     model = resolve_model("custom:p1:glm-5.2-quanttrio", providers)
     assert isinstance(model, TolerantOpenAIChatModel)
-    # Falls back to the generic OpenAI profile (no reasoning for unknown names).
+    # Multi-family coverage: GLM is a reasoning family too, so the profile turns
+    # thinking on (the top-level reasoning_effort is emitted). NOTE: unlike
+    # DeepSeek, GLM gets no chat_template_kwargs override (see below) — it is not
+    # verified whether GLM's vLLM honors the top-level field.
+    assert model.profile.get("supports_thinking") is True
+
+
+def test_resolve_model_unknown_family_unchanged():
+    providers = {
+        "p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")
+    }
+    model = resolve_model("custom:p1:qwen3-coder", providers)
+    assert isinstance(model, TolerantOpenAIChatModel)
+    # An unrecognized family falls back to the generic OpenAI profile (no reasoning).
     assert model.profile.get("supports_thinking") is False
 
 

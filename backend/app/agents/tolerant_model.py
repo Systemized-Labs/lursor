@@ -18,6 +18,11 @@ forced choices to ``tool_choice="auto"`` (filtering the visible tools to the one
 requested): the call is then parsed out of the model's free text by the server's
 tool parser, no grammar is engaged, and chain-of-thought stays on for plain chat.
 
+The class also restores the reasoning **model profile** the generic local
+``OpenAIProvider`` would otherwise drop (see :func:`_local_family_profile`), so
+the UI's thinking/effort setting actually reaches the server and the returned
+reasoning tokens are parsed back out.
+
 Normalizers, all applied in :meth:`_map_messages` (which fires for both the
 streaming and non-streaming paths, since it builds the *request*):
 
@@ -40,16 +45,58 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from openai.types import chat
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import ModelProfileSpec, ModelRequestParameters
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.profiles.openai import OpenAIModelProfile
+from pydantic_ai.providers.deepseek import DeepSeekProvider
+from pydantic_ai.providers.moonshotai import MoonshotAIProvider
+from pydantic_ai.providers.zai import ZaiProvider
 from pydantic_ai.settings import ModelSettings
 
 logger = logging.getLogger(__name__)
+
+
+# A locally-served reasoning model is reached through a *generic* OpenAIProvider
+# (see ``builder.resolve_model``), whose ``model_profile`` only recognises
+# OpenAI's own gpt-5/o-series naming. So a DeepSeek/GLM/Kimi model served on
+# vLLM comes back with ``supports_thinking=False``; pydantic-ai then strips the
+# unified ``thinking`` setting before the request (see ``Model.prepare_request``)
+# and the UI's reasoning-effort choice never reaches the server, which silently
+# falls back to its own recipe default. We restore the correct family profile by
+# delegating to pydantic-ai's own provider profiles, keyed on the model-name
+# prefix; each turns thinking support on and points reasoning-token parsing at
+# ``reasoning_content`` (vLLM's field for these families). Every provider method
+# internally gates on the specific SKU, so a non-reasoning member of the family
+# still comes back with thinking off.
+_FAMILY_PROFILES: tuple[tuple[tuple[str, ...], Callable[[str], ModelProfile | None]], ...] = (
+    (("deepseek",), DeepSeekProvider.model_profile),
+    (("glm", "zai"), ZaiProvider.model_profile),
+    (("kimi",), MoonshotAIProvider.model_profile),
+)
+
+
+def _local_family_profile(model_name: str) -> ModelProfile | None:
+    """Return the pydantic-ai family profile for a locally-served model name.
+
+    Matches the model-name prefix (case-insensitively, after stripping any
+    ``org/`` HuggingFace-style path segment) to a known reasoning family and
+    reuses that provider's profile composition — thinking support, the
+    ``reasoning_content`` field, and thinking-part echo — instead of the generic
+    OpenAI default the local ``OpenAIProvider`` would otherwise apply. Returns
+    ``None`` for unrecognised names, leaving the pre-existing generic path
+    unchanged. The normalized name is passed on to the provider method so its
+    (case-sensitive) SKU checks still fire for path-qualified names.
+    """
+    name = model_name.rsplit("/", 1)[-1].lower()
+    for prefixes, profile_fn in _FAMILY_PROFILES:
+        if name.startswith(prefixes):
+            return profile_fn(name)
+    return None
 
 
 class TolerantOpenAIChatModel(OpenAIChatModel):
@@ -68,21 +115,37 @@ class TolerantOpenAIChatModel(OpenAIChatModel):
     def __init__(
         self, *args: object, profile: ModelProfileSpec | None = None, **kwargs: object
     ) -> None:
-        # Declare forced tool choice unsupported so pydantic-ai downgrades every
-        # structured-output/forced-tool request to tool_choice="auto", keeping the
-        # local server's guided-decoding backend (which hard-terminates reasoning
-        # models) out of the loop. See the module docstring for the full rationale.
-        # This is merged as a partial override, so all other profile defaults the
-        # provider infers from the model name are preserved.
+        # Two profile adjustments are layered here (see the module docstring):
+        #
+        # 1. Restore the reasoning-family profile the generic local OpenAIProvider
+        #    drops, so the UI's thinking/effort setting reaches the server and
+        #    reasoning tokens are parsed back out.
+        # 2. Declare forced tool choice unsupported so pydantic-ai downgrades every
+        #    structured-output/forced-tool request to tool_choice="auto", keeping
+        #    the local server's guided-decoding backend (which hard-terminates
+        #    reasoning models) out of the loop.
+        #
+        # Both are merged as partial overrides on top of the provider-resolved
+        # default, so every other inferred field is preserved. no_forcing is
+        # applied last so tool_choice="required" stays disabled even when a family
+        # profile (e.g. a non-reasoning DeepSeek SKU) would re-enable it.
+        model_name = args[0] if args else kwargs.get("model_name")
+        family = (
+            _local_family_profile(model_name) if isinstance(model_name, str) else None
+        )
         no_forcing = OpenAIModelProfile(openai_supports_tool_choice_required=False)
-        if profile is None:
-            profile = no_forcing
-        elif callable(profile):
-            inner = profile
-            profile = lambda default: {**inner(default), **no_forcing}  # noqa: E731
-        else:
-            profile = {**profile, **no_forcing}
-        super().__init__(*args, profile=profile, **kwargs)  # type: ignore[arg-type]
+
+        def resolve(default: ModelProfile) -> ModelProfile:
+            base = merge_profile(default, family)
+            if profile is None:
+                user: ModelProfile = {}
+            elif callable(profile):
+                user = profile(base)
+            else:
+                user = profile
+            return merge_profile(base, user, no_forcing)
+
+        super().__init__(*args, profile=resolve, **kwargs)  # type: ignore[arg-type]
 
     async def _map_messages(
         self,
