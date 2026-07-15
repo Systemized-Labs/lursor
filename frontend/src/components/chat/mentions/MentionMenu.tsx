@@ -58,7 +58,7 @@ export function MentionMenu({
           rows.map((row, i) => {
             const isActive = i === activeIndex
             const isCategoryRow = row.kind === "category"
-            const Icon = row.source.icon
+            const Icon = (row.kind === "item" && row.item.icon) || row.source.icon
             const label = row.kind === "category" ? row.source.label : row.item.label
             const sublabel =
               row.kind === "category"

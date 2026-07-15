@@ -213,49 +213,56 @@ async def search_files(
     limit: int = 50,
     session: AsyncSession = Depends(get_session),
 ) -> list[DirEntry]:
-    """Fuzzy-search files (not directories) anywhere under the workspace root.
+    """Fuzzy-search files and directories anywhere under the workspace root.
 
-    ``q`` is matched as a subsequence against each file's workspace-relative
+    ``q`` is matched as a subsequence against each entry's workspace-relative
     path; results are ranked best-first and capped at ``limit``. An empty ``q``
-    returns the first files encountered (a default listing). Ignored/noise
-    directories are pruned from the walk.
+    returns the first entries encountered (a default listing). Ignored/noise
+    directories are pruned from the walk. Directories are included so they can be
+    ``@``-referenced in chat alongside files.
     """
     root = await _workspace_root(workspace_id, session)
     limit = max(1, min(limit, 200))
     query = q.strip()
 
-    # (score, path-length, name, path) — path-length and name break score ties so
-    # shorter, alphabetically-earlier paths win.
-    scored: list[tuple[int, int, str, str]] = []
+    # (score, path-length, name, path, is_dir) — path-length and name break score
+    # ties so shorter, alphabetically-earlier paths win.
+    scored: list[tuple[int, int, str, str, bool]] = []
     scanned = 0
+
+    def _consider(name: str, rel: str, is_dir: bool) -> None:
+        if query:
+            # Prefer a basename hit, but fall back to the full relative path
+            # so "src/comp" style queries still match.
+            score = _fuzzy_score(query, name)
+            path_score = _fuzzy_score(query, rel)
+            if score is None and path_score is None:
+                return
+            best = max(s for s in (score, path_score) if s is not None)
+            if score is not None:
+                best += 4  # nudge basename matches above path-only matches
+        else:
+            best = 0
+        scored.append((-best, len(rel), name.lower(), rel, is_dir))
+
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune ignored dirs in place so os.walk never descends into them.
         dirnames[:] = [d for d in dirnames if d not in _IGNORED_DIRS]
+        for name in dirnames:
+            scanned += 1
+            _consider(name, _rel(root, Path(dirpath) / name), True)
         for name in filenames:
             if name in _IGNORED_DIRS:
                 continue
             scanned += 1
-            rel = _rel(root, Path(dirpath) / name)
-            if query:
-                # Prefer a basename hit, but fall back to the full relative path
-                # so "src/comp" style queries still match.
-                score = _fuzzy_score(query, name)
-                path_score = _fuzzy_score(query, rel)
-                if score is None and path_score is None:
-                    continue
-                best = max(s for s in (score, path_score) if s is not None)
-                if score is not None:
-                    best += 4  # nudge basename matches above path-only matches
-            else:
-                best = 0
-            scored.append((-best, len(rel), name.lower(), rel))
+            _consider(name, _rel(root, Path(dirpath) / name), False)
         if scanned >= _MAX_SEARCH_SCAN:
             break
 
     scored.sort()
     return [
-        DirEntry(name=Path(rel).name, path=rel, is_dir=False)
-        for _, _, _, rel in scored[:limit]
+        DirEntry(name=Path(rel).name, path=rel, is_dir=is_dir)
+        for _, _, _, rel, is_dir in scored[:limit]
     ]
 
 

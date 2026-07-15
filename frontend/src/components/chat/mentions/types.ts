@@ -10,6 +10,8 @@ export interface MentionItem {
   slug: string
   /** Secondary text shown dimmed beside the label (status, kind, …). */
   sublabel?: string
+  /** Per-item icon, overriding the source's icon (e.g. a folder vs a file). */
+  icon?: Icon
   /** When true, selecting drills deeper (e.g. a directory) instead of
    *  completing the mention. */
   container?: boolean

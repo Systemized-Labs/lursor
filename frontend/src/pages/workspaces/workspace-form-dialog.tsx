@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { GitBranch, FolderOpen } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
@@ -40,6 +41,7 @@ export function WorkspaceFormDialog({
   onOpenChange,
   workspace,
 }: WorkspaceFormDialogProps) {
+  const navigate = useNavigate()
   const [form, setForm] = useState<FormState>(EMPTY)
   const [isBrowsing, setIsBrowsing] = useState(false)
   const [repoPickerOpen, setRepoPickerOpen] = useState(false)
@@ -53,7 +55,12 @@ export function WorkspaceFormDialog({
     try {
       const { path } = await workspacesApi.pickFolder()
       if (path) {
-        setForm((prev) => ({ ...prev, path }))
+        const folderName = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? ""
+        setForm((prev) => ({
+          ...prev,
+          path,
+          name: prev.name.trim() ? prev.name : folderName,
+        }))
       }
     } catch (err) {
       toast.error(
@@ -93,8 +100,11 @@ export function WorkspaceFormDialog({
         await updateWorkspace.mutateAsync({ id: workspace.id, input })
         toast.success("Workspace updated")
       } else {
-        await createWorkspace.mutateAsync(input)
+        const created = await createWorkspace.mutateAsync(input)
         toast.success("Workspace created")
+        onOpenChange(false)
+        navigate(`/workspaces/${created.id}/chat`)
+        return
       }
       onOpenChange(false)
     } catch (err) {
