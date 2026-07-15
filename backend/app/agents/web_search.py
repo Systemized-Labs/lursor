@@ -45,11 +45,18 @@ def build_web_search_capability(
 ) -> WebSearch:
     """Build the ``WebSearch`` capability for the configured ``provider``.
 
-    ``WebSearch`` prefers the model's native web tool and uses the ``local=``
-    fallback only when the model has none — so ``tavily``/``exa``/``duckduckgo``
-    all keep native search where available and differ only in the fallback.
-    ``native`` disables the fallback entirely. Unknown values fall back to
-    DuckDuckGo.
+    Semantics by provider:
+
+    - ``native`` — the model's native web tool only (``native=True, local=False``).
+    - ``duckduckgo`` — native when the model supports it, otherwise DuckDuckGo
+      (``native=True, local="duckduckgo"``). The "auto" default.
+    - ``tavily`` / ``exa`` — **forced** to that backend (``native=False``), so an
+      explicitly chosen paid provider is always the one queried rather than being
+      shadowed by a model's native web tool (which the ``NativeOrLocalTool`` base
+      would otherwise prefer, suppressing the local tool). If the key or
+      dependency is missing we degrade to the DuckDuckGo auto behaviour.
+
+    Unknown values fall back to DuckDuckGo.
     """
     name = (provider or DEFAULT_WEB_SEARCH_PROVIDER).strip().lower()
 
@@ -61,13 +68,15 @@ def build_web_search_capability(
     if name == "tavily":
         tool = _tavily_tool(tavily_api_key)
         if tool is not None:
-            return WebSearch(local=tool)
+            # native=False forces Tavily even on models with a native web tool.
+            return WebSearch(native=False, local=tool)
         return WebSearch(local="duckduckgo")
 
     if name == "exa":
         tool = _exa_tool(exa_api_key)
         if tool is not None:
-            return WebSearch(local=tool)
+            # native=False forces Exa even on models with a native web tool.
+            return WebSearch(native=False, local=tool)
         return WebSearch(local="duckduckgo")
 
     # duckduckgo (the default) and any unrecognized value.
