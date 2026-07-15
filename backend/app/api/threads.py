@@ -69,6 +69,10 @@ async def update_thread(
         thread.agent_id = payload.agent_id
     if payload.title is not None:
         thread.title = payload.title
+    # Explicit presence (not `is not None`) so null clears the per-thread model
+    # override, reverting to the agent's default.
+    if "model" in payload.model_fields_set:
+        thread.model = (payload.model or "").strip() or None
 
     # Goal config. Lets a plain chat thread be promoted into a goal ("plan")
     # thread mid-conversation (the next turn then runs the planning driver, see

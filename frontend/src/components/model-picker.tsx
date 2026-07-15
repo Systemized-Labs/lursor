@@ -177,9 +177,17 @@ interface ModelPickerProps {
   onChange: (value: string) => void
   /** Optional capability filter — only models passing it are shown. */
   modelFilter?: (m: ModelEntry) => boolean
+  /** Overrides the trigger button styling (e.g. a compact header variant).
+   *  When omitted, the default full-width form trigger is used. */
+  triggerClassName?: string
 }
 
-export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) {
+export function ModelPicker({
+  value,
+  onChange,
+  modelFilter,
+  triggerClassName,
+}: ModelPickerProps) {
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
@@ -302,7 +310,10 @@ export function ModelPicker({ value, onChange, modelFilter }: ModelPickerProps) 
       <button
         type="button"
         onClick={handleOpen}
-        className="flex h-9 w-full items-center justify-between rounded-lg border border-transparent bg-muted/60 px-3 py-1 text-sm transition-colors hover:bg-muted focus:outline-none focus:border-ring/40 focus:bg-background focus:ring-2 focus:ring-ring/15"
+        className={
+          triggerClassName ??
+          "flex h-9 w-full items-center justify-between rounded-lg border border-transparent bg-muted/60 px-3 py-1 text-sm transition-colors hover:bg-muted focus:outline-none focus:border-ring/40 focus:bg-background focus:ring-2 focus:ring-ring/15"
+        }
       >
         <span className="min-w-0 truncate text-foreground">{displayLabel}</span>
         <CaretUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />

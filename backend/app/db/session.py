@@ -86,6 +86,7 @@ async def _apply_lightweight_migrations(conn) -> None:
         ),
         "last_reason": "ALTER TABLE threads ADD COLUMN last_reason VARCHAR DEFAULT ''",
         "todos_snapshot": "ALTER TABLE threads ADD COLUMN todos_snapshot JSON DEFAULT '[]'",
+        "model": "ALTER TABLE threads ADD COLUMN model VARCHAR",
     }
     for col, ddl in thread_additions.items():
         if col not in thread_cols:

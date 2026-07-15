@@ -324,12 +324,14 @@ async def _build_agent_and_context(
     agent_row: Agent,
     workspace: Workspace,
     read_only: bool = False,
+    model_override: str | None = None,
 ):
     """Build the deep agent + deps for a thread and load the app-wide context.
 
     Shared by the chat/planning endpoint and the goal-execution start so both
     resolve providers, subagents, and deep-defaults identically. ``read_only``
-    gates the agent to "ask" mode (no file writes / shell).
+    gates the agent to "ask" mode (no file writes / shell). ``model_override``
+    (a thread's per-conversation model) wins over the agent's stored model.
     """
     providers = (await session.execute(select(CustomProvider))).scalars().all()
     custom_providers = {p.id: p for p in providers}
@@ -343,14 +345,22 @@ async def _build_agent_and_context(
         subagents,
         deep_defaults,
         read_only=read_only,
+        model_override=model_override,
     )
     return agent, deps, custom_providers, app_config
 
 
-def _resolve_evaluator_model(app_config: AppConfig | None, agent_row: Agent) -> str:
-    """The model that judges goal completion — configurable, else the agent's own."""
+def _resolve_evaluator_model(
+    app_config: AppConfig | None, thread: Thread, agent_row: Agent
+) -> str:
+    """The model that judges goal completion.
+
+    Explicit ``goal_evaluator_model`` wins; otherwise it follows the thread's
+    effective chat model (per-thread override → agent's model → default).
+    """
     return (
         (app_config.goal_evaluator_model if app_config else None)
+        or thread.model
         or agent_row.model
         or settings.default_model
     )
@@ -544,6 +554,15 @@ async def chat(
         forwarded = body.get("forwardedProps") or {}
         if isinstance(forwarded, dict):
             turn_mode = forwarded.get("turn_mode") or "edit"
+            # An optional per-turn model rides alongside turn_mode. When present it
+            # becomes this thread's model (persisted below), so switching models
+            # mid-chat sticks for future turns. Empty string clears the override,
+            # reverting the thread to the agent's default model.
+            if "model" in forwarded:
+                new_model = (forwarded.get("model") or "").strip() or None
+                if new_model != thread.model:
+                    thread.model = new_model
+                    session.add(thread)
         user_text, images = _parse_user_turn(body)
         for img in images:
             with contextlib.suppress(Exception):
@@ -576,7 +595,7 @@ async def chat(
     # "Ask" mode on a chat thread builds a read-only agent (no write/edit/shell).
     read_only = thread.mode == ThreadMode.chat and turn_mode == "ask"
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace, read_only=read_only
+        session, agent_row, workspace, read_only=read_only, model_override=thread.model
     )
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.
@@ -588,7 +607,7 @@ async def chat(
     # to view_image via the on-disk copies instead. Mutating run_input.messages
     # here is safe: the adapter parses .messages lazily, only once run_stream runs.
     if attachments:
-        model_str = agent_row.model or settings.default_model
+        model_str = thread.model or agent_row.model or settings.default_model
         if not await model_supports_vision(model_str):
             paths = [str(media_path(thread_id, a["media_id"])) for a in attachments]
             note = user_text + (
@@ -679,7 +698,7 @@ async def chat(
         ).scalars().all()
         initial_history = messages_to_history(rows)
         evaluator = build_goal_evaluator(
-            _resolve_evaluator_model(app_config, agent_row), custom_providers
+            _resolve_evaluator_model(app_config, thread, agent_row), custom_providers
         )
         max_iter = thread.max_iterations
         accept = adapter.accept
@@ -747,10 +766,10 @@ async def approve_goal_plan(
 
     media_instructions = await _thread_media_instructions(session, thread_id)
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace
+        session, agent_row, workspace, model_override=thread.model
     )
     evaluator = build_goal_evaluator(
-        _resolve_evaluator_model(app_config, agent_row), custom_providers
+        _resolve_evaluator_model(app_config, thread, agent_row), custom_providers
     )
     condition = (thread.success_criteria or thread.goal).strip()
     max_iter = thread.max_iterations

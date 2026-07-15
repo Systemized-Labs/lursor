@@ -245,6 +245,8 @@ export interface Thread {
   workspace_id: string
   agent_id: string
   title: string
+  // Per-thread model override; null inherits the agent's model.
+  model: string | null
   // Goal mode (a plain chat thread leaves these at their defaults).
   mode: ThreadMode
   goal: string
@@ -275,6 +277,8 @@ export interface ThreadUpdate {
   title?: string
   // Swap the agent this conversation talks to; the next message uses it.
   agent_id?: string
+  // Per-thread model override; empty string / null clears it (revert to agent's).
+  model?: string | null
   mode?: ThreadMode
   goal?: string
   success_criteria?: string

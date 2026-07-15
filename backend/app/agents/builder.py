@@ -203,6 +203,7 @@ def build_deep_agent(
     subagents: list[SubagentRow] | None = None,
     deep_defaults: dict | None = None,
     read_only: bool = False,
+    model_override: str | None = None,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
 
@@ -215,6 +216,10 @@ def build_deep_agent(
     directories (on-disk SKILL.md folders with bundled resources/scripts). Tool
     rows are catalogued in the DB but not yet wired into execution (see
     docs/PLAN.md — deferred); the deep agent ships its own builtin toolset.
+
+    ``model_override`` wins over ``row.model`` when set, letting a caller (e.g. a
+    per-thread choice) run this agent with a different model than its stored
+    default. Any model string ``resolve_model`` accepts is valid.
 
     ``custom_providers`` maps provider id → row and is used to route runs that
     target a locally-hosted model; callers that never use custom models can omit
@@ -304,7 +309,9 @@ def build_deep_agent(
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
 
-    model = resolve_model(row.model or settings.default_model, custom_providers or {})
+    model = resolve_model(
+        model_override or row.model or settings.default_model, custom_providers or {}
+    )
 
     # For local models whose chat template (not a top-level API field) controls
     # reasoning, translate the UI thinking level into extra_body.chat_template_kwargs.
