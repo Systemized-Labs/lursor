@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.agents.prompt_author import AgentPromptContext
-from app.db.models import Agent, ThinkingLevel
+from app.db.models import Agent, ThinkingLevel, ToolChoice
 from app.schemas._types import UTCDatetime
 
 __all__ = [
@@ -31,6 +31,7 @@ class AgentCreate(BaseModel):
     include_plan: bool = False
     web_search: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
+    tool_choice: ToolChoice = ToolChoice.auto
     extra_config: dict[str, Any] = {}
     skill_ids: list[str] = []
     tool_ids: list[str] = []
@@ -48,6 +49,7 @@ class AgentUpdate(BaseModel):
     include_plan: bool | None = None
     web_search: bool | None = None
     thinking: ThinkingLevel | None = None
+    tool_choice: ToolChoice | None = None
     extra_config: dict[str, Any] | None = None
     skill_ids: list[str] | None = None
     tool_ids: list[str] | None = None
@@ -80,6 +82,7 @@ class AgentRead(BaseModel):
     include_plan: bool
     web_search: bool
     thinking: ThinkingLevel
+    tool_choice: ToolChoice
     extra_config: dict[str, Any]
     skill_ids: list[str]
     tool_ids: list[str]
@@ -101,6 +104,7 @@ class AgentRead(BaseModel):
             include_plan=agent.include_plan,
             web_search=agent.web_search,
             thinking=agent.thinking,
+            tool_choice=agent.tool_choice,
             extra_config=agent.extra_config,
             skill_ids=[s.id for s in agent.skills],
             tool_ids=[t.id for t in agent.tools],

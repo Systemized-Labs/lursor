@@ -7,6 +7,7 @@ import type {
   AgentInput,
   AgentPromptContext,
   ThinkingLevel,
+  ToolChoice,
 } from "@/api/types"
 import {
   useCreateAgent,
@@ -45,6 +46,12 @@ import { ModelPicker } from "@/components/model-picker"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
 
+const TOOL_CHOICES: { value: ToolChoice; label: string }[] = [
+  { value: "auto", label: "Auto (model decides)" },
+  { value: "required", label: "Required (force a tool)" },
+  { value: "none", label: "None (text only)" },
+]
+
 type BooleanFieldKey =
   | "include_todo"
   | "include_subagents"
@@ -74,6 +81,7 @@ interface FormState {
   include_plan: boolean
   web_search: boolean
   thinking: ThinkingLevel
+  tool_choice: ToolChoice
   extraConfigText: string
   skill_ids: string[]
   tool_ids: string[]
@@ -92,6 +100,7 @@ function emptyState(): FormState {
     include_plan: false,
     web_search: false,
     thinking: "off",
+    tool_choice: "auto",
     extraConfigText: "{}",
     skill_ids: [],
     tool_ids: [],
@@ -111,6 +120,7 @@ function fromAgent(agent: Agent): FormState {
     include_plan: agent.include_plan,
     web_search: agent.web_search,
     thinking: agent.thinking,
+    tool_choice: agent.tool_choice ?? "auto",
     extraConfigText: JSON.stringify(agent.extra_config ?? {}, null, 2),
     skill_ids: agent.skill_ids,
     tool_ids: agent.tool_ids,
@@ -302,6 +312,7 @@ export function AgentFormDialog({
       include_plan: form.include_plan,
       web_search: form.web_search,
       thinking: form.thinking,
+      tool_choice: form.tool_choice,
       extra_config: extraConfig,
       skill_ids: form.skill_ids,
       tool_ids: form.tool_ids,
@@ -377,6 +388,31 @@ export function AgentFormDialog({
                   {THINKING_LEVELS.map((level) => (
                     <SelectItem key={level} value={level}>
                       {level}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid min-w-0 gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="agent-tool-choice">Tool calls</Label>
+                <span className="text-xs text-muted-foreground">
+                  Force or forbid tool use
+                </span>
+              </div>
+              <Select
+                value={form.tool_choice}
+                onValueChange={(value) =>
+                  update("tool_choice", value as ToolChoice)
+                }
+              >
+                <SelectTrigger id="agent-tool-choice">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TOOL_CHOICES.map((choice) => (
+                    <SelectItem key={choice.value} value={choice.value}>
+                      {choice.label}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -59,6 +59,12 @@ async def _apply_lightweight_migrations(conn) -> None:
     if "builtin_name" not in subagent_cols:
         await conn.execute(text("ALTER TABLE subagents ADD COLUMN builtin_name VARCHAR"))
 
+    agent_cols = await columns("agents")
+    if "tool_choice" not in agent_cols:
+        await conn.execute(
+            text("ALTER TABLE agents ADD COLUMN tool_choice VARCHAR DEFAULT 'auto'")
+        )
+
     app_config_cols = await columns("app_config")
     if "deep_defaults" not in app_config_cols:
         await conn.execute(

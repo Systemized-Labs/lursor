@@ -7,14 +7,17 @@ filesystem is rooted at the workspace directory via a ``LocalBackend``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 import httpx
 from pydantic_ai import Agent as PydanticAgent
-from pydantic_ai.capabilities import PrepareTools
+from pydantic_ai.capabilities import AbstractCapability, PrepareTools
 from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 
@@ -32,6 +35,7 @@ from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider
 from app.db.models import Subagent as SubagentRow
+from app.db.models import ToolChoice
 from app.skills import store as skill_store
 
 settings = get_settings()
@@ -109,6 +113,45 @@ def _readonly_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDef
     loaded on demand (tool-search deferral) are filtered too.
     """
     return [t for t in tool_defs if t.name in _READONLY_TOOL_ALLOWLIST]
+
+
+@dataclass
+class ForceToolChoice(AbstractCapability[Any]):
+    """Constrain the model's ``tool_choice`` for an agent.
+
+    - ``none``: disable function tools every step; the model replies with text
+      only (output tools remain, so structured output still works). Safe to set
+      statically, so it merges as a plain :class:`ModelSettings`.
+    - ``required``: force a tool call on the **opening step only**, then release
+      to ``auto``. pydantic-ai forbids setting ``tool_choice='required'``
+      statically because it excludes output tools and would prevent the agent
+      from ever producing a final response (an endless force-a-tool loop); the
+      supported escape is a per-step callable returned from
+      ``get_model_settings``, which is what we do — force on ``run_step == 1``
+      and step back afterwards so the run can still finish.
+
+    On local reasoning models routed through :class:`TolerantOpenAIChatModel`,
+    ``required`` is downgraded to ``auto`` at the model layer (their chat
+    templates 500 on forced tool choice); this capability stays correct there
+    because the downgrade happens after the setting is resolved.
+    """
+
+    mode: ToolChoice
+
+    def get_model_settings(
+        self,
+    ) -> ModelSettings | Callable[[RunContext[Any]], ModelSettings] | None:
+        if self.mode == ToolChoice.none:
+            return ModelSettings(tool_choice="none")
+
+        def resolve(ctx: RunContext[Any]) -> ModelSettings:
+            # run_step is 1 on the first model request; force a tool there, then
+            # leave tool_choice untouched so the agent can produce a final answer.
+            if ctx.run_step <= 1:
+                return ModelSettings(tool_choice="required")
+            return ModelSettings()
+
+        return resolve
 
 
 def _reasoning_chat_template_kwargs(
@@ -322,6 +365,12 @@ def build_deep_agent(
     capabilities = list(extra_config.pop("capabilities", []) or [])
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
+
+    # Forced tool choice: an agent can require the model to call a tool (on the
+    # opening step) or forbid tool calls entirely. "auto" is the model default,
+    # so only add the capability when the agent actually constrains the choice.
+    if row.tool_choice != ToolChoice.auto:
+        capabilities.append(ForceToolChoice(row.tool_choice))
 
     # Web search: the per-agent flag decides whether the agent can search; the
     # app-wide provider decides which backend. The library's ``web_search=`` flag

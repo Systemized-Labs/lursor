@@ -65,6 +65,19 @@ class ThinkingLevel(StrEnum):
     high = "high"
 
 
+class ToolChoice(StrEnum):
+    """How the model's tool use is constrained for an agent.
+
+    ``auto`` — the model decides (default). ``required`` — force a tool call on
+    the opening step, then release to auto so the run can still finish. ``none``
+    — forbid tool calls; the model replies with text only. See
+    ``agents/builder.py`` for how ``required``/``none`` are enforced."""
+
+    auto = "auto"
+    required = "required"
+    none = "none"
+
+
 class ThreadMode(StrEnum):
     """How a thread is driven. ``chat`` is the classic turn-based conversation;
     ``goal`` runs the self-continuing goal loop (see ``agents/goal_loop.py``)."""
@@ -171,6 +184,8 @@ class Agent(TimestampMixin, table=True):
     include_plan: bool = False
     web_search: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
+    # Force or forbid tool calls (see ToolChoice); "auto" leaves it to the model.
+    tool_choice: ToolChoice = Field(default=ToolChoice.auto)
 
     # Escape hatch for future kwargs without a schema change.
     extra_config: dict = Field(default_factory=dict, sa_column=Column(JSON))

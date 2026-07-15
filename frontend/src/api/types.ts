@@ -1,5 +1,7 @@
 export type ThinkingLevel = "off" | "low" | "medium" | "high"
 
+export type ToolChoice = "auto" | "required" | "none"
+
 export interface Agent {
   id: string
   name: string
@@ -13,6 +15,7 @@ export interface Agent {
   include_plan: boolean
   web_search: boolean
   thinking: ThinkingLevel
+  tool_choice: ToolChoice
   extra_config: Record<string, unknown>
   skill_ids: string[]
   tool_ids: string[]
@@ -32,6 +35,7 @@ export interface AgentInput {
   include_plan: boolean
   web_search: boolean
   thinking: ThinkingLevel
+  tool_choice: ToolChoice
   extra_config: Record<string, unknown>
   skill_ids: string[]
   tool_ids: string[]
