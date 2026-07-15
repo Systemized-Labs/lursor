@@ -1,5 +1,3 @@
-import { ListChecks, PencilSimple, Question } from "@phosphor-icons/react"
-
 import {
   Select,
   SelectContent,
@@ -7,17 +5,7 @@ import {
   SelectTrigger,
 } from "@/components/ui/select"
 import type { ChatMode } from "@/api/types"
-
-/** Order + presentation for the composer mode dropdown. */
-const MODE_META: Record<
-  ChatMode,
-  { label: string; hint: string; Icon: typeof Question }
-> = {
-  ask: { label: "Ask", hint: "Read-only — answers without editing", Icon: Question },
-  edit: { label: "Edit", hint: "Chat and make changes", Icon: PencilSimple },
-  plan: { label: "Plan", hint: "Draft a plan, then approve to run", Icon: ListChecks },
-}
-const MODE_ORDER: ChatMode[] = ["ask", "edit", "plan"]
+import { MODE_META, MODE_ORDER } from "./chat-modes"
 
 export interface ChatModeSelectProps {
   mode: ChatMode

@@ -180,6 +180,11 @@ interface ModelPickerProps {
   /** Overrides the trigger button styling (e.g. a compact header variant).
    *  When omitted, the default full-width form trigger is used. */
   triggerClassName?: string
+  /** The model string an empty `value` actually resolves to (per-agent model →
+   *  per-mode default → app-wide default). When set, an empty selection shows
+   *  this effective model on the trigger and the "Default model" item, so the
+   *  user can see what "default" means here rather than a bare label. */
+  resolvedDefault?: string
 }
 
 export function ModelPicker({
@@ -187,6 +192,7 @@ export function ModelPicker({
   onChange,
   modelFilter,
   triggerClassName,
+  resolvedDefault,
 }: ModelPickerProps) {
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
@@ -204,14 +210,24 @@ export function ModelPicker({
   const { data: modelGroups, isError } = useModels()
   const groups: ModelGroup[] = isError || !modelGroups ? FALLBACK_MODEL_GROUPS : modelGroups
 
-  // Trigger label for the current value.
+  // Human label for a stored model string ("group — label", else the raw string).
+  const labelFor = useCallback(
+    (v: string) => {
+      for (const group of groups) {
+        const match = group.models.find((m) => entryValue(m) === v)
+        if (match) return `${group.label} — ${match.label}`
+      }
+      return v
+    },
+    [groups]
+  )
+
+  // Trigger label for the current value. An empty value inherits: show the
+  // effective default (when known) so the picker isn't a mystery.
   const displayLabel = (() => {
-    if (!value) return "Default model"
-    for (const group of groups) {
-      const match = group.models.find((m) => entryValue(m) === value)
-      if (match) return `${group.label} — ${match.label}`
-    }
-    return value
+    if (value) return labelFor(value)
+    if (resolvedDefault) return `Default · ${labelFor(resolvedDefault)}`
+    return "Default model"
   })()
 
   const resolveInitialPreview = useCallback(() => {
@@ -389,7 +405,14 @@ export function ModelPicker({
                       "text-foreground hover:bg-muted/60"
                     )}
                   >
-                    <span className="flex-1 text-xs font-medium">Default model</span>
+                    <span className="flex-1 text-xs font-medium">
+                      Default model
+                      {resolvedDefault ? (
+                        <span className="ml-1 font-normal text-muted-foreground">
+                          · {labelFor(resolvedDefault)}
+                        </span>
+                      ) : null}
+                    </span>
                     {!value ? <Check className="h-3.5 w-3.5 shrink-0 text-primary" /> : null}
                   </button>
                   <div className="mx-3 my-1 h-px bg-border" />

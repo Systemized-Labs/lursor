@@ -97,6 +97,10 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE app_config ADD COLUMN goal_evaluator_model VARCHAR")
         )
+    if "default_models" not in app_config_cols:
+        await conn.execute(
+            text("ALTER TABLE app_config ADD COLUMN default_models JSON DEFAULT '{}'")
+        )
     app_config_additions = {
         "web_search_provider": (
             "ALTER TABLE app_config ADD COLUMN web_search_provider VARCHAR"

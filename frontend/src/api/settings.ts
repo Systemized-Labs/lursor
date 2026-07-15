@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "./client"
 import { modelKeys } from "./models"
 import type {
+  DefaultModelsInput,
+  DefaultModelsSettings,
   OpenRouterSettings,
   OpenRouterSettingsInput,
   OpenRouterTestResult,
@@ -22,11 +24,16 @@ export const settingsApi = {
     api.get<WebSearchSettings>("/settings/web-search", signal),
   setWebSearch: (input: WebSearchSettingsInput) =>
     api.put<WebSearchSettings>("/settings/web-search", input),
+  getDefaultModels: (signal?: AbortSignal) =>
+    api.get<DefaultModelsSettings>("/settings/default-models", signal),
+  setDefaultModels: (input: DefaultModelsInput) =>
+    api.put<DefaultModelsSettings>("/settings/default-models", input),
 }
 
 export const settingsKeys = {
   openrouter: ["settings", "openrouter"] as const,
   webSearch: ["settings", "web-search"] as const,
+  defaultModels: ["settings", "default-models"] as const,
 }
 
 export function useOpenRouterSettings() {
@@ -72,6 +79,23 @@ export function useSaveWebSearchSettings() {
     mutationFn: (input: WebSearchSettingsInput) => settingsApi.setWebSearch(input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: settingsKeys.webSearch })
+    },
+  })
+}
+
+export function useDefaultModels() {
+  return useQuery({
+    queryKey: settingsKeys.defaultModels,
+    queryFn: ({ signal }) => settingsApi.getDefaultModels(signal),
+  })
+}
+
+export function useSaveDefaultModels() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: DefaultModelsInput) => settingsApi.setDefaultModels(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: settingsKeys.defaultModels })
     },
   })
 }

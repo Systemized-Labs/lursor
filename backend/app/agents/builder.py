@@ -362,6 +362,7 @@ def build_deep_agent(
     deep_defaults: dict | None = None,
     read_only: bool = False,
     model_override: str | None = None,
+    default_model: str | None = None,
     web_search_provider: str | None = None,
     tavily_api_key: str | None = None,
     exa_api_key: str | None = None,
@@ -382,6 +383,12 @@ def build_deep_agent(
     ``model_override`` wins over ``row.model`` when set, letting a caller (e.g. a
     per-thread choice) run this agent with a different model than its stored
     default. Any model string ``resolve_model`` accepts is valid.
+
+    ``default_model`` is the per-chat-mode default resolved by the caller (see
+    ``AppConfig.default_models``). When set it slots in *above* ``row.model`` —
+    below only ``model_override`` (a per-thread pick) — so a mode (e.g. Ask) can
+    pin a model regardless of which agent runs. Null defers to ``row.model`` /
+    ``settings.default_model``.
 
     ``custom_providers`` maps provider id → row and is used to route runs that
     target a locally-hosted model; callers that never use custom models can omit
@@ -439,9 +446,18 @@ def build_deep_agent(
     allow_subagents = _subagent_depth < max_depth
     include_subagents = row.include_subagents and allow_subagents
 
-    # Stored model string handed to nested subagents so an unpinned subagent
-    # inherits this (parent) model rather than falling back to the global default.
-    parent_model = model_override or row.model or settings.default_model
+    # Model resolution precedence:
+    #   model_override (per-thread pick)
+    #   → default_model (per-chat-mode default, when set)
+    #   → row.model (the agent's own model)
+    #   → settings.default_model (app-wide fallback)
+    # The mode default wins over the agent's model so a mode (e.g. Ask) can pin a
+    # model regardless of which agent runs; an explicit per-thread choice still
+    # overrides it. Also handed to nested subagents so an unpinned subagent
+    # inherits this effective model rather than the global fallback.
+    parent_model = (
+        model_override or default_model or row.model or settings.default_model
+    )
 
     subagent_configs: list[dict] = []
     if include_subagents:
@@ -533,9 +549,7 @@ def build_deep_agent(
         )
     library_web_search = row.web_search and not use_custom_web_search
 
-    model = resolve_model(
-        model_override or row.model or settings.default_model, custom_providers or {}
-    )
+    model = resolve_model(parent_model, custom_providers or {})
 
     # For local models whose chat template (not a top-level API field) controls
     # reasoning, translate the UI thinking level into extra_body.chat_template_kwargs.

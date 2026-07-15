@@ -23,12 +23,16 @@ from app.config import get_settings
 from app.db.models import AppConfig
 from app.db.session import async_session_factory, get_session
 from app.schemas.settings import (
+    DefaultModelsRead,
+    DefaultModelsUpdate,
     OpenRouterSettingsRead,
     OpenRouterSettingsUpdate,
     OpenRouterTestResult,
     WebSearchSettingsRead,
     WebSearchSettingsUpdate,
 )
+
+_CHAT_MODES = ("ask", "edit", "plan")
 
 logger = logging.getLogger(__name__)
 
@@ -200,3 +204,50 @@ async def set_web_search(
     session.add(cfg)
     await session.commit()
     return await get_web_search(session)
+
+
+# --- Default models per chat mode ---------------------------------------------
+# A per-mode default replaces ``settings.default_model`` as the global fallback
+# for threads run in that mode. It never overrides an explicit per-thread or
+# per-agent model. Resolution lives in ``agents/builder.py`` / ``api/chat.py``;
+# reads happen per run straight from the DB row, so nothing is pushed into the
+# running process here.
+
+
+@router.get("/default-models", response_model=DefaultModelsRead)
+async def get_default_models(session: AsyncSession = Depends(get_session)):
+    cfg = await _get_config(session)
+    stored = (cfg.default_models if cfg else None) or {}
+    return DefaultModelsRead(
+        ask=stored.get("ask") or "",
+        edit=stored.get("edit") or "",
+        plan=stored.get("plan") or "",
+        fallback=get_settings().default_model,
+    )
+
+
+@router.put("/default-models", response_model=DefaultModelsRead)
+async def set_default_models(
+    payload: DefaultModelsUpdate, session: AsyncSession = Depends(get_session)
+):
+    cfg = await _get_config(session)
+    if cfg is None:
+        cfg = AppConfig()
+
+    # JSON columns don't track in-place mutation; rebuild and reassign. Only
+    # touch modes the caller actually sent so each can be saved independently; a
+    # blank value drops the key (reverts to the global default).
+    updated = dict(cfg.default_models or {})
+    fields = payload.model_fields_set
+    for mode in _CHAT_MODES:
+        if mode in fields:
+            value = (getattr(payload, mode) or "").strip()
+            if value:
+                updated[mode] = value
+            else:
+                updated.pop(mode, None)
+    cfg.default_models = updated
+
+    session.add(cfg)
+    await session.commit()
+    return await get_default_models(session)

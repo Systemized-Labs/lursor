@@ -12,6 +12,7 @@ import {
   useThreads,
   useUpdateThread,
 } from "@/api/threads"
+import { useDefaultModels } from "@/api/settings"
 import { useWorkspace } from "@/api/workspaces"
 import { useChat } from "@/agui/useChat"
 import { Button } from "@/components/ui/button"
@@ -82,6 +83,7 @@ export function WorkspaceChatPage() {
   const [approving, setApproving] = useState(false)
   const [gameOpen, setGameOpen] = useState(false)
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
+  const { data: defaultModels } = useDefaultModels()
 
   const chat = useChat({
     workspaceId,
@@ -391,6 +393,14 @@ export function WorkspaceChatPage() {
   // entered at any time (promotes the current chat thread into a plan).
   const modeLocked = isGoalThread
   const availableModes: ChatMode[] = isGoalThread ? ["plan"] : ["ask", "edit", "plan"]
+  // What the model picker resolves to when no per-thread model is set. Mirrors
+  // the backend chain (per-mode default → agent model → app-wide default) and
+  // reacts to the current mode, so switching Ask/Edit/Plan reveals that mode's
+  // configured default without pinning a per-thread override.
+  const modeDefaultModel = defaultModels?.[chatMode] ?? ""
+  const agentModel = agents.find((a) => a.id === selectedAgentId)?.model ?? ""
+  const resolvedDefaultModel =
+    modeDefaultModel || agentModel || defaultModels?.fallback || ""
   // The agent is actively executing (autonomous loop) — offer Stop, not chat.
   const goalExecuting = goalView?.status === "running"
 
@@ -489,7 +499,8 @@ export function WorkspaceChatPage() {
             <ModelPicker
               value={selectedModel}
               onChange={(v) => void handleModelChange(v)}
-              triggerClassName="flex h-7 max-w-[14rem] items-center justify-between gap-1.5 rounded-md bg-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none data-[state=open]:bg-accent"
+              resolvedDefault={resolvedDefaultModel}
+              triggerClassName="flex h-7 max-w-[18rem] items-center justify-between gap-1.5 rounded-md bg-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none data-[state=open]:bg-accent"
             />
           )}
 

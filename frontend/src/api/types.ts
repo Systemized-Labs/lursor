@@ -439,6 +439,26 @@ export interface WebSearchSettingsInput {
   exa_api_key?: string | null
 }
 
+/**
+ * Per-chat-mode default models. Each value is a stored model string ("" when
+ * unset, meaning that mode inherits `fallback`). `fallback` is the app-wide
+ * default (`settings.default_model`), shown so the UI can label the empty
+ * state. A set mode default replaces the fallback for threads run in that mode
+ * but never overrides an explicit per-thread or per-agent model.
+ */
+export interface DefaultModelsSettings {
+  ask: string
+  edit: string
+  plan: string
+  fallback: string
+}
+
+export interface DefaultModelsInput {
+  ask?: string
+  edit?: string
+  plan?: string
+}
+
 // --- laios control plane --------------------------------------------------------
 
 /** A connection to a laios daemon control plane (`:7420`). */
