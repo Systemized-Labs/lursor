@@ -76,6 +76,7 @@ async def _apply_lightweight_migrations(conn) -> None:
         "thinking": "ALTER TABLE subagents ADD COLUMN thinking VARCHAR DEFAULT 'off'",
         "tool_choice": "ALTER TABLE subagents ADD COLUMN tool_choice VARCHAR DEFAULT 'auto'",
         "extra_config": "ALTER TABLE subagents ADD COLUMN extra_config JSON DEFAULT '{}'",
+        "enabled": "ALTER TABLE subagents ADD COLUMN enabled BOOLEAN DEFAULT 1",
     }
     for col, ddl in subagent_additions.items():
         if col not in subagent_cols:

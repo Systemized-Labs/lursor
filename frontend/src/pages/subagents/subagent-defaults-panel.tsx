@@ -3,18 +3,13 @@ import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
 import type { BuiltinSubagent } from "@/api/types"
-import {
-  useOverrideBuiltin,
-  useResetBuiltin,
-  useSubagentDefaults,
-  useUpdateSubagentDefaults,
-} from "@/api/subagents"
+import { useOverrideBuiltin, useResetBuiltin } from "@/api/subagents"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
-  CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
@@ -31,59 +26,19 @@ import { Label } from "@/components/ui/label"
 import { ModelPicker } from "@/components/model-picker"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
 
-export function SubagentDefaultsPanel() {
-  const { data, isLoading, isError, error } = useSubagentDefaults()
-  const updateDefaults = useUpdateSubagentDefaults()
-
-  const [editing, setEditing] = useState<BuiltinSubagent | undefined>(undefined)
-
-  if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>
-  }
-  if (isError || !data) {
-    return (
-      <p className="text-sm text-destructive">
-        {error instanceof Error ? error.message : "Failed to load defaults"}
-      </p>
-    )
-  }
-
-  const disabledNames = data.builtins.filter((b) => !b.enabled).map((b) => b.name)
-
-  async function toggleEnabled(builtin: BuiltinSubagent, enabled: boolean) {
-    const next = enabled
-      ? disabledNames.filter((n) => n !== builtin.name)
-      : [...disabledNames, builtin.name]
-    try {
-      await updateDefaults.mutateAsync({ disabled_builtins: next })
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to update")
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-2">
-        {data.builtins.map((builtin) => (
-          <BuiltinCard
-            key={builtin.name}
-            builtin={builtin}
-            onToggle={(enabled) => toggleEnabled(builtin, enabled)}
-            onEdit={() => setEditing(builtin)}
-          />
-        ))}
-      </div>
-
-      <BuiltinOverrideDialog
-        builtin={editing}
-        onOpenChange={(open) => !open && setEditing(undefined)}
-      />
-    </div>
-  )
+/** Next `disabled_builtins` list after toggling one built-in on/off. */
+export function nextDisabledBuiltins(
+  builtins: BuiltinSubagent[],
+  name: string,
+  enabled: boolean
+): string[] {
+  const disabled = builtins.filter((b) => !b.enabled).map((b) => b.name)
+  return enabled ? disabled.filter((n) => n !== name) : [...disabled, name]
 }
 
-function BuiltinCard({
+export function BuiltinCard({
   builtin,
   onToggle,
   onEdit,
@@ -105,22 +60,32 @@ function BuiltinCard({
   }
 
   return (
-    <Card className={builtin.enabled ? "flex flex-col" : "flex flex-col opacity-60"}>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <CardTitle className="truncate">{builtin.name}</CardTitle>
-            {overridden && <Badge variant="secondary">Overridden</Badge>}
-          </div>
+    <Card className={cn("flex flex-col", !builtin.enabled && "opacity-60")}>
+      <CardHeader className="gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="min-w-0 flex-1 break-words">
+            {builtin.name}
+          </CardTitle>
           <Switch
             checked={builtin.enabled}
             onCheckedChange={onToggle}
+            className="mt-0.5 shrink-0"
             aria-label={`Enable ${builtin.name}`}
           />
         </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline" className="whitespace-nowrap">
+            Built-in
+          </Badge>
+          {overridden && (
+            <Badge variant="secondary" className="whitespace-nowrap">
+              Overridden
+            </Badge>
+          )}
+        </div>
         <CardDescription className="line-clamp-2">{description}</CardDescription>
       </CardHeader>
-      <CardContent className="mt-auto flex items-center gap-1">
+      <CardFooter className="mt-auto gap-1">
         <Button variant="outline" size="sm" onClick={onEdit}>
           <PencilSimple className="h-4 w-4" />
           {overridden ? "Edit" : "Override"}
@@ -136,12 +101,12 @@ function BuiltinCard({
             Reset
           </Button>
         )}
-      </CardContent>
+      </CardFooter>
     </Card>
   )
 }
 
-function BuiltinOverrideDialog({
+export function BuiltinOverrideDialog({
   builtin,
   onOpenChange,
 }: {

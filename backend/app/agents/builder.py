@@ -389,9 +389,12 @@ def build_deep_agent(
             )
 
         # Built-in override rows (builtin_name set) win over the library default;
-        # everything else is an ordinary user subagent.
+        # everything else is an ordinary user subagent. Disabled user subagents
+        # stay in the roster/UI but are excluded from the specialist set here.
         overrides = {sa.builtin_name: sa for sa in rows if sa.builtin_name}
-        subagent_configs = [_config(sa) for sa in rows if not sa.builtin_name]
+        subagent_configs = [
+            _config(sa) for sa in rows if not sa.builtin_name and sa.enabled
+        ]
 
         disabled = set(resolved_defaults["disabled_builtins"])
         for builtin in builtin_subagent_defaults():

@@ -256,6 +256,12 @@ class Subagent(TimestampMixin, table=True):
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
 
+    # When off, this subagent is kept in the roster (still shown/editable in the
+    # UI) but excluded from every agent's specialist set at build time. Lets a
+    # user park a subagent without deleting it. Built-in overrides ignore this and
+    # are toggled via ``AppConfig.deep_defaults["disabled_builtins"]`` instead.
+    enabled: bool = True
+
     # Escape hatch for future kwargs without a schema change (mirrors Agent).
     extra_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
 

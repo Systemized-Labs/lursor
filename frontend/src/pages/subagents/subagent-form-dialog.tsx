@@ -235,6 +235,8 @@ export function SubagentFormDialog({
       web_search: form.web_search,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
+      // Enabled state is toggled from the card, not this form; preserve it.
+      enabled: subagent?.enabled ?? true,
       extra_config: extraConfig,
       skill_ids: form.skill_ids,
       tool_ids: form.tool_ids,

@@ -21,6 +21,7 @@ class SubagentCreate(BaseModel):
     web_search: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     tool_choice: ToolChoice = ToolChoice.auto
+    enabled: bool = True
     extra_config: dict[str, Any] = {}
     skill_ids: list[str] = []
     tool_ids: list[str] = []
@@ -39,6 +40,7 @@ class SubagentUpdate(BaseModel):
     web_search: bool | None = None
     thinking: ThinkingLevel | None = None
     tool_choice: ToolChoice | None = None
+    enabled: bool | None = None
     extra_config: dict[str, Any] | None = None
     skill_ids: list[str] | None = None
     tool_ids: list[str] | None = None
@@ -58,6 +60,7 @@ class SubagentRead(BaseModel):
     web_search: bool
     thinking: ThinkingLevel
     tool_choice: ToolChoice
+    enabled: bool
     extra_config: dict[str, Any]
     skill_ids: list[str]
     tool_ids: list[str]
@@ -81,6 +84,7 @@ class SubagentRead(BaseModel):
             web_search=sa.web_search,
             thinking=sa.thinking,
             tool_choice=sa.tool_choice,
+            enabled=sa.enabled,
             extra_config=sa.extra_config,
             skill_ids=[s.id for s in sa.skills],
             tool_ids=[t.id for t in sa.tools],

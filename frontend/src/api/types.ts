@@ -75,6 +75,8 @@ export interface Subagent {
   web_search: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  /** When off, the subagent is kept but excluded from every agent at build time. */
+  enabled: boolean
   extra_config: Record<string, unknown>
   skill_ids: string[]
   tool_ids: string[]
@@ -97,6 +99,7 @@ export interface SubagentInput {
   web_search: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  enabled: boolean
   extra_config: Record<string, unknown>
   skill_ids: string[]
   tool_ids: string[]
