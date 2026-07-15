@@ -2,8 +2,8 @@ import { WarningCircle, CheckCircle } from "@phosphor-icons/react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
-import { useLaiosBudget, useLaiosCatalog } from "@/api/laios"
-import type { LaiosBudget, LaiosRecipeSummary, LaiosServeInput } from "@/api/types"
+import { useLaiosBudget, useLaiosCatalog, useLaiosCluster } from "@/api/laios"
+import type { LaiosRecipeSummary, LaiosServeInput } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -43,36 +43,44 @@ type Fit = "ok" | "tight" | "cluster" | "too-big" | "no-fit" | "unknown"
 interface Compat {
   sizeLabel: string // "≈2.9 GB" or "size unknown"
   fit: Fit
-  /** Hard, permanent incompatibility — disable in the dropdown. */
+  /** Hard, permanent incompatibility for the current mode — disable in the dropdown. */
   unavailable: boolean
   /** Whether the model can be served right now. */
   canServe: boolean
   reason: string // human-readable verdict
 }
 
-// Classify a recipe against the machine's VRAM budget. `usable` is the most a
-// single model could ever get (total minus the OS/engine reserve); `available`
-// also subtracts what running models already hold.
-function classify(recipe: LaiosRecipeSummary, budget: LaiosBudget | undefined): Compat {
+// Normalized VRAM pool the serve targets: `usable` is the most a single model
+// could ever get; `available` is what's free right now. In solo mode this is
+// one machine's budget; in cluster mode it's the aggregate across live nodes.
+interface VramPool {
+  usable: number
+  available: number
+  scope: "machine" | "cluster"
+}
+
+// Classify a recipe against the VRAM pool for the chosen mode. Cluster-only
+// recipes can't run solo; everything else is compared against the pool.
+function classify(recipe: LaiosRecipeSummary, solo: boolean, pool: VramPool | undefined): Compat {
   const est = recipe.vram_estimate_mb
   const sizeLabel = est == null ? "size unknown" : `≈${gb(est)}`
 
-  if (recipe.cluster_only) {
+  if (solo && recipe.cluster_only) {
     return {
       sizeLabel,
       fit: "cluster",
       unavailable: true,
       canServe: false,
-      reason: "Requires a multi-node cluster — can't serve solo here.",
+      reason: "Requires a multi-node cluster — turn off Solo to serve it.",
     }
   }
-  if (est == null || !budget) {
+  if (est == null || !pool) {
     // Nothing to compare against — let the daemon's admission be the backstop.
     return { sizeLabel, fit: "unknown", unavailable: false, canServe: true, reason: "" }
   }
 
-  const usable = Math.max(0, budget.total_mb - budget.reserved_mb)
-  const available = Math.max(0, usable - budget.allocated_mb)
+  const { usable, available, scope } = pool
+  const where = scope === "cluster" ? "the cluster" : "this machine"
 
   if (est > usable) {
     return {
@@ -80,7 +88,7 @@ function classify(recipe: LaiosRecipeSummary, budget: LaiosBudget | undefined): 
       fit: "too-big",
       unavailable: true,
       canServe: false,
-      reason: `Too large for this machine — needs ${gb(est)}, only ${gb(usable)} usable.`,
+      reason: `Too large for ${where} — needs ${gb(est)}, only ${gb(usable)} usable.`,
     }
   }
   if (est > available) {
@@ -114,6 +122,7 @@ export function ServeModelDialog({
 }: ServeModelDialogProps) {
   const { data: catalog, isLoading } = useLaiosCatalog(open ? connectionId : undefined)
   const { data: budget } = useLaiosBudget(open ? connectionId : undefined)
+  const { data: cluster } = useLaiosCluster(open ? connectionId : undefined)
 
   const [recipe, setRecipe] = useState<string>("")
   const [maxLen, setMaxLen] = useState<string>("")
@@ -129,12 +138,30 @@ export function ServeModelDialog({
     }
   }, [open])
 
+  // The single-machine pool: total minus the OS/engine reserve, then minus what
+  // running models already hold.
+  const soloPool = useMemo<VramPool | undefined>(() => {
+    if (!budget) return undefined
+    const usable = Math.max(0, budget.total_mb - budget.reserved_mb)
+    return { usable, available: Math.max(0, usable - budget.allocated_mb), scope: "machine" }
+  }, [budget])
+
+  // The cluster-wide pool: aggregate VRAM across online nodes.
+  const clusterPool = useMemo<VramPool | undefined>(() => {
+    const res = cluster?.resources
+    if (!res) return undefined
+    return { usable: res.total_vram_mb, available: res.free_vram_mb, scope: "cluster" }
+  }, [cluster])
+
+  // Solo serves into one machine; cluster mode serves into the whole cluster.
+  const activePool = solo ? soloPool : clusterPool
+
   // Precompute compatibility for every recipe so the dropdown + verdict agree.
   const compatById = useMemo(() => {
     const m = new Map<string, Compat>()
-    for (const r of catalog ?? []) m.set(r.id, classify(r, budget))
+    for (const r of catalog ?? []) m.set(r.id, classify(r, solo, activePool))
     return m
-  }, [catalog, budget])
+  }, [catalog, solo, activePool])
 
   // Runnable recipes first (then those needing freed VRAM, then unavailable),
   // and smallest first within each group so the easiest pick is at the top.
@@ -153,9 +180,8 @@ export function ServeModelDialog({
   const selected = catalog?.find((r) => r.id === recipe)
   const compat = recipe ? compatById.get(recipe) : undefined
 
-  const usable = budget ? Math.max(0, budget.total_mb - budget.reserved_mb) : undefined
-  const available =
-    budget && usable !== undefined ? Math.max(0, usable - budget.allocated_mb) : undefined
+  const usable = activePool?.usable
+  const available = activePool?.available
 
   function handleServe() {
     if (!recipe) {
@@ -190,18 +216,30 @@ export function ServeModelDialog({
           <DialogTitle>Serve a model</DialogTitle>
           <DialogDescription>
             Launch a curated recipe on this daemon. It downloads (if needed) then
-            starts — you'll see its progress under Models. Models that don't fit
-            the machine's VRAM are disabled.
+            starts — you'll see its progress under Models. Recipes that don't fit
+            the available VRAM (solo machine or whole cluster) are disabled.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4">
+          <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+            <div>
+              <Label htmlFor="serve-solo">Solo</Label>
+              <p className="text-xs text-muted-foreground">
+                Single-node serve. Turn off to serve across the cluster and run
+                larger, multi-node recipes.
+              </p>
+            </div>
+            <Switch id="serve-solo" checked={solo} onCheckedChange={setSolo} />
+          </div>
+
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
               <Label htmlFor="serve-recipe">Recipe</Label>
               {available !== undefined && usable !== undefined ? (
                 <span className="text-xs text-muted-foreground">
                   {gb(available)} free of {gb(usable)} usable
+                  {solo ? "" : " · cluster"}
                 </span>
               ) : null}
             </div>
@@ -222,11 +260,8 @@ export function ServeModelDialog({
                         </span>
                         <span className="shrink-0 text-xs text-muted-foreground">
                           {c?.sizeLabel}
-                          {c?.fit === "cluster"
-                            ? " · cluster"
-                            : c?.fit === "too-big"
-                              ? " · too large"
-                              : ""}
+                          {r.cluster_only ? " · cluster" : ""}
+                          {c?.fit === "too-big" ? " · too large" : ""}
                         </span>
                       </span>
                     </SelectItem>
@@ -277,16 +312,6 @@ export function ServeModelDialog({
                 onChange={(e) => setServedName(e.target.value)}
               />
             </div>
-          </div>
-
-          <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-            <div>
-              <Label htmlFor="serve-solo">Solo</Label>
-              <p className="text-xs text-muted-foreground">
-                Single-node serve (leave on unless running a cluster recipe).
-              </p>
-            </div>
-            <Switch id="serve-solo" checked={solo} onCheckedChange={setSolo} />
           </div>
         </div>
 
