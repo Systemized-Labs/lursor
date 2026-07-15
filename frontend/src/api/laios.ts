@@ -3,7 +3,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import { api } from "./client"
@@ -17,6 +17,7 @@ import type {
   LaiosInstanceLogs,
   LaiosInstanceStatus,
   LaiosJob,
+  LaiosJobStatus,
   LaiosRecipeSummary,
   LaiosServeInput,
 } from "./types"
@@ -57,6 +58,8 @@ export const laiosApi = {
     api.get<LaiosClusterStatus>(`/laios/connections/${id}/cluster`, signal),
   pull: (id: string, recipe: string) =>
     api.post<LaiosJob>(`/laios/connections/${id}/pull`, { recipe }),
+  jobs: (id: string, signal?: AbortSignal) =>
+    api.get<LaiosJob[]>(`/laios/connections/${id}/jobs`, signal),
   job: (id: string, jobId: string, signal?: AbortSignal) =>
     api.get<LaiosJob>(`/laios/connections/${id}/jobs/${jobId}`, signal),
   serve: (id: string, input: LaiosServeInput) =>
@@ -85,9 +88,14 @@ export const laiosKeys = {
   catalog: (id: string) => ["laios", id, "catalog"] as const,
   budget: (id: string) => ["laios", id, "budget"] as const,
   cluster: (id: string) => ["laios", id, "cluster"] as const,
+  jobs: (id: string) => ["laios", id, "jobs"] as const,
   logs: (id: string, instanceId: string) =>
     ["laios", id, "logs", instanceId] as const,
 }
+
+// A pull job the daemon is still working on. Terminal jobs (succeeded/failed)
+// are only interesting to a serve we initiated, handled in the serve manager.
+const JOB_ACTIVE: ReadonlySet<LaiosJobStatus> = new Set(["queued", "running"])
 
 export function useLaiosConnections() {
   return useQuery({
@@ -156,6 +164,24 @@ export function useLaiosCluster(id: string | undefined) {
     queryFn: ({ signal }) => laiosApi.cluster(id as string, signal),
     enabled: Boolean(id),
     refetchInterval: 8_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+// Background jobs (model pulls) with live byte progress. The daemon owns the
+// download, so polling this keeps the UI truthful across reloads and shows
+// pulls kicked off elsewhere. Poll fast while anything is in flight, then back
+// off — matching the instances hook's adaptive cadence.
+export function useLaiosJobs(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.jobs(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.jobs(id as string, signal),
+    enabled: Boolean(id),
+    refetchInterval: (query) => {
+      const data = query.state.data
+      return data?.some((j) => JOB_ACTIVE.has(j.status)) ? 1_500 : 8_000
+    },
     refetchOnWindowFocus: false,
     retry: false,
   })
@@ -272,78 +298,208 @@ export function useRemoveInstance(connectionId: string) {
   })
 }
 
-// --- Serve manager: track in-flight spin-ups as visible cards ------------------
+// --- Serve manager: track in-flight downloads → spin-ups as visible cards ------
 //
-// A model has no daemon instance record until *after* it's downloaded and
-// serve is called, so downloading models would otherwise be invisible. We track
-// each in-flight serve as a synthetic entry (download → start) and render it in
-// the models grid, then hand off to the real (polled) instance once it exists.
+// A model has no daemon instance record until *after* it's downloaded and serve
+// is called, so downloading models would otherwise be invisible. Downloads are
+// daemon pull jobs (polled via useLaiosJobs), which is the source of truth: a
+// card shows real byte progress and survives a page reload or navigation.
+//
+// The daemon owns the download; Lursor owns the serve options and the "start
+// the engine once it's downloaded" step. We persist that intent so a refresh
+// mid-download still auto-serves when the pull finishes instead of orphaning it.
 
-export interface PendingServe {
+/** A download/spin-up card, derived from daemon jobs + our serve intents. */
+export interface DownloadCard {
+  key: string
+  recipeId: string
+  name: string
+  phase: "pulling" | "starting" | "failed"
+  /** Live progress, present while the pull job reports bytes. */
+  bytesDone?: number
+  bytesTotal?: number
+  error?: string
+}
+
+// A serve we kicked off: the pull job id ties it to the daemon's download; the
+// serve input carries the options only Lursor knows. `served` guards the engine
+// start so it fires exactly once; `error` turns the card terminal.
+interface ServeIntent {
   key: string
   connectionId: string
   recipeId: string
   name: string
-  phase: "pulling" | "starting" | "failed"
+  input: LaiosServeInput
+  jobId?: string
+  served: boolean
   error?: string
 }
 
-export function useServeManager(connectionId: string | undefined) {
-  const [pending, setPending] = useState<PendingServe[]>([])
-  const serveModel = useServeModel(connectionId ?? "")
+const INTENTS_KEY = "laios.serveIntents"
 
-  // Forget entries not belonging to the active connection (e.g. after a switch).
+function loadIntents(): ServeIntent[] {
+  try {
+    const raw = localStorage.getItem(INTENTS_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return Array.isArray(parsed) ? (parsed as ServeIntent[]) : []
+  } catch {
+    return []
+  }
+}
+
+function saveIntents(intents: ServeIntent[]): void {
+  try {
+    localStorage.setItem(INTENTS_KEY, JSON.stringify(intents))
+  } catch {
+    // Storage unavailable/full — degrade to in-memory only (loses resume).
+  }
+}
+
+export function useServeManager(connectionId: string | undefined) {
+  const [intents, setIntents] = useState<ServeIntent[]>(loadIntents)
+  const { data: jobs } = useLaiosJobs(connectionId)
+  const serveModel = useServeModel(connectionId ?? "")
+  // Guards the auto-serve so a re-render (or Strict Mode double-invoke) can't
+  // fire serve twice for the same intent before `served` has been flushed.
+  const servingRef = useRef<Set<string>>(new Set())
+
   useEffect(() => {
-    setPending((p) => p.filter((x) => x.connectionId === connectionId))
-  }, [connectionId])
+    saveIntents(intents)
+  }, [intents])
+
+  const updateIntent = useCallback((key: string, patch: Partial<ServeIntent>) => {
+    setIntents((list) =>
+      list.map((it) => (it.key === key ? { ...it, ...patch } : it))
+    )
+  }, [])
+
+  const removeIntent = useCallback((key: string) => {
+    servingRef.current.delete(key)
+    setIntents((list) => list.filter((it) => it.key !== key))
+  }, [])
+
+  // Match strictly by job id: a stale succeeded job for the same recipe (from a
+  // prior pull) must never trigger a premature serve of a fresh request.
+  const jobById = useMemo(() => {
+    const m = new Map<string, LaiosJob>()
+    for (const j of jobs ?? []) m.set(j.id, j)
+    return m
+  }, [jobs])
+
+  // Reconcile intents against the daemon's jobs: a finished pull either starts
+  // the engine (once) or surfaces as a failed card.
+  useEffect(() => {
+    for (const it of intents) {
+      if (it.connectionId !== connectionId) continue
+      if (it.served || it.error || !it.jobId) continue
+      const job = jobById.get(it.jobId)
+      if (!job) continue
+      if (job.status === "failed") {
+        updateIntent(it.key, { error: job.error || "Download failed" })
+        continue
+      }
+      if (job.status === "succeeded" && !servingRef.current.has(it.key)) {
+        servingRef.current.add(it.key)
+        updateIntent(it.key, { served: true })
+        serveModel
+          .mutateAsync(it.input)
+          .then((inst) => {
+            toast.success(`Serving ${inst.served_name}`)
+            removeIntent(it.key)
+          })
+          .catch((err) => {
+            const msg =
+              err instanceof Error ? err.message : "Failed to serve model"
+            updateIntent(it.key, { error: msg })
+            toast.error(msg)
+          })
+      }
+    }
+  }, [intents, jobById, connectionId, serveModel, updateIntent, removeIntent])
 
   const start = useCallback(
     async (input: LaiosServeInput, name: string) => {
       if (!connectionId) return
       const key =
-        globalThis.crypto?.randomUUID?.() ?? `${input.recipe}-${Math.random()}`
-      const entry: PendingServe = {
-        key,
-        connectionId,
-        recipeId: input.recipe,
-        name,
-        phase: "pulling",
-      }
-      setPending((p) => [...p, entry])
+        globalThis.crypto?.randomUUID?.() ?? `${input.recipe}-${Date.now()}`
+      setIntents((list) => [
+        ...list,
+        { key, connectionId, recipeId: input.recipe, name, input, served: false },
+      ])
       try {
-        // 1) Download (idempotent; fast when already cached).
+        // Idempotent on the daemon (fast when already cached). We only need the
+        // job id — progress is read off the polled jobs list, not this call.
         const job = await laiosApi.pull(connectionId, input.recipe)
-        for (;;) {
-          const j = await laiosApi.job(connectionId, job.id)
-          if (j.status === "succeeded") break
-          if (j.status === "failed") throw new Error(j.error || "Download failed")
-          await new Promise((r) => setTimeout(r, 2000))
-        }
-        // 2) Start the engine — the real instance takes over the card.
-        setPending((p) =>
-          p.map((x) => (x.key === key ? { ...x, phase: "starting" } : x))
-        )
-        const inst = await serveModel.mutateAsync(input)
-        setPending((p) => p.filter((x) => x.key !== key))
-        toast.success(`Serving ${inst.served_name}`)
+        updateIntent(key, { jobId: job.id })
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Failed to serve model"
-        setPending((p) =>
-          p.map((x) => (x.key === key ? { ...x, phase: "failed", error: msg } : x))
-        )
+        const msg =
+          err instanceof Error ? err.message : "Failed to start download"
+        updateIntent(key, { error: msg })
         toast.error(msg)
       }
     },
-    [connectionId, serveModel]
+    [connectionId, updateIntent]
   )
 
-  const dismiss = useCallback((key: string) => {
-    setPending((p) => p.filter((x) => x.key !== key))
-  }, [])
+  // Derive the cards: our intents (with progress pulled from their job), plus
+  // any active pull the daemon is running that we didn't start (e.g. the CLI).
+  const downloads = useMemo<DownloadCard[]>(() => {
+    const mine = intents.filter((it) => it.connectionId === connectionId)
+    const cards: DownloadCard[] = []
+    const usedJobIds = new Set<string>()
 
-  return {
-    pending: pending.filter((x) => x.connectionId === connectionId),
-    start,
-    dismiss,
-  }
+    for (const it of mine) {
+      if (it.error) {
+        cards.push({ key: it.key, recipeId: it.recipeId, name: it.name, phase: "failed", error: it.error })
+        if (it.jobId) usedJobIds.add(it.jobId)
+        continue
+      }
+      if (it.served) {
+        cards.push({ key: it.key, recipeId: it.recipeId, name: it.name, phase: "starting" })
+        if (it.jobId) usedJobIds.add(it.jobId)
+        continue
+      }
+      // Still downloading — read progress off the matching job (by id, falling
+      // back to an active pull for the same recipe until our POST returns).
+      const job =
+        (it.jobId ? jobById.get(it.jobId) : undefined) ??
+        (jobs ?? []).find(
+          (j) =>
+            j.kind === "pull" &&
+            JOB_ACTIVE.has(j.status) &&
+            j.recipe_id === it.recipeId
+        )
+      if (job) usedJobIds.add(job.id)
+      cards.push({
+        key: it.key,
+        recipeId: it.recipeId,
+        name: it.name,
+        phase: "pulling",
+        bytesDone: job?.bytes_done ?? undefined,
+        bytesTotal: job?.bytes_total ?? undefined,
+      })
+    }
+
+    for (const j of jobs ?? []) {
+      if (j.kind !== "pull" || !JOB_ACTIVE.has(j.status) || usedJobIds.has(j.id)) {
+        continue
+      }
+      cards.push({
+        key: `job:${j.id}`,
+        recipeId: j.recipe_id ?? "",
+        name: j.recipe_id ?? "Model",
+        phase: "pulling",
+        bytesDone: j.bytes_done ?? undefined,
+        bytesTotal: j.bytes_total ?? undefined,
+      })
+    }
+    return cards
+  }, [intents, jobs, jobById, connectionId])
+
+  const dismiss = useCallback(
+    (key: string) => removeIntent(key),
+    [removeIntent]
+  )
+
+  return { downloads, start, dismiss }
 }

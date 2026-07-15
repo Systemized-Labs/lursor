@@ -424,6 +424,17 @@ async def pull(cid: str, body: dict, session: AsyncSession = Depends(get_session
     )
 
 
+@router.get("/connections/{cid}/jobs")
+async def jobs(cid: str, session: AsyncSession = Depends(get_session)):
+    """List the daemon's background jobs (model pulls, with live byte progress).
+
+    The download UI polls this to render in-flight pulls as first-class cards —
+    the daemon is the source of truth, so a pull started elsewhere (or before a
+    page reload) still shows up.
+    """
+    return await _forward(await _get_conn(cid, session), "GET", "/v1/jobs")
+
+
 @router.get("/connections/{cid}/jobs/{job_id}")
 async def job(cid: str, job_id: str, session: AsyncSession = Depends(get_session)):
     return await _forward(await _get_conn(cid, session), "GET", f"/v1/jobs/{job_id}")

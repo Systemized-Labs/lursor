@@ -1,4 +1,4 @@
-import { Robot, NotePencil } from "@phosphor-icons/react"
+import { Robot, NotePencil, GameController, X } from "@phosphor-icons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useParams, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
@@ -28,6 +28,7 @@ import { ChatMessageList } from "@/components/chat/ChatMessageList"
 import { ChatModeSelect } from "@/components/chat/ChatModeSelect"
 import { ChatTodoList } from "@/components/chat/ChatTodoList"
 import { GoalBanner, GoalSetup, type GoalDraft } from "@/components/chat/GoalPanel"
+import { DinoRunner } from "@/components/chat/minigames/DinoRunner"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
@@ -79,6 +80,7 @@ export function WorkspaceChatPage() {
   // resets on New conversation. An open goal thread forces `plan`.
   const [chatMode, setChatMode] = useState<ChatMode>("edit")
   const [approving, setApproving] = useState(false)
+  const [gameOpen, setGameOpen] = useState(false)
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
 
   const chat = useChat({
@@ -558,6 +560,40 @@ export function WorkspaceChatPage() {
       {chat.error ? (
         <p className="px-4 pb-1 text-sm text-destructive">{chat.error}</p>
       ) : null}
+
+      {isGoalThread && goalExecuting && (
+        // A little play area to pass the time while the goal runs — hidden by
+        // default, expanded on demand so it doesn't dominate the view.
+        <div className="mx-auto w-full max-w-3xl px-4 pb-1 sm:px-6">
+          {gameOpen ? (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Dino runner
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setGameOpen(false)}
+                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Hide
+                </button>
+              </div>
+              <DinoRunner className="h-32" />
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setGameOpen(true)}
+              className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/30 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <GameController className="h-3.5 w-3.5" />
+              Play a game while you wait
+            </button>
+          )}
+        </div>
+      )}
 
       {showGoalSetup ? (
         // Plan selected: collect the objective. The mode dropdown sits above the

@@ -20,7 +20,7 @@ import { toast } from "sonner"
 
 import {
   isTransitional,
-  type PendingServe,
+  type DownloadCard,
   useDeleteLaiosConnection,
   useLaiosBudget,
   useLaiosCluster,
@@ -79,6 +79,20 @@ const MIB_PER_GB = 1024
 
 function fmtGb(mib: number): string {
   return `${(mib / MIB_PER_GB).toFixed(1)} GB`
+}
+
+// Download progress is reported in raw bytes by the daemon; render it in the
+// largest sensible unit so a multi-GB pull reads cleanly.
+function fmtBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ["KB", "MB", "GB", "TB"]
+  let value = bytes / 1024
+  let i = 0
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024
+    i += 1
+  }
+  return `${value.toFixed(value >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
 // Idle/steady states use muted styling; active work reads as "in progress";
@@ -209,8 +223,8 @@ export function LaiosPage() {
           {activeConnection ? (
             <ConnectionPanel
               connection={activeConnection}
-              pending={serveManager.pending}
-              onDismissPending={serveManager.dismiss}
+              downloads={serveManager.downloads}
+              onDismissDownload={serveManager.dismiss}
               onServe={() => setServeOpen(true)}
               onLogs={setLogsFor}
               onStop={setToStop}
@@ -455,16 +469,16 @@ function ConnectionBar({
 
 function ConnectionPanel({
   connection,
-  pending,
-  onDismissPending,
+  downloads,
+  onDismissDownload,
   onServe,
   onLogs,
   onStop,
   onRemove,
 }: {
   connection: LaiosConnection
-  pending: PendingServe[]
-  onDismissPending: (key: string) => void
+  downloads: DownloadCard[]
+  onDismissDownload: (key: string) => void
   onServe: () => void
   onLogs: (i: LaiosInstance) => void
   onStop: (i: LaiosInstance) => void
@@ -485,9 +499,9 @@ function ConnectionPanel({
     .filter((i) => i.status !== "stopped")
     .sort((a, b) => rank(a.status) - rank(b.status))
   const updating =
-    pending.some((p) => p.phase !== "failed") ||
+    downloads.some((d) => d.phase !== "failed") ||
     visible.some((i) => isTransitional(i.status))
-  const empty = visible.length === 0 && pending.length === 0
+  const empty = visible.length === 0 && downloads.length === 0
 
   return (
     <div className="space-y-5">
@@ -510,13 +524,14 @@ function ConnectionPanel({
         <ServeModelBar onClick={onServe} />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {/* In-flight serves first — a downloading/starting model has no daemon
-              instance yet, so it lives only as a pending card until serve. */}
-          {pending.map((p) => (
-            <PendingCard
-              key={p.key}
-              pending={p}
-              onDismiss={() => onDismissPending(p.key)}
+          {/* In-flight downloads first — a downloading/starting model has no
+              daemon instance yet, so it lives only as a download card until
+              serve. Progress is read live from the daemon's pull job. */}
+          {downloads.map((d) => (
+            <DownloadTile
+              key={d.key}
+              download={d}
+              onDismiss={() => onDismissDownload(d.key)}
             />
           ))}
           {visible.map((inst) => (
@@ -568,26 +583,41 @@ function NewModelCard({ onClick }: { onClick: () => void }) {
   )
 }
 
-function PendingCard({
-  pending,
+function DownloadTile({
+  download,
   onDismiss,
 }: {
-  pending: PendingServe
+  download: DownloadCard
   onDismiss: () => void
 }) {
-  const failed = pending.phase === "failed"
+  const failed = download.phase === "failed"
+  const pulling = download.phase === "pulling"
   const label =
-    pending.phase === "pulling"
+    download.phase === "pulling"
       ? "downloading"
-      : pending.phase === "starting"
+      : download.phase === "starting"
         ? "starting"
         : "failed"
-  const detail =
-    pending.phase === "pulling"
-      ? "Downloading weights…"
-      : pending.phase === "starting"
-        ? "Starting engine…"
-        : "Failed to start"
+
+  // Progress only exists while pulling; the daemon reports bytes best-effort, so
+  // a known total gives a determinate bar, otherwise we show bytes fetched.
+  const { bytesDone, bytesTotal } = download
+  const hasProgress = pulling && bytesDone != null
+  const pct =
+    hasProgress && bytesTotal != null && bytesTotal > 0
+      ? Math.min(100, Math.round((bytesDone / bytesTotal) * 100))
+      : undefined
+
+  const detail = pulling
+    ? hasProgress
+      ? bytesTotal != null && bytesTotal > 0
+        ? `${fmtBytes(bytesDone)} of ${fmtBytes(bytesTotal)}`
+        : `${fmtBytes(bytesDone)} downloaded`
+      : "Downloading weights…"
+    : download.phase === "starting"
+      ? "Starting engine…"
+      : "Failed to start"
+
   return (
     <Card
       className={
@@ -596,7 +626,7 @@ function PendingCard({
     >
       <CardHeader>
         <div className="flex items-start justify-between gap-2">
-          <CardTitle className="truncate">{pending.name}</CardTitle>
+          <CardTitle className="truncate">{download.name}</CardTitle>
           <Badge
             variant={failed ? "destructive" : "secondary"}
             className="shrink-0 gap-1 font-normal"
@@ -612,9 +642,29 @@ function PendingCard({
         <CardDescription className="truncate text-xs">{detail}</CardDescription>
       </CardHeader>
       <CardContent className="mt-auto space-y-3">
-        {failed && pending.error ? (
+        {hasProgress ? (
+          <div className="space-y-1">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={cn(
+                  "h-full rounded-full bg-primary transition-all",
+                  // No known total — an indeterminate-ish sliver that still
+                  // conveys "working" without implying a percentage.
+                  pct == null && "w-1/3 animate-pulse"
+                )}
+                style={pct != null ? { width: `${pct}%` } : undefined}
+              />
+            </div>
+            {pct != null ? (
+              <div className="text-right text-[0.65rem] text-muted-foreground">
+                {pct}%
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {failed && download.error ? (
           <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs text-destructive">
-            {pending.error}
+            {download.error}
           </p>
         ) : null}
         {failed ? (

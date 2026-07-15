@@ -574,6 +574,10 @@ export interface LaiosJob {
   recipe_id: string | null
   result: { model_id: string; path: string; already_present: boolean } | null
   error: string | null
+  /** Bytes on disk for the target so far — live download progress. */
+  bytes_done?: number | null
+  /** Best-effort total the repo is expected to occupy (null if unknown). */
+  bytes_total?: number | null
   created_at: string
   updated_at: string
 }
