@@ -193,3 +193,70 @@ async def test_auto_link_surfaces_models_and_hides_from_providers(
     assert (await client.delete(f"/laios/connections/{conn['id']}")).status_code == 204
     groups = (await client.get("/models")).json()
     assert all(g["label"] != name for g in groups)
+
+
+async def test_daemon_lifecycle_proxy(client: AsyncClient, monkeypatch):
+    """version/update/update-log forward verbatim; restart tolerates the daemon
+    dropping the connection as it shuts down (surfaced as 202, not an error)."""
+    conn = await _make_connection(client)
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/daemon/version":
+            captured["check"] = request.url.params.get("check")
+            return httpx.Response(
+                200,
+                json={
+                    "version": "0.1.1",
+                    "git_sha": "abc1234",
+                    "management_mode": "standalone",
+                    "repo_dir": None,
+                    "update": {"checked": False},
+                },
+            )
+        if path == "/v1/daemon/update":
+            return httpx.Response(
+                202, json={"started": True, "log": "daemon-update-x.log"}
+            )
+        if path == "/v1/daemon/update/log":
+            captured["log"] = request.url.params.get("log")
+            return httpx.Response(200, json={"logs": "building…", "active": True})
+        if path == "/v1/daemon/restart":
+            # Simulate the daemon dying before it can reply.
+            raise httpx.ConnectError("connection reset", request=request)
+        return httpx.Response(404, json={"error": {"code": "not_found", "message": "x"}})
+
+    from app.api import laios as laios_mod
+
+    def fake_client(conn, timeout=None):  # noqa: ANN001
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url=conn.base_url.rstrip("/"),
+            headers={"Authorization": f"Bearer {conn.master_key}"},
+        )
+
+    monkeypatch.setattr(laios_mod, "_client", fake_client)
+
+    cid = conn["id"]
+
+    r = await client.get(f"/laios/connections/{cid}/daemon/version?check=true")
+    assert r.status_code == 200, r.text
+    assert r.json()["git_sha"] == "abc1234"
+    assert captured["check"] == "true"
+
+    r = await client.post(f"/laios/connections/{cid}/daemon/update")
+    assert r.status_code == 202, r.text
+    assert r.json()["log"] == "daemon-update-x.log"
+
+    r = await client.get(
+        f"/laios/connections/{cid}/daemon/update/log?log=daemon-update-x.log&tail=50"
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["active"] is True
+    assert captured["log"] == "daemon-update-x.log"
+
+    # Restart: the daemon drops the connection mid-shutdown → 202 "restarting".
+    r = await client.post(f"/laios/connections/{cid}/daemon/restart")
+    assert r.status_code == 202, r.text
+    assert r.json()["restarting"] is True

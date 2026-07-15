@@ -15,9 +15,17 @@ import httpx
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.capabilities import AbstractCapability, PrepareTools
 from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai.retries import (
+    AsyncTenacityTransport,
+    RetryConfig,
+    wait_retry_after,
+)
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext, ToolDefinition
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 
@@ -45,6 +53,15 @@ settings = get_settings()
 # colons, e.g. Ollama's "llama3:8b", so we only split on the first colon).
 CUSTOM_PREFIX = "custom:"
 
+# Prefix marking a cloud model served through OpenRouter.
+OPENROUTER_PREFIX = "openrouter:"
+
+# OpenRouter routes to shared upstream provider pools that rate-limit (HTTP 429,
+# "temporarily rate-limited upstream. Please retry shortly") and occasionally
+# return transient 5xx. Left alone these surface as a fatal ``ModelHTTPError``
+# that aborts the whole agent turn. Statuses we retry rather than propagate.
+_OPENROUTER_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
 # Process-shared HTTP client for every local (custom) provider. pydantic-ai's
 # default client caps read/write/pool at 600s, which aborts a single long local
 # generation (big reasoning outputs, slow prefill) mid-stream. We disable the
@@ -64,6 +81,48 @@ def _shared_local_http_client() -> httpx.AsyncClient:
     if _local_http_client is None or _local_http_client.is_closed:
         _local_http_client = httpx.AsyncClient(timeout=_LOCAL_HTTP_TIMEOUT)
     return _local_http_client
+
+
+# Process-shared retrying client for OpenRouter. Same lazy/shared rationale as
+# the local client: the provider does not own it and the agent is rebuilt per
+# turn. Streaming has no read ceiling (`read=None`); connect/write/pool stay
+# finite so setup faults still surface.
+_OPENROUTER_HTTP_TIMEOUT = httpx.Timeout(timeout=30.0, connect=15.0, read=None)
+_openrouter_http_client: httpx.AsyncClient | None = None
+
+
+def _shared_openrouter_http_client() -> httpx.AsyncClient:
+    """Return the process-wide retrying client for OpenRouter requests.
+
+    Wraps the default transport in an :class:`AsyncTenacityTransport` that, on a
+    retryable status (:data:`_OPENROUTER_RETRY_STATUSES`), waits out the server's
+    ``Retry-After`` header (falling back to capped exponential backoff) and
+    retries. After the attempts are exhausted the final response raises as usual,
+    so a persistent outage still surfaces as ``ModelHTTPError``.
+    """
+    global _openrouter_http_client
+    if _openrouter_http_client is None or _openrouter_http_client.is_closed:
+
+        def _raise_on_retryable(response: httpx.Response) -> None:
+            if response.status_code in _OPENROUTER_RETRY_STATUSES:
+                response.raise_for_status()
+
+        transport = AsyncTenacityTransport(
+            config=RetryConfig(
+                retry=retry_if_exception_type(httpx.HTTPStatusError),
+                wait=wait_retry_after(
+                    fallback_strategy=wait_exponential(multiplier=1, max=30),
+                    max_wait=60,
+                ),
+                stop=stop_after_attempt(5),
+                reraise=True,
+            ),
+            validate_response=_raise_on_retryable,
+        )
+        _openrouter_http_client = httpx.AsyncClient(
+            transport=transport, timeout=_OPENROUTER_HTTP_TIMEOUT
+        )
+    return _openrouter_http_client
 
 # Tools the agent may keep in read-only ("ask") mode. This is an ALLOWLIST, not
 # a blocklist: the deep-agent toolset exposes many mutation/execution paths
@@ -186,18 +245,34 @@ def resolve_model(
 ) -> str | Model:
     """Turn a stored model string into a value ``create_deep_agent`` accepts.
 
-    Cloud (``openrouter:``) strings are passed through untouched. A ``custom:``
-    string is resolved against ``providers`` (keyed by id) into an
+    Cloud (``openrouter:``) strings are built into an explicit model wired to a
+    retrying HTTP client (see :func:`_shared_openrouter_http_client`) so upstream
+    rate-limits (429) and transient 5xx are retried rather than aborting the turn
+    — matching what pydantic-ai's plain-string inference builds, minus the retry.
+    A ``custom:`` string is resolved against ``providers`` (keyed by id) into an
     OpenAI-compatible model object pointed at that provider's base URL. An
-    unknown provider falls back to the default model.
+    unknown provider falls back to the default model. Any other string
+    (e.g. ``anthropic:``) is passed through untouched.
     """
+    if model_str.startswith(OPENROUTER_PREFIX):
+        model_name = model_str[len(OPENROUTER_PREFIX) :]
+        return OpenAIChatModel(
+            model_name,
+            provider=OpenRouterProvider(
+                api_key=settings.openrouter_api_key,
+                http_client=_shared_openrouter_http_client(),
+            ),
+        )
+
     if not model_str.startswith(CUSTOM_PREFIX):
         return model_str
 
     provider_id, _, model_name = model_str[len(CUSTOM_PREFIX) :].partition(":")
     provider = providers.get(provider_id)
     if provider is None or not model_name:
-        return settings.default_model
+        # Fall back to the default model (an ``openrouter:`` string) via the same
+        # path so it, too, gets the retrying client rather than a raw string.
+        return resolve_model(settings.default_model, providers)
 
     # Route through the tolerant model: local OpenAI-compatible servers
     # (vLLM/llama.cpp/LM Studio, often behind a LiteLLM proxy) run strict chat

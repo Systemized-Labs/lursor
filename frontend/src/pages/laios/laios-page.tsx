@@ -5,6 +5,7 @@ import {
   CaretUpDown,
   Cpu,
   FileText,
+  Gear,
   HardDrives,
   Lightning,
   Pencil,
@@ -65,6 +66,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { DaemonDialog } from "./daemon-dialog"
 import { InstanceLogsDialog } from "./instance-logs-dialog"
 import { LaiosConnectionDialog } from "./laios-connection-dialog"
 import { LaiosStatusBadge } from "./laios-status-badge"
@@ -121,6 +123,7 @@ export function LaiosPage() {
   const [editingConn, setEditingConn] = useState<LaiosConnection | undefined>()
   const [connToDelete, setConnToDelete] = useState<LaiosConnection | undefined>()
   const [serveOpen, setServeOpen] = useState(false)
+  const [daemonOpen, setDaemonOpen] = useState(false)
   const [logsFor, setLogsFor] = useState<LaiosInstance | undefined>()
   const [toStop, setToStop] = useState<LaiosInstance | undefined>()
   const [toRemove, setToRemove] = useState<LaiosInstance | undefined>()
@@ -210,6 +213,7 @@ export function LaiosPage() {
                 setEditingConn(c)
                 setConnFormOpen(true)
               }}
+              onManage={() => setDaemonOpen(true)}
               onDelete={setConnToDelete}
             />
             {activeConnection ? (
@@ -253,6 +257,11 @@ export function LaiosPage() {
             onOpenChange={(open) => !open && setLogsFor(undefined)}
             connectionId={activeConnection.id}
             instance={logsFor}
+          />
+          <DaemonDialog
+            open={daemonOpen}
+            onOpenChange={setDaemonOpen}
+            connectionId={activeConnection.id}
           />
           <StopInstanceDialog
             connectionId={activeConnection.id}
@@ -374,6 +383,7 @@ function ConnectionBar({
   onSelect,
   onAdd,
   onEdit,
+  onManage,
   onDelete,
 }: {
   connections: LaiosConnection[]
@@ -381,6 +391,7 @@ function ConnectionBar({
   onSelect: (id: string) => void
   onAdd: () => void
   onEdit: (c: LaiosConnection) => void
+  onManage: (c: LaiosConnection) => void
   onDelete: (c: LaiosConnection) => void
 }) {
   const active = connections.find((c) => c.id === activeId)
@@ -442,6 +453,15 @@ function ConnectionBar({
           </span>
 
           <div className="ml-auto flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground"
+              onClick={() => onManage(active)}
+              aria-label="Manage daemon"
+            >
+              <Gear className="h-4 w-4" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

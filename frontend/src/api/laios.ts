@@ -13,6 +13,10 @@ import type {
   LaiosConnection,
   LaiosConnectionInput,
   LaiosConnectionStatus,
+  LaiosDaemonRestart,
+  LaiosDaemonUpdateLog,
+  LaiosDaemonUpdateStarted,
+  LaiosDaemonVersion,
   LaiosInstance,
   LaiosInstanceLogs,
   LaiosInstanceStatus,
@@ -78,6 +82,27 @@ export const laiosApi = {
       `/laios/connections/${id}/instances/${instanceId}/logs?tail=${tail}`,
       signal
     ),
+  // Daemon lifecycle. version is cheap; pass check=true to also `git fetch` and
+  // report how far behind the checkout is (kept out of the default poll).
+  daemonVersion: (id: string, check = false, signal?: AbortSignal) =>
+    api.get<LaiosDaemonVersion>(
+      `/laios/connections/${id}/daemon/version${check ? "?check=true" : ""}`,
+      signal
+    ),
+  daemonRestart: (id: string) =>
+    api.post<LaiosDaemonRestart>(`/laios/connections/${id}/daemon/restart`, {}),
+  daemonUpdate: (id: string) =>
+    api.post<LaiosDaemonUpdateStarted>(
+      `/laios/connections/${id}/daemon/update`,
+      {}
+    ),
+  daemonUpdateLog: (id: string, log: string, tail = 400, signal?: AbortSignal) =>
+    api.get<LaiosDaemonUpdateLog>(
+      `/laios/connections/${id}/daemon/update/log?log=${encodeURIComponent(
+        log
+      )}&tail=${tail}`,
+      signal
+    ),
 }
 
 export const laiosKeys = {
@@ -91,6 +116,11 @@ export const laiosKeys = {
   jobs: (id: string) => ["laios", id, "jobs"] as const,
   logs: (id: string, instanceId: string) =>
     ["laios", id, "logs", instanceId] as const,
+  daemonVersion: (id: string) => ["laios", id, "daemon", "version"] as const,
+  daemonUpdateCheck: (id: string) =>
+    ["laios", id, "daemon", "update-check"] as const,
+  daemonUpdateLog: (id: string, log: string) =>
+    ["laios", id, "daemon", "update-log", log] as const,
 }
 
 // A pull job the daemon is still working on. Terminal jobs (succeeded/failed)
@@ -182,6 +212,72 @@ export function useLaiosJobs(id: string | undefined) {
       const data = query.state.data
       return data?.some((j) => JOB_ACTIVE.has(j.status)) ? 1_500 : 8_000
     },
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+// --- Daemon lifecycle -----------------------------------------------------------
+
+// The running build (version + git sha + management mode). Polled so it tracks
+// a restart/update: the sha advancing is how the UI confirms an update landed.
+// This does NOT fetch from git (cheap); update-availability is a separate,
+// on-demand check below.
+export function useLaiosDaemonVersion(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.daemonVersion(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.daemonVersion(id as string, false, signal),
+    enabled: Boolean(id),
+    staleTime: 15_000,
+    refetchInterval: 20_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+// On-demand "is there an update?" — does a git fetch on the daemon, so it is
+// disabled by default and run via refetch() when the user asks.
+export function useLaiosUpdateCheck(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.daemonUpdateCheck(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.daemonVersion(id as string, true, signal),
+    enabled: false,
+    retry: false,
+    gcTime: 60_000,
+  })
+}
+
+export function useDaemonRestart(id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => laiosApi.daemonRestart(id),
+    onSettled: () => {
+      // The daemon is going down and coming back; nudge the version + status
+      // polls so the UI reflects the reconnect quickly.
+      qc.invalidateQueries({ queryKey: laiosKeys.daemonVersion(id) })
+      qc.invalidateQueries({ queryKey: laiosKeys.status(id) })
+    },
+  })
+}
+
+export function useDaemonUpdate(id: string) {
+  return useMutation({ mutationFn: () => laiosApi.daemonUpdate(id) })
+}
+
+// Tail an in-progress update log. Polls while the daemon reports it active
+// (recently written), then stops — the daemon restarts mid-update, so the log
+// (on disk) is the durable source of truth across the gap.
+export function useLaiosUpdateLog(
+  id: string | undefined,
+  log: string | undefined
+) {
+  return useQuery({
+    queryKey:
+      id && log ? laiosKeys.daemonUpdateLog(id, log) : laiosKeys.all,
+    queryFn: ({ signal }) =>
+      laiosApi.daemonUpdateLog(id as string, log as string, 400, signal),
+    enabled: Boolean(id && log),
+    refetchInterval: (query) => (query.state.data?.active === false ? false : 1500),
     refetchOnWindowFocus: false,
     retry: false,
   })

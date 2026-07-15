@@ -564,6 +564,46 @@ export interface LaiosInstanceLogs {
   logs: string
 }
 
+/** How far behind the daemon's checkout is; populated only when `?check=true`. */
+export interface LaiosDaemonUpdateInfo {
+  checked: boolean
+  behind_by?: number
+  remote?: string
+  branch?: string
+  error?: string
+}
+
+/** Running daemon build + how it's managed + optional update-availability. */
+export interface LaiosDaemonVersion {
+  version: string
+  git_sha: string
+  // "systemd" | "standalone" (open string in case the daemon adds modes).
+  management_mode: string
+  repo_dir: string | null
+  update: LaiosDaemonUpdateInfo
+}
+
+/** Response of `POST /daemon/restart` (202). */
+export interface LaiosDaemonRestart {
+  restarting: boolean
+  mode?: string
+  pid?: number
+  note?: string
+}
+
+/** Response of `POST /daemon/update` (202) — `log` is the tailable log name. */
+export interface LaiosDaemonUpdateStarted {
+  started: boolean
+  log: string
+  mode?: string
+}
+
+/** A tail of an in-progress update log; `active` means it was written recently. */
+export interface LaiosDaemonUpdateLog {
+  logs: string
+  active: boolean
+}
+
 export type LaiosJobStatus = "queued" | "running" | "succeeded" | "failed"
 
 /** An async daemon job (currently only model pulls/downloads). */

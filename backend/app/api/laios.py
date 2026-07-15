@@ -461,6 +461,86 @@ async def cluster_status(cid: str, session: AsyncSession = Depends(get_session))
     return await _forward(await _get_conn(cid, session), "GET", "/v1/cluster/status")
 
 
+# --- Daemon lifecycle proxy (version / restart / update) ------------------------
+#
+# The daemon owns the lifecycle logic (it shells out to the tested CLI/scripts);
+# Lursor only forwards. Restart is special: the daemon returns 202 and then dies
+# ~1s later, so a transport failure right after the request is expected, not an
+# error — we surface it as "restart initiated" so the UI can move into a
+# reconnecting state and re-probe `/status`.
+
+
+@router.get("/connections/{cid}/daemon/version")
+async def daemon_version(
+    cid: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    # `?check=true` makes the daemon `git fetch` + count commits behind; keep it
+    # opt-in so the badge's default poll stays cheap.
+    check = request.query_params.get("check")
+    params = {"check": check} if check is not None else None
+    return await _forward(
+        await _get_conn(cid, session), "GET", "/v1/daemon/version", params=params
+    )
+
+
+@router.post("/connections/{cid}/daemon/restart")
+async def daemon_restart(cid: str, session: AsyncSession = Depends(get_session)):
+    conn = await _get_conn(cid, session)
+    try:
+        return await _forward(
+            conn, "POST", "/v1/daemon/restart", timeout=httpx.Timeout(15.0)
+        )
+    except HTTPException as exc:
+        # The daemon may drop the connection as it shuts down before/while
+        # replying. That still means the restart was accepted, so don't surface
+        # it as a failure — tell the UI to start reconnecting.
+        transient = (
+            status.HTTP_502_BAD_GATEWAY,
+            status.HTTP_504_GATEWAY_TIMEOUT,
+        )
+        if exc.status_code in transient:
+            body = b'{"restarting": true, "note": "daemon closed the connection"}'
+            return Response(
+                content=body,
+                status_code=status.HTTP_202_ACCEPTED,
+                media_type="application/json",
+            )
+        raise
+
+
+@router.post("/connections/{cid}/daemon/update")
+async def daemon_update(cid: str, session: AsyncSession = Depends(get_session)):
+    return await _forward(
+        await _get_conn(cid, session),
+        "POST",
+        "/v1/daemon/update",
+        timeout=httpx.Timeout(30.0),
+    )
+
+
+@router.get("/connections/{cid}/daemon/update/log")
+async def daemon_update_log(
+    cid: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    params: dict[str, Any] = {}
+    log = request.query_params.get("log")
+    if log is not None:
+        params["log"] = log
+    tail = request.query_params.get("tail")
+    if tail is not None:
+        params["tail"] = tail
+    return await _forward(
+        await _get_conn(cid, session),
+        "GET",
+        "/v1/daemon/update/log",
+        params=params or None,
+    )
+
+
 # --- Auto-seed a "local" connection ---------------------------------------------
 
 
