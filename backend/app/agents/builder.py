@@ -13,6 +13,8 @@ import httpx
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.capabilities import PrepareTools
 from pydantic_ai.models import Model
+from pydantic_ai.profiles import ModelProfileSpec
+from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai_backends import LocalBackend
@@ -107,6 +109,56 @@ def _readonly_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDef
     return [t for t in tool_defs if t.name in _READONLY_TOOL_ALLOWLIST]
 
 
+def _local_model_profile(model_name: str) -> ModelProfileSpec | None:
+    """Pick a capability profile for a locally-hosted model by name.
+
+    Local models are served through a generic ``OpenAIProvider`` pointed at a
+    LiteLLM/vLLM base URL, so pydantic-ai falls back to ``openai_model_profile``
+    — an allowlist of *OpenAI's own* model names. Any non-OpenAI reasoning model
+    (DeepSeek, …) is therefore treated as non-reasoning: ``supports_thinking`` is
+    False, so its unified ``thinking`` setting is stripped before the request
+    (the UI thinking level never reaches the server, which then falls back to its
+    own default) and its ``reasoning_content`` output is not mapped.
+
+    We reuse the vendor profiles pydantic-ai already ships, keyed by model-name
+    prefix. Each provider's ``model_profile`` is a ``@staticmethod``, so we get
+    the profile (supports_thinking, reasoning field, tool_choice caveats) without
+    constructing the provider or needing its cloud API key/base URL. Returns
+    ``None`` for unrecognized models, which preserves the provider-default
+    behavior for everything else.
+    """
+    if model_name.startswith("deepseek-"):
+        return DeepSeekProvider.model_profile(model_name)
+    return None
+
+
+def _reasoning_chat_template_kwargs(
+    model: str | Model, thinking: bool | str
+) -> dict | None:
+    """Translate the UI thinking level into vLLM ``chat_template_kwargs``.
+
+    Some local vLLM builds ignore the top-level OpenAI ``reasoning_effort`` field
+    and read reasoning **only** from chat-template kwargs (verified against
+    DeepSeek-V4 on this cluster: a top-level ``reasoning_effort`` produced output
+    identical to the recipe default, while ``chat_template_kwargs`` changed it).
+    For those models the ``Thinking`` capability alone (which sends the top-level
+    field) has no effect, and ``thinking=off`` cannot be expressed top-level at
+    all. So we also inject the level as ``chat_template_kwargs`` in ``extra_body``,
+    which vLLM merges over the recipe's ``--default-chat-template-kwargs`` and
+    which passes cleanly through the LiteLLM gateway.
+
+    Scoped to ``deepseek-*`` (whose chat template reads ``thinking`` /
+    ``reasoning_effort``). Cloud strings resolve to a plain model name (no
+    ``model_name`` attribute) and honor the standard field, so they return None.
+    """
+    name = getattr(model, "model_name", None)
+    if not isinstance(name, str) or not name.startswith("deepseek-"):
+        return None
+    if thinking is False:
+        return {"thinking": False}
+    return {"thinking": True, "reasoning_effort": thinking}
+
+
 def resolve_model(
     model_str: str, providers: dict[str, CustomProvider]
 ) -> str | Model:
@@ -141,6 +193,10 @@ def resolve_model(
             # _shared_local_http_client); the gateway's request_timeout bounds it.
             http_client=_shared_local_http_client(),
         ),
+        # A generic OpenAIProvider would profile local models via OpenAI's
+        # name allowlist, silently disabling reasoning for non-OpenAI models.
+        # Supply the correct vendor profile so thinking/reasoning is honored.
+        profile=_local_model_profile(model_name),
     )
     # Strict local templates reject a request with no user turn; guarantee one.
     model._ensure_user_message = True
@@ -273,8 +329,24 @@ def build_deep_agent(
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
 
+    model = resolve_model(row.model or settings.default_model, custom_providers or {})
+
+    # For local models whose chat template (not a top-level API field) controls
+    # reasoning, translate the UI thinking level into extra_body.chat_template_kwargs.
+    # Caller-supplied model_settings / chat_template_kwargs win over ours.
+    ctk = _reasoning_chat_template_kwargs(model, thinking)
+    if ctk is not None:
+        model_settings = dict(extra_config.pop("model_settings", None) or {})
+        extra_body = dict(model_settings.get("extra_body") or {})
+        extra_body["chat_template_kwargs"] = {
+            **ctk,
+            **(extra_body.get("chat_template_kwargs") or {}),
+        }
+        model_settings["extra_body"] = extra_body
+        extra_config["model_settings"] = model_settings
+
     agent = create_deep_agent(
-        model=resolve_model(row.model or settings.default_model, custom_providers or {}),
+        model=model,
         instructions=row.instructions or None,
         backend=backend,
         tools=tools,
