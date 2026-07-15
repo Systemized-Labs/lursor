@@ -18,9 +18,14 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
 os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
 
-from app.agents.builder import _local_model_profile, resolve_model  # noqa: E402
+from app.agents.builder import (  # noqa: E402
+    _local_model_profile,
+    _reasoning_chat_template_kwargs,
+    build_deep_agent,
+    resolve_model,
+)
 from app.agents.tolerant_model import TolerantOpenAIChatModel  # noqa: E402
-from app.db.models import CustomProvider  # noqa: E402
+from app.db.models import Agent, CustomProvider, ThinkingLevel  # noqa: E402
 
 
 def test_deepseek_v4_profile_enables_reasoning():
@@ -66,3 +71,70 @@ def test_resolve_model_non_deepseek_unchanged():
     assert isinstance(model, TolerantOpenAIChatModel)
     # Falls back to the generic OpenAI profile (no reasoning for unknown names).
     assert model.profile.get("supports_thinking") is False
+
+
+def _deepseek_model():
+    providers = {
+        "p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")
+    }
+    return resolve_model("custom:p1:deepseek-v4-flash", providers)
+
+
+def test_chat_template_kwargs_for_deepseek_levels():
+    model = _deepseek_model()
+    # A concrete level enables thinking and carries the effort.
+    assert _reasoning_chat_template_kwargs(model, "medium") == {
+        "thinking": True,
+        "reasoning_effort": "medium",
+    }
+    assert _reasoning_chat_template_kwargs(model, "high") == {
+        "thinking": True,
+        "reasoning_effort": "high",
+    }
+    # "off" (thinking=False) disables it — only expressible via chat_template_kwargs.
+    assert _reasoning_chat_template_kwargs(model, False) == {"thinking": False}
+
+
+def test_chat_template_kwargs_skips_non_deepseek():
+    providers = {
+        "p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")
+    }
+    glm = resolve_model("custom:p1:glm-5.2-quanttrio", providers)
+    assert _reasoning_chat_template_kwargs(glm, "high") is None
+    # Cloud strings resolve to a plain name (no model_name attr) -> honored natively.
+    assert _reasoning_chat_template_kwargs("openrouter:deepseek/deepseek-chat", "high") is None
+
+
+def test_build_deep_agent_injects_deepseek_chat_template_kwargs(tmp_path):
+    prov = {"p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")}
+    row = Agent(
+        name="orchestrator",
+        model="custom:p1:deepseek-v4-flash",
+        thinking=ThinkingLevel.medium,
+    )
+    agent, _ = build_deep_agent(row, str(tmp_path), prov, [])
+    ctk = (agent.model_settings or {}).get("extra_body", {}).get("chat_template_kwargs")
+    assert ctk == {"thinking": True, "reasoning_effort": "medium"}
+
+
+def test_build_deep_agent_off_disables_thinking(tmp_path):
+    prov = {"p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")}
+    row = Agent(
+        name="orchestrator",
+        model="custom:p1:deepseek-v4-flash",
+        thinking=ThinkingLevel.off,
+    )
+    agent, _ = build_deep_agent(row, str(tmp_path), prov, [])
+    ctk = (agent.model_settings or {}).get("extra_body", {}).get("chat_template_kwargs")
+    assert ctk == {"thinking": False}
+
+
+def test_build_deep_agent_non_deepseek_no_injection(tmp_path):
+    prov = {"p1": CustomProvider(name="Local", base_url="http://127.0.0.1:4000/v1")}
+    row = Agent(
+        name="orchestrator",
+        model="custom:p1:glm-5.2-quanttrio",
+        thinking=ThinkingLevel.high,
+    )
+    agent, _ = build_deep_agent(row, str(tmp_path), prov, [])
+    assert "chat_template_kwargs" not in (agent.model_settings or {}).get("extra_body", {})
