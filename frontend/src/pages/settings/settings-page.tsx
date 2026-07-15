@@ -22,10 +22,11 @@ function isTab(value: string | null): value is Tab {
 
 /**
  * App-level settings. "General" holds the GitHub connection and agent runtime
- * defaults; "Providers" groups every model source (OpenRouter key, custom
- * endpoints, LAIOS), picked via a segmented control that sits inline on the tab
- * row so the section keeps the full page width. The active tab is mirrored to
- * `?tab=` so it survives reloads and is deep-linkable.
+ * defaults; "Providers" groups the model sources (OpenRouter key, custom
+ * endpoints), picked via a segmented control that sits inline on the tab row so
+ * the section keeps the full page width. LAIOS is its own top-level
+ * destination in the sidebar. The active tab is mirrored to `?tab=` so it
+ * survives reloads and is deep-linkable.
  */
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -34,7 +35,7 @@ export function SettingsPage() {
 
   const subParam = searchParams.get("sub")
   const provider: ProviderTab =
-    subParam && isProviderTab(subParam) ? subParam : "laios"
+    subParam && isProviderTab(subParam) ? subParam : "openrouter"
   const [providerTab, setProviderTab] = useState<ProviderTab>(provider)
 
   function handleTabChange(value: string) {

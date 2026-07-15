@@ -15,6 +15,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
   SquaresFour,
   ArrowElbowDownLeft,
+  Cpu,
   GitBranch,
   ChatCentered,
   Plug,
@@ -289,6 +290,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       to: string
       meta?: string
     }[] = [
+      { label: "LAIOS", icon: Cpu, to: "/laios" },
       { label: "Customization", icon: SlidersHorizontal, to: "/customization" },
       { label: "Agents", icon: ShootingStar, to: "/customization?tab=agents" },
       { label: "Skills", icon: SquaresFour, to: "/customization?tab=skills" },

@@ -5,14 +5,17 @@ import {
   CaretUpDown,
   Cpu,
   FileText,
+  HardDrives,
+  Lightning,
   Pencil,
   Plus,
+  ShieldCheck,
   Square,
   Stack,
   Trash,
   X,
 } from "@phosphor-icons/react"
-import { useEffect, useMemo, useState } from "react"
+import { type ComponentType, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import {
@@ -35,7 +38,6 @@ import type {
   LaiosNodeResources,
 } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
-import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -95,7 +97,7 @@ const STATE_VARIANT: Record<
   failed: "destructive",
 }
 
-export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
+export function LaiosPage() {
   const { data: connections, isLoading, isError, error } = useLaiosConnections()
 
   const [activeId, setActiveId] = useState<string | undefined>(
@@ -159,14 +161,18 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
     </Button>
   )
 
+  const hasConnections = Boolean(connections && connections.length > 0)
+
   return (
     <div className="space-y-6">
-      {/* Embedded under Settings the tab already provides the heading, so we skip
-          the description/add row entirely — adding a connection lives in the
-          switcher and the empty state. Standalone still gets a page header. */}
-      {embedded ? null : (
-        <PageHeader title="LAIOS" description={DESCRIPTION} actions={action} />
-      )}
+      {/* The add-connection action only belongs in the header once at least one
+          connection exists; before that the intro below carries the primary
+          call to action so the empty page isn't split between two CTAs. */}
+      <PageHeader
+        title="LAIOS"
+        description={DESCRIPTION}
+        actions={hasConnections ? action : undefined}
+      />
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading connections…</p>
@@ -175,16 +181,7 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
           {error instanceof Error ? error.message : "Failed to load connections"}
         </p>
       ) : !connections || connections.length === 0 ? (
-        <EmptyState
-          title="No LAIOS connections yet"
-          description="Add a LAIOS daemon URL and master key to manage models from here."
-          action={
-            <Button onClick={openAddConnection}>
-              <Plus className="h-4 w-4" />
-              Add connection
-            </Button>
-          }
-        />
+        <LaiosIntro onAddConnection={openAddConnection} />
       ) : (
         <>
           {/* One node card: the connection switcher/status as its header and the
@@ -270,6 +267,71 @@ export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
         loading={deleteConnection.isPending}
         onConfirm={confirmDeleteConnection}
       />
+    </div>
+  )
+}
+
+// Shown before any daemon is connected: a short brief on what LAIOS is and why
+// you'd wire it in, so the empty page teaches rather than just prompting. The
+// add-connection CTA lives here (not the header) while the page is empty.
+const INTRO_POINTS: ReadonlyArray<{
+  icon: ComponentType<{ className?: string }>
+  title: string
+  body: string
+}> = [
+  {
+    icon: Lightning,
+    title: "Serve models on demand",
+    body: "Spin open models up and down from here and use them like any other OpenAI-compatible provider.",
+  },
+  {
+    icon: HardDrives,
+    title: "See your VRAM",
+    body: "Live GPU memory and what's holding it, across one or more local or remote nodes.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Stays on your hardware",
+    body: "Inference runs on your own GPUs — your prompts and weights never leave the box.",
+  },
+]
+
+function LaiosIntro({ onAddConnection }: { onAddConnection: () => void }) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-6 sm:p-8">
+      <div className="flex max-w-2xl flex-col gap-2">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-foreground">
+          <Cpu className="h-5 w-5" />
+        </div>
+        <h2 className="mt-2 text-lg font-semibold text-foreground">
+          Run models on your own hardware
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          LAIOS is a local-first inference control plane. Connect a LAIOS daemon
+          to serve open models on your own GPUs, watch VRAM, and use them here
+          without your data leaving your machine.
+        </p>
+      </div>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        {INTRO_POINTS.map((p) => (
+          <div key={p.title} className="flex flex-col gap-1.5">
+            <p.icon className="h-5 w-5 text-muted-foreground" />
+            <p className="text-sm font-medium text-foreground">{p.title}</p>
+            <p className="text-xs text-muted-foreground">{p.body}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        <Button onClick={onAddConnection}>
+          <Plus className="h-4 w-4" />
+          Add connection
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          You'll need a LAIOS daemon URL and its master key.
+        </span>
+      </div>
     </div>
   )
 }

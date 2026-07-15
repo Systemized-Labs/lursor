@@ -1,5 +1,6 @@
 import {
   ChatCentered,
+  Cpu,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -85,6 +86,7 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
+  { to: "/laios", label: "LAIOS", icon: Cpu },
   { to: "/customization", label: "Customization", icon: SlidersHorizontal },
 ]
 

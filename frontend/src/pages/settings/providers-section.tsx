@@ -1,9 +1,7 @@
-import { LaiosPage } from "@/pages/laios/laios-page"
 import { ProvidersPage } from "@/pages/providers/providers-page"
 import { OpenRouterSection } from "./openrouter-section"
 
 export const PROVIDER_TABS = [
-  { value: "laios", label: "LAIOS" },
   { value: "openrouter", label: "OpenRouter" },
   { value: "custom", label: "Custom" },
 ] as const
@@ -17,10 +15,10 @@ export function isProviderTab(value: string): value is ProviderTab {
 /**
  * The body of the Providers tab — one model source at a time. Which one is
  * chosen by the segmented control the SettingsPage renders inline on the tab
- * row (so this section keeps the full page width for content).
+ * row (so this section keeps the full page width for content). LAIOS graduated
+ * to its own top-level destination and lives in the sidebar, not here.
  */
 export function ProvidersSection({ value }: { value: ProviderTab }) {
-  if (value === "openrouter") return <OpenRouterSection />
   if (value === "custom") return <ProvidersPage embedded />
-  return <LaiosPage embedded />
+  return <OpenRouterSection />
 }

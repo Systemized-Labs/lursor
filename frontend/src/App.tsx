@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom"
 import { AppShell } from "@/components/layout/app-shell"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
+import { LaiosPage } from "@/pages/laios/laios-page"
 import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
 import { SettingsPage } from "@/pages/settings/settings-page"
 
@@ -35,7 +36,14 @@ function App() {
       <Route element={<AppShell />}>
         <Route index element={<NewAgentPage />} />
         <Route path="customization" element={<CustomizationPage />} />
+        <Route path="laios" element={<LaiosPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        {/* Back-compat: LAIOS graduated from a Providers sub-tab to a top-level
+            destination; the old deep link still lands on the page. */}
+        <Route
+          path="settings/laios"
+          element={<Navigate to="/laios" replace />}
+        />
         {/* Back-compat: providers/github moved from Customization to Settings. */}
         <Route
           path="providers"
