@@ -226,25 +226,61 @@ def resolve_model(
 
 
 def _subagent_config(
-    sa: SubagentRow, custom_providers: dict[str, CustomProvider]
+    sa: SubagentRow,
+    *,
+    workspace_path: str | Path,
+    custom_providers: dict[str, CustomProvider],
+    subagents: list[SubagentRow],
+    deep_defaults: dict | None,
+    parent_model: str,
+    web_search_provider: str | None,
+    tavily_api_key: str | None,
+    exa_api_key: str | None,
+    child_depth: int,
 ) -> dict:
     """Turn a stored subagent row into a pydantic-deep ``SubAgentConfig`` dict.
 
-    ``model`` is only set when the row pins one; omitting it lets the subagent
-    inherit the parent agent's model.
+    Unlike the library's default subagent factory — which builds a stripped-down
+    agent (no skills/memory/plan/nesting, thinking off) to save tokens — we attach
+    our own ``agent_factory`` so the subagent is a *full* deep agent honoring the
+    row's own toggles, exactly like a top-level :class:`Agent`. The factory is
+    invoked lazily when the parent delegates, so no work happens here beyond
+    building the closure.
+
+    ``name``/``description``/``instructions`` stay on the config: the parent's
+    task tool shows the description when choosing a specialist, and
+    ``_compile_subagent`` reads ``name``/``description`` off the config even when
+    an ``agent_factory`` owns the build. A subagent with no pinned ``model``
+    inherits the parent's (``parent_model``). ``child_depth`` is this subagent's
+    position in the nesting chain, threaded down so the depth guard in
+    ``build_deep_agent`` can stop runaway self-delegation.
     """
-    config: dict = {
+
+    def factory(_cfg: dict) -> PydanticAgent:
+        sub_agent, _deps = build_deep_agent(
+            sa,
+            workspace_path,
+            custom_providers=custom_providers,
+            subagents=subagents,
+            deep_defaults=deep_defaults,
+            model_override=sa.model or parent_model,
+            web_search_provider=web_search_provider,
+            tavily_api_key=tavily_api_key,
+            exa_api_key=exa_api_key,
+            _subagent_depth=child_depth,
+        )
+        return sub_agent
+
+    return {
         "name": sa.name,
         "description": sa.description,
         "instructions": sa.instructions,
+        "agent_factory": factory,
     }
-    if sa.model:
-        config["model"] = resolve_model(sa.model, custom_providers)
-    return config
 
 
 def build_deep_agent(
-    row: AgentRow,
+    row: AgentRow | SubagentRow,
     workspace_path: str | Path,
     custom_providers: dict[str, CustomProvider] | None = None,
     subagents: list[SubagentRow] | None = None,
@@ -254,6 +290,7 @@ def build_deep_agent(
     web_search_provider: str | None = None,
     tavily_api_key: str | None = None,
     exa_api_key: str | None = None,
+    _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
 
@@ -317,16 +354,44 @@ def build_deep_agent(
     # (general-purpose, research) — so built-ins can be overridden or disabled from
     # the UI. See ``agents/deep_defaults.py`` for the resolution rules.
     resolved_defaults = resolve_subagent_defaults(deep_defaults)
+    # Nesting guard: subagents are now full deep agents, so one that opts into
+    # ``include_subagents`` builds its own subagent toolset — which the library
+    # does NOT re-bound by the runtime depth counter (each level gets a fresh
+    # toolset with the full ``max_nesting_depth``). We bound it at construction
+    # instead: a subagent at depth ``d`` may itself delegate only while
+    # ``d < max_nesting_depth``. The top-level agent is depth 0.
+    max_depth = resolved_defaults["max_nesting_depth"]
+    allow_subagents = _subagent_depth < max_depth
+    include_subagents = row.include_subagents and allow_subagents
+
+    # Stored model string handed to nested subagents so an unpinned subagent
+    # inherits this (parent) model rather than falling back to the global default.
+    parent_model = model_override or row.model or settings.default_model
+
     subagent_configs: list[dict] = []
-    if row.include_subagents:
+    if include_subagents:
         providers = custom_providers or {}
         rows = subagents or []
+        child_depth = _subagent_depth + 1
+
+        def _config(sa: SubagentRow) -> dict:
+            return _subagent_config(
+                sa,
+                workspace_path=workspace_path,
+                custom_providers=providers,
+                subagents=rows,
+                deep_defaults=deep_defaults,
+                parent_model=parent_model,
+                web_search_provider=web_search_provider,
+                tavily_api_key=tavily_api_key,
+                exa_api_key=exa_api_key,
+                child_depth=child_depth,
+            )
+
         # Built-in override rows (builtin_name set) win over the library default;
         # everything else is an ordinary user subagent.
         overrides = {sa.builtin_name: sa for sa in rows if sa.builtin_name}
-        subagent_configs = [
-            _subagent_config(sa, providers) for sa in rows if not sa.builtin_name
-        ]
+        subagent_configs = [_config(sa) for sa in rows if not sa.builtin_name]
 
         disabled = set(resolved_defaults["disabled_builtins"])
         for builtin in builtin_subagent_defaults():
@@ -334,9 +399,9 @@ def build_deep_agent(
             if name in disabled:
                 continue
             override = overrides.get(name)
-            subagent_configs.append(
-                _subagent_config(override, providers) if override else dict(builtin)
-            )
+            # An override row gets the full-parity factory; an un-overridden
+            # built-in stays a plain config so the library builds it as before.
+            subagent_configs.append(_config(override) if override else dict(builtin))
 
     # `subagents` and the managed subagent-default knobs may also be supplied via
     # the extra_config escape hatch; where they are, let it win rather than passing
@@ -415,7 +480,7 @@ def build_deep_agent(
         tools=tools,
         skill_directories=skill_dirs or None,
         include_todo=row.include_todo,
-        include_subagents=row.include_subagents,
+        include_subagents=include_subagents,
         include_skills=row.include_skills,
         include_memory=row.include_memory,
         include_plan=row.include_plan,

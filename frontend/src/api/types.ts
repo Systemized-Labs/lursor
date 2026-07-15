@@ -67,6 +67,17 @@ export interface Subagent {
   description: string
   instructions: string
   model: string | null
+  include_todo: boolean
+  include_subagents: boolean
+  include_skills: boolean
+  include_memory: boolean
+  include_plan: boolean
+  web_search: boolean
+  thinking: ThinkingLevel
+  tool_choice: ToolChoice
+  extra_config: Record<string, unknown>
+  skill_ids: string[]
+  tool_ids: string[]
   /** Set when this row overrides a pydantic-deep built-in of the same name. */
   builtin_name: string | null
   created_at: string
@@ -78,6 +89,17 @@ export interface SubagentInput {
   description: string
   instructions: string
   model: string | null
+  include_todo: boolean
+  include_subagents: boolean
+  include_skills: boolean
+  include_memory: boolean
+  include_plan: boolean
+  web_search: boolean
+  thinking: ThinkingLevel
+  tool_choice: ToolChoice
+  extra_config: Record<string, unknown>
+  skill_ids: string[]
+  tool_ids: string[]
 }
 
 /** A single integer default knob: what the library ships vs. the effective value. */

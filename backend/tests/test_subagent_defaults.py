@@ -13,8 +13,8 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
 os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
 
-from app.agents.builder import build_deep_agent  # noqa: E402
-from app.db.models import Agent, Subagent  # noqa: E402
+from app.agents.builder import _subagent_config, build_deep_agent  # noqa: E402
+from app.db.models import Agent, Subagent, ThinkingLevel  # noqa: E402
 from app.db.session import init_db  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -128,3 +128,83 @@ async def test_builder_roster_respects_disable_and_override(tmp_path):
         _agent(), ws, {}, [user, override], {"disabled_builtins": ["general-purpose"]}
     )
     assert agent2 is not None
+
+
+async def test_subagent_full_parity_crud_roundtrips(client: AsyncClient):
+    # A skill to attach (subagents can now carry skills, like top-level agents).
+    skill = (
+        await client.post("/skills", json={"name": "Digest", "content": "# how"})
+    ).json()
+
+    r = await client.post(
+        "/subagents",
+        json={
+            "name": "specialist",
+            "description": "d",
+            "instructions": "i",
+            "include_memory": True,
+            "include_skills": True,
+            "thinking": "high",
+            "tool_choice": "required",
+            "extra_config": {"foo": "bar"},
+            "skill_ids": [skill["id"]],
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["include_memory"] is True
+    assert body["thinking"] == "high"
+    assert body["tool_choice"] == "required"
+    assert body["extra_config"] == {"foo": "bar"}
+    assert body["skill_ids"] == [skill["id"]]
+    # Defaults for knobs not sent match the model defaults.
+    assert body["include_todo"] is True
+    assert body["include_subagents"] is False
+
+    # Patch a subset; unspecified fields are preserved.
+    r = await client.patch(
+        f"/subagents/{body['id']}", json={"thinking": "off", "skill_ids": []}
+    )
+    assert r.status_code == 200, r.text
+    patched = r.json()
+    assert patched["thinking"] == "off"
+    assert patched["skill_ids"] == []
+    assert patched["include_memory"] is True  # untouched
+
+    # Unknown skill id is rejected.
+    assert (
+        await client.post(
+            "/subagents",
+            json={"name": "x", "skill_ids": ["nope"]},
+        )
+    ).status_code == 400
+
+
+async def test_subagent_factory_builds_full_agent_and_bounds_nesting(tmp_path):
+    ws = str(tmp_path)
+    sa = Subagent(
+        name="deep",
+        description="d",
+        instructions="i",
+        include_subagents=True,
+        thinking=ThinkingLevel.low,
+    )
+    # child_depth == max_nesting_depth means this subagent sits at the floor of
+    # the nesting budget: it must build as a full deep agent but NOT itself gain a
+    # subagent toolset, so invoking the factory terminates instead of recursing.
+    cfg = _subagent_config(
+        sa,
+        workspace_path=ws,
+        custom_providers={},
+        subagents=[sa],
+        deep_defaults={"max_nesting_depth": 1},
+        parent_model="openrouter:test/model",
+        web_search_provider=None,
+        tavily_api_key=None,
+        exa_api_key=None,
+        child_depth=1,
+    )
+    assert cfg["name"] == "deep"
+    assert callable(cfg["agent_factory"])
+    sub_agent = cfg["agent_factory"](cfg)
+    assert sub_agent is not None

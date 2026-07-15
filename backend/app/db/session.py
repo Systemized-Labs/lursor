@@ -58,6 +58,28 @@ async def _apply_lightweight_migrations(conn) -> None:
     subagent_cols = await columns("subagents")
     if "builtin_name" not in subagent_cols:
         await conn.execute(text("ALTER TABLE subagents ADD COLUMN builtin_name VARCHAR"))
+    # Full deep-agent parity knobs on subagents. Defaults match the model so
+    # existing rows keep behaving as before (skills on, everything else off).
+    subagent_additions = {
+        "include_todo": "ALTER TABLE subagents ADD COLUMN include_todo BOOLEAN DEFAULT 1",
+        "include_subagents": (
+            "ALTER TABLE subagents ADD COLUMN include_subagents BOOLEAN DEFAULT 0"
+        ),
+        "include_skills": (
+            "ALTER TABLE subagents ADD COLUMN include_skills BOOLEAN DEFAULT 1"
+        ),
+        "include_memory": (
+            "ALTER TABLE subagents ADD COLUMN include_memory BOOLEAN DEFAULT 0"
+        ),
+        "include_plan": "ALTER TABLE subagents ADD COLUMN include_plan BOOLEAN DEFAULT 0",
+        "web_search": "ALTER TABLE subagents ADD COLUMN web_search BOOLEAN DEFAULT 0",
+        "thinking": "ALTER TABLE subagents ADD COLUMN thinking VARCHAR DEFAULT 'off'",
+        "tool_choice": "ALTER TABLE subagents ADD COLUMN tool_choice VARCHAR DEFAULT 'auto'",
+        "extra_config": "ALTER TABLE subagents ADD COLUMN extra_config JSON DEFAULT '{}'",
+    }
+    for col, ddl in subagent_additions.items():
+        if col not in subagent_cols:
+            await conn.execute(text(ddl))
 
     agent_cols = await columns("agents")
     if "tool_choice" not in agent_cols:

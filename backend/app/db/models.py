@@ -49,6 +49,18 @@ class AgentToolLink(SQLModel, table=True):
     tool_id: str = Field(foreign_key="tools.id", primary_key=True)
 
 
+class SubagentSkillLink(SQLModel, table=True):
+    __tablename__ = "subagent_skills"
+    subagent_id: str = Field(foreign_key="subagents.id", primary_key=True)
+    skill_id: str = Field(foreign_key="skills.id", primary_key=True)
+
+
+class SubagentToolLink(SQLModel, table=True):
+    __tablename__ = "subagent_tools"
+    subagent_id: str = Field(foreign_key="subagents.id", primary_key=True)
+    tool_id: str = Field(foreign_key="tools.id", primary_key=True)
+
+
 # --- Core entities --------------------------------------------------------------
 
 
@@ -128,6 +140,11 @@ class Skill(TimestampMixin, table=True):
         link_model=AgentSkillLink,
         sa_relationship_kwargs={"lazy": "selectin"},
     )
+    subagents: list["Subagent"] = Relationship(
+        back_populates="skills",
+        link_model=SubagentSkillLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
 
 
 class PromptTemplate(TimestampMixin, table=True):
@@ -162,6 +179,11 @@ class Tool(TimestampMixin, table=True):
     agents: list["Agent"] = Relationship(
         back_populates="tools",
         link_model=AgentToolLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+    subagents: list["Subagent"] = Relationship(
+        back_populates="tools",
+        link_model=SubagentToolLink,
         sa_relationship_kwargs={"lazy": "selectin"},
     )
 
@@ -220,11 +242,39 @@ class Subagent(TimestampMixin, table=True):
     instructions: str = ""  # the subagent's system prompt
     model: str | None = None  # optional override; falls back to the parent's model
 
+    # Full deep-agent feature toggles, identical to :class:`Agent`. By default the
+    # pydantic-deep library builds subagents with a stripped-down factory (no
+    # skills/memory/plan/nesting, thinking off) to save tokens; the builder gives
+    # each subagent its own factory so these knobs take effect (see
+    # ``agents/builder.py``). ``include_skills`` pairs with the attached ``skills``.
+    include_todo: bool = True
+    include_subagents: bool = False
+    include_skills: bool = True
+    include_memory: bool = False
+    include_plan: bool = False
+    web_search: bool = False
+    thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
+    tool_choice: ToolChoice = Field(default=ToolChoice.auto)
+
+    # Escape hatch for future kwargs without a schema change (mirrors Agent).
+    extra_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
     # When set, this row is not a user-authored subagent but an *override* of a
     # pydantic-deep built-in of the same name (e.g. "general-purpose", "research").
     # Override rows are managed in the Subagents "Defaults" area, hidden from the
     # normal roster listing, and win over the library default at build time.
     builtin_name: str | None = Field(default=None, index=True)
+
+    skills: list[Skill] = Relationship(
+        back_populates="subagents",
+        link_model=SubagentSkillLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
+    tools: list[Tool] = Relationship(
+        back_populates="subagents",
+        link_model=SubagentToolLink,
+        sa_relationship_kwargs={"lazy": "selectin"},
+    )
 
 
 class CustomProvider(TimestampMixin, table=True):

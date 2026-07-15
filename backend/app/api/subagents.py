@@ -25,7 +25,7 @@ from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
 )
-from app.db.models import AppConfig, Subagent
+from app.db.models import AppConfig, Skill, Subagent, Tool
 from app.db.session import get_session
 from app.schemas.subagent import (
     BuiltinOverrideUpdate,
@@ -39,6 +39,21 @@ from app.schemas.subagent import (
 )
 
 router = APIRouter(prefix="/subagents", tags=["subagents"])
+
+
+async def _resolve(session: AsyncSession, model, ids: list[str]) -> list:
+    """Load rows by id, 400-ing if any id is unknown (mirrors agents API)."""
+    if not ids:
+        return []
+    result = await session.execute(select(model).where(model.id.in_(ids)))
+    rows = result.scalars().all()
+    missing = set(ids) - {r.id for r in rows}
+    if missing:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unknown {model.__name__.lower()} id(s): {', '.join(sorted(missing))}",
+        )
+    return rows
 
 
 # --- Defaults: pydantic-deep built-in subagents + governing knobs --------------
@@ -71,7 +86,7 @@ async def _defaults_payload(session: AsyncSession) -> SubagentDefaultsRead:
             default_instructions=b["instructions"],
             enabled=b["name"] not in disabled,
             override=(
-                SubagentRead.model_validate(overrides[b["name"]])
+                SubagentRead.from_subagent(overrides[b["name"]])
                 if b["name"] in overrides
                 else None
             ),
@@ -184,18 +199,22 @@ async def list_subagents(session: AsyncSession = Depends(get_session)):
         .where(Subagent.builtin_name.is_(None))
         .order_by(Subagent.created_at)
     )
-    return result.scalars().all()
+    return [SubagentRead.from_subagent(sa) for sa in result.scalars().all()]
 
 
 @router.post("", response_model=SubagentRead, status_code=status.HTTP_201_CREATED)
 async def create_subagent(
     payload: SubagentCreate, session: AsyncSession = Depends(get_session)
 ):
-    subagent = Subagent(**payload.model_dump())
+    # Resolve links before the row joins the session, so assigning the
+    # collections cannot trigger a sync lazy-load on a flushed-but-unloaded object.
+    skills = await _resolve(session, Skill, payload.skill_ids)
+    tools = await _resolve(session, Tool, payload.tool_ids)
+    data = payload.model_dump(exclude={"skill_ids", "tool_ids"})
+    subagent = Subagent(**data, skills=skills, tools=tools)
     session.add(subagent)
     await session.commit()
-    await session.refresh(subagent)
-    return subagent
+    return SubagentRead.from_subagent(subagent)
 
 
 @router.get("/{subagent_id}", response_model=SubagentRead)
@@ -203,7 +222,7 @@ async def get_subagent(subagent_id: str, session: AsyncSession = Depends(get_ses
     subagent = await session.get(Subagent, subagent_id)
     if subagent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Subagent not found")
-    return subagent
+    return SubagentRead.from_subagent(subagent)
 
 
 @router.patch("/{subagent_id}", response_model=SubagentRead)
@@ -215,12 +234,16 @@ async def update_subagent(
     subagent = await session.get(Subagent, subagent_id)
     if subagent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Subagent not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True, exclude={"skill_ids", "tool_ids"})
+    for key, value in data.items():
         setattr(subagent, key, value)
+    if payload.skill_ids is not None:
+        subagent.skills = await _resolve(session, Skill, payload.skill_ids)
+    if payload.tool_ids is not None:
+        subagent.tools = await _resolve(session, Tool, payload.tool_ids)
     session.add(subagent)
     await session.commit()
-    await session.refresh(subagent)
-    return subagent
+    return SubagentRead.from_subagent(subagent)
 
 
 @router.delete("/{subagent_id}", status_code=status.HTTP_204_NO_CONTENT)

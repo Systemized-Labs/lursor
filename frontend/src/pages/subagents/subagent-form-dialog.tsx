@@ -2,9 +2,16 @@ import { FileText } from "@phosphor-icons/react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
-import type { Subagent, SubagentInput } from "@/api/types"
+import type {
+  Subagent,
+  SubagentInput,
+  ThinkingLevel,
+  ToolChoice,
+} from "@/api/types"
 import { useCreateSubagent, useUpdateSubagent } from "@/api/subagents"
 import { usePromptTemplates } from "@/api/prompt-templates"
+import { useSkills } from "@/api/skills"
+import { useTools } from "@/api/tools"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Button } from "@/components/ui/button"
 import {
@@ -18,6 +25,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ModelPicker } from "@/components/model-picker"
+import { MultiSelect } from "@/components/multi-select"
 import {
   Select,
   SelectContent,
@@ -27,16 +35,91 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
+
+const TOOL_CHOICES: { value: ToolChoice; label: string }[] = [
+  { value: "auto", label: "Auto (model decides)" },
+  { value: "required", label: "Required (force a tool)" },
+  { value: "none", label: "None (text only)" },
+]
+
+type BooleanFieldKey =
+  | "include_todo"
+  | "include_subagents"
+  | "include_skills"
+  | "include_memory"
+  | "include_plan"
+  | "web_search"
+
+const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
+  { key: "include_todo", label: "Include todo" },
+  { key: "include_subagents", label: "Include subagents" },
+  { key: "include_skills", label: "Include skills" },
+  { key: "include_memory", label: "Include memory" },
+  { key: "include_plan", label: "Include plan" },
+  { key: "web_search", label: "Web search" },
+]
 
 interface FormState {
   name: string
   description: string
   instructions: string
   model: string
+  include_todo: boolean
+  include_subagents: boolean
+  include_skills: boolean
+  include_memory: boolean
+  include_plan: boolean
+  web_search: boolean
+  thinking: ThinkingLevel
+  tool_choice: ToolChoice
+  extraConfigText: string
+  skill_ids: string[]
+  tool_ids: string[]
 }
 
-const EMPTY: FormState = { name: "", description: "", instructions: "", model: "" }
+function emptyState(): FormState {
+  return {
+    name: "",
+    description: "",
+    instructions: "",
+    model: "",
+    include_todo: true,
+    include_subagents: false,
+    include_skills: true,
+    include_memory: false,
+    include_plan: false,
+    web_search: false,
+    thinking: "off",
+    tool_choice: "auto",
+    extraConfigText: "{}",
+    skill_ids: [],
+    tool_ids: [],
+  }
+}
+
+function fromSubagent(subagent: Subagent): FormState {
+  return {
+    name: subagent.name,
+    description: subagent.description,
+    instructions: subagent.instructions,
+    model: subagent.model ?? "",
+    include_todo: subagent.include_todo,
+    include_subagents: subagent.include_subagents,
+    include_skills: subagent.include_skills,
+    include_memory: subagent.include_memory,
+    include_plan: subagent.include_plan,
+    web_search: subagent.web_search,
+    thinking: subagent.thinking,
+    tool_choice: subagent.tool_choice ?? "auto",
+    extraConfigText: JSON.stringify(subagent.extra_config ?? {}, null, 2),
+    skill_ids: subagent.skill_ids,
+    tool_ids: subagent.tool_ids,
+  }
+}
 
 interface SubagentFormDialogProps {
   open: boolean
@@ -49,7 +132,7 @@ export function SubagentFormDialog({
   onOpenChange,
   subagent,
 }: SubagentFormDialogProps) {
-  const [form, setForm] = useState<FormState>(EMPTY)
+  const [form, setForm] = useState<FormState>(emptyState)
   // A pending destructive replace guarded by a confirm dialog when the
   // instructions field already has content.
   const [pendingInstructions, setPendingInstructions] = useState<string | null>(
@@ -57,6 +140,8 @@ export function SubagentFormDialog({
   )
   const createSubagent = useCreateSubagent()
   const updateSubagent = useUpdateSubagent()
+  const skillsQuery = useSkills()
+  const toolsQuery = useTools()
   const templatesQuery = usePromptTemplates()
   const isEdit = Boolean(subagent)
   const isSaving = createSubagent.isPending || updateSubagent.isPending
@@ -71,28 +156,42 @@ export function SubagentFormDialog({
     return [...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [templatesQuery.data])
 
+  const skillOptions = useMemo(
+    () =>
+      (skillsQuery.data ?? []).map((s) => ({
+        value: s.id,
+        label: s.name,
+        description: s.description,
+      })),
+    [skillsQuery.data]
+  )
+  const toolOptions = useMemo(
+    () =>
+      (toolsQuery.data ?? []).map((t) => ({
+        value: t.id,
+        label: t.name,
+        description: t.description,
+      })),
+    [toolsQuery.data]
+  )
+
   useEffect(() => {
     if (open) {
-      setForm(
-        subagent
-          ? {
-              name: subagent.name,
-              description: subagent.description,
-              instructions: subagent.instructions,
-              model: subagent.model ?? "",
-            }
-          : EMPTY
-      )
+      setForm(subagent ? fromSubagent(subagent) : emptyState())
       setPendingInstructions(null)
     }
   }, [open, subagent])
+
+  function update<K extends keyof FormState>(key: K, value: FormState[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
 
   /** Set instructions, confirming first when there is content to overwrite. */
   function applyInstructions(next: string) {
     if (form.instructions.trim()) {
       setPendingInstructions(next)
     } else {
-      setForm((prev) => ({ ...prev, instructions: next }))
+      update("instructions", next)
     }
   }
 
@@ -108,11 +207,37 @@ export function SubagentFormDialog({
       toast.error("Name is required")
       return
     }
+
+    let extraConfig: Record<string, unknown>
+    try {
+      const parsed: unknown = JSON.parse(form.extraConfigText || "{}")
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("Extra config must be a JSON object")
+      }
+      extraConfig = parsed as Record<string, unknown>
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Extra config is not valid JSON"
+      )
+      return
+    }
+
     const input: SubagentInput = {
       name: form.name.trim(),
       description: form.description.trim(),
       instructions: form.instructions,
       model: form.model.trim() ? form.model.trim() : null,
+      include_todo: form.include_todo,
+      include_subagents: form.include_subagents,
+      include_skills: form.include_skills,
+      include_memory: form.include_memory,
+      include_plan: form.include_plan,
+      web_search: form.web_search,
+      thinking: form.thinking,
+      tool_choice: form.tool_choice,
+      extra_config: extraConfig,
+      skill_ids: form.skill_ids,
+      tool_ids: form.tool_ids,
     }
     try {
       if (subagent) {
@@ -136,7 +261,8 @@ export function SubagentFormDialog({
           <DialogTitle>{isEdit ? "Edit subagent" : "New subagent"}</DialogTitle>
           <DialogDescription>
             Subagents are specialists your agents can delegate tasks to. They
-            apply to every agent that has subagents enabled.
+            apply to every agent that has subagents enabled, and get the same
+            capability controls as a top-level agent.
           </DialogDescription>
         </DialogHeader>
 
@@ -146,9 +272,7 @@ export function SubagentFormDialog({
             <Input
               id="subagent-name"
               value={form.name}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, name: e.target.value }))
-              }
+              onChange={(e) => update("name", e.target.value)}
             />
           </div>
           <div className="grid gap-2">
@@ -156,35 +280,78 @@ export function SubagentFormDialog({
             <Input
               id="subagent-description"
               value={form.description}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, description: e.target.value }))
-              }
+              onChange={(e) => update("description", e.target.value)}
             />
             <p className="text-xs text-muted-foreground">
               Shown to the parent agent when it chooses which specialist to
               delegate to.
             </p>
           </div>
-          <div className="grid min-w-0 gap-2">
-            <Label htmlFor="subagent-model">Model</Label>
-            <ModelPicker
-              value={form.model}
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, model: value }))
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Optional. Leave unset to inherit the parent agent's model.
-            </p>
+
+          <div className="grid gap-4">
+            <div className="grid min-w-0 gap-2">
+              <Label htmlFor="subagent-model">Model</Label>
+              <ModelPicker
+                value={form.model}
+                onChange={(value) => update("model", value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional. Leave unset to inherit the parent agent's model.
+              </p>
+            </div>
+            <div className="grid min-w-0 gap-2">
+              <Label htmlFor="subagent-thinking">Thinking</Label>
+              <Select
+                value={form.thinking}
+                onValueChange={(value) =>
+                  update("thinking", value as ThinkingLevel)
+                }
+              >
+                <SelectTrigger id="subagent-thinking">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {THINKING_LEVELS.map((level) => (
+                    <SelectItem key={level} value={level}>
+                      {level}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid min-w-0 gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="subagent-tool-choice">Tool calls</Label>
+                <span className="text-xs text-muted-foreground">
+                  Force or forbid tool use
+                </span>
+              </div>
+              <Select
+                value={form.tool_choice}
+                onValueChange={(value) =>
+                  update("tool_choice", value as ToolChoice)
+                }
+              >
+                <SelectTrigger id="subagent-tool-choice">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TOOL_CHOICES.map((choice) => (
+                    <SelectItem key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
+
           <div className="grid gap-2">
             <Label htmlFor="subagent-instructions">Instructions</Label>
             <Textarea
               id="subagent-instructions"
               value={form.instructions}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, instructions: e.target.value }))
-              }
+              onChange={(e) => update("instructions", e.target.value)}
               className="min-h-[200px] font-mono text-xs"
               spellCheck={false}
             />
@@ -215,6 +382,59 @@ export function SubagentFormDialog({
               </Select>
             </div>
           </div>
+
+          <div className="grid gap-3 rounded-md border p-4">
+            <span className="text-sm font-medium text-foreground">
+              Capabilities
+            </span>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {BOOLEAN_FIELDS.map((field) => (
+                <div
+                  key={field.key}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <Label htmlFor={`subagent-${field.key}`}>{field.label}</Label>
+                  <Switch
+                    id={`subagent-${field.key}`}
+                    checked={form[field.key]}
+                    onCheckedChange={(checked) => update(field.key, checked)}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label>Skills</Label>
+              <MultiSelect
+                options={skillOptions}
+                selected={form.skill_ids}
+                onChange={(ids) => update("skill_ids", ids)}
+                emptyText="No skills created yet."
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Tools</Label>
+              <MultiSelect
+                options={toolOptions}
+                selected={form.tool_ids}
+                onChange={(ids) => update("tool_ids", ids)}
+                emptyText="No tools created yet."
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="subagent-extra-config">Extra config (JSON)</Label>
+            <Textarea
+              id="subagent-extra-config"
+              value={form.extraConfigText}
+              onChange={(e) => update("extraConfigText", e.target.value)}
+              className="min-h-[100px] font-mono text-xs"
+              spellCheck={false}
+            />
+          </div>
         </div>
 
         <DialogFooter>
@@ -240,7 +460,7 @@ export function SubagentFormDialog({
       confirmLabel="Replace"
       onConfirm={() => {
         if (pendingInstructions !== null) {
-          setForm((prev) => ({ ...prev, instructions: pendingInstructions }))
+          update("instructions", pendingInstructions)
         }
         setPendingInstructions(null)
       }}

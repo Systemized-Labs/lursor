@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
+from app.db.models import Subagent, ThinkingLevel, ToolChoice
 from app.schemas._types import UTCDatetime
 
 
@@ -10,6 +13,17 @@ class SubagentCreate(BaseModel):
     description: str = ""
     instructions: str = ""
     model: str | None = None
+    include_todo: bool = True
+    include_subagents: bool = False
+    include_skills: bool = True
+    include_memory: bool = False
+    include_plan: bool = False
+    web_search: bool = False
+    thinking: ThinkingLevel = ThinkingLevel.off
+    tool_choice: ToolChoice = ToolChoice.auto
+    extra_config: dict[str, Any] = {}
+    skill_ids: list[str] = []
+    tool_ids: list[str] = []
 
 
 class SubagentUpdate(BaseModel):
@@ -17,6 +31,17 @@ class SubagentUpdate(BaseModel):
     description: str | None = None
     instructions: str | None = None
     model: str | None = None
+    include_todo: bool | None = None
+    include_subagents: bool | None = None
+    include_skills: bool | None = None
+    include_memory: bool | None = None
+    include_plan: bool | None = None
+    web_search: bool | None = None
+    thinking: ThinkingLevel | None = None
+    tool_choice: ToolChoice | None = None
+    extra_config: dict[str, Any] | None = None
+    skill_ids: list[str] | None = None
+    tool_ids: list[str] | None = None
 
 
 class SubagentRead(BaseModel):
@@ -25,11 +50,44 @@ class SubagentRead(BaseModel):
     description: str
     instructions: str
     model: str | None
+    include_todo: bool
+    include_subagents: bool
+    include_skills: bool
+    include_memory: bool
+    include_plan: bool
+    web_search: bool
+    thinking: ThinkingLevel
+    tool_choice: ToolChoice
+    extra_config: dict[str, Any]
+    skill_ids: list[str]
+    tool_ids: list[str]
     builtin_name: str | None = None
     created_at: UTCDatetime
     updated_at: UTCDatetime
 
-    model_config = {"from_attributes": True}
+    @classmethod
+    def from_subagent(cls, sa: Subagent) -> SubagentRead:
+        return cls(
+            id=sa.id,
+            name=sa.name,
+            description=sa.description,
+            instructions=sa.instructions,
+            model=sa.model,
+            include_todo=sa.include_todo,
+            include_subagents=sa.include_subagents,
+            include_skills=sa.include_skills,
+            include_memory=sa.include_memory,
+            include_plan=sa.include_plan,
+            web_search=sa.web_search,
+            thinking=sa.thinking,
+            tool_choice=sa.tool_choice,
+            extra_config=sa.extra_config,
+            skill_ids=[s.id for s in sa.skills],
+            tool_ids=[t.id for t in sa.tools],
+            builtin_name=sa.builtin_name,
+            created_at=sa.created_at,
+            updated_at=sa.updated_at,
+        )
 
 
 # --- Subagent defaults (pydantic-deep built-ins + governing knobs) -------------
