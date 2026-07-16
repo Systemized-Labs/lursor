@@ -276,3 +276,41 @@ async def test_goal_planning_conversation_refines_before_approval(
     assert approve.status_code == 200, approve.text
     _assert_valid_lifecycle(await _drain_stream(client, tid))
     assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "completed"
+
+
+async def test_interject_requires_an_active_goal_run(client: AsyncClient):
+    """The interject endpoint only accepts steering for a live goal run."""
+    agent = (await client.post("/agents", json={"name": "Goalie4"})).json()
+    ws = (await client.post("/workspaces", json={"name": "GoalWS4"})).json()
+
+    # A plain chat thread is not a goal → 409.
+    chat_thread = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()
+    r = await client.post(
+        f"/threads/{chat_thread['id']}/goal/interject", json={"content": "hi"}
+    )
+    assert r.status_code == 409, r.text
+
+    # A goal thread with no run in flight → 409 (nothing to steer).
+    goal_thread = (
+        await client.post(
+            "/threads",
+            json={
+                "workspace_id": ws["id"],
+                "agent_id": agent["id"],
+                "mode": "goal",
+                "goal": "build a thing",
+            },
+        )
+    ).json()
+    r = await client.post(
+        f"/threads/{goal_thread['id']}/goal/interject", json={"content": "hi"}
+    )
+    assert r.status_code == 409, r.text
+
+    # Unknown thread → 404.
+    r = await client.post("/threads/does-not-exist/goal/interject", json={"content": "hi"})
+    assert r.status_code == 404, r.text

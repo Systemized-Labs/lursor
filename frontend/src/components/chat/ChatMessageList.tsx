@@ -111,6 +111,9 @@ export interface ChatMessageListProps {
   endRef: RefObject<HTMLDivElement>
   /** Scroll container ref. */
   containerRef?: RefObject<HTMLDivElement>
+  /** Wraps the growing message content; observed to keep the view pinned to the
+   *  bottom as content streams/reflows. */
+  contentRef?: RefObject<HTMLDivElement>
   /** Number of trailing messages rendered before the user pages back. */
   windowSize?: number
   /** Changing this (e.g. the thread id) resets the window to the tail. */
@@ -135,6 +138,7 @@ export function ChatMessageList({
   messages,
   endRef,
   containerRef,
+  contentRef,
   windowSize = DEFAULT_WINDOW_SIZE,
   resetKey,
   className,
@@ -181,7 +185,7 @@ export function ChatMessageList({
         empty
       ) : (
         <>
-          <div className="mx-auto w-full max-w-3xl space-y-10">
+          <div ref={contentRef} className="mx-auto w-full max-w-3xl space-y-10">
             {hasOlder && (
               <div className="flex justify-center">
                 <Button

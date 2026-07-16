@@ -231,3 +231,27 @@ loads history from the API on thread open), and `run_stream` *appends* the
 request's messages to `message_history` — so re-seeding from the DB would
 duplicate the entire transcript. The request adapter already carries full
 conversational context (and image attachments), so planning turns keep using it.
+
+## Follow-up: mid-run interjection (running-goal UX, 2026-07-16)
+
+While a goal is executing, the composer is back (previously replaced by a bare
+"Stop goal" button) so the user can steer the run without stopping it.
+
+- **Backend buffer** — `goal_loop.py` adds a per-thread interjection store
+  (`queue_interjection` / `drain_interjections`) and `weave_interjections(seed,
+  pending)`, which leads the next turn's seed with the user's message followed by
+  the continue directive. `_run_goal_execution.run_turn` drains + weaves at each
+  turn boundary, so a message folds into the *next* turn (it doesn't interrupt the
+  turn in flight).
+- **Endpoint** — `POST /threads/{id}/goal/interject` (`chat.py`): validates a goal
+  thread with a live run, persists the message to the transcript, and buffers it.
+  Can't reuse `POST /chat` because the autonomous run streams as one lifecycle and
+  a second run would 409.
+- **Frontend** — `threadsApi.interjectGoal`, `useChat.interject` (optimistically
+  appends the user bubble), and a running-goal composer with a "send a message to
+  steer it" + **Stop goal** bar above it. The composer renders with
+  `isSending={false}` so a message sends immediately (interjects) instead of
+  joining the send queue; mode dropdown/attachments are hidden in this mode.
+- **Tests** — `test_goal_loop.py` covers the weave/store and that an interjection
+  queued during turn 1 lands in turn 2's seed; `test_goal_chat.py` covers the
+  endpoint guards (non-goal / no active run / unknown thread).

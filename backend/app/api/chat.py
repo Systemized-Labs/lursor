@@ -45,9 +45,12 @@ from app.agents.goal_loop import (
     REFINE_INSTRUCTION,
     build_continuation_adapter,
     build_goal_evaluator,
+    drain_interjections,
     drive_goal_loop,
     encode_goal_status_event,
     messages_to_history,
+    queue_interjection,
+    weave_interjections,
 )
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
@@ -489,8 +492,13 @@ async def _run_goal_execution(
 
         async def run_turn(turn_no: int, seed: str | None) -> list[ModelMessage]:
             nonlocal history
+            # Fold in any messages the user sent mid-run since the last turn, so a
+            # course correction reaches the agent at this turn boundary.
+            effective_seed = weave_interjections(
+                seed or kickoff, drain_interjections(thread_id)
+            )
             turn_adapter = build_continuation_adapter(
-                agent, seed or kickoff, thread_id, accept
+                agent, effective_seed, thread_id, accept
             )
             history = await _stream_turn(
                 thread_id,
@@ -864,3 +872,38 @@ async def approve_goal_plan(
     if not chat_run_manager.start_run(thread_id, driver):
         raise HTTPException(status.HTTP_409_CONFLICT, "A run is already active")
     return {"approved": True}
+
+
+@router.post("/{thread_id}/goal/interject", status_code=status.HTTP_200_OK)
+async def interject_goal(
+    thread_id: str, request: Request, session: AsyncSession = Depends(get_session)
+) -> dict[str, bool]:
+    """Steer a running goal: buffer a user message for the loop's next turn.
+
+    The autonomous run streams as one long lifecycle, so a new message can't ride
+    the normal ``POST /chat`` path (that would 409 on the active run). Instead we
+    persist the message to the transcript and buffer it; ``_run_goal_execution``
+    weaves any buffered messages into the next turn's seed at the turn boundary.
+    """
+    thread = await session.get(Thread, thread_id)
+    if thread is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
+    if thread.mode != ThreadMode.goal:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Not a goal thread")
+    if not chat_run_manager.is_running(thread_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "No active goal run to steer")
+
+    text = ""
+    with contextlib.suppress(Exception):
+        body = await request.json()
+        if isinstance(body, dict):
+            text = str(body.get("content") or body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Message text is required")
+
+    # Persist so the interjection survives reconnect and lands in the transcript
+    # (the optimistic bubble the sender rendered is reconciled on reload).
+    session.add(Message(thread_id=thread_id, role="user", content=text))
+    await session.commit()
+    queue_interjection(thread_id, text)
+    return {"queued": True}

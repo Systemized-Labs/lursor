@@ -81,6 +81,9 @@ export interface ChatComposerProps {
   availableModes?: ChatMode[]
   /** Lock the dropdown to the current mode (e.g. an open goal/plan thread). */
   modeLocked?: boolean
+  /** Render without the standalone card chrome (border/fill/outer padding) so
+   *  the composer blends into a surrounding panel (e.g. the goal control deck). */
+  embedded?: boolean
 }
 
 /** Message composer: a growing textarea inside a rounded card, with send/stop,
@@ -107,6 +110,7 @@ export function ChatComposer({
   onModeChange,
   availableModes,
   modeLocked = false,
+  embedded = false,
 }: ChatComposerProps) {
   const canAttach = !!onAttachmentsChange && !disabled
   const hasContent = !!input.trim() || attachments.length > 0
@@ -197,8 +201,8 @@ export function ChatComposer({
   }
 
   return (
-    <div className="px-4 pb-4 pt-2 flex-shrink-0">
-      <div className="relative mx-auto w-full max-w-3xl">
+    <div className={cn(!embedded && "px-4 pb-4 pt-2 flex-shrink-0")}>
+      <div className={cn("relative w-full", !embedded && "mx-auto max-w-3xl")}>
         <MentionMenu
           open={mentions.open}
           rows={mentions.rows}
@@ -220,10 +224,14 @@ export function ChatComposer({
           className={cn(
             // One flat fill for the whole input (matches the app's other inputs
             // and the toolbar controls) — no focus-driven colour shift.
-            "rounded-2xl border border-border/60 bg-muted/60 px-2.5 py-2",
-            "transition-[border-color,box-shadow] duration-200",
-            "focus-within:border-ring/40 focus-within:shadow-sm focus-within:ring-2 focus-within:ring-ring/10",
-            isDragging && "border-ring/50 ring-2 ring-ring/20",
+            embedded
+              ? "px-3.5 py-3"
+              : cn(
+                  "rounded-2xl border border-border/60 bg-muted/60 px-2.5 py-2",
+                  "transition-[border-color,box-shadow] duration-200",
+                  "focus-within:border-ring/40 focus-within:shadow-sm focus-within:ring-2 focus-within:ring-ring/10",
+                  isDragging && "border-ring/50 ring-2 ring-ring/20"
+                ),
             disabled && "opacity-60"
           )}
         >

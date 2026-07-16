@@ -143,6 +143,9 @@ export interface UseChat {
   /** Start a goal: lazily creates a goal thread (via the same path as `send`,
    *  avoiding the load/clobber race) and sends the objective as the first turn. */
   startGoal: (objective: string, config: GoalThreadConfig) => Promise<void>
+  /** Steer a running goal: buffer a message for the loop's next turn (does not
+   *  start a new run). Optimistically shows the user's message in the thread. */
+  interject: (text: string) => Promise<void>
   /** Attach to the open thread's in-flight run (used after approving a plan,
    *  when the backend starts a fresh execution run to follow). */
   followRun: () => void
@@ -188,6 +191,12 @@ export function useChat(options: UseChatOptions): UseChat {
   // so `loadConversation` can bail before it opens a second consumer for the same
   // run (see the guard in `loadConversation`).
   const sendingThreadRef = useRef<string | null>(null)
+  // Thread currently being (or already) opened by `loadConversation`. Set
+  // synchronously so a duplicate open of the same thread — e.g. StrictMode
+  // double-invoking the URL effect, or a re-render firing it again — bails
+  // instead of wiping the loaded messages ([]) and reloading, which yanks the
+  // view off the bottom mid-stream.
+  const loadedThreadRef = useRef<string | null>(null)
 
   // Latest values for use inside stable callbacks without re-binding them.
   const optionsRef = useRef(options)
@@ -340,6 +349,10 @@ export function useChat(options: UseChatOptions): UseChat {
       // URL (via useSyncExternalStore) a render before `selectedThreadId` catches
       // up, so the URL effect's `cParam !== selectedThreadId` guard slips through.
       if (threadId === sendingThreadRef.current) return
+      // Already opened (or opening) this exact thread: a duplicate call would
+      // wipe the loaded messages and reload, detaching the view mid-stream.
+      if (threadId === loadedThreadRef.current) return
+      loadedThreadRef.current = threadId
       abortLocalStreams()
       const seq = ++loadSeq.current
       setSelectedThreadId(threadId)
@@ -382,6 +395,7 @@ export function useChat(options: UseChatOptions): UseChat {
     currentAssistantId.current = null
     // Abandoned any in-flight send; re-opening that thread should reconnect, not bail.
     sendingThreadRef.current = null
+    loadedThreadRef.current = null
     setSelectedThreadId(null)
     setMessages([])
     setTodos([])
@@ -583,6 +597,29 @@ export function useChat(options: UseChatOptions): UseChat {
     [performSend]
   )
 
+  // Steer a running goal without opening a second run: POST the message to the
+  // interject endpoint (the backend buffers it into the loop's next turn) and
+  // optimistically append it to the thread so the user sees it land immediately.
+  const interject = useCallback(async (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const threadId = selectedThreadIdRef.current
+    if (!threadId) return
+    const outgoing = expandMentionTokens(trimmed)
+    const userMessage: ChatMessage = {
+      id: randomUUID(),
+      role: "user",
+      content: outgoing,
+      toolCalls: [],
+    }
+    setMessages((prev) => [...prev, userMessage])
+    try {
+      await threadsApi.interjectGoal(threadId, outgoing)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send message")
+    }
+  }, [])
+
   // Resume a paused queue: fire it now (the rest auto-drain as each run settles).
   const resumeQueue = useCallback(() => {
     pausedRef.current = false
@@ -625,6 +662,7 @@ export function useChat(options: UseChatOptions): UseChat {
     queuePaused,
     send,
     startGoal,
+    interject,
     followRun,
     stop,
     removeQueued,

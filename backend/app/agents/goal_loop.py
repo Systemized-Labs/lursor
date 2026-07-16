@@ -96,6 +96,42 @@ AUTONOMOUS_KICKOFF = (
     "codes, test results, file state) as you go so completion can be verified."
 )
 
+# Mid-run steering: messages the user sends while the autonomous loop is running.
+# Buffered per thread and drained into the *next* turn's seed, so a course
+# correction is folded in at a turn boundary rather than interrupting the turn in
+# flight. In-process module state, mirroring how a run's transient state lives on
+# the (single) server process — a restart drops any un-drained interjections.
+_goal_interjections: dict[str, list[str]] = {}
+
+
+def queue_interjection(thread_id: str, text: str) -> None:
+    """Buffer a user message to weave into the goal loop's next turn."""
+    text = text.strip()
+    if not text:
+        return
+    _goal_interjections.setdefault(thread_id, []).append(text)
+
+
+def drain_interjections(thread_id: str) -> list[str]:
+    """Take and clear the buffered interjections for a thread."""
+    return _goal_interjections.pop(thread_id, [])
+
+
+def weave_interjections(seed: str, pending: list[str]) -> str:
+    """Prepend buffered user messages to a turn seed as mid-run steering.
+
+    The user's message leads (so it's prominent) and the continue directive
+    follows, keeping the goal/anti-drift guidance in context.
+    """
+    if not pending:
+        return seed
+    joined = "\n\n".join(pending)
+    return (
+        "## New message from the user (sent while you were working)\n"
+        "Take this into account before continuing — it may change priorities or "
+        f"add constraints:\n{joined}\n\n{seed}"
+    )
+
 
 def messages_to_history(rows) -> list[ModelMessage]:
     """Convert persisted thread messages into pydantic-ai history.

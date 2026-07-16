@@ -1,5 +1,12 @@
-import { Robot, NotePencil, GameController, X } from "@phosphor-icons/react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Robot, NotePencil } from "@phosphor-icons/react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useLocation, useParams, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -27,8 +34,12 @@ import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
 import { ChatModeSelect } from "@/components/chat/ChatModeSelect"
 import { ChatTodoList } from "@/components/chat/ChatTodoList"
-import { GoalBanner, GoalSetup, type GoalDraft } from "@/components/chat/GoalPanel"
-import { DinoRunner } from "@/components/chat/minigames/DinoRunner"
+import {
+  GoalBanner,
+  GoalRunPanel,
+  GoalSetup,
+  type GoalDraft,
+} from "@/components/chat/GoalPanel"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
@@ -282,7 +293,7 @@ export function WorkspaceChatPage() {
     setDraft("")
     setAttachments([])
     // Sending re-pins to the bottom so the user sees their turn and its reply.
-    isUserScrolledUpRef.current = false
+    stickToBottomRef.current = true
     setIsAtBottom(true)
     setHasNewBelow(false)
     // Composer sends are ask/edit turns. `plan` on a fresh conversation goes
@@ -299,92 +310,109 @@ export function WorkspaceChatPage() {
     }
   }
 
+  // Steer a goal that's already executing: the message is buffered into the
+  // loop's next turn rather than starting a new run.
+  async function handleInterject() {
+    const text = draft.trim()
+    if (!text) return
+    setDraft("")
+    stickToBottomRef.current = true
+    setIsAtBottom(true)
+    setHasNewBelow(false)
+    await chat.interject(text)
+  }
+
+  function handleInterjectKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      void handleInterject()
+    }
+  }
+
   // --- auto-scroll plumbing --------------------------------------------------
   // The timeline follows new content by default. Once the user scrolls away
   // from the bottom they "detach": auto-scroll pauses and a floating button
   // offers to re-pin ("reattach"). Content streaming in while detached lights
   // the button up as "New messages".
   const containerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
-  const isUserScrolledUpRef = useRef(false)
+  // Whether the timeline should keep following new content. Flipped off only
+  // when the user scrolls away from the bottom, and back on when they return.
+  const stickToBottomRef = useRef(true)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [hasNewBelow, setHasNewBelow] = useState(false)
 
-  // We drive the scroll position ourselves (auto-follow + reattach). The scroll
-  // listener below can't natively tell our programmatic scrolls apart from the
-  // user grabbing the scrollbar, so a smooth animation's intermediate frames —
-  // which momentarily sit far from the bottom — would be misread as the user
-  // detaching. Suppress detection while a programmatic scroll is in flight.
-  const programmaticScrollRef = useRef(false)
-  const programmaticTimerRef = useRef<number | null>(null)
-  const scrollToEnd = useCallback((behavior: ScrollBehavior) => {
-    // "smooth" animates over a few hundred ms and fires scroll events the whole
-    // way; hold the guard long enough to cover it. "instant" snaps in one frame.
-    programmaticScrollRef.current = true
-    if (programmaticTimerRef.current !== null) {
-      window.clearTimeout(programmaticTimerRef.current)
-    }
-    programmaticTimerRef.current = window.setTimeout(
-      () => {
-        programmaticScrollRef.current = false
-        programmaticTimerRef.current = null
-      },
-      behavior === "smooth" ? 600 : 100
-    )
-    endRef.current?.scrollIntoView({ behavior })
-  }, [])
+  // Distance from the bottom (px) still treated as "pinned". A little slack
+  // absorbs sub-pixel rounding and the last token's growth.
+  const BOTTOM_THRESHOLD = 120
 
-  // Track whether the user has scrolled away from the bottom.
+  // The scroll container/content only exist once at least one message renders.
+  const hasMessages = chat.messages.length > 0
+
+  // Re-arm auto-follow when opening a conversation. Runs before the (async)
+  // history load, so the observer below finds `stick` already true and pins the
+  // freshly-loaded turns to the bottom.
+  useEffect(() => {
+    stickToBottomRef.current = true
+    setIsAtBottom(true)
+    setHasNewBelow(false)
+  }, [selectedThreadId])
+
+  // Detach detection — the only thing that turns auto-follow off. Detach only
+  // when the scroll moves *up*: we never scroll up ourselves, so an upward move
+  // can only be the user. This matters during a flood — content grows every
+  // frame while scrollTop still holds last frame's pinned value, and the scroll
+  // event fires before the ResizeObserver re-pins (per the HTML rendering-steps
+  // order), so a plain distance check would read a huge gap and wrongly detach.
+  const lastScrollTopRef = useRef(0)
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const onScroll = () => {
-      // Ignore scroll events we caused ourselves; only genuine user scrolls
-      // should detach the timeline from the bottom.
-      if (programmaticScrollRef.current) return
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      const scrolledUp = distFromBottom > 150
-      isUserScrolledUpRef.current = scrolledUp
-      setIsAtBottom(!scrolledUp)
-      if (!scrolledUp) setHasNewBelow(false)
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      const movedUp = el.scrollTop < lastScrollTopRef.current - 1
+      lastScrollTopRef.current = el.scrollTop
+      if (dist <= BOTTOM_THRESHOLD) {
+        stickToBottomRef.current = true
+        setIsAtBottom(true)
+        setHasNewBelow(false)
+      } else if (movedUp) {
+        stickToBottomRef.current = false
+        setIsAtBottom(false)
+      }
     }
     el.addEventListener("scroll", onScroll, { passive: true })
     return () => el.removeEventListener("scroll", onScroll)
-    // Re-bind once messages first render (the container may be empty initially).
-  }, [chat.messages.length > 0])
+  }, [hasMessages])
 
-  // Auto-scroll to bottom unless the user has detached.
-  const prevMessageCountRef = useRef(0)
-  useEffect(() => {
-    const prevCount = prevMessageCountRef.current
-    prevMessageCountRef.current = chat.messages.length
-    if (prevCount === 0 && chat.messages.length > 0) {
-      // First render of a conversation: jump straight to the latest turn.
-      scrollToEnd("instant")
-      isUserScrolledUpRef.current = false
-      setIsAtBottom(true)
-      setHasNewBelow(false)
-      return
-    }
-    if (!isUserScrolledUpRef.current) {
-      // Follow streaming content with an instant snap, not a smooth animation:
-      // tokens arrive faster than a smooth scroll can complete, so it would
-      // perpetually lag the growing content and read as "scrolled up".
-      scrollToEnd("instant")
-    } else {
-      // Content arrived while the user is reading older messages — flag it on
-      // the "jump to latest" button.
-      setHasNewBelow(true)
-    }
-  }, [chat.messages, scrollToEnd])
+  // Auto-follow — the only thing that pins to the bottom. The initial pin runs
+  // here (useLayoutEffect, before paint) so freshly-loaded history never flashes
+  // scrolled-up. A ResizeObserver then keeps it pinned through every later height
+  // change: each streamed token, tool blocks mounting, code highlighting
+  // settling, or a banner resizing the list.
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    const el = containerRef.current
+    if (!content || !el) return
+    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight
+    const observer = new ResizeObserver(() => {
+      if (stickToBottomRef.current) el.scrollTop = el.scrollHeight
+      else setHasNewBelow(true)
+    })
+    observer.observe(content) // scrollHeight grows as messages stream in
+    observer.observe(el) // clientHeight shrinks when a banner appears below
+    return () => observer.disconnect()
+  }, [hasMessages])
 
-  // Re-pin to the bottom and resume auto-scroll (the "reattach" action).
+  // Re-pin to the bottom and resume auto-follow (the "reattach" action).
   const scrollToBottom = useCallback(() => {
-    isUserScrolledUpRef.current = false
+    const el = containerRef.current
+    stickToBottomRef.current = true
     setIsAtBottom(true)
     setHasNewBelow(false)
-    scrollToEnd("smooth")
-  }, [scrollToEnd])
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+  }, [])
 
   const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
@@ -563,8 +591,9 @@ export function WorkspaceChatPage() {
         messages={chat.messages}
         endRef={endRef}
         containerRef={containerRef}
+        contentRef={contentRef}
         resetKey={selectedThreadId ?? undefined}
-        className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6"
+        className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 [overflow-anchor:none] sm:px-6"
         renderIcons
         showScrollToBottom={!isAtBottom}
         hasNewMessages={hasNewBelow}
@@ -590,7 +619,9 @@ export function WorkspaceChatPage() {
         }
       />
 
-      {goalView && (
+      {/* Goal status + tasks live in the run deck while executing (below);
+          otherwise (planning/review/terminal) show them as their own cards. */}
+      {goalView && !goalExecuting && (
         <div className="mx-auto w-full max-w-3xl px-4 pb-1 sm:px-6">
           <GoalBanner
             status={goalView.status}
@@ -605,7 +636,7 @@ export function WorkspaceChatPage() {
         </div>
       )}
 
-      {chat.todos.length > 0 && (
+      {chat.todos.length > 0 && !goalExecuting && (
         <div className="mx-auto w-full max-w-3xl px-4 pb-1 sm:px-6">
           <ChatTodoList todos={chat.todos} />
         </div>
@@ -614,40 +645,6 @@ export function WorkspaceChatPage() {
       {chat.error ? (
         <p className="px-4 pb-1 text-sm text-destructive">{chat.error}</p>
       ) : null}
-
-      {isGoalThread && goalExecuting && (
-        // A little play area to pass the time while the goal runs — hidden by
-        // default, expanded on demand so it doesn't dominate the view.
-        <div className="mx-auto w-full max-w-3xl px-4 pb-1 sm:px-6">
-          {gameOpen ? (
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">
-                  Dino runner
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setGameOpen(false)}
-                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Hide
-                </button>
-              </div>
-              <DinoRunner className="h-32" />
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setGameOpen(true)}
-              className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/30 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <GameController className="h-3.5 w-3.5" />
-              Play a game while you wait
-            </button>
-          )}
-        </div>
-      )}
 
       {showGoalSetup ? (
         // Plan selected: collect the objective. The mode dropdown sits above the
@@ -670,12 +667,34 @@ export function WorkspaceChatPage() {
           />
         </div>
       ) : isGoalThread && goalExecuting ? (
-        // Autonomous execution is running: offer Stop, not the composer.
-        <div className="flex items-center justify-center px-4 pb-4 pt-1 sm:px-6">
-          <Button variant="outline" size="sm" onClick={chat.stop}>
-            Stop goal
-          </Button>
-        </div>
+        // Autonomous execution is running: one control deck holding live status,
+        // task progress, the steer input, stop, and the wait-time game. The
+        // embedded composer forces `isSending` false so a message sends
+        // immediately (interjects into the loop's next turn) rather than joining
+        // the send queue; the mode dropdown and attachments are hidden here.
+        <GoalRunPanel
+          objective={goalView?.condition ?? ""}
+          iteration={goalView?.iteration ?? 0}
+          maxIterations={goalView?.maxIterations ?? 0}
+          reason={goalView?.reason ?? ""}
+          todos={chat.todos}
+          gameOpen={gameOpen}
+          onToggleGame={() => setGameOpen((o) => !o)}
+          onStop={chat.stop}
+        >
+          <ChatComposer
+            input={draft}
+            onInputChange={setDraft}
+            onKeyDown={handleInterjectKeyDown}
+            onSend={() => void handleInterject()}
+            onStop={chat.stop}
+            isSending={false}
+            disabled={noAgents}
+            placeholder="Send a message to steer the goal…"
+            mentionSources={mentionSources}
+            embedded
+          />
+        </GoalRunPanel>
       ) : (
         // Plain chat, or goal planning/review — the composer stays available so
         // the user can iterate on the plan before approving. The mode dropdown

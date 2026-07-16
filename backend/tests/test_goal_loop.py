@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from pydantic_deep import GoalEvaluation
 
-from app.agents.goal_loop import drive_goal_loop
+from app.agents.goal_loop import (
+    drain_interjections,
+    drive_goal_loop,
+    queue_interjection,
+    weave_interjections,
+)
 from app.db.models import GoalStatus
 
 
@@ -114,3 +119,62 @@ async def test_on_evaluation_hook_sees_each_turn():
     )
 
     assert observed == [(1, False), (2, False), (3, True)]
+
+
+# --- mid-run interjection -----------------------------------------------------
+
+
+def test_weave_interjections_is_noop_when_empty():
+    assert weave_interjections("SEED", []) == "SEED"
+
+
+def test_weave_interjections_leads_with_user_message():
+    out = weave_interjections("CONTINUE-DIRECTIVE", ["focus on the tests"])
+    # The user's message leads; the continue directive still follows.
+    assert "focus on the tests" in out
+    assert out.index("focus on the tests") < out.index("CONTINUE-DIRECTIVE")
+
+
+def test_queue_and_drain_interjections_fifo_and_clears():
+    tid = "thread-interject-store"
+    queue_interjection(tid, "first")
+    queue_interjection(tid, "   ")  # blank is ignored
+    queue_interjection(tid, "second")
+    assert drain_interjections(tid) == ["first", "second"]
+    # Draining clears the buffer.
+    assert drain_interjections(tid) == []
+
+
+async def test_interjection_folds_into_next_turn_seed():
+    """A message queued during a turn reaches the agent on the following turn.
+
+    Mirrors how ``_run_goal_execution.run_turn`` weaves the buffer into the seed.
+    """
+    tid = "thread-interject-loop"
+    drain_interjections(tid)  # start clean
+    seeds: list[str] = []
+
+    async def run_turn(turn_no: int, seed: str | None) -> list:
+        effective = weave_interjections(seed or "KICKOFF", drain_interjections(tid))
+        seeds.append(effective)
+        if turn_no == 1:
+            queue_interjection(tid, "please also run the linter")
+        return [f"turn-{turn_no}"]
+
+    outcome = await drive_goal_loop(
+        condition="done",
+        max_turns=5,
+        run_turn=run_turn,
+        evaluate=_scripted_evaluator(
+            [
+                GoalEvaluation(met=False, reason="keep going"),
+                GoalEvaluation(met=True, reason="done"),
+            ]
+        ),
+        initial_seed="KICKOFF",
+    )
+
+    assert outcome.status == GoalStatus.completed
+    assert "please also run the linter" not in seeds[0]  # nothing queued yet
+    assert "please also run the linter" in seeds[1]  # folded into turn 2
+    drain_interjections(tid)  # cleanup

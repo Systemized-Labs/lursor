@@ -30,6 +30,9 @@ export const threadsApi = {
   // Release a goal run parked at the plan-approval checkpoint.
   approveGoal: (id: string) =>
     api.post<{ approved: boolean }>(`/threads/${id}/goal/approve`, {}),
+  // Steer a running goal: buffer a user message for the loop's next turn.
+  interjectGoal: (id: string, content: string) =>
+    api.post<{ queued: boolean }>(`/threads/${id}/goal/interject`, { content }),
 }
 
 export const threadKeys = {
