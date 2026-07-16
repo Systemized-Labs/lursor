@@ -203,3 +203,76 @@ async def test_goal_thread_plans_then_executes_on_approval(
     exec_types = await _drain_stream(client, thread["id"])
     _assert_valid_lifecycle(exec_types)
     assert (await client.get(f"/threads/{thread['id']}")).json()["goal_status"] == "completed"
+
+
+async def test_goal_planning_conversation_refines_before_approval(
+    client: AsyncClient, monkeypatch
+):
+    """Messages before approval refine the plan and never execute; only approve does.
+
+    First message → a fresh plan (PLANNING_INSTRUCTION), parked awaiting approval.
+    A second message while awaiting approval is a refinement turn (REFINE_INSTRUCTION)
+    that stays in awaiting_approval — the autonomous loop must not start. Approval
+    is the sole path to execution.
+    """
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
+    )
+
+    # Spy on the run-scoped instructions each planning turn uses, delegating to the
+    # real streamer so the SSE flow is unchanged.
+    from app.api import chat as chat_mod
+
+    real_stream_turn = chat_mod._stream_turn
+    captured: list[str] = []
+
+    async def spy_stream_turn(*args, **kwargs):
+        captured.append(kwargs.get("instructions", ""))
+        return await real_stream_turn(*args, **kwargs)
+
+    monkeypatch.setattr("app.api.chat._stream_turn", spy_stream_turn)
+
+    agent = (await client.post("/agents", json={"name": "Goalie3"})).json()
+    ws = (await client.post("/workspaces", json={"name": "GoalWS3"})).json()
+    thread = (
+        await client.post(
+            "/threads",
+            json={
+                "workspace_id": ws["id"],
+                "agent_id": agent["id"],
+                "mode": "goal",
+                "goal": "refactor the module",
+                "require_plan_approval": True,
+            },
+        )
+    ).json()
+    tid = thread["id"]
+
+    def _input(mid: str, content: str) -> str:
+        return RunAgentInput(
+            thread_id=tid,
+            run_id=mid,
+            state=None,
+            messages=[UserMessage(id=mid, role="user", content=content)],
+            tools=[],
+            context=[],
+            forwarded_props=None,
+        ).model_dump_json(by_alias=True)
+
+    # First message → fresh plan (PLANNING_INSTRUCTION), awaiting approval.
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m1", "refactor it")))
+    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "awaiting_approval"
+    assert "do NOT execute yet" in captured[-1]
+
+    # Second message while awaiting approval → refinement (REFINE_INSTRUCTION),
+    # still parked awaiting approval — no execution.
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m2", "also add tests")))
+    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "awaiting_approval"
+    assert "refining the plan with the user" in captured[-1]
+
+    # Approve → execution runs to completion.
+    approve = await client.post(f"/threads/{tid}/goal/approve")
+    assert approve.status_code == 200, approve.text
+    _assert_valid_lifecycle(await _drain_stream(client, tid))
+    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "completed"

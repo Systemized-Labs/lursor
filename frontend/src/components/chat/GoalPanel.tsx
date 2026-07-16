@@ -220,6 +220,7 @@ export function GoalBanner({
   maxIterations,
   reason,
   approving,
+  planUpdated,
   onApprove,
 }: {
   status: GoalStatus
@@ -228,6 +229,8 @@ export function GoalBanner({
   maxIterations: number
   reason: string
   approving?: boolean
+  /** A refinement turn just rewrote the plan doc — surfaced as a subtle pill. */
+  planUpdated?: boolean
   onApprove: () => void
 }) {
   const meta = statusMeta(status)
@@ -262,6 +265,11 @@ export function GoalBanner({
             {iteration}/{maxIterations}
           </span>
         )}
+        {status === "awaiting_approval" && planUpdated && (
+          <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
+            Plan updated
+          </span>
+        )}
       </div>
 
       {reason && (
@@ -271,7 +279,8 @@ export function GoalBanner({
       {status === "awaiting_approval" && (
         <div className="flex items-center gap-2">
           <p className="flex-1 text-xs text-muted-foreground">
-            Review the plan below, then approve to start the autonomous run.
+            Review the plan below. Chat to refine it, or approve to start the
+            autonomous run.
           </p>
           <Button
             type="button"

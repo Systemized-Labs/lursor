@@ -61,10 +61,24 @@ PLANNING_INSTRUCTION = (
     "your workspace (create it, or overwrite/revise it if it already exists, "
     "using your file tools). Structure it as an ordered checklist of concrete "
     "steps plus any key decisions or assumptions. In your chat reply, briefly "
-    "summarise the plan and invite the user to request changes.\n"
-    "Do NOT start doing the work yet: the user reviews the plan and may ask you "
-    f"to revise it before approving. If the user requests changes, update "
-    f"`{PLAN_DOC}` and summarise what changed."
+    "summarise the plan and invite the user to request changes — you'll refine "
+    "it together before they approve.\n"
+    "Do NOT start doing the work yet: this is a planning conversation. The user "
+    "reviews the plan and may go back and forth with you to revise it before "
+    "approving. Nothing runs until they explicitly approve."
+)
+
+# Run-scoped instructions for a follow-up planning turn: the user is giving
+# feedback on the plan already written to ``PLAN_DOC``. Framed as revising an
+# existing draft (read it first, apply the changes) rather than writing anew.
+REFINE_INSTRUCTION = (
+    "## Goal planning — refining the plan with the user\n"
+    f"The user is giving feedback on the plan you already wrote to `{PLAN_DOC}`. "
+    f"Read the current `{PLAN_DOC}` with your file tools, apply the requested "
+    "changes, and save the updated plan. In your chat reply, briefly say what "
+    "you changed and invite further edits.\n"
+    "Do NOT start doing the work yet: this is still the planning conversation. "
+    "The user may keep refining, and nothing runs until they explicitly approve."
 )
 
 # Seeds the first execution turn once the plan is approved.

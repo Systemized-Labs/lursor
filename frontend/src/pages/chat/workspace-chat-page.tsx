@@ -412,6 +412,37 @@ export function WorkspaceChatPage() {
     }
   }, [goalView?.status, workspaceId, selectedThreadId])
 
+  // Refinement signal: each edge into `awaiting_approval` means a planning turn
+  // just finished. The first is the initial draft; a second+ edge for the same
+  // thread means the plan was revised, so flash a "Plan updated" pill and refresh
+  // the open plan doc. Cleared whenever we leave the review phase.
+  const [planUpdated, setPlanUpdated] = useState(false)
+  const prevGoalStatusRef = useRef<GoalStatus | null>(null)
+  const awaitingCountRef = useRef<{ threadId: string | null; count: number }>({
+    threadId: null,
+    count: 0,
+  })
+  useEffect(() => {
+    const status = goalView?.status ?? null
+    const prev = prevGoalStatusRef.current
+    prevGoalStatusRef.current = status
+    if (status !== "awaiting_approval") {
+      setPlanUpdated(false)
+      return
+    }
+    if (prev === "awaiting_approval") return // not a fresh edge into review
+    if (awaitingCountRef.current.threadId !== selectedThreadId) {
+      awaitingCountRef.current = { threadId: selectedThreadId ?? null, count: 0 }
+    }
+    awaitingCountRef.current.count += 1
+    if (awaitingCountRef.current.count > 1) {
+      setPlanUpdated(true)
+      if (workspaceId) {
+        requestOpenFile({ workspaceId, path: GOAL_PLAN_DOC, name: GOAL_PLAN_DOC })
+      }
+    }
+  }, [goalView?.status, selectedThreadId, workspaceId])
+
   if (workspaceQuery.isLoading) {
     return <p className="p-6 text-sm text-muted-foreground">Loading workspace…</p>
   }
@@ -538,6 +569,7 @@ export function WorkspaceChatPage() {
             maxIterations={goalView.maxIterations}
             reason={goalView.reason}
             approving={approving}
+            planUpdated={planUpdated}
             onApprove={() => void handleApproveGoal()}
           />
         </div>
@@ -627,7 +659,11 @@ export function WorkspaceChatPage() {
           isSending={chat.isStreaming}
           disabled={noAgents}
           placeholder={
-            isGoalThread ? "Refine the plan, then approve to run…" : undefined
+            goalView?.status === "awaiting_approval"
+              ? "Ask for changes to the plan, or approve to run…"
+              : isGoalThread
+                ? "Refine the plan, then approve to run…"
+                : undefined
           }
           attachments={attachments}
           onAttachmentsChange={setAttachments}

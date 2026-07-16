@@ -42,6 +42,7 @@ from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     EXECUTION_KICKOFF,
     PLANNING_INSTRUCTION,
+    REFINE_INSTRUCTION,
     build_continuation_adapter,
     build_goal_evaluator,
     drive_goal_loop,
@@ -686,11 +687,26 @@ async def chat(
         else:
             chat_run_manager.finish(thread_id, "finished")
 
+    # A goal thread parked in `awaiting_approval` and receiving another message is
+    # a *refinement* turn: the user is giving feedback on the plan already written
+    # to GOAL_PLAN.md, so we frame the turn as revising the existing draft. Any
+    # other status (idle/planning, or a terminal goal getting a fresh message)
+    # starts a fresh planning round with the from-scratch instruction. The
+    # request adapter already carries the full frontend transcript (useChat sets
+    # the agent's messages before each run) and any image attachments, so the
+    # planning turn has full conversational context without re-seeding from the DB.
+    planning_instruction = (
+        REFINE_INSTRUCTION
+        if is_goal and thread.goal_status == GoalStatus.awaiting_approval
+        else PLANNING_INSTRUCTION
+    )
+
     async def planning_driver() -> None:
         # Goal planning: one turn that writes/revises the plan doc, then ends in
         # `awaiting_approval` so the thread is free for the user to iterate (send
-        # more messages) or approve. Wrapped in a manual lifecycle so goal-status
-        # events sit safely inside RUN_STARTED…RUN_FINISHED.
+        # more messages to refine) or approve. Nothing executes until approval —
+        # this branch never starts the autonomous loop. Wrapped in a manual
+        # lifecycle so goal-status events sit safely inside RUN_STARTED…RUN_FINISHED.
         run_id = uuid.uuid4().hex
         publish_status = _goal_status_publisher(thread_id, condition, thread.max_iterations)
         _publish_lifecycle_start(thread_id, run_id)
@@ -702,7 +718,7 @@ async def chat(
                 adapter,
                 deps,
                 message_history=None,
-                instructions=_join_instructions(media_instructions, PLANNING_INSTRUCTION),
+                instructions=_join_instructions(media_instructions, planning_instruction),
                 accumulated=accumulated,
                 todos_state=todos_state,
                 strip_lifecycle=True,
@@ -730,6 +746,10 @@ async def chat(
     if not is_goal:
         driver = chat_driver
     elif thread.require_plan_approval:
+        # Planning conversation: every message before approval routes here (first
+        # plan, refinements while awaiting_approval, or a fresh plan after a prior
+        # goal terminated — planning_driver resets the status to `planning`).
+        # Approval is the sole path to execution (POST /goal/approve).
         driver = planning_driver
     else:
         # Fully autonomous (approval off): skip the review pause and execute the
