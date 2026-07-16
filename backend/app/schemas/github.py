@@ -69,3 +69,24 @@ class GitHubCloneInput(BaseModel):
     clone_url: str | None = None
     name: str | None = None
     path: str | None = None
+
+
+class GitHubCloneIntoInput(BaseModel):
+    """Clone a repository into an existing workspace's directory.
+
+    The repo lands in a subfolder of the workspace, named after the repo (or
+    ``folder`` when provided). Provide either ``repo_full_name`` (``owner/name``)
+    or an explicit ``clone_url``.
+    """
+
+    repo_full_name: str | None = None
+    clone_url: str | None = None
+    folder: str | None = None
+
+
+class GitHubCloneIntoResult(BaseModel):
+    """Result of cloning a repository into an existing workspace."""
+
+    workspace_id: str
+    path: str  # absolute path of the cloned subfolder
+    folder: str  # subfolder name relative to the workspace directory

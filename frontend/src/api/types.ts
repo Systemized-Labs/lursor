@@ -400,6 +400,19 @@ export interface GitHubCloneInput {
   path?: string
 }
 
+/** Clone a repo into an existing workspace's directory (as a subfolder). */
+export interface GitHubCloneIntoInput {
+  repo_full_name?: string
+  clone_url?: string
+  folder?: string
+}
+
+export interface GitHubCloneIntoResult {
+  workspace_id: string
+  path: string
+  folder: string
+}
+
 /** OpenRouter API key status (the raw key is never returned). */
 export interface OpenRouterSettings {
   configured: boolean

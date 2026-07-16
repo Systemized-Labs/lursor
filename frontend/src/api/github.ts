@@ -9,6 +9,8 @@ import { api } from "./client"
 import { workspaceKeys } from "./workspaces"
 import type {
   GitHubCloneInput,
+  GitHubCloneIntoInput,
+  GitHubCloneIntoResult,
   GitHubConfig,
   GitHubConfigInput,
   GitHubRepo,
@@ -25,6 +27,11 @@ export const githubApi = {
       signal
     ),
   clone: (input: GitHubCloneInput) => api.post<Workspace>("/github/clone", input),
+  cloneInto: (workspaceId: string, input: GitHubCloneIntoInput) =>
+    api.post<GitHubCloneIntoResult>(
+      `/github/clone-into/${workspaceId}`,
+      input
+    ),
 }
 
 export const githubKeys = {
@@ -89,5 +96,14 @@ export function useCloneRepo() {
   return useMutation({
     mutationFn: (input: GitHubCloneInput) => githubApi.clone(input),
     onSuccess: () => qc.invalidateQueries({ queryKey: workspaceKeys.all }),
+  })
+}
+
+// Cloning into an existing workspace drops the repo into a subfolder; the
+// workspace itself is unchanged, so there's no cache to invalidate.
+export function useCloneRepoInto(workspaceId: string) {
+  return useMutation({
+    mutationFn: (input: GitHubCloneIntoInput) =>
+      githubApi.cloneInto(workspaceId, input),
   })
 }

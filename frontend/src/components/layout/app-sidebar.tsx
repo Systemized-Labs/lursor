@@ -5,6 +5,7 @@ import {
   FolderOpen,
   FolderPlus,
   Gear,
+  GitBranch,
   MagnifyingGlass,
   NotePencil,
   Palette,
@@ -75,6 +76,7 @@ import { Input } from "@/components/ui/input"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ThemePicker } from "@/components/ui/theme-picker"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
+import { CloneIntoWorkspaceDialog } from "@/pages/workspaces/clone-into-workspace-dialog"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { cn } from "@/lib/utils"
 import { isMacElectron } from "@/lib/platform"
@@ -149,6 +151,9 @@ export function AppSidebar() {
   )
   const [renameWsValue, setRenameWsValue] = useState("")
   const [deleteWsTarget, setDeleteWsTarget] = useState<WorkspaceTarget | null>(
+    null
+  )
+  const [cloneWsTarget, setCloneWsTarget] = useState<WorkspaceTarget | null>(
     null
   )
   const [workspaceFormOpen, setWorkspaceFormOpen] = useState(false)
@@ -386,6 +391,9 @@ export function AppSidebar() {
                     onDeleteWorkspace={() =>
                       setDeleteWsTarget({ id: ws.id, name: ws.name })
                     }
+                    onCloneWorkspace={() =>
+                      setCloneWsTarget({ id: ws.id, name: ws.name })
+                    }
                   />
                 ))
               )}
@@ -536,6 +544,16 @@ export function AppSidebar() {
         loading={deleteWorkspace.isPending}
         onConfirm={handleDeleteWorkspace}
       />
+
+      {/* Clone a GitHub repo into the selected workspace's directory */}
+      {cloneWsTarget ? (
+        <CloneIntoWorkspaceDialog
+          open={Boolean(cloneWsTarget)}
+          onOpenChange={(open) => !open && setCloneWsTarget(null)}
+          workspaceId={cloneWsTarget.id}
+          workspaceName={cloneWsTarget.name}
+        />
+      ) : null}
     </Sidebar>
   )
 }
@@ -559,6 +577,7 @@ interface WorkspaceRowProps {
   onDelete: (thread: Thread) => void
   onRenameWorkspace: () => void
   onDeleteWorkspace: () => void
+  onCloneWorkspace: () => void
 }
 
 function WorkspaceRow({
@@ -575,6 +594,7 @@ function WorkspaceRow({
   onDelete,
   onRenameWorkspace,
   onDeleteWorkspace,
+  onCloneWorkspace,
 }: WorkspaceRowProps) {
   return (
     <SidebarMenuItem className="group/workspace relative">
@@ -593,6 +613,10 @@ function WorkspaceRow({
           <ContextMenuItem onSelect={onRenameWorkspace}>
             <Pencil className="size-4" />
             Rename
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onCloneWorkspace}>
+            <GitBranch className="size-4" />
+            Clone GitHub repo…
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"

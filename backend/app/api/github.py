@@ -30,6 +30,8 @@ from app.db.models import GitHubConfig, Workspace
 from app.db.session import get_session
 from app.schemas.github import (
     GitHubCloneInput,
+    GitHubCloneIntoInput,
+    GitHubCloneIntoResult,
     GitHubConfigInput,
     GitHubConfigRead,
     GitHubRepo,
@@ -285,6 +287,63 @@ async def clone_repo(payload: GitHubCloneInput, session: AsyncSession = Depends(
     session.add(ws)
     await session.commit()
     return WorkspaceRead.from_workspace(ws)
+
+
+@router.post(
+    "/clone-into/{workspace_id}",
+    response_model=GitHubCloneIntoResult,
+    status_code=status.HTTP_201_CREATED,
+)
+async def clone_into_workspace(
+    workspace_id: str,
+    payload: GitHubCloneIntoInput,
+    session: AsyncSession = Depends(get_session),
+):
+    """Clone a repository into a subfolder of an existing workspace.
+
+    Unlike ``/clone`` (which creates a new workspace), this leaves the workspace
+    untouched and drops the repo into ``<workspace.path>/<folder>``.
+    """
+    await _require_config(session)
+
+    ws = await session.get(Workspace, workspace_id)
+    if ws is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    if not ws.path or not ws.path.strip():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Workspace has no directory on disk."
+        )
+
+    clone_url = (payload.clone_url or "").strip()
+    full_name = (payload.repo_full_name or "").strip().strip("/")
+    if not clone_url and full_name:
+        clone_url = f"https://{_GITHUB_HOST}/{full_name}.git"
+    if not clone_url:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Provide a repository (repo_full_name or clone_url)."
+        )
+
+    repo_name = _repo_name_from_url(full_name or clone_url)
+    folder_name = (payload.folder or "").strip() or repo_name
+
+    root = Path(ws.path).expanduser()
+    if not root.is_absolute():
+        root = root.resolve()
+    # Land in a not-yet-existing subfolder; git refuses a non-empty target, so
+    # dedup (``repo``, ``repo-2``, …) rather than fail when it already exists.
+    target = unique_workspace_dir(root, folder_name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    rc, _out, err = await _run_git("clone", clone_url, str(target))
+    if rc != 0:
+        detail = _scrub(err) or "unknown error"
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"git clone failed: {detail}")
+
+    return GitHubCloneIntoResult(
+        workspace_id=ws.id,
+        path=str(target),
+        folder=target.name,
+    )
 
 
 def _repo_name_from_url(value: str) -> str:
