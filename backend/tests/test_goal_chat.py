@@ -155,6 +155,58 @@ async def test_goal_thread_runs_to_completion(client: AsyncClient, monkeypatch):
     assert refreshed["last_reason"] == "looks done"
 
 
+async def test_interjection_is_consumed_during_execution(
+    client: AsyncClient, monkeypatch
+):
+    """A buffered interjection is drained by the steer capability while the run
+    executes — proving the ``before_model_request`` hook fires and consumes it,
+    rather than the message sitting untouched until the loop ends."""
+    from app.agents.goal_loop import drain_interjections, queue_interjection
+
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
+    )
+
+    agent = (await client.post("/agents", json={"name": "Steerer"})).json()
+    ws = (await client.post("/workspaces", json={"name": "SteerWS"})).json()
+    thread = (
+        await client.post(
+            "/threads",
+            json={
+                "workspace_id": ws["id"],
+                "agent_id": agent["id"],
+                "mode": "goal",
+                "goal": "make the tests pass",
+                "require_plan_approval": False,
+                "max_iterations": 5,
+            },
+        )
+    ).json()
+    tid = thread["id"]
+
+    # Buffer a steer message before the run; the capability should drain it as the
+    # agent makes its first (and only) model request.
+    queue_interjection(tid, "also update the changelog")
+
+    run_input = RunAgentInput(
+        thread_id=tid,
+        run_id="run-1",
+        state=None,
+        messages=[UserMessage(id="m1", role="user", content="make the tests pass")],
+        tools=[],
+        context=[],
+        forwarded_props=None,
+    )
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, run_input.model_dump_json(by_alias=True))
+    )
+
+    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "completed"
+    # The buffer was consumed during the run (hook fired), not left dangling.
+    assert drain_interjections(tid) == []
+
+
 async def test_goal_thread_plans_then_executes_on_approval(
     client: AsyncClient, monkeypatch
 ):

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from ag_ui.core import CustomEvent, EventType, RunAgentInput, UserMessage
 from pydantic_ai import Agent as PydanticAgent
+from pydantic_ai.capabilities import Hooks
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -31,6 +32,7 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
+from pydantic_ai.tools import RunContext
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 from pydantic_deep import (
     GoalEvaluation,
@@ -97,15 +99,24 @@ AUTONOMOUS_KICKOFF = (
 )
 
 # Mid-run steering: messages the user sends while the autonomous loop is running.
-# Buffered per thread and drained into the *next* turn's seed, so a course
-# correction is folded in at a turn boundary rather than interrupting the turn in
-# flight. In-process module state, mirroring how a run's transient state lives on
-# the (single) server process — a restart drops any un-drained interjections.
+#
+# Buffered per thread, then injected into the live agent run via the steer
+# capability below. Consuming them at the model-request boundary (not just
+# between whole agent runs) is what makes steering feel responsive — it matches
+# how Claude Code / Cursor / Kiro apply a queued message at the next tool/step,
+# rather than waiting for the current agent run to finish (which may never happen
+# if the goal completes first).
+#
+# In-process module state, mirroring how a run's transient state lives on the
+# (single) server process — a restart drops any un-drained interjections. The
+# HTTP handler only ever `list.append`s here; the drain runs on the agent's own
+# event loop between graph nodes, so the two don't race (see pydantic-ai's
+# `RunContext.enqueue` docs).
 _goal_interjections: dict[str, list[str]] = {}
 
 
 def queue_interjection(thread_id: str, text: str) -> None:
-    """Buffer a user message to weave into the goal loop's next turn."""
+    """Buffer a user message to steer the thread's running goal loop."""
     text = text.strip()
     if not text:
         return
@@ -117,20 +128,30 @@ def drain_interjections(thread_id: str) -> list[str]:
     return _goal_interjections.pop(thread_id, [])
 
 
-def weave_interjections(seed: str, pending: list[str]) -> str:
-    """Prepend buffered user messages to a turn seed as mid-run steering.
+async def _enqueue_interjections(ctx: RunContext, thread_id: str) -> None:
+    """Fold any buffered interjections for `thread_id` into the live run.
 
-    The user's message leads (so it's prominent) and the continue directive
-    follows, keeping the goal/anti-drift guidance in context.
+    ``ctx.enqueue(..., priority='asap')`` delivers each message at the next model
+    request — or, if the agent was about to finish, as a redirect — so a steer
+    always lands even near the end of a run.
     """
-    if not pending:
-        return seed
-    joined = "\n\n".join(pending)
-    return (
-        "## New message from the user (sent while you were working)\n"
-        "Take this into account before continuing — it may change priorities or "
-        f"add constraints:\n{joined}\n\n{seed}"
-    )
+    for text in drain_interjections(thread_id):
+        ctx.enqueue(text, priority="asap")
+
+
+def build_steer_capability(thread_id: str) -> Hooks:
+    """A per-run capability that injects queued user interjections mid-run.
+
+    Fires before each model request (a drain boundary for ``enqueue``), so
+    messages the user sends while the loop is executing reach the model at the
+    next step instead of waiting for the whole agent run to end.
+    """
+
+    async def before_model_request(ctx: RunContext, request_context):
+        await _enqueue_interjections(ctx, thread_id)
+        return request_context
+
+    return Hooks(before_model_request=before_model_request)
 
 
 def messages_to_history(rows) -> list[ModelMessage]:

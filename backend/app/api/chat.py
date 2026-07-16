@@ -18,7 +18,7 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 
 from ag_ui.core import (
@@ -29,6 +29,7 @@ from ag_ui.core import (
     RunStartedEvent,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 from pydantic_ai.usage import UsageLimits
@@ -45,12 +46,11 @@ from app.agents.goal_loop import (
     REFINE_INSTRUCTION,
     build_continuation_adapter,
     build_goal_evaluator,
-    drain_interjections,
+    build_steer_capability,
     drive_goal_loop,
     encode_goal_status_event,
     messages_to_history,
     queue_interjection,
-    weave_interjections,
 )
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
@@ -330,6 +330,7 @@ async def _stream_turn(
     todos_state: dict,
     strip_lifecycle: bool = False,
     kind: str = "chat",
+    capabilities: Sequence[AbstractCapability] | None = None,
 ) -> list[ModelMessage]:
     """Run one agent turn to completion, streaming events + todos to subscribers.
 
@@ -355,6 +356,7 @@ async def _stream_turn(
         on_complete=on_complete,
         instructions=instructions,
         usage_limits=UsageLimits(request_limit=_MAX_TURN_REQUESTS),
+        capabilities=capabilities,
     )
     async for encoded in turn_adapter.encode_stream(
         _tee_events(stream, accumulated, strip_lifecycle=strip_lifecycle)
@@ -489,16 +491,16 @@ async def _run_goal_execution(
         await _set_goal_state(thread_id, status=GoalStatus.running, iteration=0)
         publish_status(GoalStatus.running, 0)
         history = list(initial_history)
+        # Mid-run steering: this capability drains the thread's interjection
+        # buffer before each model request and injects it into the live run, so a
+        # message the user sends while executing reaches the model at the next
+        # step (not just between whole agent runs).
+        steer = build_steer_capability(thread_id)
 
         async def run_turn(turn_no: int, seed: str | None) -> list[ModelMessage]:
             nonlocal history
-            # Fold in any messages the user sent mid-run since the last turn, so a
-            # course correction reaches the agent at this turn boundary.
-            effective_seed = weave_interjections(
-                seed or kickoff, drain_interjections(thread_id)
-            )
             turn_adapter = build_continuation_adapter(
-                agent, effective_seed, thread_id, accept
+                agent, seed or kickoff, thread_id, accept
             )
             history = await _stream_turn(
                 thread_id,
@@ -510,6 +512,7 @@ async def _run_goal_execution(
                 todos_state=todos_state,
                 strip_lifecycle=True,
                 kind="goal",
+                capabilities=[steer],
             )
             return history
 

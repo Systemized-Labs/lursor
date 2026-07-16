@@ -13,8 +13,8 @@ import {
 } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { MentionMenu } from "@/components/chat/mentions/MentionMenu"
@@ -38,7 +38,7 @@ export interface GoalDraft {
 const DEFAULT_DRAFT: GoalDraft = {
   goal: "",
   successCriteria: "",
-  maxIterations: 25,
+  maxIterations: 10,
   requirePlanApproval: true,
 }
 
@@ -160,29 +160,26 @@ export function GoalSetup({
         />
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="flex items-center gap-2">
-          <Label
-            htmlFor="goal-max"
-            className="text-xs text-muted-foreground"
-          >
+          <Label htmlFor="goal-max" className="shrink-0 text-xs text-muted-foreground">
             Max iterations
           </Label>
-          <Input
+          <Slider
             id="goal-max"
-            type="number"
             min={1}
-            max={100}
+            max={25}
+            step={1}
             value={draft.maxIterations}
             onChange={(e) =>
-              setDraft((d) => ({
-                ...d,
-                maxIterations: Math.max(1, Number(e.target.value) || 1),
-              }))
+              setDraft((d) => ({ ...d, maxIterations: Number(e.target.value) }))
             }
             disabled={disabled}
-            className="h-8 w-20 text-sm"
+            className="w-28"
           />
+          <span className="w-6 shrink-0 text-right text-xs font-medium tabular-nums text-foreground">
+            {draft.maxIterations}
+          </span>
         </div>
 
         <div className="flex items-center gap-2">

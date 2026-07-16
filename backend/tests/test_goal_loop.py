@@ -10,10 +10,10 @@ from __future__ import annotations
 from pydantic_deep import GoalEvaluation
 
 from app.agents.goal_loop import (
+    _enqueue_interjections,
     drain_interjections,
     drive_goal_loop,
     queue_interjection,
-    weave_interjections,
 )
 from app.db.models import GoalStatus
 
@@ -124,17 +124,6 @@ async def test_on_evaluation_hook_sees_each_turn():
 # --- mid-run interjection -----------------------------------------------------
 
 
-def test_weave_interjections_is_noop_when_empty():
-    assert weave_interjections("SEED", []) == "SEED"
-
-
-def test_weave_interjections_leads_with_user_message():
-    out = weave_interjections("CONTINUE-DIRECTIVE", ["focus on the tests"])
-    # The user's message leads; the continue directive still follows.
-    assert "focus on the tests" in out
-    assert out.index("focus on the tests") < out.index("CONTINUE-DIRECTIVE")
-
-
 def test_queue_and_drain_interjections_fifo_and_clears():
     tid = "thread-interject-store"
     queue_interjection(tid, "first")
@@ -145,36 +134,36 @@ def test_queue_and_drain_interjections_fifo_and_clears():
     assert drain_interjections(tid) == []
 
 
-async def test_interjection_folds_into_next_turn_seed():
-    """A message queued during a turn reaches the agent on the following turn.
+class _FakeRunContext:
+    """Records ``enqueue`` calls the way pydantic-ai's RunContext would receive them."""
 
-    Mirrors how ``_run_goal_execution.run_turn`` weaves the buffer into the seed.
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[tuple, str]] = []
+
+    def enqueue(self, *content, priority: str = "asap") -> None:
+        self.enqueued.append((content, priority))
+
+
+async def test_enqueue_interjections_injects_asap_and_drains():
+    """Buffered interjections are enqueued into the live run and the buffer cleared.
+
+    This is what the steer capability's ``before_model_request`` hook does each
+    model request — the fine-grained boundary that makes steering land promptly
+    instead of waiting for a whole agent run to finish.
     """
-    tid = "thread-interject-loop"
+    tid = "thread-interject-enqueue"
     drain_interjections(tid)  # start clean
-    seeds: list[str] = []
+    queue_interjection(tid, "focus on the tests")
+    queue_interjection(tid, "skip the docs")
 
-    async def run_turn(turn_no: int, seed: str | None) -> list:
-        effective = weave_interjections(seed or "KICKOFF", drain_interjections(tid))
-        seeds.append(effective)
-        if turn_no == 1:
-            queue_interjection(tid, "please also run the linter")
-        return [f"turn-{turn_no}"]
+    ctx = _FakeRunContext()
+    await _enqueue_interjections(ctx, tid)
 
-    outcome = await drive_goal_loop(
-        condition="done",
-        max_turns=5,
-        run_turn=run_turn,
-        evaluate=_scripted_evaluator(
-            [
-                GoalEvaluation(met=False, reason="keep going"),
-                GoalEvaluation(met=True, reason="done"),
-            ]
-        ),
-        initial_seed="KICKOFF",
-    )
-
-    assert outcome.status == GoalStatus.completed
-    assert "please also run the linter" not in seeds[0]  # nothing queued yet
-    assert "please also run the linter" in seeds[1]  # folded into turn 2
-    drain_interjections(tid)  # cleanup
+    assert ctx.enqueued == [
+        (("focus on the tests",), "asap"),
+        (("skip the docs",), "asap"),
+    ]
+    # Drained — a second pass injects nothing (no double-injection).
+    ctx2 = _FakeRunContext()
+    await _enqueue_interjections(ctx2, tid)
+    assert ctx2.enqueued == []

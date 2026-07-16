@@ -238,11 +238,9 @@ While a goal is executing, the composer is back (previously replaced by a bare
 "Stop goal" button) so the user can steer the run without stopping it.
 
 - **Backend buffer** — `goal_loop.py` adds a per-thread interjection store
-  (`queue_interjection` / `drain_interjections`) and `weave_interjections(seed,
-  pending)`, which leads the next turn's seed with the user's message followed by
-  the continue directive. `_run_goal_execution.run_turn` drains + weaves at each
-  turn boundary, so a message folds into the *next* turn (it doesn't interrupt the
-  turn in flight).
+  (`queue_interjection` / `drain_interjections`). Consumption is at the
+  **model-request boundary** (see the correction below), not the goal-loop turn
+  boundary.
 - **Endpoint** — `POST /threads/{id}/goal/interject` (`chat.py`): validates a goal
   thread with a live run, persists the message to the transcript, and buffers it.
   Can't reuse `POST /chat` because the autonomous run streams as one lifecycle and
@@ -252,6 +250,28 @@ While a goal is executing, the composer is back (previously replaced by a bare
   steer it" + **Stop goal** bar above it. The composer renders with
   `isSending={false}` so a message sends immediately (interjects) instead of
   joining the send queue; mode dropdown/attachments are hidden in this mode.
-- **Tests** — `test_goal_loop.py` covers the weave/store and that an interjection
-  queued during turn 1 lands in turn 2's seed; `test_goal_chat.py` covers the
-  endpoint guards (non-goal / no active run / unknown thread).
+- **Tests** — `test_goal_loop.py` covers the store + `_enqueue_interjections`;
+  `test_goal_chat.py` covers the endpoint guards (non-goal / no active run /
+  unknown thread) and that a buffered interjection is consumed during execution.
+
+### Correction: inject at the model-request boundary, not the run boundary
+
+The first cut drained the buffer only in `_run_goal_execution.run_turn` and wove
+it into the next turn's *seed*. But a goal-loop "turn" is a whole
+`run_stream` (up to `_MAX_TURN_REQUESTS = 150` model requests), so a steer message
+waited for the entire agent run to finish — and never landed if the goal
+completed in one run. This is the bug that made the injector feel broken.
+
+Research into how other tools do it (Claude Code, Cursor 1.4, Kiro, OpenHands)
+converged on one pattern: **queue the message and inject it at the next
+model-request / tool-call boundary**, not at a coarse task boundary. pydantic-ai
+2.8.0 ships the exact primitive: `RunContext.enqueue(text, priority='asap')`,
+which delivers at the next model request (or as a redirect if the agent was about
+to finish). Its drain runs between graph nodes and is safe against a plain
+`list.append` from the HTTP handler's loop — our exact pattern.
+
+The fix (`build_steer_capability`): a per-run `Hooks(before_model_request=…)`
+capability, passed to `_stream_turn` → `run_stream(capabilities=[steer])` for goal
+execution turns. Before each model request it drains the thread's buffer and calls
+`ctx.enqueue(text)`. No rewrite to `agent.iter()` was needed. `weave_interjections`
+and the seed-weaving path were removed.
