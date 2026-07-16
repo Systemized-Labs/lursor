@@ -310,11 +310,38 @@ export function WorkspaceChatPage() {
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [hasNewBelow, setHasNewBelow] = useState(false)
 
+  // We drive the scroll position ourselves (auto-follow + reattach). The scroll
+  // listener below can't natively tell our programmatic scrolls apart from the
+  // user grabbing the scrollbar, so a smooth animation's intermediate frames —
+  // which momentarily sit far from the bottom — would be misread as the user
+  // detaching. Suppress detection while a programmatic scroll is in flight.
+  const programmaticScrollRef = useRef(false)
+  const programmaticTimerRef = useRef<number | null>(null)
+  const scrollToEnd = useCallback((behavior: ScrollBehavior) => {
+    // "smooth" animates over a few hundred ms and fires scroll events the whole
+    // way; hold the guard long enough to cover it. "instant" snaps in one frame.
+    programmaticScrollRef.current = true
+    if (programmaticTimerRef.current !== null) {
+      window.clearTimeout(programmaticTimerRef.current)
+    }
+    programmaticTimerRef.current = window.setTimeout(
+      () => {
+        programmaticScrollRef.current = false
+        programmaticTimerRef.current = null
+      },
+      behavior === "smooth" ? 600 : 100
+    )
+    endRef.current?.scrollIntoView({ behavior })
+  }, [])
+
   // Track whether the user has scrolled away from the bottom.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const onScroll = () => {
+      // Ignore scroll events we caused ourselves; only genuine user scrolls
+      // should detach the timeline from the bottom.
+      if (programmaticScrollRef.current) return
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
       const scrolledUp = distFromBottom > 150
       isUserScrolledUpRef.current = scrolledUp
@@ -333,28 +360,31 @@ export function WorkspaceChatPage() {
     prevMessageCountRef.current = chat.messages.length
     if (prevCount === 0 && chat.messages.length > 0) {
       // First render of a conversation: jump straight to the latest turn.
-      endRef.current?.scrollIntoView({ behavior: "instant" })
+      scrollToEnd("instant")
       isUserScrolledUpRef.current = false
       setIsAtBottom(true)
       setHasNewBelow(false)
       return
     }
     if (!isUserScrolledUpRef.current) {
-      endRef.current?.scrollIntoView({ behavior: "smooth" })
+      // Follow streaming content with an instant snap, not a smooth animation:
+      // tokens arrive faster than a smooth scroll can complete, so it would
+      // perpetually lag the growing content and read as "scrolled up".
+      scrollToEnd("instant")
     } else {
       // Content arrived while the user is reading older messages — flag it on
       // the "jump to latest" button.
       setHasNewBelow(true)
     }
-  }, [chat.messages])
+  }, [chat.messages, scrollToEnd])
 
   // Re-pin to the bottom and resume auto-scroll (the "reattach" action).
   const scrollToBottom = useCallback(() => {
     isUserScrolledUpRef.current = false
     setIsAtBottom(true)
     setHasNewBelow(false)
-    endRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [])
+    scrollToEnd("smooth")
+  }, [scrollToEnd])
 
   const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
