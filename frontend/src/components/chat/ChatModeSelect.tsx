@@ -17,7 +17,7 @@ export interface ChatModeSelectProps {
   disabled?: boolean
 }
 
-/** The Ask / Edit / Plan mode dropdown shown below the chat input. */
+/** The Ask / Edit / Goal mode dropdown shown below the chat input. */
 export function ChatModeSelect({
   mode,
   onModeChange,

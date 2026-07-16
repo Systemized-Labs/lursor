@@ -251,10 +251,10 @@ export interface ThreadMessage {
 export type ThreadMode = "chat" | "goal"
 
 /** The mode selected in the composer dropdown. `ask`/`edit` are per-turn
- *  modifiers on a chat thread; `plan` starts a goal thread (see `ThreadMode`). */
-export type ChatMode = "ask" | "edit" | "plan"
+ *  modifiers on a chat thread; `goal` starts a goal thread (see `ThreadMode`). */
+export type ChatMode = "ask" | "edit" | "goal"
 
-/** Per-turn modifier sent with a chat message (`plan` is expressed by the
+/** Per-turn modifier sent with a chat message (`goal` is expressed by the
  *  thread being a goal thread, so it is not a TurnMode). */
 export type TurnMode = "ask" | "edit"
 
@@ -456,13 +456,13 @@ export interface WebSearchSettingsInput {
 export interface DefaultAgentsSettings {
   ask: string
   edit: string
-  plan: string
+  goal: string
 }
 
 export interface DefaultAgentsInput {
   ask?: string
   edit?: string
-  plan?: string
+  goal?: string
 }
 
 // --- laios control plane --------------------------------------------------------

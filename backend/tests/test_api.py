@@ -253,8 +253,8 @@ async def test_thread_update_and_run_endpoints(client: AsyncClient):
     # Stopping a thread with no live run is a 404.
     assert (await client.post(f"/threads/{thread['id']}/stop")).status_code == 404
 
-    # A plain chat thread can be promoted to a goal ("plan") thread mid-life so
-    # Plan can be entered at any time (see workspace-chat-page handleStartGoal).
+    # A plain chat thread can be promoted to a goal thread mid-life so
+    # Goal can be entered at any time (see workspace-chat-page handleStartGoal).
     assert thread["mode"] == "chat"
     r = await client.patch(
         f"/threads/{thread['id']}",

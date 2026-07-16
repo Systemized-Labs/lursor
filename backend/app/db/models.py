@@ -351,7 +351,7 @@ class AppConfig(TimestampMixin, table=True):
     goal_evaluator_model: str | None = None
 
     # Default agent per composer chat mode, keyed by mode ("ask" | "edit" |
-    # "plan") → agent id. When a mode has an entry, selecting that mode in the
+    # "goal") → agent id. When a mode has an entry, selecting that mode in the
     # composer switches to (and, for an open thread, reassigns) that agent; the
     # agent brings its own model/tools/instructions. A missing/blank key means
     # "no default — keep the current agent". Kept as a free-form JSON blob so the

@@ -32,7 +32,7 @@ from app.schemas.settings import (
     WebSearchSettingsUpdate,
 )
 
-_CHAT_MODES = ("ask", "edit", "plan")
+_CHAT_MODES = ("ask", "edit", "goal")
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ async def set_web_search(
 
 
 # --- Default agent per chat mode ----------------------------------------------
-# Maps a composer mode ("ask" | "edit" | "plan") to the agent selected when that
+# Maps a composer mode ("ask" | "edit" | "goal") to the agent selected when that
 # mode is chosen. This is a UI convenience: the frontend reads it to pick/switch
 # the agent, and the agent brings its own model/tools. Nothing is resolved at
 # run time here — the selected agent id rides on the thread as usual.
@@ -220,7 +220,7 @@ async def get_default_agents(session: AsyncSession = Depends(get_session)):
     return DefaultAgentsRead(
         ask=stored.get("ask") or "",
         edit=stored.get("edit") or "",
-        plan=stored.get("plan") or "",
+        goal=stored.get("goal") or "",
     )
 
 

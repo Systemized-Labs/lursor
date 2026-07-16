@@ -70,7 +70,7 @@ async def update_thread(
     if payload.title is not None:
         thread.title = payload.title
 
-    # Goal config. Lets a plain chat thread be promoted into a goal ("plan")
+    # Goal config. Lets a plain chat thread be promoted into a goal
     # thread mid-conversation (the next turn then runs the planning driver, see
     # api/chat.py). goal_status stays server-managed and isn't settable here.
     if payload.mode is not None:

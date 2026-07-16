@@ -58,7 +58,7 @@ class WebSearchSettingsUpdate(BaseModel):
     exa_api_key: str | None = None
 
 
-ChatMode = Literal["ask", "edit", "plan"]
+ChatMode = Literal["ask", "edit", "goal"]
 
 
 class DefaultAgentsRead(BaseModel):
@@ -66,7 +66,7 @@ class DefaultAgentsRead(BaseModel):
 
     ask: str = ""
     edit: str = ""
-    plan: str = ""
+    goal: str = ""
 
 
 class DefaultAgentsUpdate(BaseModel):
@@ -75,4 +75,4 @@ class DefaultAgentsUpdate(BaseModel):
     # present-but-blank value clears that mode's default agent.
     ask: str | None = None
     edit: str | None = None
-    plan: str | None = None
+    goal: str | None = None

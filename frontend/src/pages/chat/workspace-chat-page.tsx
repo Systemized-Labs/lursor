@@ -121,12 +121,12 @@ export function WorkspaceChatPage() {
       const t = threads.find((x) => x.id === selectedThreadId)
       if (t) {
         setSelectedAgentId(t.agent_id)
-        // A goal thread pins the dropdown to Plan. A chat thread keeps the
+        // A goal thread pins the dropdown to Goal. A chat thread keeps the
         // user's current Ask/Edit choice (it's per-turn, not persisted) — don't
         // clobber it when the thread row loads after the first send; only coerce
-        // away from Plan, which isn't valid on a chat thread.
-        if (t.mode === "goal") setChatMode("plan")
-        else setChatMode((prev) => (prev === "plan" ? "edit" : prev))
+        // away from Goal, which isn't valid on a chat thread.
+        if (t.mode === "goal") setChatMode("goal")
+        else setChatMode((prev) => (prev === "goal" ? "edit" : prev))
       }
     } else {
       // A fresh conversation seeds the agent from the Edit mode default (its
@@ -359,14 +359,14 @@ export function WorkspaceChatPage() {
   const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
 
-  // A goal ("plan") thread: mode persisted as goal, or a live goal stream.
-  // Picking Plan in the dropdown does NOT itself make the thread a goal thread —
+  // A goal thread: mode persisted as goal, or a live goal stream.
+  // Picking Goal in the dropdown does NOT itself make the thread a goal thread —
   // it first shows the setup form; the thread is promoted only once planning
   // starts (fresh create or mid-conversation conversion).
   const isGoalThread = currentThread?.mode === "goal" || chat.goalStatus !== null
-  // Plan selected but not yet running a goal → collect objective/criteria. Works
-  // on a fresh conversation and mid-chat (Plan can be entered at any time).
-  const showGoalSetup = chatMode === "plan" && !isGoalThread
+  // Goal selected but not yet running a goal → collect objective/criteria. Works
+  // on a fresh conversation and mid-chat (Goal can be entered at any time).
+  const showGoalSetup = chatMode === "goal" && !isGoalThread
   // Prefer the live stream status; fall back to the thread's persisted goal state
   // (e.g. reopening a finished/paused goal that isn't currently streaming).
   const goalView: {
@@ -386,11 +386,11 @@ export function WorkspaceChatPage() {
           reason: currentThread.last_reason,
         }
       : null
-  // A goal thread is pinned to Plan (its lifecycle can't switch back). Otherwise
-  // all three modes are selectable — Ask/Edit are per-turn, and Plan can be
-  // entered at any time (promotes the current chat thread into a plan).
+  // A goal thread is pinned to Goal (its lifecycle can't switch back). Otherwise
+  // all three modes are selectable — Ask/Edit are per-turn, and Goal can be
+  // entered at any time (promotes the current chat thread into a goal).
   const modeLocked = isGoalThread
-  const availableModes: ChatMode[] = isGoalThread ? ["plan"] : ["ask", "edit", "plan"]
+  const availableModes: ChatMode[] = isGoalThread ? ["goal"] : ["ask", "edit", "goal"]
   // The agent is actively executing (autonomous loop) — offer Stop, not chat.
   const goalExecuting = goalView?.status === "running"
 
