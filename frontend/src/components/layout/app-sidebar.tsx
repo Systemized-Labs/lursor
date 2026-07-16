@@ -169,6 +169,15 @@ export function AppSidebar() {
   const isNavActive = (href: string) =>
     pathname === href || pathname.startsWith(`${href}/`)
 
+  const collapseWorkspace = (id: string) => {
+    setOpenWorkspaces((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }
+
   const newConversation = (workspaceId: string) => {
     setOpenWorkspaces((prev) =>
       prev.has(workspaceId) ? prev : new Set(prev).add(workspaceId)
@@ -362,6 +371,7 @@ export function AppSidebar() {
                     activeThreadId={activeThreadId}
                     activeRuns={activeRuns}
                     onNewConversation={() => newConversation(ws.id)}
+                    onCollapse={() => collapseWorkspace(ws.id)}
                     onNavigate={closeMobile}
                     onRename={(t) => {
                       setRenameTarget(t)
@@ -542,6 +552,7 @@ interface WorkspaceRowProps {
   activeThreadId: string | null
   activeRuns: Set<string>
   onNewConversation: () => void
+  onCollapse: () => void
   onNavigate: () => void
   onRename: (thread: Thread) => void
   onDelete: (thread: Thread) => void
@@ -557,6 +568,7 @@ function WorkspaceRow({
   activeThreadId,
   activeRuns,
   onNewConversation,
+  onCollapse,
   onNavigate,
   onRename,
   onDelete,
@@ -570,7 +582,7 @@ function WorkspaceRow({
           <SidebarMenuButton
             isActive={isActive}
             tooltip={name}
-            onClick={onNewConversation}
+            onClick={isOpen ? onCollapse : onNewConversation}
           >
             {isOpen ? (
               <FolderOpen className="size-4" />
