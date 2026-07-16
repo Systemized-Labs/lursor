@@ -28,6 +28,7 @@ from pydantic_ai.tools import RunContext, ToolDefinition
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
+from pydantic_deep.prompts import BASE_PROMPT
 
 from app.agents.deep_defaults import (
     builtin_subagent_defaults,
@@ -47,6 +48,12 @@ from app.db.models import ToolChoice
 from app.skills import store as skill_store
 
 settings = get_settings()
+
+# Appended to every agent's system instructions so models default to English
+# rather than drifting into another language mid-conversation. Applied here (the
+# lower level) so users never have to add it to their own agent instructions;
+# the model still switches languages when the user writes in, or asks for, one.
+DEFAULT_LANGUAGE_DIRECTIVE = "Always respond in English by default."
 
 # Prefix on a stored model string that marks a locally-hosted custom provider.
 # Format: "custom:{provider_id}:{model_name}" (model_name may itself contain
@@ -551,9 +558,16 @@ def build_deep_agent(
         model_settings["extra_body"] = extra_body
         extra_config["model_settings"] = model_settings
 
+    # Append the English-by-default directive to the agent's instructions. When
+    # the agent has no custom instructions we fall back to the library's base
+    # prompt (what ``create_deep_agent`` would have used) so we extend it rather
+    # than replace it — passing a non-None value swaps out the default entirely.
+    base_instructions = row.instructions or BASE_PROMPT
+    instructions = f"{base_instructions}\n\n{DEFAULT_LANGUAGE_DIRECTIVE}"
+
     agent = create_deep_agent(
         model=model,
-        instructions=row.instructions or None,
+        instructions=instructions,
         backend=backend,
         tools=tools,
         skill_directories=skill_dirs or None,
