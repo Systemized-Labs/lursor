@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useParams } from "react-router-dom"
 
 import { AppShell } from "@/components/layout/app-shell"
+import { AnalyticsPage } from "@/pages/analytics/analytics-page"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
 import { LaiosPage } from "@/pages/laios/laios-page"
@@ -35,6 +36,7 @@ function App() {
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<NewAgentPage />} />
+        <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="customization" element={<CustomizationPage />} />
         <Route path="laios" element={<LaiosPage />} />
         <Route path="settings" element={<SettingsPage />} />

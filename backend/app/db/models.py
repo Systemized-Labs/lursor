@@ -441,3 +441,35 @@ class Message(TimestampMixin, table=True):
     attachments: list = Field(default_factory=list, sa_column=Column(JSON))
 
     thread: Thread | None = Relationship(back_populates="messages")
+
+
+class UsageRecord(TimestampMixin, table=True):
+    """Token consumption + cost for a single agent turn.
+
+    One row is written per completed turn (see ``api/chat.py``'s ``on_complete``),
+    carrying enough foreign keys to roll usage up by model, workspace, agent, or
+    thread — and over time via ``created_at``. ``cost_usd`` is derived from the
+    OpenRouter pricing catalogue (``app/pricing.py``); local/custom models resolve
+    to ``0.0`` because they have no per-token price.
+    """
+
+    __tablename__ = "usage_records"
+
+    thread_id: str = Field(foreign_key="threads.id", index=True)
+    workspace_id: str = Field(foreign_key="workspaces.id", index=True)
+    agent_id: str = Field(foreign_key="agents.id", index=True)
+    # Raw model string as stored on the agent (e.g. ``openrouter:qwen/qwen3-max``).
+    model: str = Field(default="", index=True)
+    # Which kind of turn produced this: chat | goal | plan | vision.
+    kind: str = Field(default="chat", index=True)
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    requests: int = 0
+    cost_usd: float = 0.0
+
+    # Raw RunUsage extras (per-provider detail dicts), kept for future breakdowns.
+    usage_details: dict = Field(default_factory=dict, sa_column=Column(JSON))

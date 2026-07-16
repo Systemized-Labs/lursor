@@ -1,4 +1,5 @@
 import {
+  ChartBar,
   ChatCentered,
   Cpu,
   Folder,
@@ -88,6 +89,7 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
+  { to: "/analytics", label: "Usage", icon: ChartBar },
   { to: "/laios", label: "LAIOS", icon: Cpu },
   { to: "/customization", label: "Customization", icon: SlidersHorizontal },
 ]

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     agents,
+    analytics,
     chat,
     files,
     git,
@@ -70,6 +71,7 @@ async def health() -> dict[str, str]:
 
 for module in (
     agents,
+    analytics,
     skills,
     subagents,
     prompt_templates,

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -58,10 +59,14 @@ from app.db.models import (
     Subagent,
     Thread,
     ThreadMode,
+    UsageRecord,
     Workspace,
 )
 from app.db.session import async_session_factory, get_session
 from app.media_store import media_path, save_base64_image
+from app.pricing import compute_cost
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/threads", tags=["chat"])
 
@@ -250,6 +255,47 @@ async def _set_goal_state(
         await bg_session.commit()
 
 
+async def _persist_usage(thread_id: str, kind: str, usage) -> None:
+    """Record one turn's token usage + cost (own background session).
+
+    Resolves the workspace/agent/model from the thread so callers only supply the
+    turn ``kind``. Best-effort: a missing thread, absent usage, or a pricing gap
+    must never break a run, so failures are swallowed after logging.
+    """
+    if usage is None:
+        return
+    try:
+        async with async_session_factory() as bg_session:
+            thread = await bg_session.get(Thread, thread_id)
+            if thread is None:
+                return
+            agent_row = await bg_session.get(Agent, thread.agent_id)
+            model_str = (agent_row.model if agent_row else None) or settings.default_model
+
+            cost = await compute_cost(model_str, usage)
+            details = usage.details if isinstance(getattr(usage, "details", None), dict) else {}
+            bg_session.add(
+                UsageRecord(
+                    thread_id=thread_id,
+                    workspace_id=thread.workspace_id,
+                    agent_id=thread.agent_id,
+                    model=model_str,
+                    kind=kind,
+                    input_tokens=getattr(usage, "input_tokens", 0) or 0,
+                    output_tokens=getattr(usage, "output_tokens", 0) or 0,
+                    total_tokens=getattr(usage, "total_tokens", 0) or 0,
+                    cache_read_tokens=getattr(usage, "cache_read_tokens", 0) or 0,
+                    cache_write_tokens=getattr(usage, "cache_write_tokens", 0) or 0,
+                    requests=getattr(usage, "requests", 0) or 0,
+                    cost_usd=cost,
+                    usage_details=details,
+                )
+            )
+            await bg_session.commit()
+    except Exception as exc:  # noqa: BLE001 — usage recording is best-effort
+        logger.warning("usage: failed to persist for thread %s: %s", thread_id, exc)
+
+
 async def _tee_events(
     stream: AsyncIterator, accumulated: list[str], *, strip_lifecycle: bool
 ) -> AsyncIterator:
@@ -279,12 +325,14 @@ async def _stream_turn(
     accumulated: list[str],
     todos_state: dict,
     strip_lifecycle: bool = False,
+    kind: str = "chat",
 ) -> list[ModelMessage]:
     """Run one agent turn to completion, streaming events + todos to subscribers.
 
     Returns the full message history after the turn (``result.all_messages()``)
     so a goal loop can feed it into the next turn. ``todos_state`` carries the
     last-published todo JSON across a run's turns (``{"json": str | None}``).
+    ``kind`` (chat | plan | goal) tags the usage row recorded on completion.
     """
     captured: dict[str, object] = {}
 
@@ -293,6 +341,9 @@ async def _stream_turn(
         output = getattr(result, "output", None)
         content = output if isinstance(output, str) else str(output) if output else ""
         await _persist_message(thread_id, "assistant", content)
+        # ``AgentRunResult.usage`` is a property (not a method) that returns the
+        # run's ``RunUsage``; ``_persist_usage`` guards its own failures.
+        await _persist_usage(thread_id, kind, getattr(result, "usage", None))
 
     stream = turn_adapter.run_stream(
         message_history=message_history,
@@ -449,6 +500,7 @@ async def _run_goal_execution(
                 accumulated=accumulated,
                 todos_state=todos_state,
                 strip_lifecycle=True,
+                kind="goal",
             )
             return history
 
@@ -654,6 +706,7 @@ async def chat(
                 accumulated=accumulated,
                 todos_state=todos_state,
                 strip_lifecycle=True,
+                kind="plan",
             )
             await _set_goal_state(
                 thread_id,
