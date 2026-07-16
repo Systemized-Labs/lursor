@@ -9,7 +9,6 @@ import {
   NotePencil,
   Palette,
   Pencil,
-  Plus,
   SlidersHorizontal,
   Trash,
   X,
@@ -169,15 +168,6 @@ export function AppSidebar() {
   }
   const isNavActive = (href: string) =>
     pathname === href || pathname.startsWith(`${href}/`)
-
-  const toggleWorkspace = (id: string) => {
-    setOpenWorkspaces((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
 
   const newConversation = (workspaceId: string) => {
     setOpenWorkspaces((prev) =>
@@ -371,7 +361,6 @@ export function AppSidebar() {
                     isActive={activeWorkspaceId === ws.id}
                     activeThreadId={activeThreadId}
                     activeRuns={activeRuns}
-                    onToggle={() => toggleWorkspace(ws.id)}
                     onNewConversation={() => newConversation(ws.id)}
                     onNavigate={closeMobile}
                     onRename={(t) => {
@@ -552,7 +541,6 @@ interface WorkspaceRowProps {
   isActive: boolean
   activeThreadId: string | null
   activeRuns: Set<string>
-  onToggle: () => void
   onNewConversation: () => void
   onNavigate: () => void
   onRename: (thread: Thread) => void
@@ -568,7 +556,6 @@ function WorkspaceRow({
   isActive,
   activeThreadId,
   activeRuns,
-  onToggle,
   onNewConversation,
   onNavigate,
   onRename,
@@ -580,7 +567,11 @@ function WorkspaceRow({
     <SidebarMenuItem className="group/workspace relative">
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <SidebarMenuButton isActive={isActive} tooltip={name} onClick={onToggle}>
+          <SidebarMenuButton
+            isActive={isActive}
+            tooltip={name}
+            onClick={onNewConversation}
+          >
             {isOpen ? (
               <FolderOpen className="size-4" />
             ) : (
@@ -603,19 +594,6 @@ function WorkspaceRow({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
-
-      <button
-        type="button"
-        aria-label="New conversation"
-        title="New conversation"
-        onClick={(e) => {
-          e.stopPropagation()
-          onNewConversation()
-        }}
-        className="absolute right-1 top-1.5 flex size-5 items-center justify-center rounded-md text-sidebar-foreground opacity-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/workspace:opacity-100 group-data-[collapsible=icon]:hidden"
-      >
-        <Plus className="size-4" />
-      </button>
 
       {isOpen ? (
         <WorkspaceThreads
