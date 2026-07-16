@@ -23,7 +23,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { ModelPicker } from "@/components/model-picker"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatMessageList } from "@/components/chat/ChatMessageList"
 import { ChatModeSelect } from "@/components/chat/ChatModeSelect"
@@ -68,10 +67,6 @@ export function WorkspaceChatPage() {
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
-  // Per-thread model override (canonical model string; "" = the agent's default
-  // model). Forwarded with each send and persisted server-side, so switching
-  // models mid-conversation sticks. Synced from the open thread below.
-  const [selectedModel, setSelectedModel] = useState("")
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
@@ -88,7 +83,6 @@ export function WorkspaceChatPage() {
   const chat = useChat({
     workspaceId,
     agentId: selectedAgentId || undefined,
-    model: selectedModel,
     activeRuns,
     reconnect: true,
     onThreadCreated: (thread) => {
@@ -127,7 +121,6 @@ export function WorkspaceChatPage() {
       const t = threads.find((x) => x.id === selectedThreadId)
       if (t) {
         setSelectedAgentId(t.agent_id)
-        setSelectedModel(t.model ?? "")
         // A goal thread pins the dropdown to Plan. A chat thread keeps the
         // user's current Ask/Edit choice (it's per-turn, not persisted) — don't
         // clobber it when the thread row loads after the first send; only coerce
@@ -145,9 +138,6 @@ export function WorkspaceChatPage() {
           ? editDefault
           : agents[0]?.id
       setSelectedAgentId((prev) => prev || seedable || "")
-      // A fresh conversation inherits the agent's default model until the user
-      // picks one.
-      setSelectedModel("")
     }
   }, [selectedThreadId, threads, agents, defaultAgents])
 
@@ -201,22 +191,6 @@ export function WorkspaceChatPage() {
     const editDefault = defaultAgentFor("edit")
     if (editDefault) setSelectedAgentId(editDefault)
     setSearchParams({})
-  }
-
-  async function handleModelChange(model: string) {
-    setSelectedModel(model)
-    // Persist immediately when a thread exists so reopening reflects the choice;
-    // a not-yet-created thread picks it up via the forwarded prop on first send.
-    if (selectedThreadId) {
-      try {
-        await updateThread.mutateAsync({
-          id: selectedThreadId,
-          input: { model: model || null },
-        })
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to switch model")
-      }
-    }
   }
 
   async function handleStartGoal(goalDraft: GoalDraft) {
@@ -417,10 +391,6 @@ export function WorkspaceChatPage() {
   // entered at any time (promotes the current chat thread into a plan).
   const modeLocked = isGoalThread
   const availableModes: ChatMode[] = isGoalThread ? ["plan"] : ["ask", "edit", "plan"]
-  // What the model picker resolves to when no per-thread model is set: the
-  // selected agent's own model. Shown on the trigger so an empty (inherit)
-  // selection still reveals the effective model.
-  const agentModel = agents.find((a) => a.id === selectedAgentId)?.model ?? ""
   // The agent is actively executing (autonomous loop) — offer Stop, not chat.
   const goalExecuting = goalView?.status === "running"
 
@@ -513,15 +483,6 @@ export function WorkspaceChatPage() {
                 ))}
               </SelectContent>
             </Select>
-          )}
-
-          {!noAgents && (
-            <ModelPicker
-              value={selectedModel}
-              onChange={(v) => void handleModelChange(v)}
-              resolvedDefault={agentModel}
-              triggerClassName="flex h-7 max-w-[18rem] items-center justify-between gap-1.5 rounded-md bg-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none data-[state=open]:bg-accent"
-            />
           )}
 
           <Button

@@ -28,7 +28,6 @@ class ThreadUpdate(BaseModel):
 
     title: str | None = None
     agent_id: str | None = None
-    model: str | None = None  # per-thread model override ("" / null clears it)
     mode: ThreadMode | None = None
     goal: str | None = None
     success_criteria: str | None = None
@@ -41,7 +40,6 @@ class ThreadRead(BaseModel):
     title: str
     workspace_id: str
     agent_id: str
-    model: str | None = None
     mode: ThreadMode
     goal: str
     success_criteria: str

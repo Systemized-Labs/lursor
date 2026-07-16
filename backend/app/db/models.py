@@ -402,10 +402,6 @@ class Thread(TimestampMixin, table=True):
     title: str = "New conversation"
     workspace_id: str = Field(foreign_key="workspaces.id", index=True)
     agent_id: str = Field(foreign_key="agents.id", index=True)
-    # Per-thread model override. Null → inherit the agent's model (which itself
-    # falls back to settings.default_model). Lets the user switch models mid-chat
-    # without editing the agent. See resolution in api/chat.py.
-    model: str | None = None
 
     # --- Goal mode -----------------------------------------------------------
     # A ``chat`` thread ignores every field below. A ``goal`` thread runs the

@@ -95,9 +95,6 @@ export interface UseChatOptions {
   workspaceId: string | undefined
   /** Agent the next message (and any lazily-created thread) will use. */
   agentId: string | undefined
-  /** Per-thread model override forwarded with each turn. Empty string reverts
-   *  the thread to the agent's default model; undefined leaves it untouched. */
-  model?: string
   /** Thread ids with a live run; gates reconnect-on-open. */
   activeRuns?: Set<string>
   /** Reconnect to a still-running run when opening a conversation. */
@@ -479,17 +476,8 @@ export function useChat(options: UseChatOptions): UseChat {
       try {
         await agent.runAgent(
           // Carry the per-turn mode so the backend can build a read-only
-          // ("ask") agent for this turn. Goal threads ignore it. The optional
-          // model rides along too — the backend persists it as the thread's
-          // model, so a mid-chat switch sticks for future turns.
-          {
-            forwardedProps: {
-              turn_mode: turnMode,
-              ...(optionsRef.current.model !== undefined
-                ? { model: optionsRef.current.model }
-                : {}),
-            },
-          },
+          // ("ask") agent for this turn. Goal threads ignore it.
+          { forwardedProps: { turn_mode: turnMode } },
           {
             onTextMessageStartEvent: ({ event }) =>
               handlers.onTextStart(event.messageId),
