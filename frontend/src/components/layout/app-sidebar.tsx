@@ -618,7 +618,7 @@ function WorkspaceRow({
           </ContextMenuItem>
           <ContextMenuItem onSelect={onCloneWorkspace}>
             <GitBranch className="size-4" />
-            Clone GitHub repo…
+            Clone repo
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
