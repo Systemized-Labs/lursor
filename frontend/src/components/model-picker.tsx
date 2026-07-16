@@ -395,42 +395,26 @@ export function ModelPicker({
               {/* Model list */}
               <ScrollArea className="min-h-0 flex-1">
                 <div className="py-2">
-                  {/* Default (fall back to the server default model). Styled as
-                      a distinct accented card so it reads as the recommended
-                      choice rather than just another list row. */}
-                  <div className="px-3 pb-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={handleUseDefault}
-                      className={cn(
-                        "flex w-full items-center gap-2.5 rounded-lg border px-3 text-left transition-colors",
-                        isMobile ? "min-h-[44px] py-2.5" : "py-2",
-                        !value
-                          ? "border-primary/40 bg-primary/10"
-                          : "border-border bg-muted/40 hover:border-primary/30 hover:bg-muted"
-                      )}
-                    >
-                      <Lightning
-                        className={cn(
-                          "h-4 w-4 shrink-0",
-                          !value ? "text-primary" : "text-muted-foreground"
-                        )}
-                      />
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="text-sm font-semibold text-foreground">
-                          Default model
+                  {/* Default (fall back to the server default model). */}
+                  <button
+                    type="button"
+                    onClick={handleUseDefault}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-4 text-left transition-colors",
+                      isMobile ? "min-h-[44px] py-3" : "py-1.5",
+                      "text-foreground hover:bg-muted/60"
+                    )}
+                  >
+                    <span className="flex-1 text-xs font-medium">
+                      Default model
+                      {resolvedDefault ? (
+                        <span className="ml-1 font-normal text-muted-foreground">
+                          · {labelFor(resolvedDefault)}
                         </span>
-                        {resolvedDefault ? (
-                          <span className="truncate text-xs text-muted-foreground">
-                            {labelFor(resolvedDefault)}
-                          </span>
-                        ) : null}
-                      </span>
-                      {!value ? (
-                        <Check className="h-4 w-4 shrink-0 text-primary" />
                       ) : null}
-                    </button>
-                  </div>
+                    </span>
+                    {!value ? <Check className="h-3.5 w-3.5 shrink-0 text-primary" /> : null}
+                  </button>
                   <div className="mx-3 my-1 h-px bg-border" />
 
                   {filtered.length === 0 ? (
