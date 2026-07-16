@@ -40,6 +40,7 @@ import {
   useUpdateWorkspace,
   useWorkspaces,
 } from "@/api/workspaces"
+import { useGitHubConfig } from "@/api/github"
 import {
   Sidebar,
   SidebarContent,
@@ -55,7 +56,6 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarRail,
-  SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar"
 import {
@@ -122,6 +122,7 @@ export function AppSidebar() {
   const qc = useQueryClient()
 
   const workspacesQuery = useWorkspaces()
+  const githubConfig = useGitHubConfig().data
   const activeRunsQuery = useActiveRuns()
   const activeRuns = useMemo(
     () => new Set(activeRunsQuery.data ?? []),
@@ -259,23 +260,26 @@ export function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader
         className={cn(
-          // On macOS Electron, drop the header below the overlaid traffic
-          // lights and let the empty strip drag the window.
-          isMacElectron && "pt-8 [-webkit-app-region:drag]"
+          // On macOS Electron the OS traffic lights overlay the top-left, so
+          // let the header strip drag the window.
+          isMacElectron && "[-webkit-app-region:drag]"
         )}
       >
-        <div className="flex items-center justify-between gap-1">
+        {/* On macOS the OS traffic lights overlay the top-left, so reserve a
+            drag strip above the logo to clear them. */}
+        {isMacElectron && !isMobile && <div className="h-8" />}
+        <div className="flex items-center gap-1 group-data-[collapsible=icon]:justify-center">
           <Link
             to="/"
             onClick={closeMobile}
-            className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0 [-webkit-app-region:no-drag]"
+            className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:hidden [-webkit-app-region:no-drag]"
           >
             <img
               src="/lursor_icon.png"
               alt="Lursor"
-              className="size-11 shrink-0 rounded-md object-contain"
+              className="size-9 shrink-0 rounded-md object-contain"
             />
-            <span className="truncate text-lg font-bold tracking-tight text-foreground group-data-[collapsible=icon]:hidden">
+            <span className="truncate text-lg font-bold tracking-tight text-foreground">
               Lursor
             </span>
           </Link>
@@ -407,35 +411,62 @@ export function AppSidebar() {
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              isActive={isNavActive("/settings")}
-              tooltip="Settings"
-              asChild
-            >
-              <Link to="/settings" onClick={closeMobile}>
-                <Gear className="size-4" />
-                <span>Settings</span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <div className="flex items-center justify-between group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
-              <ThemePicker
-                trigger={(open) => (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Choose theme"
-                    onClick={open}
-                  >
-                    <Palette className="h-5 w-5" />
-                    <span className="sr-only">Choose theme</span>
-                  </Button>
+            <div className="flex items-center gap-2 rounded-md px-1.5 py-1 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+              {/* GitHub identity. The avatar links to Settings so it stays a
+                  reachable target even when the sidebar collapses to icons. */}
+              <Link
+                to="/settings"
+                onClick={closeMobile}
+                aria-label="Settings"
+                className="shrink-0"
+              >
+                {githubConfig?.avatar_url ? (
+                  <img
+                    src={githubConfig.avatar_url}
+                    alt=""
+                    className="size-8 rounded-full border border-sidebar-border object-cover"
+                  />
+                ) : (
+                  <div className="flex size-8 items-center justify-center rounded-full border border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground">
+                    <GitBranch className="size-4" />
+                  </div>
                 )}
-              />
-              {/* The collapse-to-rail toggle only makes sense for the desktop
-                  docked sidebar; the mobile drawer closes via the header X. */}
-              {!isMobile && <SidebarTrigger className="shrink-0" />}
+              </Link>
+              <div className="min-w-0 flex-1 leading-tight group-data-[collapsible=icon]:hidden">
+                <p className="truncate text-sm font-medium text-sidebar-foreground">
+                  {githubConfig?.name || githubConfig?.login || "Not connected"}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {githubConfig?.login ? `@${githubConfig.login}` : "GitHub"}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5 group-data-[collapsible=icon]:hidden">
+                <ThemePicker
+                  trigger={(open) => (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 text-sidebar-foreground/70 hover:text-sidebar-accent-foreground"
+                      aria-label="Choose theme"
+                      onClick={open}
+                    >
+                      <Palette className="size-4" />
+                      <span className="sr-only">Choose theme</span>
+                    </Button>
+                  )}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 text-sidebar-foreground/70 hover:text-sidebar-accent-foreground"
+                  aria-label="Settings"
+                  asChild
+                >
+                  <Link to="/settings" onClick={closeMobile}>
+                    <Gear className="size-4" />
+                  </Link>
+                </Button>
+              </div>
             </div>
           </SidebarMenuItem>
         </SidebarMenu>

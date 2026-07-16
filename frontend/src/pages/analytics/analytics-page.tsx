@@ -482,7 +482,10 @@ function ActivityHeatmap({
   return (
     <TooltipProvider delayDuration={100}>
       <div className="overflow-x-auto">
-        <div className="inline-block min-w-full">
+        {/* The grid is a fixed width (~53 fixed-size columns), so center the
+            whole unit — labels, cells, and footer share this width and stay
+            aligned; it scrolls left-anchored when the card is narrower. */}
+        <div className="mx-auto w-fit">
           {/* Month labels aligned to week columns. */}
           <div className="mb-1.5 flex gap-[3px]">
             {weeks.map((week, i) => {
