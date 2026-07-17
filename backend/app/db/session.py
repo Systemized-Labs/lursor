@@ -136,14 +136,17 @@ async def _apply_lightweight_migrations(conn) -> None:
     for col, ddl in thread_additions.items():
         if col not in thread_cols:
             await conn.execute(text(ddl))
-    # Carry old goal-mode state onto the renamed ``status`` column. Runs once, when
-    # a pre-refactor DB still has the legacy ``goal_status`` column: copy its value
-    # so in-flight/finished goal threads keep their lifecycle. The dead column is
-    # left in place (SQLite can't cheaply drop columns; it's harmless).
-    if "goal_status" in thread_cols and "status" not in thread_cols:
+    # Carry old goal-mode state onto the renamed ``status`` column, then drop the
+    # legacy NOT NULL columns. Leaving them in place breaks INSERTs: the ORM no
+    # longer writes ``goal_status`` / ``require_plan_approval``, and SQLite rejects
+    # NULL for those constraints.
+    if "goal_status" in thread_cols:
         await conn.execute(
             text("UPDATE threads SET status = goal_status WHERE goal_status IS NOT NULL")
         )
+        await conn.execute(text("ALTER TABLE threads DROP COLUMN goal_status"))
+    if "require_plan_approval" in thread_cols:
+        await conn.execute(text("ALTER TABLE threads DROP COLUMN require_plan_approval"))
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
