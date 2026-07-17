@@ -20,7 +20,9 @@ router = APIRouter(prefix="/threads", tags=["threads"])
 async def list_threads(
     workspace_id: str | None = None, session: AsyncSession = Depends(get_session)
 ):
-    query = select(Thread).order_by(Thread.created_at.desc())
+    # Order by recency of activity (updated_at is bumped whenever a turn lands,
+    # see api/chat.py) so the conversation you were last in floats to the top.
+    query = select(Thread).order_by(Thread.updated_at.desc())
     if workspace_id:
         query = query.where(Thread.workspace_id == workspace_id)
     result = await session.execute(query)

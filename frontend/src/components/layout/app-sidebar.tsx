@@ -21,6 +21,7 @@ import {
   type MouseEvent,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react"
 import {
@@ -82,6 +83,11 @@ import {
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import { Input } from "@/components/ui/input"
+import {
+  markThreadRead,
+  seedThreadRead,
+  useThreadReads,
+} from "@/hooks/use-thread-reads"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ThemePicker } from "@/components/ui/theme-picker"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
@@ -141,6 +147,25 @@ export function AppSidebar() {
     () => new Set(activeRunsQuery.data ?? []),
     [activeRunsQuery.data]
   )
+
+  // When a background run finishes (its id leaves the active set), refresh the
+  // thread lists so the sidebar reorders by recency and picks up the new
+  // updated_at that drives the "finished, unopened" badge.
+  const prevRuns = useRef(activeRuns)
+  useEffect(() => {
+    const prev = prevRuns.current
+    prevRuns.current = activeRuns
+    let finished = false
+    for (const id of prev) {
+      if (!activeRuns.has(id)) {
+        finished = true
+        break
+      }
+    }
+    if (finished) {
+      qc.invalidateQueries({ queryKey: ["threads", "workspace"] })
+    }
+  }, [activeRuns, qc])
 
   const chatMatch =
     matchPath("/workspaces/:workspaceId/chat", pathname) ??
@@ -874,7 +899,20 @@ function WorkspaceThreads({
   onDelete,
 }: WorkspaceThreadsProps) {
   const threadsQuery = useThreads(workspaceId)
-  const threads = threadsQuery.data ?? []
+  const threads = useMemo(() => threadsQuery.data ?? [], [threadsQuery.data])
+  const { isUnread } = useThreadReads()
+
+  // Reconcile read state: record threads on first sight (so pre-existing
+  // activity isn't retroactively flagged) and keep the open conversation marked
+  // read as its activity advances.
+  useEffect(() => {
+    for (const thread of threads) {
+      seedThreadRead(thread.id, thread.updated_at)
+      if (thread.id === activeThreadId) {
+        markThreadRead(thread.id, thread.updated_at)
+      }
+    }
+  }, [threads, activeThreadId])
 
   return (
     <SidebarMenuSub className="mx-2 px-1.5">
@@ -891,6 +929,11 @@ function WorkspaceThreads({
             thread={thread}
             isActive={thread.id === activeThreadId}
             running={activeRuns.has(thread.id)}
+            unread={
+              thread.id !== activeThreadId &&
+              !activeRuns.has(thread.id) &&
+              isUnread(thread.id, thread.updated_at)
+            }
             isSelected={selection.isThreadSelected(thread.id)}
             selection={selection}
             onSelect={(mods) => selection.selectThread(thread, mods, threads)}
@@ -908,6 +951,8 @@ interface SessionRowProps {
   thread: Thread
   isActive: boolean
   running: boolean
+  /** A reply landed since this conversation was last opened. */
+  unread: boolean
   isSelected: boolean
   selection: SidebarSelection
   onSelect: (mods: SelectMods) => void
@@ -920,6 +965,7 @@ function SessionRow({
   thread,
   isActive,
   running,
+  unread,
   isSelected,
   selection,
   onSelect,
@@ -969,10 +1015,21 @@ function SessionRow({
                   className="shrink-0 text-primary"
                   label="Working"
                 />
+              ) : unread ? (
+                <ChatCentered
+                  weight="fill"
+                  className="size-4 shrink-0 text-success"
+                />
               ) : (
                 <ChatCentered className="size-4" />
               )}
-              <span className={cn("flex-1 truncate", running && "text-primary")}>
+              <span
+                className={cn(
+                  "flex-1 truncate",
+                  running && "text-primary",
+                  unread && "font-medium text-foreground"
+                )}
+              >
                 {thread.title || "Untitled"}
               </span>
               <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">

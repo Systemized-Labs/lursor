@@ -244,6 +244,12 @@ async def _persist_message(
                 tool_calls=tool_calls,
             )
         )
+        # Bump the thread's activity clock so the sidebar sorts by "most recently
+        # active" and can flag a finished reply the user hasn't opened yet.
+        thread = await bg_session.get(Thread, thread_id)
+        if thread is not None:
+            thread.updated_at = datetime.now(UTC)
+            bg_session.add(thread)
         await bg_session.commit()
 
 
