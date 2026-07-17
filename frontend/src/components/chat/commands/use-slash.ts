@@ -25,9 +25,9 @@ export interface UseSlashOptions {
  * Selecting a row rewrites just that token to `/<name> ` and restores focus. It
  * reads the command registry, so it has no hard-coded command names.
  *
- * Note the parser (`parseSlashCommand`) still only *honors* a command at the
- * start of the message, since a command governs the whole turn; the menu firing
- * mid-text is a convenience, and a token inserted there sends as plain text.
+ * The parser (`parseSlashCommand`) honors the command wherever it sits: the
+ * governing token is stripped and the rest of the message becomes its arguments,
+ * matching what the composer highlights.
  */
 export function useSlash({
   value,

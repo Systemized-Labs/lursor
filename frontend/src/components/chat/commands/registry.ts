@@ -62,34 +62,57 @@ export function getCommand(name: string): SlashCommand | undefined {
 /** A parsed slash invocation: the matched command plus the remaining text. */
 export interface ParsedCommand {
   command: SlashCommand
-  /** Everything after `/<name> ` — the message body / arguments. */
+  /** The message body with the `/<name>` token removed — the arguments. */
   args: string
 }
 
 /**
- * Parse a leading `/command` off the input. Returns `null` when the text isn't a
- * recognized command (a plain message, or `/unknown`), so the caller falls back
- * to a normal send. Matches `/name` followed by a space or end-of-input.
+ * Locate the first recognized `/command` token in the input, wherever it sits.
+ * A command governs the whole turn, so only the first recognized token counts.
+ * The `/` must sit at a word boundary (start of input or after whitespace) and
+ * the name must be a letter followed by word chars/hyphens ending at whitespace
+ * or end-of-input — matching {@link findActiveSlash} — which keeps paths
+ * (`/Users`), dates (`7/17`) and fractions from being mistaken for commands.
+ * Returns the token's character span and the resolved command, or `null`.
  */
-export function parseSlashCommand(input: string): ParsedCommand | null {
-  const m = input.match(/^\/([a-zA-Z][\w-]*)(?:\s+([\s\S]*))?$/)
-  if (!m) return null
-  const command = getCommand(m[1])
-  if (!command) return null
-  return { command, args: (m[2] ?? "").trim() }
+export function findCommand(
+  input: string
+): { start: number; end: number; command: SlashCommand } | null {
+  const re = /(^|\s)\/([a-zA-Z][\w-]*)(?=\s|$)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(input)) !== null) {
+    const command = getCommand(m[2])
+    if (command) {
+      const start = m.index + m[1].length
+      return { start, end: start + 1 + m[2].length, command }
+    }
+  }
+  return null
 }
 
 /**
- * The character span of a recognized leading `/command` name, for highlighting
- * it in the composer. Only the `/name` itself (not its arguments) and only when
- * it's start-anchored *and* resolves to a real command — i.e. exactly the token
- * {@link parseSlashCommand} would honor on send — so the accent never implies a
- * mid-text or unknown slash is active. Returns `null` otherwise.
+ * Parse the governing `/command` out of the input, wherever it sits. Returns
+ * `null` for a plain message (no recognized command), so the caller falls back
+ * to a normal send. The command token is removed and the rest of the text —
+ * anything before and after it — becomes the command's `args`.
  */
-export function leadingCommandRange(input: string): { start: number; end: number } | null {
-  const m = input.match(/^\/([a-zA-Z][\w-]*)(?=\s|$)/)
-  if (!m || !getCommand(m[1])) return null
-  return { start: 0, end: m[0].length }
+export function parseSlashCommand(input: string): ParsedCommand | null {
+  const found = findCommand(input)
+  if (!found) return null
+  const before = input.slice(0, found.start).replace(/\s$/, "")
+  const after = input.slice(found.end)
+  return { command: found.command, args: (before + after).trim() }
+}
+
+/**
+ * The character span of the governing `/command` token, for highlighting it in
+ * the composer — exactly the token {@link parseSlashCommand} honors on send, so
+ * the accent never implies an unknown slash is active. Returns `null` when the
+ * input has no recognized command.
+ */
+export function commandRange(input: string): { start: number; end: number } | null {
+  const found = findCommand(input)
+  return found ? { start: found.start, end: found.end } : null
 }
 
 /**

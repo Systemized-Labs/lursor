@@ -180,15 +180,9 @@ export function AppSidebar() {
   const activeWorkspaceId = chatMatch?.params.workspaceId
   const activeThreadId = searchParams.get("c")
 
+  // Expand/collapse is driven solely by clicking a workspace row; navigating to
+  // a conversation never opens its folder.
   const [openWorkspaces, setOpenWorkspaces] = useState<Set<string>>(new Set())
-  // Auto-expand the workspace you're currently in.
-  useEffect(() => {
-    if (activeWorkspaceId) {
-      setOpenWorkspaces((prev) =>
-        prev.has(activeWorkspaceId) ? prev : new Set(prev).add(activeWorkspaceId)
-      )
-    }
-  }, [activeWorkspaceId])
 
   const [renameTarget, setRenameTarget] = useState<Thread | null>(null)
   const [renameValue, setRenameValue] = useState("")

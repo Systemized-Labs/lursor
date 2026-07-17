@@ -20,7 +20,7 @@ import { mentionRanges } from "@/components/chat/mentions/types"
 import type { MentionSource, ResolvedMention } from "@/components/chat/mentions/types"
 import { SlashMenu } from "@/components/chat/commands/SlashMenu"
 import { useSlash } from "@/components/chat/commands/use-slash"
-import { leadingCommandRange } from "@/components/chat/commands/registry"
+import { commandRange } from "@/components/chat/commands/registry"
 import type { QueuedMessage } from "@/agui/useChat"
 import type { PendingAttachment } from "@/agui/types"
 import type { ThreadMode } from "@/api/types"
@@ -32,13 +32,13 @@ const NOOP_SOURCES: MentionSource[] = []
  *  pixel-for-pixel over the (transparent) textarea text. */
 const FIELD_TYPO = "px-1 py-1.5 text-sm leading-relaxed"
 
-/** Render the input for the highlight overlay: a recognized leading `/command`
- *  in the accent colour, every committed `@mention` token in the info colour,
- *  and the rest in the normal text colour. Ranges never overlap — a leading
- *  `/command` and an `@mention` can't occupy the same span — so we just sort by
- *  start and walk the string, interleaving plain text and coloured spans. */
+/** Render the input for the highlight overlay: the governing `/command` in the
+ *  accent colour, every committed `@mention` token in the info colour, and the
+ *  rest in the normal text colour. Ranges never overlap — a `/command` token and
+ *  an `@mention` can't occupy the same span — so we just sort by start and walk
+ *  the string, interleaving plain text and coloured spans. */
 function renderHighlight(text: string) {
-  const command = leadingCommandRange(text)
+  const command = commandRange(text)
   const spans = [
     ...(command ? [{ ...command, className: "text-primary" }] : []),
     ...mentionRanges(text).map((r) => ({ ...r, className: "text-info" })),
