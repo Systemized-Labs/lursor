@@ -451,10 +451,16 @@ async def watch_files(websocket: WebSocket, workspace_id: str) -> None:
     if root is None:
         # Reject the handshake (no accept) so the client sees a permanent failure
         # and backs off instead of hammering us with reconnects.
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        with contextlib.suppress(Exception):
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
 
-    await websocket.accept()
+    try:
+        await websocket.accept()
+    except (WebSocketDisconnect, RuntimeError):
+        # The client dropped the socket during the handshake — common on page
+        # navigation / HMR reload. Nothing to accept; bail quietly.
+        return
 
     stop = asyncio.Event()
 
@@ -475,7 +481,9 @@ async def watch_files(websocket: WebSocket, workspace_id: str) -> None:
             message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # Normal teardown when the client goes away (RuntimeError can surface
+        # from receive() after an abrupt disconnect).
         pass
     finally:
         stop.set()
