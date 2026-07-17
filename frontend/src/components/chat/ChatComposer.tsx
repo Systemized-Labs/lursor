@@ -389,6 +389,7 @@ export function ChatComposer({
               }}
               onScroll={syncScroll}
               onPaste={handlePaste}
+              spellCheck={false}
               placeholder={willQueue ? "Add to queue…" : placeholder}
               disabled={disabled}
               rows={1}
