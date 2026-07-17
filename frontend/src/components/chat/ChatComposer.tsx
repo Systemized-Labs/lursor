@@ -7,6 +7,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react"
 import { Clock, NotePencil, Paperclip, PaperPlaneTilt, Play, Square, Target, X } from "@phosphor-icons/react"
 
@@ -15,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { MentionMenu } from "@/components/chat/mentions/MentionMenu"
 import { useMentions } from "@/components/chat/mentions/use-mentions"
+import { mentionRanges } from "@/components/chat/mentions/types"
 import type { MentionSource, ResolvedMention } from "@/components/chat/mentions/types"
 import { SlashMenu } from "@/components/chat/commands/SlashMenu"
 import { useSlash } from "@/components/chat/commands/use-slash"
@@ -31,16 +33,30 @@ const NOOP_SOURCES: MentionSource[] = []
 const FIELD_TYPO = "px-1 py-1.5 text-sm leading-relaxed"
 
 /** Render the input for the highlight overlay: a recognized leading `/command`
- *  in the accent colour, the rest in the normal text colour. */
+ *  in the accent colour, every committed `@mention` token in the info colour,
+ *  and the rest in the normal text colour. Ranges never overlap — a leading
+ *  `/command` and an `@mention` can't occupy the same span — so we just sort by
+ *  start and walk the string, interleaving plain text and coloured spans. */
 function renderHighlight(text: string) {
-  const range = leadingCommandRange(text)
-  if (!range) return text
-  return (
-    <>
-      <span className="text-primary">{text.slice(0, range.end)}</span>
-      {text.slice(range.end)}
-    </>
-  )
+  const command = leadingCommandRange(text)
+  const spans = [
+    ...(command ? [{ ...command, className: "text-primary" }] : []),
+    ...mentionRanges(text).map((r) => ({ ...r, className: "text-info" })),
+  ].sort((a, b) => a.start - b.start)
+  if (spans.length === 0) return text
+  const out: ReactNode[] = []
+  let cursor = 0
+  spans.forEach((span, i) => {
+    if (span.start > cursor) out.push(text.slice(cursor, span.start))
+    out.push(
+      <span key={i} className={span.className}>
+        {text.slice(span.start, span.end)}
+      </span>
+    )
+    cursor = span.end
+  })
+  if (cursor < text.length) out.push(text.slice(cursor))
+  return <>{out}</>
 }
 
 /** Tallest the prompt grows before it starts scrolling internally (px). Big

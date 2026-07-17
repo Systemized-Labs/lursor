@@ -86,6 +86,21 @@ export function findActiveMention(text: string, caret: number): ActiveMention | 
   return null
 }
 
+/** Character spans of committed mention tokens (`@/<category>/<…>`) for
+ *  highlighting them in the composer, mirroring what {@link expandMentionTokens}
+ *  would rewrite on send. A token starts at a word-boundary `@/` and runs to the
+ *  next whitespace, so a bare `@` still being typed isn't coloured. */
+export function mentionRanges(input: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = []
+  const re = /(^|\s)(@\/\S+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(input)) !== null) {
+    const start = m.index + m[1].length
+    ranges.push({ start, end: start + m[2].length })
+  }
+  return ranges
+}
+
 /** Rewrite committed mention tokens into plain references the agent can act on.
  *  A file mention is inserted as `@/files/<workspace-relative-path>`; the leading
  *  `/files/` makes the model read it as an absolute path and (e.g.) create the
