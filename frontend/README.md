@@ -16,7 +16,7 @@ bun install
 cp .env.example .env   # adjust VITE_API_BASE if needed
 ```
 
-`VITE_API_BASE` defaults to `http://localhost:8000/api`.
+`VITE_API_BASE` defaults to `http://localhost:8791/api`.
 
 ## Scripts
 

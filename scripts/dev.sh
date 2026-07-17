@@ -25,8 +25,8 @@ trap cleanup INT TERM
 echo "Installing frontend dependencies ..."
 (cd "$ROOT_DIR/frontend" && bun install)
 
-echo "Starting backend on :8000 ..."
-(cd "$ROOT_DIR/backend" && uv run uvicorn app.main:app --reload --port 8000) &
+echo "Starting backend on :8791 ..."
+(cd "$ROOT_DIR/backend" && uv run uvicorn app.main:app --reload --port 8791) &
 
 echo "Starting $FRONTEND_LABEL ..."
 (cd "$ROOT_DIR/frontend" && bun run "$FRONTEND_CMD") &

@@ -30,14 +30,14 @@ Two terminals (or use the dev script below).
 cd backend
 uv sync --extra dev
 cp .env.example .env      # add your OPENROUTER_API_KEY
-uv run uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8791
 ```
 
 **Frontend**
 ```bash
 cd frontend
 bun install
-cp .env.example .env      # VITE_API_BASE defaults to http://localhost:8000/api
+cp .env.example .env      # VITE_API_BASE defaults to http://localhost:8791/api
 bun run dev
 ```
 

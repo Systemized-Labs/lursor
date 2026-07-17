@@ -1,6 +1,6 @@
 export const API_BASE: string =
   (import.meta.env.VITE_API_BASE as string | undefined) ??
-  "http://localhost:8000/api"
+  "http://localhost:8791/api"
 
 export class ApiError extends Error {
   status: number

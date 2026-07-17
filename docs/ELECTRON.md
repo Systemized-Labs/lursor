@@ -2,7 +2,7 @@
 
 The Vite + React frontend in `frontend/` doubles as a desktop app via Electron.
 The Electron shell only wraps the UI — the FastAPI backend still runs separately
-on `http://localhost:8000` (start it with `scripts/dev.sh` or the backend README).
+on `http://localhost:8791` (start it with `scripts/dev.sh` or the backend README).
 
 ## Layout
 
@@ -28,7 +28,7 @@ bun install
 bun run electron:dev     # starts Vite, waits for :5173, then launches Electron
 ```
 
-Make sure the backend is running (`http://localhost:8000`).
+Make sure the backend is running (`http://localhost:8791`).
 
 ## Package
 

@@ -21,11 +21,11 @@ cp .env.example .env         # then add your OPENROUTER_API_KEY
 ## Run
 
 ```bash
-uv run uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8791
 ```
 
-- API base: `http://localhost:8000/api`
-- Interactive docs: `http://localhost:8000/docs`
+- API base: `http://localhost:8791/api`
+- Interactive docs: `http://localhost:8791/docs`
 - Health: `GET /api/health`
 
 ## Test & lint

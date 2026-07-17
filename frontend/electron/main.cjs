@@ -3,7 +3,7 @@
 // In development it loads the Vite dev server (URL passed via
 // VITE_DEV_SERVER_URL). In production it loads the built renderer from
 // dist/index.html. The Python/FastAPI backend is expected to run separately
-// on http://localhost:8000 (see the repo README / scripts/dev.sh).
+// on http://localhost:8791 (see the repo README / scripts/dev.sh).
 
 const path = require("node:path")
 const { app, BrowserWindow, nativeImage, shell } = require("electron")
