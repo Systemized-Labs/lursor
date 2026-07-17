@@ -18,11 +18,30 @@ import { useMentions } from "@/components/chat/mentions/use-mentions"
 import type { MentionSource, ResolvedMention } from "@/components/chat/mentions/types"
 import { SlashMenu } from "@/components/chat/commands/SlashMenu"
 import { useSlash } from "@/components/chat/commands/use-slash"
+import { leadingCommandRange } from "@/components/chat/commands/registry"
 import type { QueuedMessage } from "@/agui/useChat"
 import type { PendingAttachment } from "@/agui/types"
 import type { ThreadMode } from "@/api/types"
 
 const NOOP_SOURCES: MentionSource[] = []
+
+/** Typography + padding shared by the textarea and the highlight overlay behind
+ *  it. They must match exactly so the overlay's accent-coloured `/command` sits
+ *  pixel-for-pixel over the (transparent) textarea text. */
+const FIELD_TYPO = "px-1 py-1.5 text-sm leading-relaxed"
+
+/** Render the input for the highlight overlay: a recognized leading `/command`
+ *  in the accent colour, the rest in the normal text colour. */
+function renderHighlight(text: string) {
+  const range = leadingCommandRange(text)
+  if (!range) return text
+  return (
+    <>
+      <span className="text-primary">{text.slice(0, range.end)}</span>
+      {text.slice(range.end)}
+    </>
+  )
+}
 
 /** Tallest the prompt grows before it starts scrolling internally (px). Big
  *  enough to read a pasted paragraph without the box eating the whole screen. */
@@ -114,8 +133,17 @@ export function ChatComposer({
   // pending queue already exists that this message should join.
   const willQueue = isSending || queuedMessages.length > 0
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const highlightRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
+
+  // Keep the highlight overlay scrolled in lockstep with the textarea so the
+  // accent `/command` stays aligned once the prompt scrolls past its max height.
+  const syncScroll = useCallback(() => {
+    const el = textareaRef.current
+    const hl = highlightRef.current
+    if (el && hl) hl.scrollTop = el.scrollTop
+  }, [])
 
   const mentions = useMentions({
     value: input,
@@ -149,7 +177,8 @@ export function ChatComposer({
   // clearing after send or a mention insert.
   useLayoutEffect(() => {
     resizeTextarea()
-  }, [input, resizeTextarea])
+    syncScroll()
+  }, [input, resizeTextarea, syncScroll])
 
   // The row count also depends on the box's width, which the value change above
   // can't see: opening/closing the Builder dock or resizing the window rewraps
@@ -307,37 +336,54 @@ export function ChatComposer({
               ))}
             </div>
           )}
-          {/* Prompt on its own line so it spans the card width. */}
-          <Textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => {
-              onInputChange(e.target.value)
-              mentions.refresh()
-              slash.refresh()
-            }}
-            onKeyDown={handleKeyDown}
-            onKeyUp={() => {
-              mentions.refresh()
-              slash.refresh()
-            }}
-            onClick={() => {
-              mentions.refresh()
-              slash.refresh()
-            }}
-            onSelect={() => {
-              mentions.refresh()
-              slash.refresh()
-            }}
-            onPaste={handlePaste}
-            placeholder={willQueue ? "Add to queue…" : placeholder}
-            disabled={disabled}
-            rows={1}
-            className={cn(
-              "min-h-[34px] resize-none overflow-y-auto border-0 bg-transparent px-1 py-1.5 text-sm leading-relaxed shadow-none",
-              "focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent disabled:bg-transparent dark:disabled:bg-transparent"
-            )}
-          />
+          {/* Prompt on its own line so it spans the card width. The textarea's
+              own text is transparent; the overlay behind paints it, accenting a
+              recognized leading `/command`. */}
+          <div className="relative">
+            <div
+              ref={highlightRef}
+              aria-hidden
+              className={cn(
+                "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-foreground",
+                FIELD_TYPO
+              )}
+            >
+              {renderHighlight(input)}
+            </div>
+            <Textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => {
+                onInputChange(e.target.value)
+                mentions.refresh()
+                slash.refresh()
+              }}
+              onKeyDown={handleKeyDown}
+              onKeyUp={() => {
+                mentions.refresh()
+                slash.refresh()
+              }}
+              onClick={() => {
+                mentions.refresh()
+                slash.refresh()
+              }}
+              onSelect={() => {
+                mentions.refresh()
+                slash.refresh()
+              }}
+              onScroll={syncScroll}
+              onPaste={handlePaste}
+              placeholder={willQueue ? "Add to queue…" : placeholder}
+              disabled={disabled}
+              rows={1}
+              className={cn(
+                "relative min-h-[34px] resize-none overflow-y-auto border-0 bg-transparent shadow-none",
+                "text-transparent caret-foreground",
+                FIELD_TYPO,
+                "focus-visible:border-transparent focus-visible:bg-transparent focus-visible:ring-0 dark:bg-transparent disabled:bg-transparent dark:disabled:bg-transparent"
+              )}
+            />
+          </div>
           {/* Toolbar: mode pill + attach on the left, send/stop on the right. */}
           <div className="mt-1 flex items-center gap-1">
             {activeMode !== "chat" && (

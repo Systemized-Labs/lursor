@@ -100,19 +100,18 @@ function StreamingMarkdown({ text, animate }: { text: string; animate: boolean }
   return <MarkdownRenderer>{animate ? text.slice(0, count) : text}</MarkdownRenderer>
 }
 
-/** Bouncing-dots "agent is working" indicator shown before any content lands. */
+/** Bouncing-dots "agent is working" indicator. The dots are one consistent size
+ *  everywhere it appears (pending, pre-content, and trailing mid-stream) so the
+ *  loader never resizes as a turn progresses; `lead` only adds standalone
+ *  padding when it isn't hugging content. */
 function StreamingDots({ lead }: { lead?: boolean }) {
-  const dot = lead ? "h-2 w-2" : "h-1 w-1"
   const delays = ["0ms", "150ms", "300ms"]
   return (
-    <div className={cn("flex items-center", lead ? "gap-1.5 py-1" : "gap-1")}>
+    <div className={cn("flex items-center gap-1", lead && "py-1")}>
       {delays.map((d) => (
         <span
           key={d}
-          className={cn(
-            "rounded-full bg-primary/60 [animation:chat-typing_1.2s_ease-in-out_infinite]",
-            dot
-          )}
+          className="h-1 w-1 rounded-full bg-primary/60 [animation:chat-typing_1.2s_ease-in-out_infinite]"
           style={{ animationDelay: d }}
         />
       ))}
@@ -167,6 +166,20 @@ function AssistantSegments({ messages }: { messages: ChatMessage[] }) {
         )
       })}
     </>
+  )
+}
+
+/**
+ * The "agent is working" loader shown the instant a turn is sent, before any
+ * assistant event has arrived — so the conversation never looks stuck in the
+ * gap between send and the first token. Matches the placement/animation of the
+ * real assistant block, which replaces it seamlessly once content starts.
+ */
+export function ChatPendingReply() {
+  return (
+    <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+      <StreamingDots lead />
+    </div>
   )
 }
 

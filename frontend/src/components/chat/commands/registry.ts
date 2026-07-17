@@ -80,6 +80,19 @@ export function parseSlashCommand(input: string): ParsedCommand | null {
 }
 
 /**
+ * The character span of a recognized leading `/command` name, for highlighting
+ * it in the composer. Only the `/name` itself (not its arguments) and only when
+ * it's start-anchored *and* resolves to a real command — i.e. exactly the token
+ * {@link parseSlashCommand} would honor on send — so the accent never implies a
+ * mid-text or unknown slash is active. Returns `null` otherwise.
+ */
+export function leadingCommandRange(input: string): { start: number; end: number } | null {
+  const m = input.match(/^\/([a-zA-Z][\w-]*)(?=\s|$)/)
+  if (!m || !getCommand(m[1])) return null
+  return { start: 0, end: m[0].length }
+}
+
+/**
  * Commands whose `/name` prefix is still being typed (no space yet), for the
  * autocomplete menu. `query` is the partial text after the slash.
  */

@@ -540,6 +540,7 @@ export function WorkspaceChatPage() {
         contentRef={contentRef}
         resetKey={selectedThreadId ?? undefined}
         className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 [overflow-anchor:none] sm:px-6"
+        isStreaming={chat.isStreaming}
         renderIcons
         showScrollToBottom={!isAtBottom}
         hasNewMessages={hasNewBelow}

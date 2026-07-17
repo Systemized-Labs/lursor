@@ -870,23 +870,23 @@ function WorkspaceRow({
         <Plus className="size-4" />
       </button>
 
-      {isOpen ? (
-        <WorkspaceThreads
-          workspaceId={workspaceId}
-          activeThreadId={activeThreadId}
-          activeRuns={activeRuns}
-          selection={selection}
-          onNavigate={onNavigate}
-          onRename={onRename}
-          onDelete={onDelete}
-        />
-      ) : null}
+      <WorkspaceThreads
+        workspaceId={workspaceId}
+        isOpen={isOpen}
+        activeThreadId={activeThreadId}
+        activeRuns={activeRuns}
+        selection={selection}
+        onNavigate={onNavigate}
+        onRename={onRename}
+        onDelete={onDelete}
+      />
     </SidebarMenuItem>
   )
 }
 
 interface WorkspaceThreadsProps {
   workspaceId: string
+  isOpen: boolean
   activeThreadId: string | null
   activeRuns: Set<string>
   selection: SidebarSelection
@@ -895,9 +895,15 @@ interface WorkspaceThreadsProps {
   onDelete: (thread: Thread) => void
 }
 
-/** Nested conversation list; only mounts (and fetches) while its folder is open. */
+/**
+ * Nested conversation list. Always mounts (and fetches) so read state stays
+ * current, but when the folder is collapsed it shows only the conversations
+ * that still warrant attention — the active chat, anything running, and any
+ * pending unread replies — hiding the rest.
+ */
 function WorkspaceThreads({
   workspaceId,
+  isOpen,
   activeThreadId,
   activeRuns,
   selection,
@@ -921,16 +927,31 @@ function WorkspaceThreads({
     }
   }, [threads, activeThreadId])
 
+  // While collapsed, keep only chats that still need attention: the active
+  // conversation, anything currently running, and pending unread replies.
+  const visibleThreads = useMemo(() => {
+    if (isOpen) return threads
+    return threads.filter(
+      (thread) =>
+        thread.id === activeThreadId ||
+        activeRuns.has(thread.id) ||
+        isUnread(thread.id, thread.updated_at)
+    )
+  }, [isOpen, threads, activeThreadId, activeRuns, isUnread])
+
+  // Collapsed with nothing worth surfacing: render nothing at all.
+  if (!isOpen && visibleThreads.length === 0) return null
+
   return (
     <SidebarMenuSub className="mx-2 px-1.5">
-      {threadsQuery.isLoading ? (
+      {isOpen && threadsQuery.isLoading ? (
         <li className="px-2 py-1 text-[11px] text-muted-foreground">Loading…</li>
-      ) : threads.length === 0 ? (
+      ) : isOpen && threads.length === 0 ? (
         <li className="px-2 py-1 text-[11px] text-muted-foreground">
           No conversations
         </li>
       ) : (
-        threads.map((thread) => (
+        visibleThreads.map((thread) => (
           <SessionRow
             key={thread.id}
             thread={thread}

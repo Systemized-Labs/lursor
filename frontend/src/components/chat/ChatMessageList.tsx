@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils"
 import {
   ChatAssistantGroup,
   ChatMessageBubble,
+  ChatPendingReply,
 } from "@/components/chat/ChatMessageBubble"
 import type { ChatMessage } from "@/agui/types"
 
@@ -121,6 +122,9 @@ export interface ChatMessageListProps {
   /** Applied to the list root (scroll + vertical spacing). */
   className?: string
   isLoadingMessages?: boolean
+  /** A turn is in flight: show the working loader under the last user prompt
+   *  until the assistant's first event lands. */
+  isStreaming?: boolean
   /** Rendered in place of the timeline when there are no messages. */
   empty?: ReactNode
   renderIcons?: boolean
@@ -143,6 +147,7 @@ export function ChatMessageList({
   resetKey,
   className,
   isLoadingMessages,
+  isStreaming,
   empty,
   renderIcons,
   showScrollToBottom,
@@ -158,6 +163,13 @@ export function ChatMessageList({
 
   const hasOlder = messages.length > visibleCount
   const visibleMessages = hasOlder ? messages.slice(-visibleCount) : messages
+
+  // Streaming has begun but the assistant hasn't emitted its first event yet:
+  // the last message is still the user's prompt. Show a working loader hugging
+  // it so the send doesn't look stuck during the round-trip.
+  const awaitingReply =
+    Boolean(isStreaming) &&
+    messages[messages.length - 1]?.role === "user"
 
   // Revealing older messages prepends content above the viewport, which would
   // otherwise shove everything the user is reading downward. Capture the
@@ -200,7 +212,7 @@ export function ChatMessageList({
                 </Button>
               </div>
             )}
-            {groupTurns(groupMessages(visibleMessages)).map((turn) => (
+            {groupTurns(groupMessages(visibleMessages)).map((turn, i, turns) => (
               <div key={turn.id} className="space-y-4">
                 {turn.user && (
                   <ChatMessageBubble
@@ -208,8 +220,10 @@ export function ChatMessageList({
                     renderIcons={renderIcons}
                   />
                 )}
-                {turn.assistant && (
+                {turn.assistant ? (
                   <ChatAssistantGroup messages={turn.assistant.messages} />
+                ) : (
+                  awaitingReply && i === turns.length - 1 && <ChatPendingReply />
                 )}
               </div>
             ))}
