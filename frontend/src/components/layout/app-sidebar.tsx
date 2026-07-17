@@ -16,7 +16,13 @@ import {
   Trash,
   X,
 } from "@phosphor-icons/react"
-import { type ComponentType, useEffect, useMemo, useState } from "react"
+import {
+  type ComponentType,
+  type MouseEvent,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 import {
   Link,
   matchPath,
@@ -39,6 +45,8 @@ import {
   useDeleteWorkspace,
   useUpdateWorkspace,
   useWorkspaces,
+  workspaceKeys,
+  workspacesApi,
 } from "@/api/workspaces"
 import { useGitHubConfig } from "@/api/github"
 import {
@@ -79,6 +87,11 @@ import { ThemePicker } from "@/components/ui/theme-picker"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
 import { CloneIntoWorkspaceDialog } from "@/pages/workspaces/clone-into-workspace-dialog"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
+import {
+  type SelectMods,
+  type SidebarSelection,
+  useSidebarSelection,
+} from "@/components/layout/use-sidebar-selection"
 import { cn } from "@/lib/utils"
 import { isMacElectron } from "@/lib/platform"
 
@@ -172,6 +185,20 @@ export function AppSidebar() {
   const updateWorkspace = useUpdateWorkspace()
   const deleteWorkspace = useDeleteWorkspace()
 
+  const selection = useSidebarSelection()
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+
+  // Esc exits sticky selection mode (unless the confirm dialog owns Esc).
+  useEffect(() => {
+    if (selection.count === 0 || bulkDeleteOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") selection.clear()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [selection, bulkDeleteOpen])
+
   const closeMobile = () => {
     if (isMobile) setOpenMobile(false)
   }
@@ -254,7 +281,45 @@ export function AppSidebar() {
     }
   }
 
+  async function handleBulkDelete() {
+    setBulkDeleting(true)
+    try {
+      if (selection.kind === "workspace") {
+        const ids = [...selection.workspaceIds]
+        await Promise.all(ids.map((id) => workspacesApi.remove(id)))
+        qc.invalidateQueries({ queryKey: workspaceKeys.all })
+        // If the open workspace was among them, leave the chat surface.
+        if (activeWorkspaceId && ids.includes(activeWorkspaceId)) {
+          navigate("/customization")
+        }
+        toast.success(`${ids.length} workspace${ids.length > 1 ? "s" : ""} deleted`)
+      } else if (selection.kind === "thread") {
+        const threads = [...selection.threads.values()]
+        await Promise.all(threads.map((t) => threadsApi.remove(t.id)))
+        // Refresh every workspace whose conversations changed.
+        for (const wsId of new Set(threads.map((t) => t.workspace_id))) {
+          qc.invalidateQueries({ queryKey: threadKeys.byWorkspace(wsId) })
+        }
+        // If the open conversation was deleted, fall back to a new one.
+        const openDeleted = threads.find((t) => t.id === activeThreadId)
+        if (openDeleted) {
+          navigate(`/workspaces/${openDeleted.workspace_id}/chat`)
+        }
+        toast.success(
+          `${threads.length} conversation${threads.length > 1 ? "s" : ""} deleted`
+        )
+      }
+      selection.clear()
+      setBulkDeleteOpen(false)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete")
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const workspaces = workspacesQuery.data ?? []
+  const orderedWorkspaceIds = workspaces.map((ws) => ws.id)
 
   return (
     <Sidebar collapsible="icon">
@@ -362,6 +427,41 @@ export function AppSidebar() {
               <FolderPlus className="size-4" />
             </button>
           </div>
+
+          {/* Bulk-selection toolbar — appears once ⌘/⇧-click selects items.
+              While it's showing, plain clicks toggle selection (sticky mode);
+              "Done" or Esc exits back to normal navigation. */}
+          {selection.count > 0 ? (
+            <div className="mx-1 mb-1 flex items-center gap-1 rounded-md border border-sidebar-border bg-sidebar-accent/50 px-2 py-1 group-data-[collapsible=icon]:hidden">
+              <span className="flex-1 truncate text-xs font-medium text-sidebar-foreground">
+                {selection.count}{" "}
+                {selection.kind === "workspace"
+                  ? selection.count > 1
+                    ? "workspaces"
+                    : "workspace"
+                  : selection.count > 1
+                    ? "conversations"
+                    : "conversation"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setBulkDeleteOpen(true)}
+                title="Delete selected"
+                aria-label="Delete selected"
+                className="flex size-6 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
+              >
+                <Trash className="size-4" />
+              </button>
+              <button
+                type="button"
+                onClick={selection.clear}
+                aria-label="Done selecting"
+                className="rounded-md px-2 py-0.5 text-xs font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              >
+                Done
+              </button>
+            </div>
+          ) : null}
           <SidebarGroupContent className="scrollbar-hover min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:overflow-hidden">
             <SidebarMenu>
               {workspacesQuery.isLoading ? (
@@ -380,6 +480,11 @@ export function AppSidebar() {
                     name={ws.name}
                     isOpen={openWorkspaces.has(ws.id)}
                     isActive={activeWorkspaceId === ws.id}
+                    isSelected={selection.isWorkspaceSelected(ws.id)}
+                    selection={selection}
+                    onSelect={(mods) =>
+                      selection.selectWorkspace(ws.id, mods, orderedWorkspaceIds)
+                    }
                     activeThreadId={activeThreadId}
                     activeRuns={activeRuns}
                     onToggle={() => toggleWorkspace(ws.id)}
@@ -578,6 +683,30 @@ export function AppSidebar() {
         onConfirm={handleDeleteWorkspace}
       />
 
+      {/* Bulk delete confirmation */}
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={(open) => !open && setBulkDeleteOpen(false)}
+        title={
+          selection.kind === "workspace"
+            ? "Delete workspaces"
+            : "Delete conversations"
+        }
+        description={
+          selection.kind === "workspace"
+            ? `This will permanently delete ${selection.count} workspace${
+                selection.count > 1 ? "s" : ""
+              } and all of their conversations.`
+            : `This will permanently delete ${selection.count} conversation${
+                selection.count > 1 ? "s" : ""
+              }.`
+        }
+        confirmLabel="Delete"
+        destructive
+        loading={bulkDeleting}
+        onConfirm={handleBulkDelete}
+      />
+
       {/* Clone a GitHub repo into the selected workspace's directory */}
       {cloneWsTarget ? (
         <CloneIntoWorkspaceDialog
@@ -601,6 +730,9 @@ interface WorkspaceRowProps {
   name: string
   isOpen: boolean
   isActive: boolean
+  isSelected: boolean
+  selection: SidebarSelection
+  onSelect: (mods: SelectMods) => void
   activeThreadId: string | null
   activeRuns: Set<string>
   onToggle: () => void
@@ -618,6 +750,9 @@ function WorkspaceRow({
   name,
   isOpen,
   isActive,
+  isSelected,
+  selection,
+  onSelect,
   activeThreadId,
   activeRuns,
   onToggle,
@@ -629,11 +764,40 @@ function WorkspaceRow({
   onDeleteWorkspace,
   onCloneWorkspace,
 }: WorkspaceRowProps) {
+  const handleClick = (e: MouseEvent) => {
+    // ⌘/ctrl toggles this workspace; ⇧ extends a range. Once a workspace
+    // selection is active ("sticky" mode) a plain click also toggles, so the
+    // selection is never lost by an errant click and folders don't navigate
+    // away mid-select. Esc / Done exits. A plain click while nothing (or only
+    // conversations) is selected keeps the normal folder open/close behaviour.
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault()
+      onSelect({ toggle: true, range: false })
+    } else if (e.shiftKey) {
+      e.preventDefault()
+      onSelect({ toggle: false, range: true })
+    } else if (selection.kind === "workspace") {
+      e.preventDefault()
+      onSelect({ toggle: true, range: false })
+    } else {
+      onToggle()
+    }
+  }
+
   return (
     <SidebarMenuItem className="group/workspace relative">
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <SidebarMenuButton isActive={isActive} tooltip={name} onClick={onToggle}>
+          <SidebarMenuButton
+            isActive={isActive}
+            tooltip={name}
+            onClick={handleClick}
+            className={cn(
+              "select-none",
+              isSelected &&
+                "bg-primary/15 text-foreground hover:bg-primary/20 data-[active=true]:bg-primary/25"
+            )}
+          >
             {isOpen ? (
               <FolderOpen className="size-4" />
             ) : (
@@ -679,6 +843,7 @@ function WorkspaceRow({
           workspaceId={workspaceId}
           activeThreadId={activeThreadId}
           activeRuns={activeRuns}
+          selection={selection}
           onNavigate={onNavigate}
           onRename={onRename}
           onDelete={onDelete}
@@ -692,6 +857,7 @@ interface WorkspaceThreadsProps {
   workspaceId: string
   activeThreadId: string | null
   activeRuns: Set<string>
+  selection: SidebarSelection
   onNavigate: () => void
   onRename: (thread: Thread) => void
   onDelete: (thread: Thread) => void
@@ -702,6 +868,7 @@ function WorkspaceThreads({
   workspaceId,
   activeThreadId,
   activeRuns,
+  selection,
   onNavigate,
   onRename,
   onDelete,
@@ -724,6 +891,9 @@ function WorkspaceThreads({
             thread={thread}
             isActive={thread.id === activeThreadId}
             running={activeRuns.has(thread.id)}
+            isSelected={selection.isThreadSelected(thread.id)}
+            selection={selection}
+            onSelect={(mods) => selection.selectThread(thread, mods, threads)}
             onNavigate={onNavigate}
             onRename={onRename}
             onDelete={onDelete}
@@ -738,6 +908,9 @@ interface SessionRowProps {
   thread: Thread
   isActive: boolean
   running: boolean
+  isSelected: boolean
+  selection: SidebarSelection
+  onSelect: (mods: SelectMods) => void
   onNavigate: () => void
   onRename: (thread: Thread) => void
   onDelete: (thread: Thread) => void
@@ -747,18 +920,48 @@ function SessionRow({
   thread,
   isActive,
   running,
+  isSelected,
+  selection,
+  onSelect,
   onNavigate,
   onRename,
   onDelete,
 }: SessionRowProps) {
+  const handleClick = (e: MouseEvent) => {
+    // ⌘/ctrl toggles this conversation; ⇧ extends a range within this
+    // workspace. Once any selection is active ("sticky" mode) a plain click
+    // toggles too instead of navigating, so clicks never lose the selection or
+    // yank you to another chat. Esc / Done exits back to normal navigation.
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault()
+      onSelect({ toggle: true, range: false })
+    } else if (e.shiftKey) {
+      e.preventDefault()
+      onSelect({ toggle: false, range: true })
+    } else if (selection.count > 0) {
+      e.preventDefault()
+      onSelect({ toggle: true, range: false })
+    } else {
+      onNavigate()
+    }
+  }
+
   return (
     <SidebarMenuSubItem className="group/session">
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <SidebarMenuSubButton asChild isActive={isActive}>
+          <SidebarMenuSubButton
+            asChild
+            isActive={isActive}
+            className={cn(
+              "select-none",
+              isSelected &&
+                "bg-primary/15 text-foreground hover:bg-primary/20 data-[active=true]:bg-primary/25"
+            )}
+          >
             <Link
               to={`/workspaces/${thread.workspace_id}/chat?c=${thread.id}`}
-              onClick={onNavigate}
+              onClick={handleClick}
             >
               {running ? (
                 <DotGridLoader

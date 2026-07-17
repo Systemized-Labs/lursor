@@ -530,7 +530,14 @@ export function useChat(options: UseChatOptions): UseChat {
                 if (goal) handlers.onGoalStatus(goal)
               }
             },
-            onRunErrorEvent: ({ event }) => handlers.onError(event.message),
+            // The AG-UI client turns an aborted fetch (switch/stop) into a
+            // RUN_ERROR event with code "abort" rather than rejecting runAgent, so
+            // the try/catch below never sees it. Drop it here — it's expected, not
+            // a failure — otherwise "BodyStreamBuffer was aborted" paints as an error.
+            onRunErrorEvent: ({ event }) => {
+              if (event.code === "abort" || isAbortError(event.rawEvent)) return
+              handlers.onError(event.message)
+            },
           }
         )
       } catch (err) {
