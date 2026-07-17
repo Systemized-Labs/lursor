@@ -17,7 +17,6 @@ export interface Agent {
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   extra_config: Record<string, unknown>
-  skill_ids: string[]
   tool_ids: string[]
   created_at: string
   updated_at: string
@@ -37,9 +36,11 @@ export interface AgentInput {
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   extra_config: Record<string, unknown>
-  skill_ids: string[]
   tool_ids: string[]
 }
+
+/** Where a skill lives: user-global, or scoped to one workspace directory. */
+export type SkillScope = "global" | "workspace"
 
 export interface Skill {
   id: string
@@ -47,6 +48,11 @@ export interface Skill {
   name: string
   description: string
   content: string
+  // global (~/.lursor/skills) or workspace (<workspace>/.agents/skills). On a
+  // slug collision the workspace copy wins at build time.
+  scope: SkillScope
+  // Owning workspace when scope === "workspace"; null for global skills.
+  workspace_id: string | null
   // Bundled files discovered in the skill folder (relative paths). These are
   // what the agent can load via read_skill_resource / run_skill_script.
   resources: string[]
@@ -59,6 +65,10 @@ export interface SkillInput {
   name: string
   description: string
   content: string
+  // Defaults to "global" on the backend when omitted; set both to create a
+  // workspace-scoped skill.
+  scope?: SkillScope
+  workspace_id?: string | null
 }
 
 export interface Subagent {
@@ -78,7 +88,6 @@ export interface Subagent {
   /** When off, the subagent is kept but excluded from every agent at build time. */
   enabled: boolean
   extra_config: Record<string, unknown>
-  skill_ids: string[]
   tool_ids: string[]
   /** Set when this row overrides a pydantic-deep built-in of the same name. */
   builtin_name: string | null
@@ -101,7 +110,6 @@ export interface SubagentInput {
   tool_choice: ToolChoice
   enabled: boolean
   extra_config: Record<string, unknown>
-  skill_ids: string[]
   tool_ids: string[]
 }
 

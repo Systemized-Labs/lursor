@@ -9,9 +9,22 @@ import {
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
-import type { Skill } from "@/api/types"
-import { useDeleteSkill, useImportSkills, useSkills } from "@/api/skills"
+import type { Skill, SkillScope } from "@/api/types"
+import {
+  type SkillScopeFilter,
+  useDeleteSkill,
+  useImportSkills,
+  useSkills,
+} from "@/api/skills"
+import { useWorkspaces } from "@/api/workspaces"
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Card,
   CardContent,
@@ -32,8 +45,23 @@ import { SkillFormDialog } from "./skill-form-dialog"
 
 const DESCRIPTION = "Reusable markdown instructions for your agents."
 
+// The scope selector's value: "global", or a workspace id for that workspace's
+// own skills. Global skills apply to every agent everywhere; workspace skills
+// live in `<workspace>/.agents/skills/` and only apply while an agent runs there.
+const GLOBAL = "global"
+
 export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
-  const { data: skills, isLoading, isError, error } = useSkills()
+  const [scopeKey, setScopeKey] = useState<string>(GLOBAL)
+  const workspacesQuery = useWorkspaces()
+
+  const filter: SkillScopeFilter =
+    scopeKey === GLOBAL
+      ? { scope: "global" }
+      : { scope: "workspace", workspace_id: scopeKey }
+  const newSkillScope: SkillScope = scopeKey === GLOBAL ? "global" : "workspace"
+  const newSkillWorkspaceId = scopeKey === GLOBAL ? null : scopeKey
+
+  const { data: skills, isLoading, isError, error } = useSkills(filter)
   const deleteSkill = useDeleteSkill()
   const importSkills = useImportSkills()
 
@@ -61,7 +89,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
   async function importFiles(files: File[]) {
     if (files.length === 0) return
     try {
-      const created = await importSkills.mutateAsync(files)
+      const created = await importSkills.mutateAsync({ files, filter })
       toast.success(
         created.length === 1
           ? `Imported "${created[0].name}"`
@@ -89,8 +117,26 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
     }
   }
 
+  const workspaces = workspacesQuery.data ?? []
+  const scopeSelector = (
+    <Select value={scopeKey} onValueChange={setScopeKey}>
+      <SelectTrigger className="w-full sm:w-56">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={GLOBAL}>Global (all workspaces)</SelectItem>
+        {workspaces.map((ws) => (
+          <SelectItem key={ws.id} value={ws.id}>
+            {ws.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+
   const action = (
     <div className="flex items-center gap-2">
+      {scopeSelector}
       <input
         ref={fileInputRef}
         type="file"
@@ -153,8 +199,12 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
         </p>
       ) : !skills || skills.length === 0 ? (
         <EmptyState
-          title="No skills yet"
-          description="Create a skill to share instructions across agents."
+          title={scopeKey === GLOBAL ? "No global skills yet" : "No workspace skills yet"}
+          description={
+            scopeKey === GLOBAL
+              ? "Global skills apply to every agent, in every workspace."
+              : "Workspace skills live in this workspace's folder and apply only while an agent runs here."
+          }
           action={
             <Button onClick={openCreate}>
               <Plus className="h-4 w-4" />
@@ -225,6 +275,8 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
         open={formOpen}
         onOpenChange={setFormOpen}
         skill={editing}
+        scope={newSkillScope}
+        workspaceId={newSkillWorkspaceId}
       />
 
       <ConfirmDialog

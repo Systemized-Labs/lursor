@@ -156,9 +156,11 @@ export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
                     web
                   </Badge>
                 ) : null}
-                <Badge variant="outline" className="font-normal">
-                  {agent.skill_ids.length} skills
-                </Badge>
+                {agent.include_skills ? (
+                  <Badge variant="outline" className="font-normal">
+                    skills
+                  </Badge>
+                ) : null}
                 <Badge variant="outline" className="font-normal">
                   {agent.tool_ids.length} tools
                 </Badge>

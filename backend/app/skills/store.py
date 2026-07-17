@@ -1,16 +1,27 @@
 """On-disk skill storage following the Anthropic skill standard.
 
-A skill lives in ``<skills_dir>/<slug>/`` and always contains a ``SKILL.md``
-with YAML frontmatter (``name``, ``description``) and a markdown body. The folder
-may also carry bundled **resource** files (``.md``/``.json``/``.yaml``/``.yml``/
-``.csv``/``.xml``/``.txt`` at any depth) and **scripts** (``*.py`` in the folder
-root or a ``scripts/`` subdirectory). These are exactly the files
-``pydantic_deep``'s ``SkillsDirectory`` discovers at run time, so what the UI
-shows here matches what the agent actually loads.
+A skill lives in ``<root>/<slug>/`` and always contains a ``SKILL.md`` with YAML
+frontmatter (``name``, ``description``) and a markdown body. The folder may also
+carry bundled **resource** files (``.md``/``.json``/``.yaml``/``.yml``/``.csv``/
+``.xml``/``.txt`` at any depth) and **scripts** (``*.py`` in the folder root or a
+``scripts/`` subdirectory). These are exactly the files ``pydantic_deep``'s
+``SkillsDirectory`` discovers at run time, so what the UI shows here matches what
+the agent actually loads.
 
-This module is filesystem-only — it never touches the database. The DB
-``skills`` table is a rebuildable index reconciled against this store in
-``app/api/skills.py``.
+Skills come from two **scopes**, mirroring Claude Code:
+
+- **global** — ``~/.lursor/skills/`` (``settings.skills_dir``): applies to every
+  agent, in every workspace.
+- **workspace** — ``<workspace.path>/.agents/skills/``: travels with the workspace
+  directory (git-shareable) and only applies while an agent runs in it.
+
+Every path helper takes an explicit ``root`` so the same code serves both scopes;
+``global_skills_root`` / ``workspace_skills_root`` resolve the two roots.
+``merged_skill_dirs`` is what the builder hands the deep agent for a run: the two
+scopes merged with the workspace copy winning on slug collision (closest scope).
+
+This module is filesystem-only — it never touches the database. The DB ``skills``
+table is a rebuildable index reconciled against this store in ``app/api/skills.py``.
 """
 
 from __future__ import annotations
@@ -33,6 +44,11 @@ RESOURCE_EXTENSIONS: frozenset[str] = frozenset(
 )
 SKILL_FILE = "SKILL.md"
 
+# Per-workspace skills live here, relative to the workspace directory. The
+# ``.agents/`` prefix matches the convention several agent tools/libraries already
+# use for on-disk configuration that travels with a repo.
+WORKSPACE_SKILLS_SUBDIR = Path(".agents") / "skills"
+
 
 @dataclass
 class ParsedSkill:
@@ -46,23 +62,35 @@ class ParsedSkill:
     scripts: list[str] = field(default_factory=list)
 
 
-def skills_root() -> Path:
+def global_skills_root() -> Path:
+    """The user-global skills root (``~/.lursor/skills/``), created if missing."""
     root = get_settings().skills_dir
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def path_for(slug: str) -> Path:
-    """Absolute path to a skill folder. ``slug`` is validated to stay under root."""
-    root = skills_root()
+def workspace_skills_root(workspace_path: str | Path) -> Path:
+    """The skills root for a workspace: ``<workspace.path>/.agents/skills/``.
+
+    Not created here — a workspace may have no skills, so absence is normal.
+    Directory creation is lazy, on the first workspace-scoped write.
+    """
+    return Path(workspace_path) / WORKSPACE_SKILLS_SUBDIR
+
+
+def path_for(slug: str, root: Path) -> Path:
+    """Absolute path to a skill folder under ``root``.
+
+    ``slug`` is validated to stay directly under ``root`` (no traversal).
+    """
     folder = (root / slug).resolve()
     if folder.parent != root.resolve():
         raise ValueError(f"Invalid skill slug: {slug!r}")
     return folder
 
 
-def exists(slug: str) -> bool:
-    return (path_for(slug) / SKILL_FILE).is_file()
+def exists(slug: str, root: Path) -> bool:
+    return (path_for(slug, root) / SKILL_FILE).is_file()
 
 
 def slugify(name: str, *, taken: set[str] | None = None) -> str:
@@ -83,12 +111,34 @@ def slugify(name: str, *, taken: set[str] | None = None) -> str:
     return slug
 
 
-def list_slugs() -> list[str]:
-    """Every folder directly under the skills root that holds a ``SKILL.md``."""
-    root = skills_root()
+def list_slugs(root: Path) -> list[str]:
+    """Every folder directly under ``root`` that holds a ``SKILL.md``.
+
+    Tolerates a missing ``root`` (returns ``[]``) since workspace roots are only
+    created on first write.
+    """
+    if not root.is_dir():
+        return []
     return sorted(
         p.name for p in root.iterdir() if p.is_dir() and (p / SKILL_FILE).is_file()
     )
+
+
+def merged_skill_dirs(workspace_path: str | Path) -> list[str]:
+    """Absolute skill folders for a run: global skills plus the workspace's own.
+
+    On a slug collision the workspace copy wins (closest scope, like Claude Code).
+    Reads the two roots directly off disk — independent of the DB index — so a run
+    always sees exactly what is on disk for wherever it is working.
+    """
+    by_slug: dict[str, Path] = {}
+    global_root = global_skills_root()
+    for slug in list_slugs(global_root):
+        by_slug[slug] = path_for(slug, global_root)
+    ws_root = workspace_skills_root(workspace_path)
+    for slug in list_slugs(ws_root):
+        by_slug[slug] = path_for(slug, ws_root)
+    return [str(p) for p in by_slug.values()]
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
@@ -138,9 +188,9 @@ def _discover_scripts(folder: Path) -> list[str]:
     return sorted(out)
 
 
-def read_skill(slug: str) -> ParsedSkill | None:
-    """Load a skill folder, or ``None`` if it has no ``SKILL.md``."""
-    folder = path_for(slug)
+def read_skill(slug: str, root: Path) -> ParsedSkill | None:
+    """Load a skill folder under ``root``, or ``None`` if it has no ``SKILL.md``."""
+    folder = path_for(slug, root)
     skill_md = folder / SKILL_FILE
     if not skill_md.is_file():
         return None
@@ -155,9 +205,11 @@ def read_skill(slug: str) -> ParsedSkill | None:
     )
 
 
-def write_skill(slug: str, *, name: str, description: str, content: str) -> None:
-    """Create/overwrite ``<slug>/SKILL.md`` with standard frontmatter."""
-    folder = path_for(slug)
+def write_skill(
+    slug: str, root: Path, *, name: str, description: str, content: str
+) -> None:
+    """Create/overwrite ``<root>/<slug>/SKILL.md`` with standard frontmatter."""
+    folder = path_for(slug, root)
     folder.mkdir(parents=True, exist_ok=True)
     frontmatter = yaml.safe_dump(
         {"name": name, "description": description},
@@ -169,8 +221,8 @@ def write_skill(slug: str, *, name: str, description: str, content: str) -> None
     (folder / SKILL_FILE).write_text(doc, encoding="utf-8")
 
 
-def delete_skill(slug: str) -> None:
-    folder = path_for(slug)
+def delete_skill(slug: str, root: Path) -> None:
+    folder = path_for(slug, root)
     if folder.is_dir():
         shutil.rmtree(folder)
 
@@ -178,9 +230,9 @@ def delete_skill(slug: str) -> None:
 # --- Bundled resource / script files -------------------------------------------
 
 
-def _resource_path(slug: str, rel: str) -> Path:
+def _resource_path(slug: str, root: Path, rel: str) -> Path:
     """Resolve a file inside a skill folder, guarding against path traversal."""
-    folder = path_for(slug).resolve()
+    folder = path_for(slug, root).resolve()
     target = (folder / rel).resolve()
     try:
         target.relative_to(folder)
@@ -191,18 +243,18 @@ def _resource_path(slug: str, rel: str) -> Path:
     return target
 
 
-def read_file(slug: str, rel: str) -> str:
-    return _resource_path(slug, rel).read_text(encoding="utf-8")
+def read_file(slug: str, root: Path, rel: str) -> str:
+    return _resource_path(slug, root, rel).read_text(encoding="utf-8")
 
 
-def write_file(slug: str, rel: str, content: str) -> None:
-    target = _resource_path(slug, rel)
+def write_file(slug: str, root: Path, rel: str, content: str) -> None:
+    target = _resource_path(slug, root, rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
 
 
-def delete_file(slug: str, rel: str) -> None:
-    target = _resource_path(slug, rel)
+def delete_file(slug: str, root: Path, rel: str) -> None:
+    target = _resource_path(slug, root, rel)
     if target.is_file():
         target.unlink()
 
@@ -262,27 +314,29 @@ def find_skill_folders(root: Path) -> list[Path]:
     return chosen
 
 
-def import_folder(src: Path, *, taken: set[str]) -> str:
-    """Copy an on-disk skill folder into the store under a fresh slug."""
+def import_folder(src: Path, root: Path, *, taken: set[str]) -> str:
+    """Copy an on-disk skill folder into ``root`` under a fresh slug."""
     frontmatter, _ = _split_frontmatter((src / SKILL_FILE).read_text(encoding="utf-8"))
     base = str(frontmatter.get("name") or src.name)
     slug = slugify(base, taken=taken)
     taken.add(slug)
-    shutil.copytree(src, path_for(slug))
+    shutil.copytree(src, path_for(slug, root))
     return slug
 
 
-def import_markdown(text: str, *, fallback_name: str, taken: set[str]) -> str:
-    """Create a skill from a single SKILL.md/markdown document."""
+def import_markdown(
+    text: str, root: Path, *, fallback_name: str, taken: set[str]
+) -> str:
+    """Create a skill in ``root`` from a single SKILL.md/markdown document."""
     frontmatter, body = _split_frontmatter(text)
     name = str(frontmatter.get("name") or fallback_name)
     slug = slugify(name, taken=taken)
     taken.add(slug)
     if frontmatter:
         # Already standard-shaped: preserve it verbatim (may carry extra keys).
-        folder = path_for(slug)
+        folder = path_for(slug, root)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / SKILL_FILE).write_text(text.strip() + "\n", encoding="utf-8")
     else:
-        write_skill(slug, name=name, description="", content=body)
+        write_skill(slug, root, name=name, description="", content=body)
     return slug

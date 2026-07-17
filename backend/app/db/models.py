@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import JSON, Column
+from sqlalchemy import Enum as SAEnum
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -37,22 +38,14 @@ class TimestampMixin(SQLModel):
 # --- Link tables (many-to-many) -------------------------------------------------
 
 
-class AgentSkillLink(SQLModel, table=True):
-    __tablename__ = "agent_skills"
-    agent_id: str = Field(foreign_key="agents.id", primary_key=True)
-    skill_id: str = Field(foreign_key="skills.id", primary_key=True)
+# Skills are no longer linked per-agent (see :class:`Skill`): they are discovered
+# by *scope* (global + workspace) at build time. Tools remain per-agent for now.
 
 
 class AgentToolLink(SQLModel, table=True):
     __tablename__ = "agent_tools"
     agent_id: str = Field(foreign_key="agents.id", primary_key=True)
     tool_id: str = Field(foreign_key="tools.id", primary_key=True)
-
-
-class SubagentSkillLink(SQLModel, table=True):
-    __tablename__ = "subagent_skills"
-    subagent_id: str = Field(foreign_key="subagents.id", primary_key=True)
-    skill_id: str = Field(foreign_key="skills.id", primary_key=True)
 
 
 class SubagentToolLink(SQLModel, table=True):
@@ -126,14 +119,34 @@ class ThreadStatus(StrEnum):
     stopped = "stopped"
 
 
+class SkillScope(StrEnum):
+    """Where a skill lives — mirrors Claude Code's user-global / project split.
+
+    ``global`` skills sit under ``settings.skills_dir`` and apply to every agent in
+    every workspace. ``workspace`` skills sit under ``<workspace.path>/.agents/skills/``
+    and apply only while an agent runs in that workspace. On a slug collision the
+    workspace copy wins (closest scope). See ``app/skills/store.py``.
+    """
+
+    global_ = "global"
+    workspace = "workspace"
+
+
 class Skill(TimestampMixin, table=True):
     """Index row for an on-disk skill folder (Anthropic skill standard).
 
-    The source of truth is the folder ``<skills_dir>/<slug>/`` containing a
-    ``SKILL.md`` (+ optional resources and ``scripts/``); see ``app/skills/store.py``.
-    This row exists so agents can link to a skill by a stable id and so listing is
-    cheap. ``name``/``description``/``content`` are a cache of the folder's
-    contents, refreshed from disk on reconcile (``api/skills.py``).
+    The source of truth is the folder ``<root>/<slug>/`` containing a ``SKILL.md``
+    (+ optional resources and ``scripts/``), where ``<root>`` depends on the
+    :class:`SkillScope`; see ``app/skills/store.py``. Skills are **not** linked to
+    agents — an agent discovers whatever exists in the global scope plus its
+    current workspace's scope at build time, gated only by its ``include_skills``
+    toggle. This row exists so listing is cheap and so the UI has a stable id;
+    ``name``/``description``/``content`` are a cache of the folder's contents,
+    refreshed from disk on reconcile (``api/skills.py``).
+
+    Identity is ``(scope, workspace_id, slug)`` — a workspace may legitimately
+    redefine a global slug (that is the collision case, resolved at build time).
+    ``workspace_id`` is set only when ``scope == "workspace"``.
     """
 
     __tablename__ = "skills"
@@ -142,17 +155,25 @@ class Skill(TimestampMixin, table=True):
     name: str = Field(index=True)
     description: str = ""
     content: str = ""  # cached markdown body (disk is authoritative)
-
-    agents: list["Agent"] = Relationship(
-        back_populates="skills",
-        link_model=AgentSkillLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
+    # Store the enum's *value* ("global"/"workspace"), not its member name — the
+    # member ``global_`` is spelled with a trailing underscore only because
+    # ``global`` is a Python keyword. ``values_callable`` keeps the DB column
+    # readable and matches what the migration/API write (a plain VARCHAR value).
+    scope: SkillScope = Field(
+        default=SkillScope.global_,
+        sa_column=Column(
+            SAEnum(
+                SkillScope,
+                name="skillscope",
+                values_callable=lambda enum: [m.value for m in enum],
+            ),
+            nullable=False,
+            index=True,
+            server_default=SkillScope.global_.value,
+        ),
     )
-    subagents: list["Subagent"] = Relationship(
-        back_populates="skills",
-        link_model=SubagentSkillLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
-    )
+    # Owning workspace when scope == "workspace"; null for global skills.
+    workspace_id: str | None = Field(default=None, foreign_key="workspaces.id", index=True)
 
 
 class PromptTemplate(TimestampMixin, table=True):
@@ -220,11 +241,8 @@ class Agent(TimestampMixin, table=True):
     # Escape hatch for future kwargs without a schema change.
     extra_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
-    skills: list[Skill] = Relationship(
-        back_populates="agents",
-        link_model=AgentSkillLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
-    )
+    # Skills are not linked here — they are discovered by scope (global +
+    # workspace) at build time, gated by ``include_skills`` above.
     tools: list[Tool] = Relationship(
         back_populates="agents",
         link_model=AgentToolLink,
@@ -254,7 +272,7 @@ class Subagent(TimestampMixin, table=True):
     # pydantic-deep library builds subagents with a stripped-down factory (no
     # skills/memory/plan/nesting, thinking off) to save tokens; the builder gives
     # each subagent its own factory so these knobs take effect (see
-    # ``agents/builder.py``). ``include_skills`` pairs with the attached ``skills``.
+    # ``agents/builder.py``). ``include_skills`` gates scope-discovered skills.
     include_todo: bool = True
     include_subagents: bool = False
     include_skills: bool = True
@@ -279,11 +297,8 @@ class Subagent(TimestampMixin, table=True):
     # normal roster listing, and win over the library default at build time.
     builtin_name: str | None = Field(default=None, index=True)
 
-    skills: list[Skill] = Relationship(
-        back_populates="subagents",
-        link_model=SubagentSkillLink,
-        sa_relationship_kwargs={"lazy": "selectin"},
-    )
+    # Like :class:`Agent`, subagents discover skills by scope at build time (no
+    # per-subagent link); ``include_skills`` gates whether they get any.
     tools: list[Tool] = Relationship(
         back_populates="subagents",
         link_model=SubagentToolLink,

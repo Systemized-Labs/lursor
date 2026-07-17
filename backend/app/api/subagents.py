@@ -25,7 +25,7 @@ from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
 )
-from app.db.models import AppConfig, Skill, Subagent, Tool
+from app.db.models import AppConfig, Subagent, Tool
 from app.db.session import get_session
 from app.schemas.subagent import (
     BuiltinOverrideUpdate,
@@ -208,10 +208,9 @@ async def create_subagent(
 ):
     # Resolve links before the row joins the session, so assigning the
     # collections cannot trigger a sync lazy-load on a flushed-but-unloaded object.
-    skills = await _resolve(session, Skill, payload.skill_ids)
     tools = await _resolve(session, Tool, payload.tool_ids)
-    data = payload.model_dump(exclude={"skill_ids", "tool_ids"})
-    subagent = Subagent(**data, skills=skills, tools=tools)
+    data = payload.model_dump(exclude={"tool_ids"})
+    subagent = Subagent(**data, tools=tools)
     session.add(subagent)
     await session.commit()
     return SubagentRead.from_subagent(subagent)
@@ -234,11 +233,9 @@ async def update_subagent(
     subagent = await session.get(Subagent, subagent_id)
     if subagent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Subagent not found")
-    data = payload.model_dump(exclude_unset=True, exclude={"skill_ids", "tool_ids"})
+    data = payload.model_dump(exclude_unset=True, exclude={"tool_ids"})
     for key, value in data.items():
         setattr(subagent, key, value)
-    if payload.skill_ids is not None:
-        subagent.skills = await _resolve(session, Skill, payload.skill_ids)
     if payload.tool_ids is not None:
         subagent.tools = await _resolve(session, Tool, payload.tool_ids)
     session.add(subagent)

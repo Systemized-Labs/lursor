@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.agents.prompt_author import generate_prompt, improve_prompt
-from app.db.models import Agent, CustomProvider, Skill, Tool
+from app.db.models import Agent, CustomProvider, Tool
 from app.db.session import get_session
 from app.schemas.agent import (
     AgentCreate,
@@ -51,10 +51,9 @@ async def list_agents(session: AsyncSession = Depends(get_session)):
 async def create_agent(payload: AgentCreate, session: AsyncSession = Depends(get_session)):
     # Resolve links before the agent joins the session, so assigning the
     # collections cannot trigger a sync lazy-load on a flushed-but-unloaded object.
-    skills = await _resolve(session, Skill, payload.skill_ids)
     tools = await _resolve(session, Tool, payload.tool_ids)
-    data = payload.model_dump(exclude={"skill_ids", "tool_ids"})
-    agent = Agent(**data, skills=skills, tools=tools)
+    data = payload.model_dump(exclude={"tool_ids"})
+    agent = Agent(**data, tools=tools)
     session.add(agent)
     await session.commit()
     return AgentRead.from_agent(agent)
@@ -102,11 +101,9 @@ async def update_agent(
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
 
-    data = payload.model_dump(exclude_unset=True, exclude={"skill_ids", "tool_ids"})
+    data = payload.model_dump(exclude_unset=True, exclude={"tool_ids"})
     for key, value in data.items():
         setattr(agent, key, value)
-    if payload.skill_ids is not None:
-        agent.skills = await _resolve(session, Skill, payload.skill_ids)
     if payload.tool_ids is not None:
         agent.tools = await _resolve(session, Tool, payload.tool_ids)
 

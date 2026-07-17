@@ -419,9 +419,11 @@ def build_deep_agent(
     filtered out via a ``PrepareTools`` capability, so the agent can read and
     search the workspace but never modify it.
 
-    Skills attached to the agent are handed to the deep agent as skill
-    directories (on-disk SKILL.md folders with bundled resources/scripts). Tool
-    rows are catalogued in the DB but not yet wired into execution (see
+    Skills are discovered by scope (global + this workspace's ``.agents/skills``)
+    and handed to the deep agent as skill directories (on-disk SKILL.md folders
+    with bundled resources/scripts), the workspace winning on slug collision; see
+    ``skill_store.merged_skill_dirs``. ``row.include_skills`` gates them entirely.
+    Tool rows are catalogued in the DB but not yet wired into execution (see
     docs/PLAN.md — deferred); the deep agent ships its own builtin toolset.
 
     ``workspace_name`` / ``workspace_description`` orient the agent on disk: they
@@ -464,17 +466,17 @@ def build_deep_agent(
     # thinking is stored as an enum: "off" disables, otherwise pass the level string.
     thinking: bool | str = False if row.thinking.value == "off" else row.thinking.value
 
-    # Skills are on-disk folders (SKILL.md + resources + scripts). Hand the deep
-    # agent each attached skill's directory so it discovers the full standard —
-    # bundled resources (`read_skill_resource`) and scripts (`run_skill_script`) —
-    # not just the markdown body. See app/skills/store.py. Folders are guaranteed
-    # to exist by reconcile (startup + on every skills API call); skip any that
-    # are somehow missing rather than failing the whole run.
-    skill_dirs = [
-        str(skill_store.path_for(s.slug))
-        for s in row.skills
-        if s.slug and skill_store.exists(s.slug)
-    ]
+    # Skills are on-disk folders (SKILL.md + resources + scripts) discovered by
+    # *scope*, not linked per-agent: the user-global set (``~/.lursor/skills/``)
+    # plus this workspace's own (``<workspace>/.agents/skills/``), the workspace
+    # winning on slug collision. Hand the deep agent each folder so it discovers
+    # the full standard — bundled resources (`read_skill_resource`) and scripts
+    # (`run_skill_script`), not just the markdown body. ``include_skills`` is the
+    # master switch: when off, no skills of either scope are injected. See
+    # app/skills/store.py (``merged_skill_dirs``).
+    skill_dirs = (
+        skill_store.merged_skill_dirs(workspace_path) if row.include_skills else []
+    )
 
     # Global subagents apply only when the agent opts into subagents. We assemble
     # the full roster ourselves — user subagents plus the pydantic-deep built-ins

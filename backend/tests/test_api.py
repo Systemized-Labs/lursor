@@ -35,6 +35,62 @@ async def test_skill_and_tool_crud(client: AsyncClient):
     return skill, tool
 
 
+async def test_workspace_scoped_skills_and_precedence(client: AsyncClient):
+    """Skills come from two scopes; the workspace copy wins on slug collision.
+
+    Exercises the whole path the builder relies on: a workspace-scoped skill is
+    written under ``<workspace>/.agents/skills/`` and ``merged_skill_dirs`` returns
+    global + workspace dirs with the workspace winning when slugs collide.
+    """
+    import os
+
+    from app.skills import store
+
+    ws = (await client.post("/workspaces", json={"name": "Scoped"})).json()
+
+    # A global skill and a workspace skill that share the slug "shared".
+    g = (
+        await client.post("/skills", json={"name": "shared", "content": "GLOBAL"})
+    ).json()
+    assert g["scope"] == "global"
+    w = (
+        await client.post(
+            "/skills",
+            json={
+                "name": "shared",
+                "content": "WORKSPACE",
+                "scope": "workspace",
+                "workspace_id": ws["id"],
+            },
+        )
+    ).json()
+    assert w["scope"] == "workspace" and w["workspace_id"] == ws["id"]
+
+    # The workspace skill landed under <workspace>/.agents/skills/shared/.
+    ws_skill_md = os.path.join(ws["path"], ".agents", "skills", "shared", "SKILL.md")
+    assert os.path.isfile(ws_skill_md)
+
+    # A workspace skill requires a workspace_id.
+    bad = await client.post(
+        "/skills", json={"name": "x", "scope": "workspace"}
+    )
+    assert bad.status_code == 400
+
+    # Filtering by scope works.
+    ws_list = (
+        await client.get("/skills", params={"scope": "workspace", "workspace_id": ws["id"]})
+    ).json()
+    assert [s["id"] for s in ws_list] == [w["id"]]
+
+    # Precedence: merged dirs include both slugs' folders, workspace winning on
+    # the colliding "shared" slug.
+    dirs = store.merged_skill_dirs(ws["path"])
+    shared = [d for d in dirs if d.rstrip("/").endswith("/shared")]
+    assert len(shared) == 1
+    ws_root = os.path.realpath(os.path.join(ws["path"], ".agents", "skills"))
+    assert os.path.realpath(shared[0]).startswith(ws_root)
+
+
 async def test_skill_bundled_resources(client: AsyncClient):
     """A skill supports the full standard: bundled resource files and scripts."""
     skill = (
@@ -65,7 +121,7 @@ async def test_skill_bundled_resources(client: AsyncClient):
     from app.skills import store
 
     with pytest.raises(ValueError):
-        store.write_file(skill["slug"], "../escape.md", "x")
+        store.write_file(skill["slug"], store.global_skills_root(), "../escape.md", "x")
 
     # Deleting the skill removes the folder and its bundled files.
     assert (await client.delete(f"/skills/{sid}")).status_code == 204
@@ -165,7 +221,10 @@ async def test_import_skill_from_folder(client: AsyncClient):
 
 
 async def test_agent_with_links_and_workspace_thread(client: AsyncClient):
+    # Skills are global (scope-discovered), not linked to agents; agents only link
+    # tools now.
     skill = (await client.post("/skills", json={"name": "S1"})).json()
+    assert skill["scope"] == "global" and skill["workspace_id"] is None
     tool = (await client.post("/tools", json={"name": "T1"})).json()
 
     r = await client.post(
@@ -174,17 +233,16 @@ async def test_agent_with_links_and_workspace_thread(client: AsyncClient):
             "name": "Builder",
             "instructions": "Be helpful",
             "thinking": "medium",
-            "skill_ids": [skill["id"]],
             "tool_ids": [tool["id"]],
         },
     )
     assert r.status_code == 201, r.text
     agent = r.json()
-    assert agent["skill_ids"] == [skill["id"]]
+    assert "skill_ids" not in agent
     assert agent["tool_ids"] == [tool["id"]]
 
-    # Bad link id -> 400
-    bad = await client.post("/agents", json={"name": "X", "skill_ids": ["nope"]})
+    # Bad tool link id -> 400
+    bad = await client.post("/agents", json={"name": "X", "tool_ids": ["nope"]})
     assert bad.status_code == 400
 
     # Workspace creation; a directory should be created.
@@ -301,7 +359,6 @@ async def test_build_deep_agent_offline(client: AsyncClient, tmp_path):
     from app.db.models import Agent as AgentRow
 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
-    row.skills = []
     agent, deps = build_deep_agent(row, str(tmp_path))
     assert agent is not None
     assert deps is not None
@@ -319,7 +376,6 @@ async def test_build_deep_agent_injects_environment_block(client: AsyncClient, t
     from pydantic_ai.models.function import AgentInfo, FunctionModel
 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
-    row.skills = []
 
     seen: dict[str, str] = {}
 
@@ -362,7 +418,6 @@ async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient, 
     from pydantic_ai.models.function import AgentInfo, FunctionModel
 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
-    row.skills = []
     row.include_subagents = True  # ensure the `task` delegation tool is present
 
     # The pure filter keeps only allowlisted names.

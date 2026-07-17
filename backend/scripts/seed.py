@@ -40,8 +40,13 @@ async def seed_example_agent(session) -> None:
         "When responding, lead with the answer. Avoid preamble and "
         "restating the question. Prefer short paragraphs and lists.\n"
     )
-    slug = skill_store.slugify(name, taken=set(skill_store.list_slugs()))
-    skill_store.write_skill(slug, name=name, description=description, content=content)
+    # Skills live in the global scope now (no per-agent link) — any agent with
+    # ``include_skills`` on discovers them. Seed one global skill + one agent.
+    root = skill_store.global_skills_root()
+    slug = skill_store.slugify(name, taken=set(skill_store.list_slugs(root)))
+    skill_store.write_skill(
+        slug, root, name=name, description=description, content=content
+    )
     skill = Skill(slug=slug, name=name, description=description, content=content)
     agent = Agent(
         name="Assistant",
@@ -50,11 +55,10 @@ async def seed_example_agent(session) -> None:
         include_todo=True,
         include_skills=True,
         thinking=ThinkingLevel.low,
-        skills=[skill],
     )
-    session.add(agent)
+    session.add_all([skill, agent])
     await session.commit()
-    print(f"Seeded agent '{agent.name}' ({agent.id}) with skill '{skill.name}'.")
+    print(f"Seeded agent '{agent.name}' ({agent.id}) with global skill '{skill.name}'.")
 
 
 async def main() -> None:

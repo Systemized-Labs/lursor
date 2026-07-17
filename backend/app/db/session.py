@@ -58,6 +58,21 @@ async def _apply_lightweight_migrations(conn) -> None:
     skill_cols = await columns("skills")
     if "slug" not in skill_cols:
         await conn.execute(text("ALTER TABLE skills ADD COLUMN slug VARCHAR DEFAULT ''"))
+    # Scope columns for the global/workspace skill split. Existing rows are all
+    # global (they came from the single flat skills dir), so backfill scope.
+    if "scope" not in skill_cols:
+        await conn.execute(
+            text("ALTER TABLE skills ADD COLUMN scope VARCHAR DEFAULT 'global'")
+        )
+    if "workspace_id" not in skill_cols:
+        await conn.execute(text("ALTER TABLE skills ADD COLUMN workspace_id VARCHAR"))
+
+    # Skills are no longer linked per-agent/subagent — membership is derived from
+    # scope. Drop the join tables; existing links are intentionally discarded (the
+    # global scope now applies to every agent). SQLite ignores DROP on a missing
+    # table only with IF EXISTS.
+    await conn.execute(text("DROP TABLE IF EXISTS agent_skills"))
+    await conn.execute(text("DROP TABLE IF EXISTS subagent_skills"))
 
     subagent_cols = await columns("subagents")
     if "builtin_name" not in subagent_cols:

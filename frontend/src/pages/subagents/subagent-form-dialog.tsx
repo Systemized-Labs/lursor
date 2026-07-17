@@ -10,7 +10,6 @@ import type {
 } from "@/api/types"
 import { useCreateSubagent, useUpdateSubagent } from "@/api/subagents"
 import { usePromptTemplates } from "@/api/prompt-templates"
-import { useSkills } from "@/api/skills"
 import { useTools } from "@/api/tools"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Button } from "@/components/ui/button"
@@ -77,7 +76,6 @@ interface FormState {
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   extraConfigText: string
-  skill_ids: string[]
   tool_ids: string[]
 }
 
@@ -96,7 +94,6 @@ function emptyState(): FormState {
     thinking: "off",
     tool_choice: "auto",
     extraConfigText: "{}",
-    skill_ids: [],
     tool_ids: [],
   }
 }
@@ -116,7 +113,6 @@ function fromSubagent(subagent: Subagent): FormState {
     thinking: subagent.thinking,
     tool_choice: subagent.tool_choice ?? "auto",
     extraConfigText: JSON.stringify(subagent.extra_config ?? {}, null, 2),
-    skill_ids: subagent.skill_ids,
     tool_ids: subagent.tool_ids,
   }
 }
@@ -140,7 +136,6 @@ export function SubagentFormDialog({
   )
   const createSubagent = useCreateSubagent()
   const updateSubagent = useUpdateSubagent()
-  const skillsQuery = useSkills()
   const toolsQuery = useTools()
   const templatesQuery = usePromptTemplates()
   const isEdit = Boolean(subagent)
@@ -156,15 +151,6 @@ export function SubagentFormDialog({
     return [...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [templatesQuery.data])
 
-  const skillOptions = useMemo(
-    () =>
-      (skillsQuery.data ?? []).map((s) => ({
-        value: s.id,
-        label: s.name,
-        description: s.description,
-      })),
-    [skillsQuery.data]
-  )
   const toolOptions = useMemo(
     () =>
       (toolsQuery.data ?? []).map((t) => ({
@@ -238,7 +224,6 @@ export function SubagentFormDialog({
       // Enabled state is toggled from the card, not this form; preserve it.
       enabled: subagent?.enabled ?? true,
       extra_config: extraConfig,
-      skill_ids: form.skill_ids,
       tool_ids: form.tool_ids,
     }
     try {
@@ -406,25 +391,20 @@ export function SubagentFormDialog({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label>Skills</Label>
-              <MultiSelect
-                options={skillOptions}
-                selected={form.skill_ids}
-                onChange={(ids) => update("skill_ids", ids)}
-                emptyText="No skills created yet."
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>Tools</Label>
-              <MultiSelect
-                options={toolOptions}
-                selected={form.tool_ids}
-                onChange={(ids) => update("tool_ids", ids)}
-                emptyText="No tools created yet."
-              />
-            </div>
+          <div className="grid gap-2">
+            <Label>Tools</Label>
+            <MultiSelect
+              options={toolOptions}
+              selected={form.tool_ids}
+              onChange={(ids) => update("tool_ids", ids)}
+              emptyText="No tools created yet."
+            />
+            <p className="text-xs text-muted-foreground">
+              Skills are discovered by scope (global + workspace), not attached
+              here. Toggle the{" "}
+              <span className="font-medium text-foreground">Skills</span>{" "}
+              capability above to let this subagent use them.
+            </p>
           </div>
 
           <div className="grid gap-2">

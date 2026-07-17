@@ -83,7 +83,6 @@ interface FormState {
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   extraConfigText: string
-  skill_ids: string[]
   tool_ids: string[]
 }
 
@@ -102,7 +101,6 @@ function emptyState(): FormState {
     thinking: "off",
     tool_choice: "auto",
     extraConfigText: "{}",
-    skill_ids: [],
     tool_ids: [],
   }
 }
@@ -122,7 +120,6 @@ function fromAgent(agent: Agent): FormState {
     thinking: agent.thinking,
     tool_choice: agent.tool_choice ?? "auto",
     extraConfigText: JSON.stringify(agent.extra_config ?? {}, null, 2),
-    skill_ids: agent.skill_ids,
     tool_ids: agent.tool_ids,
   }
 }
@@ -139,7 +136,10 @@ export function AgentFormDialog({
   agent,
 }: AgentFormDialogProps) {
   const [form, setForm] = useState<FormState>(emptyState)
-  const skillsQuery = useSkills()
+  // Skills are no longer linked per-agent — they are discovered by scope (global
+  // + workspace) at build time. We still read the global set so prompt authoring
+  // stays capability-aware about what an agent with skills-on will see.
+  const skillsQuery = useSkills({ scope: "global" })
   const toolsQuery = useTools()
   const templatesQuery = usePromptTemplates()
   const createAgent = useCreateAgent()
@@ -178,15 +178,6 @@ export function AgentFormDialog({
     }
   }, [open, agent])
 
-  const skillOptions = useMemo(
-    () =>
-      (skillsQuery.data ?? []).map((s) => ({
-        value: s.id,
-        label: s.name,
-        description: s.description,
-      })),
-    [skillsQuery.data]
-  )
   const toolOptions = useMemo(
     () =>
       (toolsQuery.data ?? []).map((t) => ({
@@ -217,7 +208,11 @@ export function AgentFormDialog({
       include_plan: form.include_plan,
       web_search: form.web_search,
       thinking: form.thinking,
-      skill_names: namesFor(skillsQuery.data, form.skill_ids),
+      // Skills are scope-discovered; when enabled the agent sees every global
+      // skill (plus its workspace's own at run time), so surface the global set.
+      skill_names: form.include_skills
+        ? (skillsQuery.data ?? []).map((s) => s.name)
+        : [],
       tool_names: namesFor(toolsQuery.data, form.tool_ids),
       model: form.model.trim() ? form.model.trim() : null,
     }
@@ -314,7 +309,6 @@ export function AgentFormDialog({
       thinking: form.thinking,
       tool_choice: form.tool_choice,
       extra_config: extraConfig,
-      skill_ids: form.skill_ids,
       tool_ids: form.tool_ids,
     }
 
@@ -539,25 +533,21 @@ export function AgentFormDialog({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label>Skills</Label>
-              <MultiSelect
-                options={skillOptions}
-                selected={form.skill_ids}
-                onChange={(ids) => update("skill_ids", ids)}
-                emptyText="No skills created yet."
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>Tools</Label>
-              <MultiSelect
-                options={toolOptions}
-                selected={form.tool_ids}
-                onChange={(ids) => update("tool_ids", ids)}
-                emptyText="No tools created yet."
-              />
-            </div>
+          <div className="grid gap-2">
+            <Label>Tools</Label>
+            <MultiSelect
+              options={toolOptions}
+              selected={form.tool_ids}
+              onChange={(ids) => update("tool_ids", ids)}
+              emptyText="No tools created yet."
+            />
+            <p className="text-xs text-muted-foreground">
+              Skills are no longer attached per agent. With the{" "}
+              <span className="font-medium text-foreground">Skills</span>{" "}
+              capability on, this agent automatically gets every global skill
+              plus whatever lives in the workspace it runs in. Manage them on
+              the Skills page.
+            </p>
           </div>
 
           <div className="grid gap-2">

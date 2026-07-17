@@ -33,7 +33,6 @@ class AgentCreate(BaseModel):
     thinking: ThinkingLevel = ThinkingLevel.off
     tool_choice: ToolChoice = ToolChoice.auto
     extra_config: dict[str, Any] = {}
-    skill_ids: list[str] = []
     tool_ids: list[str] = []
 
 
@@ -51,7 +50,6 @@ class AgentUpdate(BaseModel):
     thinking: ThinkingLevel | None = None
     tool_choice: ToolChoice | None = None
     extra_config: dict[str, Any] | None = None
-    skill_ids: list[str] | None = None
     tool_ids: list[str] | None = None
 
 
@@ -84,7 +82,6 @@ class AgentRead(BaseModel):
     thinking: ThinkingLevel
     tool_choice: ToolChoice
     extra_config: dict[str, Any]
-    skill_ids: list[str]
     tool_ids: list[str]
     created_at: UTCDatetime
     updated_at: UTCDatetime
@@ -106,7 +103,6 @@ class AgentRead(BaseModel):
             thinking=agent.thinking,
             tool_choice=agent.tool_choice,
             extra_config=agent.extra_config,
-            skill_ids=[s.id for s in agent.skills],
             tool_ids=[t.id for t in agent.tools],
             created_at=agent.created_at,
             updated_at=agent.updated_at,

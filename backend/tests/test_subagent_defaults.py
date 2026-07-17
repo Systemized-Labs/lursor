@@ -115,10 +115,6 @@ async def test_builder_roster_respects_disable_and_override(tmp_path):
 
 async def test_subagent_full_parity_crud_roundtrips(client: AsyncClient):
     # A skill to attach (subagents can now carry skills, like top-level agents).
-    skill = (
-        await client.post("/skills", json={"name": "Digest", "content": "# how"})
-    ).json()
-
     r = await client.post(
         "/subagents",
         json={
@@ -130,7 +126,6 @@ async def test_subagent_full_parity_crud_roundtrips(client: AsyncClient):
             "thinking": "high",
             "tool_choice": "required",
             "extra_config": {"foo": "bar"},
-            "skill_ids": [skill["id"]],
         },
     )
     assert r.status_code == 201, r.text
@@ -139,28 +134,21 @@ async def test_subagent_full_parity_crud_roundtrips(client: AsyncClient):
     assert body["thinking"] == "high"
     assert body["tool_choice"] == "required"
     assert body["extra_config"] == {"foo": "bar"}
-    assert body["skill_ids"] == [skill["id"]]
+    # Skills are scope-discovered now, not linked per-subagent.
+    assert "skill_ids" not in body
+    assert body["include_skills"] is True
     # Defaults for knobs not sent match the model defaults.
     assert body["include_todo"] is True
     assert body["include_subagents"] is False
 
     # Patch a subset; unspecified fields are preserved.
     r = await client.patch(
-        f"/subagents/{body['id']}", json={"thinking": "off", "skill_ids": []}
+        f"/subagents/{body['id']}", json={"thinking": "off"}
     )
     assert r.status_code == 200, r.text
     patched = r.json()
     assert patched["thinking"] == "off"
-    assert patched["skill_ids"] == []
     assert patched["include_memory"] is True  # untouched
-
-    # Unknown skill id is rejected.
-    assert (
-        await client.post(
-            "/subagents",
-            json={"name": "x", "skill_ids": ["nope"]},
-        )
-    ).status_code == 400
 
 
 async def test_subagent_factory_builds_full_agent_and_bounds_nesting(tmp_path):

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
-import type { Skill, SkillInput } from "@/api/types"
+import type { Skill, SkillInput, SkillScope } from "@/api/types"
 import { useCreateSkill, useUpdateSkill } from "@/api/skills"
 import { Button } from "@/components/ui/button"
 import {
@@ -28,12 +28,18 @@ interface SkillFormDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   skill?: Skill
+  // Scope a newly-created skill lands in (ignored when editing — a skill's scope
+  // is fixed once created). Defaults to global.
+  scope?: SkillScope
+  workspaceId?: string | null
 }
 
 export function SkillFormDialog({
   open,
   onOpenChange,
   skill,
+  scope = "global",
+  workspaceId = null,
 }: SkillFormDialogProps) {
   const [form, setForm] = useState<FormState>(EMPTY)
   const createSkill = useCreateSkill()
@@ -67,10 +73,15 @@ export function SkillFormDialog({
     }
     try {
       if (skill) {
+        // Scope is immutable after creation; only send content fields.
         await updateSkill.mutateAsync({ id: skill.id, input })
         toast.success("Skill updated")
       } else {
-        await createSkill.mutateAsync(input)
+        await createSkill.mutateAsync({
+          ...input,
+          scope,
+          workspace_id: scope === "workspace" ? workspaceId : null,
+        })
         toast.success("Skill created")
       }
       onOpenChange(false)
@@ -85,7 +96,11 @@ export function SkillFormDialog({
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit skill" : "New skill"}</DialogTitle>
           <DialogDescription>
-            Skills are reusable markdown instructions agents can load.
+            {isEdit
+              ? "Skills are reusable markdown instructions agents can load."
+              : scope === "workspace"
+                ? "Creating a workspace skill — it lives in this workspace's folder and applies only there."
+                : "Creating a global skill — it applies to every agent in every workspace."}
           </DialogDescription>
         </DialogHeader>
 
