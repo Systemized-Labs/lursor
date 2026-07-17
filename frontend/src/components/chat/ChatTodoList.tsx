@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   CaretDown,
   CheckCircle,
@@ -36,11 +36,17 @@ function TodoStatusIcon({ status }: { status: TodoStatus }) {
  */
 export function ChatTodoList({ todos }: { todos: AgentTodo[] }) {
   const [open, setOpen] = useState(true)
-  if (!todos.length) return null
 
   const completed = todos.filter((t) => t.status === "completed").length
   const active = todos.find((t) => t.status === "in_progress")
-  const allDone = completed === todos.length
+  const allDone = todos.length > 0 && completed === todos.length
+
+  // Collapse once every task is done to reduce clutter; the user can reopen it.
+  useEffect(() => {
+    if (allDone) setOpen(false)
+  }, [allDone])
+
+  if (!todos.length) return null
 
   return (
     <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-xl border border-border/60 bg-muted/30">
