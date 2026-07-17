@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.db.models import ThreadMode, ThreadStatus
 from app.schemas._types import UTCDatetime
@@ -66,8 +66,15 @@ class MessageRead(BaseModel):
     role: str
     content: str
     kind: str = "chat"
-    tool_calls: dict[str, Any]
+    tool_calls: list[dict[str, Any]] = []
     attachments: list[MessageAttachment] = []
     created_at: UTCDatetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("tool_calls", mode="before")
+    @classmethod
+    def _coerce_tool_calls(cls, v: Any) -> list[dict[str, Any]]:
+        # Legacy rows stored an empty dict before tool calls were persisted as a
+        # list; only a list carries real tool blocks, so anything else is empty.
+        return v if isinstance(v, list) else []

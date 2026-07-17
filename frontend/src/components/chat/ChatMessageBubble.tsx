@@ -12,6 +12,7 @@ import { cn, copyToClipboard } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer"
 import { ChatToolCalls } from "@/components/chat/ChatToolCalls"
+import { ChatReasoning } from "@/components/chat/ChatReasoning"
 import {
   ChatSubagentCalls,
   SUBAGENT_TOOL_NAME,
@@ -126,7 +127,7 @@ function StreamingDots({ lead }: { lead?: boolean }) {
  */
 function AssistantSegments({ messages }: { messages: ChatMessage[] }) {
   const segments = messages.filter(
-    (m) => m.content !== "" || m.toolCalls.length > 0
+    (m) => m.content !== "" || m.toolCalls.length > 0 || Boolean(m.reasoning)
   )
   return (
     <>
@@ -141,6 +142,14 @@ function AssistantSegments({ messages }: { messages: ChatMessage[] }) {
         )
         return (
           <div key={seg.id} className={i > 0 ? "mt-3" : undefined}>
+            {seg.reasoning && (
+              <div className={seg.content !== "" ? "mb-3" : undefined}>
+                <ChatReasoning
+                  reasoning={seg.reasoning}
+                  streaming={Boolean(seg.streaming) && !seg.reasoningDone}
+                />
+              </div>
+            )}
             {seg.content !== "" && (
               <StreamingMarkdown text={seg.content} animate={Boolean(seg.streaming)} />
             )}
@@ -175,7 +184,9 @@ export interface ChatAssistantGroupProps {
  */
 export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
   const isStreaming = messages.some((m) => m.streaming)
-  const hasBody = messages.some((m) => m.content !== "" || m.toolCalls.length > 0)
+  const hasBody = messages.some(
+    (m) => m.content !== "" || m.toolCalls.length > 0 || Boolean(m.reasoning)
+  )
 
   const copyText = messages
     .map((m) => m.content)

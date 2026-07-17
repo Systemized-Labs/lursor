@@ -219,12 +219,31 @@ async def _thread_media_instructions(session: AsyncSession, thread_id: str) -> s
     )
 
 
-async def _persist_message(thread_id: str, role: str, content: str) -> None:
-    """Append a message on its own background session (runs outside the request)."""
-    if not content:
+async def _persist_message(
+    thread_id: str,
+    role: str,
+    content: str,
+    *,
+    tool_calls: list[dict] | None = None,
+) -> None:
+    """Append a message on its own background session (runs outside the request).
+
+    A turn is worth persisting when it produced text *or* tool calls — a goal
+    turn that ends on tool calls with no final text still has to survive reload,
+    otherwise the thread reopens empty.
+    """
+    tool_calls = tool_calls or []
+    if not content and not tool_calls:
         return
     async with async_session_factory() as bg_session:
-        bg_session.add(Message(thread_id=thread_id, role=role, content=content))
+        bg_session.add(
+            Message(
+                thread_id=thread_id,
+                role=role,
+                content=content,
+                tool_calls=tool_calls,
+            )
+        )
         await bg_session.commit()
 
 
@@ -302,10 +321,47 @@ async def _persist_usage(thread_id: str, kind: str, usage) -> None:
         logger.warning("usage: failed to persist for thread %s: %s", thread_id, exc)
 
 
+def _collect_tool_call(event, etype, tool_calls: dict[str, dict]) -> None:
+    """Fold one tool-call event into the per-turn ``tool_calls`` accumulator.
+
+    Mirrors the frontend stream reader: START/CHUNK opens a call (and may carry
+    the name + first args delta), ARGS appends JSON argument deltas, RESULT
+    attaches the tool's return. Keyed by ``tool_call_id`` and insertion-ordered so
+    the persisted list matches what streamed in live.
+    """
+    tid = getattr(event, "tool_call_id", None)
+    if not tid:
+        return
+    call = tool_calls.setdefault(
+        tid, {"id": tid, "name": "tool", "arguments": "", "result": None}
+    )
+    if etype in (EventType.TOOL_CALL_START, EventType.TOOL_CALL_CHUNK):
+        name = getattr(event, "tool_call_name", None)
+        if name:
+            call["name"] = name
+        delta = getattr(event, "delta", None)
+        if delta:
+            call["arguments"] += delta
+    elif etype == EventType.TOOL_CALL_ARGS:
+        delta = getattr(event, "delta", None)
+        if delta:
+            call["arguments"] += delta
+    elif etype == EventType.TOOL_CALL_RESULT:
+        call["result"] = getattr(event, "content", None)
+
+
 async def _tee_events(
-    stream: AsyncIterator, accumulated: list[str], *, strip_lifecycle: bool
+    stream: AsyncIterator,
+    accumulated: list[str],
+    tool_calls: dict[str, dict],
+    *,
+    strip_lifecycle: bool,
 ) -> AsyncIterator:
-    """Pass events through, accumulating assistant text for partial-persist.
+    """Pass events through, accumulating assistant text + tool calls for persist.
+
+    ``accumulated`` gathers streamed text (used for the stop/cancel partial);
+    ``tool_calls`` collects each tool call so the turn can be persisted with the
+    same tool blocks the user watched — not just the final text.
 
     In goal mode (``strip_lifecycle``) the per-turn RUN_STARTED/FINISHED/ERROR
     events are dropped so the caller can wrap all turns in one outer lifecycle.
@@ -318,6 +374,8 @@ async def _tee_events(
             delta = getattr(event, "delta", None)
             if delta:
                 accumulated.append(delta)
+        else:
+            _collect_tool_call(event, etype, tool_calls)
         yield event
 
 
@@ -342,15 +400,14 @@ async def _stream_turn(
     ``kind`` (chat | plan | goal) tags the usage row recorded on completion.
     """
     captured: dict[str, object] = {}
+    # Per-turn tool calls, keyed by id (insertion-ordered). Filled as events flow
+    # through ``_tee_events``; persisted with the turn once the stream drains.
+    tool_calls: dict[str, dict] = {}
 
     async def on_complete(result) -> None:
+        # Only capture here — the tool-call accumulator isn't guaranteed complete
+        # until the encode loop below has drained, so persistence happens after it.
         captured["result"] = result
-        output = getattr(result, "output", None)
-        content = output if isinstance(output, str) else str(output) if output else ""
-        await _persist_message(thread_id, "assistant", content)
-        # ``AgentRunResult.usage`` is a property (not a method) that returns the
-        # run's ``RunUsage``; ``_persist_usage`` guards its own failures.
-        await _persist_usage(thread_id, kind, getattr(result, "usage", None))
 
     stream = turn_adapter.run_stream(
         message_history=message_history,
@@ -361,7 +418,7 @@ async def _stream_turn(
         capabilities=capabilities,
     )
     async for encoded in turn_adapter.encode_stream(
-        _tee_events(stream, accumulated, strip_lifecycle=strip_lifecycle)
+        _tee_events(stream, accumulated, tool_calls, strip_lifecycle=strip_lifecycle)
     ):
         chat_run_manager.publish(thread_id, encoded)
         # A todo tool call mutated deps.todos in place — surface the new list to
@@ -375,6 +432,15 @@ async def _stream_turn(
             chat_run_manager.publish(thread_id, _encode_todos_event(snapshot))
 
     result = captured.get("result")
+    if result is not None:
+        output = getattr(result, "output", None)
+        content = output if isinstance(output, str) else str(output) if output else ""
+        await _persist_message(
+            thread_id, "assistant", content, tool_calls=list(tool_calls.values())
+        )
+        # ``AgentRunResult.usage`` is a property (not a method) that returns the
+        # run's ``RunUsage``; ``_persist_usage`` guards its own failures.
+        await _persist_usage(thread_id, kind, getattr(result, "usage", None))
     return result.all_messages() if result is not None else (message_history or [])
 
 

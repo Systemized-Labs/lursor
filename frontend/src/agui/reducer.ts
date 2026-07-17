@@ -32,6 +32,32 @@ export function setAssistantContent(
   return [...next, { ...emptyAssistant(messageId), content }]
 }
 
+export function setReasoning(
+  messages: ChatMessage[],
+  messageId: string,
+  reasoning: string
+): ChatMessage[] {
+  let found = false
+  const next = messages.map((m) => {
+    if (m.id !== messageId) return m
+    found = true
+    return { ...m, reasoning, streaming: true }
+  })
+  if (found) return next
+  return [...next, { ...emptyAssistant(messageId), reasoning }]
+}
+
+/** Marks a turn's reasoning phase complete so its block can auto-collapse while
+ *  the rest of the turn (answer/tools) is still streaming. */
+export function finishReasoning(
+  messages: ChatMessage[],
+  messageId: string
+): ChatMessage[] {
+  return messages.map((m) =>
+    m.id === messageId ? { ...m, reasoningDone: true } : m
+  )
+}
+
 export function addToolCall(
   messages: ChatMessage[],
   messageId: string,

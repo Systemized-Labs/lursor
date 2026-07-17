@@ -126,6 +126,16 @@ async def test_goal_thread_runs_to_completion(client: AsyncClient, monkeypatch):
     # One-off: the thread is not left in a goal mode.
     assert refreshed["mode"] == "chat"
 
+    # The assistant transcript must survive reload. The bug this guards against
+    # was a completed goal thread reopening with only the user's turn because the
+    # streamed narration lived solely in the in-memory run buffer, never the DB.
+    msgs = (await client.get(f"/threads/{thread['id']}/messages")).json()
+    roles = [m["role"] for m in msgs]
+    assert "user" in roles
+    assert any(
+        m["role"] == "assistant" and m["content"] for m in msgs
+    ), f"no assistant turn persisted for a completed goal run: {roles}"
+
 
 async def test_interjection_is_consumed_during_execution(
     client: AsyncClient, monkeypatch

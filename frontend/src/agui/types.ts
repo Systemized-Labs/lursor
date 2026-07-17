@@ -43,6 +43,13 @@ export interface ChatMessage {
   id: string
   role: ChatRole
   content: string
+  /** Streamed reasoning/thinking tokens for this turn (reasoning models only).
+   *  Shown as a collapsible block; transient, so it's not persisted and is absent
+   *  after a reload. */
+  reasoning?: string
+  /** Set once the reasoning phase ends (the model moved on to its answer/tools),
+   *  so the block can auto-collapse without waiting for the whole run to finish. */
+  reasoningDone?: boolean
   toolCalls: ChatToolCall[]
   attachments?: ChatAttachment[]
   streaming?: boolean

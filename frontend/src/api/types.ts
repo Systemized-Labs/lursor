@@ -231,6 +231,7 @@ export interface ThreadMessageToolCall {
   id: string
   name: string
   arguments: string
+  result?: string | null
 }
 
 export interface ThreadMessageAttachment {

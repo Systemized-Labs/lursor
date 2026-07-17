@@ -15,8 +15,10 @@ import { expandMentionTokens } from "@/components/chat/mentions/types"
 import { createThreadAgent, mediaUrl } from "./agent"
 import {
   addToolCall,
+  finishReasoning,
   finishStreaming,
   setAssistantContent,
+  setReasoning,
   setToolCallArgs,
   setToolCallResult,
   upsertAssistant,
@@ -49,7 +51,12 @@ export function toChatMessages(
     kind: m.kind,
     // `tool_calls` is an opaque JSON object by default; narrow before mapping.
     toolCalls: Array.isArray(m.tool_calls)
-      ? m.tool_calls.map((tc) => ({ id: tc.id, name: tc.name, args: tc.arguments }))
+      ? m.tool_calls.map((tc) => ({
+          id: tc.id,
+          name: tc.name,
+          args: tc.arguments,
+          result: tc.result ?? undefined,
+        }))
       : [],
     attachments: m.attachments?.map((a) => ({
       url: mediaUrl(threadId, a.media_id),
@@ -310,6 +317,13 @@ export function useChat(options: UseChatOptions): UseChat {
         const id = resolveAssistantId(messageId)
         setMessages((prev) => setAssistantContent(prev, id, content))
       },
+      onReasoning: (messageId, content) => {
+        const id = resolveAssistantId(messageId)
+        setMessages((prev) => setReasoning(prev, id, content))
+      },
+      onReasoningEnd: (messageId) => {
+        setMessages((prev) => finishReasoning(prev, messageId))
+      },
       onToolStart: (parentMessageId, toolCallId, toolName) => {
         const id = resolveAssistantId(parentMessageId)
         setMessages((prev) =>
@@ -523,6 +537,10 @@ export function useChat(options: UseChatOptions): UseChat {
               handlers.onTextStart(event.messageId),
             onTextMessageContentEvent: ({ event, textMessageBuffer }) =>
               handlers.onTextContent(event.messageId, textMessageBuffer),
+            onReasoningMessageContentEvent: ({ event, reasoningMessageBuffer }) =>
+              handlers.onReasoning(event.messageId, reasoningMessageBuffer),
+            onReasoningMessageEndEvent: ({ event }) =>
+              handlers.onReasoningEnd(event.messageId),
             onToolCallStartEvent: ({ event }) =>
               handlers.onToolStart(
                 event.parentMessageId,

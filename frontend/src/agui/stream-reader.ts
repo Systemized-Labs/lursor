@@ -83,6 +83,8 @@ export function parseTodos(value: unknown): AgentTodo[] | null {
 export interface ChatEventHandlers {
   onTextStart: (messageId: string) => void
   onTextContent: (messageId: string, content: string) => void
+  onReasoning: (messageId: string, content: string) => void
+  onReasoningEnd: (messageId: string) => void
   onToolStart: (
     parentMessageId: string | undefined,
     toolCallId: string,
@@ -132,6 +134,7 @@ export async function consumeThreadStream(
   // Deltas arrive incrementally; accumulate to the absolute value the sink wants.
   const textBuffers = new Map<string, string>()
   const argBuffers = new Map<string, string>()
+  const reasoningBuffers = new Map<string, string>()
   let buffer = ""
 
   try {
@@ -153,7 +156,7 @@ export async function consumeThreadStream(
         } catch {
           continue
         }
-        dispatch(event, handlers, textBuffers, argBuffers)
+        dispatch(event, handlers, textBuffers, argBuffers, reasoningBuffers)
       }
     }
   } finally {
@@ -165,9 +168,37 @@ function dispatch(
   event: AguiWireEvent,
   handlers: ChatEventHandlers,
   textBuffers: Map<string, string>,
-  argBuffers: Map<string, string>
+  argBuffers: Map<string, string>,
+  reasoningBuffers: Map<string, string>
 ): void {
   switch (event.type) {
+    case "REASONING_MESSAGE_START": {
+      if (event.messageId) reasoningBuffers.set(event.messageId, "")
+      break
+    }
+    case "REASONING_MESSAGE_CONTENT":
+    case "REASONING_MESSAGE_CHUNK": {
+      // CHUNK may omit the id; fall back to the only in-flight reasoning stream.
+      const id =
+        event.messageId ??
+        (reasoningBuffers.size === 1
+          ? reasoningBuffers.keys().next().value
+          : undefined)
+      if (!id) break
+      const next = (reasoningBuffers.get(id) ?? "") + (event.delta ?? "")
+      reasoningBuffers.set(id, next)
+      handlers.onReasoning(id, next)
+      break
+    }
+    case "REASONING_MESSAGE_END": {
+      const id =
+        event.messageId ??
+        (reasoningBuffers.size === 1
+          ? reasoningBuffers.keys().next().value
+          : undefined)
+      if (id) handlers.onReasoningEnd(id)
+      break
+    }
     case "TEXT_MESSAGE_START": {
       if (event.messageId) {
         textBuffers.set(event.messageId, "")

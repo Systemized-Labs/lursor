@@ -448,7 +448,11 @@ class Message(TimestampMixin, table=True):
     # (read-only) | "plan" (a plan-mode turn) | "goal" (a one-off goal run).
     # Assistant/tool rows keep the default and render no badge.
     kind: str = Field(default="chat")
-    tool_calls: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Assistant tool calls made during this turn, insertion-ordered:
+    # ``[{id, name, arguments, result}]``. Persisted so a reloaded thread shows the
+    # same tool blocks that streamed in live (see api/chat.py ``_collect_tool_call``).
+    # Legacy rows may hold an empty dict; ``MessageRead`` coerces that to ``[]``.
+    tool_calls: list = Field(default_factory=list, sa_column=Column(JSON))
     # Media attached to this turn: list of {media_id, mime_type, filename}. The
     # bytes live on disk (see app.media_store); this only holds references.
     attachments: list = Field(default_factory=list, sa_column=Column(JSON))
