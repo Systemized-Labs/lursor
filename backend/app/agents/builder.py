@@ -55,6 +55,38 @@ settings = get_settings()
 # the model still switches languages when the user writes in, or asks for, one.
 DEFAULT_LANGUAGE_DIRECTIVE = "Always respond in English by default."
 
+
+def _environment_instructions(
+    workspace_path: str | Path,
+    workspace_name: str | None,
+    workspace_description: str | None,
+) -> str:
+    """A system-prompt section telling the agent where it is on disk.
+
+    The agent's filesystem is rooted at the workspace directory (``LocalBackend``),
+    but nothing in the base prompt or the tool output states that root — ``ls``
+    prints only relative names and the model would otherwise have to run ``pwd``
+    (blocked in read-only mode) to discover it. Without an anchor the agent
+    guesses absolute paths, trips the sandbox boundary, and can't emit correct
+    ``path:line`` references. Stating the root, name, and purpose up front fixes
+    that. ``workspace_name`` falls back to the directory's basename when unset.
+    """
+    root = str(workspace_path)
+    name = workspace_name or Path(root).name
+    header = f"- Workspace: {name}"
+    if workspace_description:
+        header += f" — {workspace_description}"
+    return "\n".join(
+        [
+            "# Environment",
+            header,
+            f"- Working directory (your filesystem root): {root}",
+            "- Every file tool is sandboxed to this directory and relative paths "
+            "resolve against it. Reference files by their path under this root "
+            "(e.g. `path/to/file.py:42`).",
+        ]
+    )
+
 # Prefix on a stored model string that marks a locally-hosted custom provider.
 # Format: "custom:{provider_id}:{model_name}" (model_name may itself contain
 # colons, e.g. Ollama's "llama3:8b", so we only split on the first colon).
@@ -311,6 +343,8 @@ def _subagent_config(
     sa: SubagentRow,
     *,
     workspace_path: str | Path,
+    workspace_name: str | None,
+    workspace_description: str | None,
     custom_providers: dict[str, CustomProvider],
     subagents: list[SubagentRow],
     deep_defaults: dict | None,
@@ -342,6 +376,8 @@ def _subagent_config(
         sub_agent, _deps = build_deep_agent(
             sa,
             workspace_path,
+            workspace_name=workspace_name,
+            workspace_description=workspace_description,
             custom_providers=custom_providers,
             subagents=subagents,
             deep_defaults=deep_defaults,
@@ -372,6 +408,8 @@ def build_deep_agent(
     web_search_provider: str | None = None,
     tavily_api_key: str | None = None,
     exa_api_key: str | None = None,
+    workspace_name: str | None = None,
+    workspace_description: str | None = None,
     _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
@@ -385,6 +423,13 @@ def build_deep_agent(
     directories (on-disk SKILL.md folders with bundled resources/scripts). Tool
     rows are catalogued in the DB but not yet wired into execution (see
     docs/PLAN.md — deferred); the deep agent ships its own builtin toolset.
+
+    ``workspace_name`` / ``workspace_description`` orient the agent on disk: they
+    feed an ``# Environment`` section prepended to the instructions that names the
+    workspace and states its absolute filesystem root (see
+    :func:`_environment_instructions`). Both flow down to subagents unchanged so
+    every level knows where it is working. When ``workspace_name`` is omitted the
+    root directory's basename is used.
 
     ``model_override`` wins over ``row.model`` when set, letting a caller (e.g. a
     per-thread choice) run this agent with a different model than its stored
@@ -460,6 +505,8 @@ def build_deep_agent(
             return _subagent_config(
                 sa,
                 workspace_path=workspace_path,
+                workspace_name=workspace_name,
+                workspace_description=workspace_description,
                 custom_providers=providers,
                 subagents=rows,
                 deep_defaults=deep_defaults,
@@ -563,7 +610,12 @@ def build_deep_agent(
     # prompt (what ``create_deep_agent`` would have used) so we extend it rather
     # than replace it — passing a non-None value swaps out the default entirely.
     base_instructions = row.instructions or BASE_PROMPT
-    instructions = f"{base_instructions}\n\n{DEFAULT_LANGUAGE_DIRECTIVE}"
+    environment = _environment_instructions(
+        workspace_path, workspace_name, workspace_description
+    )
+    instructions = (
+        f"{base_instructions}\n\n{environment}\n\n{DEFAULT_LANGUAGE_DIRECTIVE}"
+    )
 
     agent = create_deep_agent(
         model=model,

@@ -307,6 +307,44 @@ async def test_build_deep_agent_offline(client: AsyncClient, tmp_path):
     assert deps is not None
 
 
+async def test_build_deep_agent_injects_environment_block(client: AsyncClient, tmp_path):
+    """The agent's instructions must state its workspace name and filesystem root.
+
+    Without this anchor the model never learns which directory it is rooted in
+    (`ls` prints only relative names), so it guesses absolute paths and gets lost.
+    """
+    from app.agents.builder import build_deep_agent
+    from app.db.models import Agent as AgentRow
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
+    row.skills = []
+
+    seen: dict[str, str] = {}
+
+    def _capture(messages, _info: AgentInfo):
+        for m in messages:
+            if getattr(m, "instructions", None):
+                seen["instructions"] = m.instructions
+        return ModelResponse(parts=[TextPart("ok")])
+
+    agent, deps = build_deep_agent(
+        row,
+        str(tmp_path),
+        workspace_name="my-project",
+        workspace_description="a demo workspace",
+    )
+    with agent.override(model=FunctionModel(_capture)):
+        await agent.run("hi", deps=deps)
+
+    instructions = seen["instructions"]
+    assert "# Environment" in instructions
+    assert "my-project" in instructions
+    assert "a demo workspace" in instructions
+    assert str(tmp_path) in instructions
+
+
 async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient, tmp_path):
     """Ask mode (read_only) exposes ONLY read-safe tools to the model.
 

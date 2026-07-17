@@ -178,6 +178,8 @@ async def test_subagent_factory_builds_full_agent_and_bounds_nesting(tmp_path):
     cfg = _subagent_config(
         sa,
         workspace_path=ws,
+        workspace_name="deep-ws",
+        workspace_description=None,
         custom_providers={},
         subagents=[sa],
         deep_defaults={"max_nesting_depth": 1},

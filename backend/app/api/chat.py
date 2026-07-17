@@ -473,6 +473,8 @@ async def _build_agent_and_context(
         custom_providers,
         subagents,
         deep_defaults,
+        workspace_name=workspace.name,
+        workspace_description=workspace.description or None,
         read_only=read_only,
         web_search_provider=app_config.web_search_provider if app_config else None,
         # A UI-saved key (on AppConfig) wins over the environment fallback.
