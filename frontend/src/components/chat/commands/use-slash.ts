@@ -8,7 +8,7 @@ import {
 } from "react"
 
 import { matchCommandPrefix } from "./registry"
-import type { SlashCommand } from "./types"
+import { findActiveSlash, type SlashCommand } from "./types"
 
 export interface UseSlashOptions {
   value: string
@@ -18,12 +18,16 @@ export interface UseSlashOptions {
 }
 
 /**
- * Autocomplete for leading `/command` tokens, modelled on the `@`-mention
- * typeahead (`use-mentions`). The menu is open only while the command *name* is
- * being typed — a bare `/` or `/pl` — and closes once a space is typed (the
- * command is chosen and the rest is its arguments). Selecting a row rewrites the
- * input to `/<name> ` and restores focus. It reads the command registry, so it
- * has no hard-coded command names.
+ * Autocomplete for `/command` tokens, modelled on the `@`-mention typeahead
+ * (`use-mentions`). The menu triggers wherever the caret sits on a slash token
+ * at a word boundary — not only when the whole input is `/command` — and closes
+ * once a space is typed (the command is chosen and the rest is its arguments).
+ * Selecting a row rewrites just that token to `/<name> ` and restores focus. It
+ * reads the command registry, so it has no hard-coded command names.
+ *
+ * Note the parser (`parseSlashCommand`) still only *honors* a command at the
+ * start of the message, since a command governs the whole turn; the menu firing
+ * mid-text is a convenience, and a token inserted there sends as plain text.
  */
 export function useSlash({
   value,
@@ -33,41 +37,40 @@ export function useSlash({
 }: UseSlashOptions) {
   const [caret, setCaret] = useState(0)
   const [activeIndex, setActiveIndex] = useState(0)
-  const [dismissed, setDismissed] = useState(false)
+  const [dismissedStart, setDismissedStart] = useState<number | null>(null)
 
   const refresh = useCallback(() => {
     setCaret(textareaRef.current?.selectionStart ?? 0)
   }, [textareaRef])
 
-  // Active only when the whole input is a leading slash token with no space yet
-  // and the caret sits inside it — i.e. the user is still naming the command.
-  const query = useMemo<string | null>(() => {
-    if (!enabled) return null
-    const m = value.match(/^\/([a-zA-Z][\w-]*)?$/)
-    if (!m) return null
-    if (caret > value.length) return null
-    return m[1] ?? ""
-  }, [enabled, value, caret])
-
-  const rows = useMemo<SlashCommand[]>(
-    () => (query === null ? [] : matchCommandPrefix(query)),
-    [query]
+  // The slash token under the caret, wherever it is in the input.
+  const active = useMemo(
+    () => (enabled ? findActiveSlash(value, caret) : null),
+    [enabled, value, caret]
   )
 
-  // Reset transient state when the query changes.
+  const rows = useMemo<SlashCommand[]>(
+    () => (active === null ? [] : matchCommandPrefix(active.query)),
+    [active]
+  )
+
+  // Reset transient state when the token changes (position or query).
   useEffect(() => {
     setActiveIndex(0)
-    setDismissed(false)
-  }, [query])
+    setDismissedStart(null)
+  }, [active?.start, active?.query])
 
-  const open = query !== null && !dismissed && rows.length > 0
+  const open =
+    active !== null && active.start !== dismissedStart && rows.length > 0
   const clampedIndex = rows.length ? Math.min(activeIndex, rows.length - 1) : 0
 
   const select = useCallback(
     (command: SlashCommand) => {
-      const next = `/${command.name} `
+      if (!active) return
+      const token = `/${command.name} `
+      const next = value.slice(0, active.start) + token + value.slice(active.end)
+      const pos = active.start + token.length
       setValue(next)
-      const pos = next.length
       setCaret(pos)
       requestAnimationFrame(() => {
         const el = textareaRef.current
@@ -76,7 +79,7 @@ export function useSlash({
         el.setSelectionRange(pos, pos)
       })
     },
-    [setValue, textareaRef]
+    [active, value, setValue, textareaRef]
   )
 
   const onKeyDown = useCallback(
@@ -98,13 +101,13 @@ export function useSlash({
           return true
         case "Escape":
           e.preventDefault()
-          setDismissed(true)
+          if (active) setDismissedStart(active.start)
           return true
         default:
           return false
       }
     },
-    [open, rows, clampedIndex, select]
+    [open, rows, clampedIndex, select, active]
   )
 
   return {

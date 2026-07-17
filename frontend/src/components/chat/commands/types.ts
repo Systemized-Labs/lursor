@@ -16,6 +16,41 @@ export type CommandKind =
 /** A named local action a command can trigger (kind === "action"). */
 export type CommandAction = "new-conversation"
 
+/** The active `/…` command token under the caret. */
+export interface ActiveSlash {
+  /** Index of the `/` in the text. */
+  start: number
+  /** Caret index (token end, exclusive). */
+  end: number
+  /** Raw text between `/` and the caret — the partial command name. */
+  query: string
+}
+
+/**
+ * Locate the `/…` command token immediately preceding `caret`, if any. Modelled
+ * on `findActiveMention`: the `/` must sit at a word boundary (start of input or
+ * after whitespace) with no whitespace between it and the caret, so the menu can
+ * trigger anywhere in the input — not only when the whole value is `/command`.
+ * The token after the slash must look like a command name (a letter followed by
+ * word chars/hyphens), which keeps paths (`/Users`), dates (`7/17`, where the
+ * `/` isn't at a boundary), and fractions from opening the menu.
+ */
+export function findActiveSlash(text: string, caret: number): ActiveSlash | null {
+  for (let i = caret - 1; i >= 0; i--) {
+    const ch = text[i]
+    if (ch === "/") {
+      const prev = i > 0 ? text[i - 1] : ""
+      if (i !== 0 && !/\s/.test(prev)) return null
+      const query = text.slice(i + 1, caret)
+      // Empty (bare `/`) or a well-formed partial command name only.
+      if (query !== "" && !/^[a-zA-Z][\w-]*$/.test(query)) return null
+      return { start: i, end: caret, query }
+    }
+    if (/\s/.test(ch)) return null
+  }
+  return null
+}
+
 /**
  * A slash command, expressed as data. This descriptor is the single source of
  * truth: the menu renders it, the parser matches it, and the dispatch acts on
