@@ -45,13 +45,22 @@ class _FakeEvaluator:
 
 
 def _fake_deep_agent(row, workspace_path, *args, **kwargs):
-    """A minimal deep agent backed by ``TestModel`` (returns text, calls no tools)."""
+    """A minimal deep agent backed by ``TestModel`` (returns text, calls no tools).
+
+    Native/builtin tools (web search/fetch, tool-search) are disabled because
+    ``TestModel`` rejects them ("does not support built-in tools"); the plan
+    execution turn streams a natural AG-UI lifecycle, so such an error would
+    surface as RUN_ERROR rather than being masked.
+    """
     backend = LocalBackend(root_dir=str(workspace_path))
     agent = create_deep_agent(
         model=TestModel(call_tools=[]),
         backend=backend,
         include_subagents=False,
         include_plan=False,
+        web_search=False,
+        web_fetch=False,
+        tool_search=False,
     )
     return agent, create_default_deps(backend)
 
@@ -70,23 +79,6 @@ async def _drain_chat(client: AsyncClient, thread_id: str, body: str) -> list[st
         content=body,
         headers={"accept": "text/event-stream", "content-type": "application/json"},
     ) as resp:
-        assert resp.status_code == 200, await resp.aread()
-        async for line in resp.aiter_lines():
-            if not line.startswith("data:"):
-                continue
-            try:
-                event = json.loads(line[len("data:") :].strip())
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event, dict) and isinstance(event.get("type"), str):
-                types.append(event["type"])
-    return types
-
-
-async def _drain_stream(client: AsyncClient, thread_id: str) -> list[str]:
-    """Follow a thread's run via GET /stream to completion; return event types."""
-    types: list[str] = []
-    async with client.stream("GET", f"/threads/{thread_id}/stream") as resp:
         assert resp.status_code == 200, await resp.aread()
         async for line in resp.aiter_lines():
             if not line.startswith("data:"):
@@ -126,13 +118,12 @@ async def test_goal_thread_runs_to_completion(client: AsyncClient, monkeypatch):
                 "agent_id": agent["id"],
                 "mode": "goal",
                 "goal": "make the tests pass",
-                "require_plan_approval": False,
                 "max_iterations": 5,
             },
         )
     ).json()
     assert thread["mode"] == "goal"
-    assert thread["goal_status"] == "idle"
+    assert thread["status"] == "idle"
 
     run_input = RunAgentInput(
         thread_id=thread["id"],
@@ -150,7 +141,7 @@ async def test_goal_thread_runs_to_completion(client: AsyncClient, monkeypatch):
     _assert_valid_lifecycle(types)
 
     refreshed = (await client.get(f"/threads/{thread['id']}")).json()
-    assert refreshed["goal_status"] == "completed"
+    assert refreshed["status"] == "completed"
     assert refreshed["iteration"] == 1
     assert refreshed["last_reason"] == "looks done"
 
@@ -178,7 +169,6 @@ async def test_interjection_is_consumed_during_execution(
                 "agent_id": agent["id"],
                 "mode": "goal",
                 "goal": "make the tests pass",
-                "require_plan_approval": False,
                 "max_iterations": 5,
             },
         )
@@ -202,18 +192,17 @@ async def test_interjection_is_consumed_during_execution(
         await _drain_chat(client, tid, run_input.model_dump_json(by_alias=True))
     )
 
-    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "completed"
+    assert (await client.get(f"/threads/{tid}")).json()["status"] == "completed"
     # The buffer was consumed during the run (hook fired), not left dangling.
     assert drain_interjections(tid) == []
 
 
-async def test_goal_thread_plans_then_executes_on_approval(
+async def test_plan_thread_plans_then_executes_via_chat(
     client: AsyncClient, monkeypatch
 ):
+    """Plan mode drafts a plan (no approval flow); leaving plan mode and chatting
+    normally executes it as an ordinary full-tool turn."""
     monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
-    monkeypatch.setattr(
-        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
-    )
 
     agent = (await client.post("/agents", json={"name": "Goalie2"})).json()
     ws = (await client.post("/workspaces", json={"name": "GoalWS2"})).json()
@@ -223,54 +212,47 @@ async def test_goal_thread_plans_then_executes_on_approval(
             json={
                 "workspace_id": ws["id"],
                 "agent_id": agent["id"],
-                "mode": "goal",
+                "mode": "plan",
                 "goal": "refactor the module",
-                "require_plan_approval": True,
             },
         )
     ).json()
+    tid = thread["id"]
 
-    run_input = RunAgentInput(
-        thread_id=thread["id"],
-        run_id="run-1",
-        state=None,
-        messages=[UserMessage(id="m1", role="user", content="refactor the module")],
-        tools=[],
-        context=[],
-        forwarded_props=None,
-    )
+    def _input(mid: str, content: str) -> str:
+        return RunAgentInput(
+            thread_id=tid,
+            run_id=mid,
+            state=None,
+            messages=[UserMessage(id=mid, role="user", content=content)],
+            tools=[],
+            context=[],
+            forwarded_props=None,
+        ).model_dump_json(by_alias=True)
 
-    # Phase 1 — planning. The /chat run drafts the plan and ends awaiting approval.
-    plan_types = await _drain_chat(
-        client, thread["id"], run_input.model_dump_json(by_alias=True)
-    )
-    _assert_valid_lifecycle(plan_types)
-    assert (await client.get(f"/threads/{thread['id']}")).json()[
-        "goal_status"
-    ] == "awaiting_approval"
+    # Phase 1 — planning. The /chat run drafts the plan and parks awaiting review.
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m1", "refactor it")))
+    assert (await client.get(f"/threads/{tid}")).json()["status"] == "awaiting_approval"
 
-    # Phase 2 — approve starts a fresh execution run; follow it via GET /stream.
-    approve = await client.post(f"/threads/{thread['id']}/goal/approve")
-    assert approve.status_code == 200, approve.text
-    exec_types = await _drain_stream(client, thread["id"])
-    _assert_valid_lifecycle(exec_types)
-    assert (await client.get(f"/threads/{thread['id']}")).json()["goal_status"] == "completed"
+    # Phase 2 — leave plan mode (mode→chat), then a normal chat turn executes.
+    r = await client.patch(f"/threads/{tid}", json={"mode": "chat"})
+    assert r.status_code == 200, r.text
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m2", "go ahead")))
+    assert (await client.get(f"/threads/{tid}")).json()["mode"] == "chat"
 
 
-async def test_goal_planning_conversation_refines_before_approval(
+async def test_plan_conversation_refines_then_executes_on_exit(
     client: AsyncClient, monkeypatch
 ):
-    """Messages before approval refine the plan and never execute; only approve does.
+    """Messages in plan mode refine the plan and never execute; leaving plan mode
+    is what enables execution.
 
-    First message → a fresh plan (PLANNING_INSTRUCTION), parked awaiting approval.
-    A second message while awaiting approval is a refinement turn (REFINE_INSTRUCTION)
-    that stays in awaiting_approval — the autonomous loop must not start. Approval
-    is the sole path to execution.
+    First message → a fresh plan (PLANNING_INSTRUCTION), parked awaiting review.
+    A second message while still in plan mode is a refinement turn
+    (REFINE_INSTRUCTION) that stays in awaiting_approval — nothing executes. Only
+    after leaving plan mode does a chat turn run normally.
     """
     monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
-    monkeypatch.setattr(
-        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
-    )
 
     # Spy on the run-scoped instructions each planning turn uses, delegating to the
     # real streamer so the SSE flow is unchanged.
@@ -293,9 +275,8 @@ async def test_goal_planning_conversation_refines_before_approval(
             json={
                 "workspace_id": ws["id"],
                 "agent_id": agent["id"],
-                "mode": "goal",
+                "mode": "plan",
                 "goal": "refactor the module",
-                "require_plan_approval": True,
             },
         )
     ).json()
@@ -314,20 +295,21 @@ async def test_goal_planning_conversation_refines_before_approval(
 
     # First message → fresh plan (PLANNING_INSTRUCTION), awaiting approval.
     _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m1", "refactor it")))
-    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "awaiting_approval"
+    assert (await client.get(f"/threads/{tid}")).json()["status"] == "awaiting_approval"
     assert "do NOT execute yet" in captured[-1]
 
-    # Second message while awaiting approval → refinement (REFINE_INSTRUCTION),
-    # still parked awaiting approval — no execution.
+    # Second message while still in plan mode → refinement (REFINE_INSTRUCTION),
+    # still parked awaiting review — no execution.
     _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m2", "also add tests")))
-    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "awaiting_approval"
+    assert (await client.get(f"/threads/{tid}")).json()["status"] == "awaiting_approval"
     assert "refining the plan with the user" in captured[-1]
 
-    # Approve → execution runs to completion.
-    approve = await client.post(f"/threads/{tid}/goal/approve")
-    assert approve.status_code == 200, approve.text
-    _assert_valid_lifecycle(await _drain_stream(client, tid))
-    assert (await client.get(f"/threads/{tid}")).json()["goal_status"] == "completed"
+    # Leave plan mode → a normal chat turn executes (no planning instruction).
+    r = await client.patch(f"/threads/{tid}", json={"mode": "chat"})
+    assert r.status_code == 200, r.text
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m3", "go ahead")))
+    assert (await client.get(f"/threads/{tid}")).json()["mode"] == "chat"
+    assert captured[-1] is None or "plan" not in (captured[-1] or "").lower()
 
 
 async def test_interject_requires_an_active_goal_run(client: AsyncClient):

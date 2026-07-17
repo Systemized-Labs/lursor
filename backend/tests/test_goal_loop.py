@@ -15,7 +15,7 @@ from app.agents.goal_loop import (
     drive_goal_loop,
     queue_interjection,
 )
-from app.db.models import GoalStatus
+from app.db.models import ThreadStatus
 
 
 def _scripted_evaluator(evaluations: list[GoalEvaluation]):
@@ -50,7 +50,7 @@ async def test_completes_when_evaluator_confirms():
         initial_seed="kick off",
     )
 
-    assert outcome.status == GoalStatus.completed
+    assert outcome.status == ThreadStatus.completed
     assert outcome.turns == 2
     assert outcome.last_reason == "done"
     # First turn uses the initial seed; the second is driven by the continue
@@ -72,7 +72,7 @@ async def test_blocked_when_evaluator_says_impossible():
         ),
     )
 
-    assert outcome.status == GoalStatus.blocked
+    assert outcome.status == ThreadStatus.blocked
     assert outcome.turns == 1
 
 
@@ -90,7 +90,7 @@ async def test_fails_when_iteration_cap_is_hit():
         evaluate=_scripted_evaluator([GoalEvaluation(met=False, reason="keep going")]),
     )
 
-    assert outcome.status == GoalStatus.failed
+    assert outcome.status == ThreadStatus.failed
     assert outcome.turns == 3
     assert turns["n"] == 3  # ran exactly max_turns turns, no more
 

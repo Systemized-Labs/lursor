@@ -32,7 +32,7 @@ from app.schemas.settings import (
     WebSearchSettingsUpdate,
 )
 
-_CHAT_MODES = ("ask", "edit", "goal")
+_COMMAND_NAMES = ("chat", "ask", "plan", "goal")
 
 logger = logging.getLogger(__name__)
 
@@ -206,11 +206,11 @@ async def set_web_search(
     return await get_web_search(session)
 
 
-# --- Default agent per chat mode ----------------------------------------------
-# Maps a composer mode ("ask" | "edit" | "goal") to the agent selected when that
-# mode is chosen. This is a UI convenience: the frontend reads it to pick/switch
-# the agent, and the agent brings its own model/tools. Nothing is resolved at
-# run time here — the selected agent id rides on the thread as usual.
+# --- Default agent per command ------------------------------------------------
+# Maps a slash command ("chat" | "ask" | "plan" | "goal") to the agent selected
+# when that command is used. This is a UI convenience: the frontend reads it to
+# pick/switch the agent, and the agent brings its own model/tools. Nothing is
+# resolved at run time here — the selected agent id rides on the thread as usual.
 
 
 @router.get("/default-agents", response_model=DefaultAgentsRead)
@@ -218,8 +218,9 @@ async def get_default_agents(session: AsyncSession = Depends(get_session)):
     cfg = await _get_config(session)
     stored = (cfg.default_agents if cfg else None) or {}
     return DefaultAgentsRead(
+        chat=stored.get("chat") or "",
         ask=stored.get("ask") or "",
-        edit=stored.get("edit") or "",
+        plan=stored.get("plan") or "",
         goal=stored.get("goal") or "",
     )
 
@@ -233,17 +234,17 @@ async def set_default_agents(
         cfg = AppConfig()
 
     # JSON columns don't track in-place mutation; rebuild and reassign. Only
-    # touch modes the caller actually sent so each can be saved independently; a
-    # blank value drops the key (no default agent for that mode).
+    # touch commands the caller actually sent so each can be saved independently;
+    # a blank value drops the key (no default agent for that command).
     updated = dict(cfg.default_agents or {})
     fields = payload.model_fields_set
-    for mode in _CHAT_MODES:
-        if mode in fields:
-            value = (getattr(payload, mode) or "").strip()
+    for command in _COMMAND_NAMES:
+        if command in fields:
+            value = (getattr(payload, command) or "").strip()
             if value:
-                updated[mode] = value
+                updated[command] = value
             else:
-                updated.pop(mode, None)
+                updated.pop(command, None)
     cfg.default_agents = updated
 
     session.add(cfg)

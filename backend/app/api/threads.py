@@ -70,9 +70,9 @@ async def update_thread(
     if payload.title is not None:
         thread.title = payload.title
 
-    # Goal config. Lets a plain chat thread be promoted into a goal
-    # thread mid-conversation (the next turn then runs the planning driver, see
-    # api/chat.py). goal_status stays server-managed and isn't settable here.
+    # Plan/goal config. Lets a plain chat thread enter plan or goal mode
+    # mid-conversation (the next turn then runs the matching driver, see
+    # api/chat.py). ``status`` stays server-managed and isn't settable here.
     if payload.mode is not None:
         thread.mode = payload.mode
     if payload.goal is not None:
@@ -81,8 +81,6 @@ async def update_thread(
         thread.success_criteria = payload.success_criteria
     if payload.max_iterations is not None:
         thread.max_iterations = payload.max_iterations
-    if payload.require_plan_approval is not None:
-        thread.require_plan_approval = payload.require_plan_approval
 
     thread.updated_at = datetime.now(UTC)
     session.add(thread)

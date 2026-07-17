@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { HttpAgent, type Message, randomUUID } from "@ag-ui/client"
 
-import type { Thread, ThreadMessage, TurnMode } from "@/api/types"
+import type { Thread, ThreadMessage, ThreadMode, TurnIntent } from "@/api/types"
 import { threadsApi } from "@/api/threads"
 
 import { expandMentionTokens } from "@/components/chat/mentions/types"
@@ -109,17 +109,17 @@ export interface QueuedMessage {
   id: string
   text: string
   attachments: PendingAttachment[]
-  /** Per-turn mode captured when the message was submitted (defaults "edit").
-   *  Read at send time so a queued turn keeps the mode it was typed in. */
-  turnMode: TurnMode
+  /** Per-turn intent captured when the message was submitted (defaults "chat").
+   *  Read at send time so a queued turn keeps the intent it was typed with. */
+  turnIntent: TurnIntent
 }
 
-/** Goal config applied when a goal thread is lazily created via `startGoal`. */
-export interface GoalThreadConfig {
+/** Plan/goal config applied when a thread is lazily created via `startMode`. */
+export interface ThreadModeInit {
+  mode: ThreadMode
   goal: string
   successCriteria: string
   maxIterations: number
-  requirePlanApproval: boolean
 }
 
 export interface UseChat {
@@ -138,17 +138,15 @@ export interface UseChat {
   send: (
     text: string,
     attachments?: PendingAttachment[],
-    turnMode?: TurnMode
+    turnIntent?: TurnIntent
   ) => Promise<void>
-  /** Start a goal: lazily creates a goal thread (via the same path as `send`,
-   *  avoiding the load/clobber race) and sends the objective as the first turn. */
-  startGoal: (objective: string, config: GoalThreadConfig) => Promise<void>
+  /** Enter plan/goal mode on a fresh conversation: lazily creates the thread
+   *  (via the same path as `send`, avoiding the load/clobber race) with the mode
+   *  config, and sends the first turn. */
+  startMode: (text: string, init: ThreadModeInit) => Promise<void>
   /** Steer a running goal: buffer a message for the loop's next turn (does not
    *  start a new run). Optimistically shows the user's message in the thread. */
   interject: (text: string) => Promise<void>
-  /** Attach to the open thread's in-flight run (used after approving a plan,
-   *  when the backend starts a fresh execution run to follow). */
-  followRun: () => void
   stop: () => void
   /** Drop a queued message before it sends. */
   removeQueued: (id: string) => void
@@ -183,8 +181,8 @@ export function useChat(options: UseChatOptions): UseChat {
 
   const agentRef = useRef<HttpAgent | null>(null)
   const agentThreadRef = useRef<string | null>(null)
-  // Set by `startGoal` and consumed by the next lazy thread-create in performSend.
-  const pendingGoalConfigRef = useRef<GoalThreadConfig | null>(null)
+  // Set by `startMode` and consumed by the next lazy thread-create in performSend.
+  const pendingModeInitRef = useRef<ThreadModeInit | null>(null)
   const reconnectAbortRef = useRef<AbortController | null>(null)
   const currentAssistantId = useRef<string | null>(null)
   // Thread `send` is actively driving via the live POST stream. Set synchronously
@@ -409,7 +407,7 @@ export function useChat(options: UseChatOptions): UseChat {
   // both a live submit and a message drained off the queue. Drains the next
   // queued message once this run settles.
   const performSend = useCallback(
-    async ({ text: trimmed, attachments, turnMode }: QueuedMessage) => {
+    async ({ text: trimmed, attachments, turnIntent }: QueuedMessage) => {
       const { workspaceId, agentId } = optionsRef.current
       if (!workspaceId || !agentId) {
         setError("Pick an agent before sending a message.")
@@ -417,26 +415,25 @@ export function useChat(options: UseChatOptions): UseChat {
       }
 
       // Lazily create the thread on first send so "New conversation" leaves no
-      // orphan threads behind if the user never sends anything. A pending goal
-      // config (set by `startGoal`) makes the new thread a goal thread.
+      // orphan threads behind if the user never sends anything. A pending mode
+      // init (set by `startMode`) makes the new thread a plan/goal thread.
       let threadId = selectedThreadIdRef.current
       if (!threadId) {
-        const goalConfig = pendingGoalConfigRef.current
-        pendingGoalConfigRef.current = null
+        const modeInit = pendingModeInitRef.current
+        pendingModeInitRef.current = null
         try {
           const thread = await threadsApi.create({
             workspace_id: workspaceId,
             agent_id: agentId,
-            title: goalConfig
-              ? goalConfig.goal.slice(0, 60) || "New goal"
+            title: modeInit
+              ? modeInit.goal.slice(0, 60) || "New conversation"
               : "New conversation",
-            ...(goalConfig
+            ...(modeInit
               ? {
-                  mode: "goal" as const,
-                  goal: goalConfig.goal,
-                  success_criteria: goalConfig.successCriteria,
-                  max_iterations: goalConfig.maxIterations,
-                  require_plan_approval: goalConfig.requirePlanApproval,
+                  mode: modeInit.mode,
+                  goal: modeInit.goal,
+                  success_criteria: modeInit.successCriteria,
+                  max_iterations: modeInit.maxIterations,
                 }
               : {}),
           })
@@ -489,9 +486,9 @@ export function useChat(options: UseChatOptions): UseChat {
 
       try {
         await agent.runAgent(
-          // Carry the per-turn mode so the backend can build a read-only
-          // ("ask") agent for this turn. Goal threads ignore it.
-          { forwardedProps: { turn_mode: turnMode } },
+          // Carry the per-turn intent so the backend can build a read-only
+          // ("ask") agent for this turn. Plan/goal threads ignore it.
+          { forwardedProps: { turn: turnIntent } },
           {
             onTextMessageStartEvent: ({ event }) =>
               handlers.onTextStart(event.messageId),
@@ -550,7 +547,7 @@ export function useChat(options: UseChatOptions): UseChat {
     async (
       text: string,
       attachments: PendingAttachment[] = [],
-      turnMode: TurnMode = "edit"
+      turnIntent: TurnIntent = "chat"
     ) => {
       const trimmed = text.trim()
       if (!trimmed && attachments.length === 0) return
@@ -558,7 +555,7 @@ export function useChat(options: UseChatOptions): UseChat {
         id: randomUUID(),
         text: trimmed,
         attachments,
-        turnMode,
+        turnIntent,
       }
       // Append while a run is streaming, or while a pending queue already exists,
       // so new messages join the batch in order rather than jumping ahead.
@@ -571,27 +568,20 @@ export function useChat(options: UseChatOptions): UseChat {
     [performSend, setQueueSynced]
   )
 
-  // Follow a run that started server-side (e.g. execution after plan approval)
-  // by attaching the GET SSE reader to the open thread.
-  const followRun = useCallback(() => {
-    const id = selectedThreadIdRef.current
-    if (id) reconnectToRun(id)
-  }, [reconnectToRun])
-
-  // Start a goal on a fresh conversation. Routes through `performSend`'s
+  // Enter plan/goal mode on a fresh conversation. Routes through `performSend`'s
   // lazy-create so the thread is created and claimed (sendingThreadRef) before
   // the URL updates — the same guard that stops `loadConversation` from wiping
-  // the just-sent objective and streamed plan.
-  const startGoal = useCallback(
-    async (objective: string, config: GoalThreadConfig) => {
-      const trimmed = objective.trim()
+  // the just-sent objective and streamed reply.
+  const startMode = useCallback(
+    async (text: string, init: ThreadModeInit) => {
+      const trimmed = text.trim()
       if (!trimmed) return
-      pendingGoalConfigRef.current = config
+      pendingModeInitRef.current = init
       await performSend({
         id: randomUUID(),
         text: trimmed,
         attachments: [],
-        turnMode: "edit",
+        turnIntent: "chat",
       })
     },
     [performSend]
@@ -661,9 +651,8 @@ export function useChat(options: UseChatOptions): UseChat {
     queue,
     queuePaused,
     send,
-    startGoal,
+    startMode,
     interject,
-    followRun,
     stop,
     removeQueued,
     editQueued,

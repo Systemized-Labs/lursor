@@ -41,7 +41,6 @@ from app.agents.builder import build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
-    EXECUTION_KICKOFF,
     PLANNING_INSTRUCTION,
     REFINE_INSTRUCTION,
     build_continuation_adapter,
@@ -58,11 +57,11 @@ from app.db.models import (
     Agent,
     AppConfig,
     CustomProvider,
-    GoalStatus,
     Message,
     Subagent,
     Thread,
     ThreadMode,
+    ThreadStatus,
     UsageRecord,
     Workspace,
 )
@@ -229,15 +228,16 @@ async def _persist_message(thread_id: str, role: str, content: str) -> None:
         await bg_session.commit()
 
 
-async def _set_goal_state(
+async def _set_thread_state(
     thread_id: str,
     *,
-    status: GoalStatus | None = None,
+    status: ThreadStatus | None = None,
+    mode: ThreadMode | None = None,
     iteration: int | None = None,
     last_reason: str | None = None,
     todos: list[dict] | None = None,
 ) -> None:
-    """Persist goal progress to the thread row (own background session).
+    """Persist plan/goal run progress to the thread row (own background session).
 
     Only non-``None`` fields are written, so partial updates (just a status, or
     just the latest todos) are cheap and don't clobber the rest.
@@ -247,7 +247,9 @@ async def _set_goal_state(
         if thread is None:
             return
         if status is not None:
-            thread.goal_status = status
+            thread.status = status
+        if mode is not None:
+            thread.mode = mode
         if iteration is not None:
             thread.iteration = iteration
         if last_reason is not None:
@@ -447,7 +449,7 @@ def _publish_lifecycle_finish(thread_id: str, run_id: str) -> None:
 def _goal_status_publisher(thread_id: str, condition: str, max_iter: int):
     """A ``(status, iteration, reason)`` closure that emits goal-status events."""
 
-    def publish(status_: GoalStatus, iteration: int, reason: str = "") -> None:
+    def publish(status_: ThreadStatus, iteration: int, reason: str = "") -> None:
         chat_run_manager.publish(
             thread_id,
             encode_goal_status_event(
@@ -473,13 +475,13 @@ async def _run_goal_execution(
     max_turns: int,
     media_instructions: str | None,
     initial_history: list[ModelMessage],
-    kickoff: str = EXECUTION_KICKOFF,
+    kickoff: str = AUTONOMOUS_KICKOFF,
 ) -> None:
-    """Drive the autonomous execution loop after a plan is approved.
+    """Drive the autonomous goal loop (``/goal``).
 
-    Many agent turns stream through one AG-UI lifecycle: read the approved plan,
-    work a step, evaluate against the goal, continue — until met / impossible /
-    capped. The whole run is wrapped in a single RUN_STARTED…RUN_FINISHED.
+    Many agent turns stream through one AG-UI lifecycle: work a step, evaluate
+    against the goal, continue — until met / impossible / capped. The whole run is
+    wrapped in a single RUN_STARTED…RUN_FINISHED.
     """
     accumulated: list[str] = []
     todos_state: dict = {"json": None}
@@ -488,8 +490,8 @@ async def _run_goal_execution(
 
     _publish_lifecycle_start(thread_id, run_id)
     try:
-        await _set_goal_state(thread_id, status=GoalStatus.running, iteration=0)
-        publish_status(GoalStatus.running, 0)
+        await _set_thread_state(thread_id, status=ThreadStatus.running, iteration=0)
+        publish_status(ThreadStatus.running, 0)
         history = list(initial_history)
         # Mid-run steering: this capability drains the thread's interjection
         # buffer before each model request and injects it into the live run, so a
@@ -517,14 +519,14 @@ async def _run_goal_execution(
             return history
 
         async def on_evaluation(state, evaluation) -> None:
-            await _set_goal_state(
+            await _set_thread_state(
                 thread_id,
-                status=GoalStatus.running,
+                status=ThreadStatus.running,
                 iteration=state.turns,
                 last_reason=evaluation.reason,
                 todos=_todos_snapshot(deps),
             )
-            publish_status(GoalStatus.running, state.turns, evaluation.reason)
+            publish_status(ThreadStatus.running, state.turns, evaluation.reason)
 
         outcome = await drive_goal_loop(
             condition=condition,
@@ -534,7 +536,7 @@ async def _run_goal_execution(
             on_evaluation=on_evaluation,
             initial_seed=kickoff,
         )
-        await _set_goal_state(
+        await _set_thread_state(
             thread_id,
             status=outcome.status,
             iteration=outcome.turns,
@@ -544,15 +546,15 @@ async def _run_goal_execution(
         publish_status(outcome.status, outcome.turns, outcome.last_reason)
     except asyncio.CancelledError:
         await _persist_message(thread_id, "assistant", "".join(accumulated))
-        await _set_goal_state(thread_id, status=GoalStatus.stopped)
-        publish_status(GoalStatus.stopped, 0)
+        await _set_thread_state(thread_id, status=ThreadStatus.stopped)
+        publish_status(ThreadStatus.stopped, 0)
         raise
     except Exception as exc:
         chat_run_manager.publish(
             thread_id,
             _encode_ag_ui_event(RunErrorEvent(type=EventType.RUN_ERROR, message=str(exc))),
         )
-        await _set_goal_state(thread_id, status=GoalStatus.failed)
+        await _set_thread_state(thread_id, status=ThreadStatus.failed)
         raise
     _publish_lifecycle_finish(thread_id, run_id)
     chat_run_manager.finish(thread_id, "finished")
@@ -611,15 +613,16 @@ async def chat(
     # attached images are written to the media store and referenced on the row.
     user_text = ""
     attachments: list[dict] = []
-    # Per-turn mode ("ask"/"edit") rides on the AG-UI request as a forwarded
-    # prop; "edit" (full tools) is the default. Only meaningful for chat threads
-    # — goal threads run the plan lifecycle regardless.
-    turn_mode = "edit"
+    # Per-turn intent ("chat"/"ask") rides on the AG-UI request as a forwarded
+    # prop; "chat" (full tools) is the default, "ask" builds a read-only agent.
+    # Set by the frontend slash-command dispatch. Sticky plan/goal modes come from
+    # the thread row, not this flag.
+    turn = "chat"
     with contextlib.suppress(Exception):
         body = await request.json()
         forwarded = body.get("forwardedProps") or {}
         if isinstance(forwarded, dict):
-            turn_mode = forwarded.get("turn_mode") or "edit"
+            turn = forwarded.get("turn") or "chat"
         user_text, images = _parse_user_turn(body)
         for img in images:
             with contextlib.suppress(Exception):
@@ -649,8 +652,8 @@ async def chat(
     # of them via view_image, regardless of the model's own vision support.
     media_instructions = await _thread_media_instructions(session, thread_id)
 
-    # "Ask" mode on a chat thread builds a read-only agent (no write/edit/shell).
-    read_only = thread.mode == ThreadMode.chat and turn_mode == "ask"
+    # A "/ask" turn on a chat thread builds a read-only agent (no write/edit/shell).
+    read_only = thread.mode == ThreadMode.chat and turn == "ask"
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
         session, agent_row, workspace, read_only=read_only
     )
@@ -674,13 +677,14 @@ async def chat(
             )
             _strip_inline_images(adapter.run_input, note.strip())
 
+    is_plan = thread.mode == ThreadMode.plan
     is_goal = thread.mode == ThreadMode.goal
     condition = (thread.success_criteria or thread.goal).strip()
     accumulated: list[str] = []
     todos_state: dict = {"json": None}
 
     async def chat_driver() -> None:
-        # Plain chat: one turn, natural AG-UI lifecycle intact.
+        # Plain chat (or /ask): one turn, natural AG-UI lifecycle intact.
         try:
             await _stream_turn(
                 thread_id,
@@ -698,32 +702,31 @@ async def chat(
         else:
             chat_run_manager.finish(thread_id, "finished")
 
-    # A goal thread parked in `awaiting_approval` and receiving another message is
+    # A plan thread parked in `awaiting_approval` and receiving another message is
     # a *refinement* turn: the user is giving feedback on the plan already written
-    # to GOAL_PLAN.md, so we frame the turn as revising the existing draft. Any
-    # other status (idle/planning, or a terminal goal getting a fresh message)
-    # starts a fresh planning round with the from-scratch instruction. The
+    # to PLAN.md, so we frame the turn as revising the existing draft. Any other
+    # status starts a fresh planning round with the from-scratch instruction. The
     # request adapter already carries the full frontend transcript (useChat sets
     # the agent's messages before each run) and any image attachments, so the
     # planning turn has full conversational context without re-seeding from the DB.
     planning_instruction = (
         REFINE_INSTRUCTION
-        if is_goal and thread.goal_status == GoalStatus.awaiting_approval
+        if is_plan and thread.status == ThreadStatus.awaiting_approval
         else PLANNING_INSTRUCTION
     )
 
-    async def planning_driver() -> None:
-        # Goal planning: one turn that writes/revises the plan doc, then ends in
+    async def plan_driver() -> None:
+        # Plan mode: one turn that writes/revises PLAN.md, then ends in
         # `awaiting_approval` so the thread is free for the user to iterate (send
-        # more messages to refine) or approve. Nothing executes until approval —
-        # this branch never starts the autonomous loop. Wrapped in a manual
-        # lifecycle so goal-status events sit safely inside RUN_STARTED…RUN_FINISHED.
+        # more messages to refine). Nothing executes while in plan mode; the user
+        # leaves plan mode (mode→chat) and chats normally to carry the plan out.
+        # Wrapped in a manual lifecycle so status events sit inside RUN_STARTED…FINISHED.
         run_id = uuid.uuid4().hex
         publish_status = _goal_status_publisher(thread_id, condition, thread.max_iterations)
         _publish_lifecycle_start(thread_id, run_id)
         try:
-            await _set_goal_state(thread_id, status=GoalStatus.planning)
-            publish_status(GoalStatus.planning, 0)
+            await _set_thread_state(thread_id, status=ThreadStatus.planning)
+            publish_status(ThreadStatus.planning, 0)
             await _stream_turn(
                 thread_id,
                 adapter,
@@ -735,15 +738,15 @@ async def chat(
                 strip_lifecycle=True,
                 kind="plan",
             )
-            await _set_goal_state(
+            await _set_thread_state(
                 thread_id,
-                status=GoalStatus.awaiting_approval,
+                status=ThreadStatus.awaiting_approval,
                 todos=_todos_snapshot(deps),
             )
-            publish_status(GoalStatus.awaiting_approval, 0)
+            publish_status(ThreadStatus.awaiting_approval, 0)
         except asyncio.CancelledError:
             await _persist_message(thread_id, "assistant", "".join(accumulated))
-            await _set_goal_state(thread_id, status=GoalStatus.awaiting_approval)
+            await _set_thread_state(thread_id, status=ThreadStatus.awaiting_approval)
             raise
         except Exception as exc:
             chat_run_manager.publish(
@@ -754,18 +757,10 @@ async def chat(
         _publish_lifecycle_finish(thread_id, run_id)
         chat_run_manager.finish(thread_id, "finished")
 
-    if not is_goal:
-        driver = chat_driver
-    elif thread.require_plan_approval:
-        # Planning conversation: every message before approval routes here (first
-        # plan, refinements while awaiting_approval, or a fresh plan after a prior
-        # goal terminated — planning_driver resets the status to `planning`).
-        # Approval is the sole path to execution (POST /goal/approve).
-        driver = planning_driver
-    else:
-        # Fully autonomous (approval off): skip the review pause and execute the
-        # goal straight away. Load context in request scope (the detached driver
-        # must not touch the request-scoped session after the response starts).
+    if is_goal:
+        # /goal: run the autonomous loop straight away — no approval gate. Load
+        # context in request scope (the detached driver must not touch the
+        # request-scoped session after the response starts).
         rows = (
             await session.execute(
                 select(Message)
@@ -780,7 +775,7 @@ async def chat(
         max_iter = thread.max_iterations
         accept = adapter.accept
 
-        async def autonomous_driver() -> None:
+        async def goal_driver() -> None:
             await _run_goal_execution(
                 thread_id,
                 agent,
@@ -794,7 +789,11 @@ async def chat(
                 kickoff=AUTONOMOUS_KICKOFF,
             )
 
-        driver = autonomous_driver
+        driver = goal_driver
+    elif is_plan:
+        driver = plan_driver
+    else:
+        driver = chat_driver
 
     if not chat_run_manager.start_run(thread_id, driver):
         raise HTTPException(
@@ -816,65 +815,6 @@ async def stop_run(thread_id: str) -> dict[str, bool]:
     if not stopped:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No active run for this conversation")
     return {"stopped": True}
-
-
-@router.post("/{thread_id}/goal/approve", status_code=status.HTTP_200_OK)
-async def approve_goal_plan(
-    thread_id: str, session: AsyncSession = Depends(get_session)
-) -> dict[str, bool]:
-    """Approve the plan and start the autonomous execution run.
-
-    Planning turns have already finished (the thread is idle in
-    ``awaiting_approval``), so this spawns the execution loop as a fresh detached
-    run. The caller follows it via ``GET /threads/{id}/stream``.
-    """
-    thread = await session.get(Thread, thread_id)
-    if thread is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
-    if thread.mode != ThreadMode.goal:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Not a goal thread")
-    if chat_run_manager.is_running(thread_id):
-        raise HTTPException(status.HTTP_409_CONFLICT, "A run is already active")
-
-    agent_row = await session.get(Agent, thread.agent_id)
-    workspace = await session.get(Workspace, thread.workspace_id)
-    if agent_row is None or workspace is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Thread's agent or workspace is missing")
-
-    media_instructions = await _thread_media_instructions(session, thread_id)
-    agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace
-    )
-    evaluator = build_goal_evaluator(
-        _resolve_evaluator_model(app_config, thread, agent_row), custom_providers
-    )
-    condition = (thread.success_criteria or thread.goal).strip()
-    max_iter = thread.max_iterations
-    # Seed the execution run with the planning transcript so it has context; the
-    # detailed plan itself lives in the workspace's plan doc, which it reads.
-    rows = (
-        await session.execute(
-            select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at)
-        )
-    ).scalars().all()
-    initial_history = messages_to_history(rows)
-
-    async def driver() -> None:
-        await _run_goal_execution(
-            thread_id,
-            agent,
-            deps,
-            accept="text/event-stream",
-            evaluator=evaluator,
-            condition=condition,
-            max_turns=max_iter,
-            media_instructions=media_instructions,
-            initial_history=initial_history,
-        )
-
-    if not chat_run_manager.start_run(thread_id, driver):
-        raise HTTPException(status.HTTP_409_CONFLICT, "A run is already active")
-    return {"approved": True}
 
 
 @router.post("/{thread_id}/goal/interject", status_code=status.HTTP_200_OK)

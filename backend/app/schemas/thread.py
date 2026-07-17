@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.db.models import GoalStatus, ThreadMode
+from app.db.models import ThreadMode, ThreadStatus
 from app.schemas._types import UTCDatetime
 
 
@@ -12,18 +12,17 @@ class ThreadCreate(BaseModel):
     workspace_id: str
     agent_id: str
     title: str = "New conversation"
-    # Goal mode (optional; a plain chat thread omits these).
+    # Plan/goal mode (optional; a plain chat thread omits these).
     mode: ThreadMode = ThreadMode.chat
     goal: str = ""
     success_criteria: str = ""
     max_iterations: int = 25
-    require_plan_approval: bool = True
 
 
 class ThreadUpdate(BaseModel):
-    """Partial update: rename a thread, swap its agent, or edit its goal config.
+    """Partial update: rename a thread, swap its agent, or edit its plan/goal config.
 
-    ``goal_status`` is server-managed and intentionally not settable here.
+    ``status`` is server-managed and intentionally not settable here.
     """
 
     title: str | None = None
@@ -32,7 +31,6 @@ class ThreadUpdate(BaseModel):
     goal: str | None = None
     success_criteria: str | None = None
     max_iterations: int | None = None
-    require_plan_approval: bool | None = None
 
 
 class ThreadRead(BaseModel):
@@ -43,10 +41,9 @@ class ThreadRead(BaseModel):
     mode: ThreadMode
     goal: str
     success_criteria: str
-    goal_status: GoalStatus
+    status: ThreadStatus
     iteration: int
     max_iterations: int
-    require_plan_approval: bool
     last_reason: str
     todos_snapshot: list[Any] = []
     created_at: UTCDatetime

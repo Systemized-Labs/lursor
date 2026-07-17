@@ -112,8 +112,10 @@ async def _apply_lightweight_migrations(conn) -> None:
         if col not in app_config_cols:
             await conn.execute(text(ddl))
 
-    # Goal-mode columns on threads (all default to a benign "chat"/idle state so
-    # existing rows keep behaving exactly as before).
+    # Plan/goal columns on threads (all default to a benign "chat"/idle state so
+    # existing rows keep behaving exactly as before). ``status`` is the generalized
+    # run lifecycle (was ``goal_status`` before the slash-command refactor);
+    # ``require_plan_approval`` was dropped (plan mode replaces the approval gate).
     thread_cols = await columns("threads")
     thread_additions = {
         "mode": "ALTER TABLE threads ADD COLUMN mode VARCHAR DEFAULT 'chat'",
@@ -121,18 +123,23 @@ async def _apply_lightweight_migrations(conn) -> None:
         "success_criteria": (
             "ALTER TABLE threads ADD COLUMN success_criteria VARCHAR DEFAULT ''"
         ),
-        "goal_status": "ALTER TABLE threads ADD COLUMN goal_status VARCHAR DEFAULT 'idle'",
+        "status": "ALTER TABLE threads ADD COLUMN status VARCHAR DEFAULT 'idle'",
         "iteration": "ALTER TABLE threads ADD COLUMN iteration INTEGER DEFAULT 0",
         "max_iterations": "ALTER TABLE threads ADD COLUMN max_iterations INTEGER DEFAULT 25",
-        "require_plan_approval": (
-            "ALTER TABLE threads ADD COLUMN require_plan_approval BOOLEAN DEFAULT 1"
-        ),
         "last_reason": "ALTER TABLE threads ADD COLUMN last_reason VARCHAR DEFAULT ''",
         "todos_snapshot": "ALTER TABLE threads ADD COLUMN todos_snapshot JSON DEFAULT '[]'",
     }
     for col, ddl in thread_additions.items():
         if col not in thread_cols:
             await conn.execute(text(ddl))
+    # Carry old goal-mode state onto the renamed ``status`` column. Runs once, when
+    # a pre-refactor DB still has the legacy ``goal_status`` column: copy its value
+    # so in-flight/finished goal threads keep their lifecycle. The dead column is
+    # left in place (SQLite can't cheaply drop columns; it's harmless).
+    if "goal_status" in thread_cols and "status" not in thread_cols:
+        await conn.execute(
+            text("UPDATE threads SET status = goal_status WHERE goal_status IS NOT NULL")
+        )
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

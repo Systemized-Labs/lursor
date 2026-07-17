@@ -248,18 +248,17 @@ export interface ThreadMessage {
   created_at: string
 }
 
-export type ThreadMode = "chat" | "goal"
+/** How a thread is driven. `chat` is the default; `plan` and `goal` are sticky
+ *  modes entered by a slash command (see the command registry). */
+export type ThreadMode = "chat" | "plan" | "goal"
 
-/** The mode selected in the composer dropdown. `ask`/`edit` are per-turn
- *  modifiers on a chat thread; `goal` starts a goal thread (see `ThreadMode`). */
-export type ChatMode = "ask" | "edit" | "goal"
+/** Per-turn intent sent with a message. `chat` is full tools (default); `ask`
+ *  is a read-only turn. Sticky `plan`/`goal` come from the thread, not here. */
+export type TurnIntent = "chat" | "ask"
 
-/** Per-turn modifier sent with a chat message (`goal` is expressed by the
- *  thread being a goal thread, so it is not a TurnMode). */
-export type TurnMode = "ask" | "edit"
-
-/** Lifecycle of a goal-mode thread (mirrors backend `GoalStatus`). */
-export type GoalStatus =
+/** Lifecycle of a plan/goal run (mirrors backend `ThreadStatus`; `goal_status`
+ *  on the wire). */
+export type RunStatus =
   | "idle"
   | "planning"
   | "awaiting_approval"
@@ -274,14 +273,13 @@ export interface Thread {
   workspace_id: string
   agent_id: string
   title: string
-  // Goal mode (a plain chat thread leaves these at their defaults).
+  // Plan/goal mode (a plain chat thread leaves these at their defaults).
   mode: ThreadMode
   goal: string
   success_criteria: string
-  goal_status: GoalStatus
+  status: RunStatus
   iteration: number
   max_iterations: number
-  require_plan_approval: boolean
   last_reason: string
   todos_snapshot: unknown[]
   created_at: string
@@ -292,12 +290,11 @@ export interface ThreadInput {
   workspace_id: string
   agent_id: string
   title: string
-  // Optional goal-mode config supplied when starting a goal thread.
+  // Optional plan/goal config supplied when entering that mode.
   mode?: ThreadMode
   goal?: string
   success_criteria?: string
   max_iterations?: number
-  require_plan_approval?: boolean
 }
 
 export interface ThreadUpdate {
@@ -308,7 +305,6 @@ export interface ThreadUpdate {
   goal?: string
   success_criteria?: string
   max_iterations?: number
-  require_plan_approval?: boolean
 }
 
 export interface HealthResponse {
@@ -449,19 +445,21 @@ export interface WebSearchSettingsInput {
 }
 
 /**
- * Default agent per chat mode. Each value is an agent id ("" when the mode has
- * no default agent). Selecting a mode in the composer switches to (and, for an
- * open thread, reassigns) that mode's agent.
+ * Default agent per slash command. Each value is an agent id ("" when the
+ * command has no default agent). Using a command in the composer switches to
+ * (and, for an open thread, reassigns) that command's agent.
  */
 export interface DefaultAgentsSettings {
+  chat: string
   ask: string
-  edit: string
+  plan: string
   goal: string
 }
 
 export interface DefaultAgentsInput {
+  chat?: string
   ask?: string
-  edit?: string
+  plan?: string
   goal?: string
 }
 

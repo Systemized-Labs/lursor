@@ -91,19 +91,27 @@ class ToolChoice(StrEnum):
 
 
 class ThreadMode(StrEnum):
-    """How a thread is driven. ``chat`` is the classic turn-based conversation;
-    ``goal`` runs the self-continuing goal loop (see ``agents/goal_loop.py``)."""
+    """How a thread is driven, selected per-turn via a slash command.
+
+    ``chat`` is the classic turn-based conversation (a plain message, or ``/ask``
+    for a read-only turn). ``plan`` is Claude-Code-style plan mode: the agent
+    proposes a plan and waits for approval before executing (``/plan``). ``goal``
+    runs the self-continuing goal loop until an evaluator judges it done
+    (``/goal``; see ``agents/goal_loop.py``). ``plan`` and ``goal`` are sticky —
+    they own the thread until it returns to ``chat``."""
 
     chat = "chat"
+    plan = "plan"
     goal = "goal"
 
 
-class GoalStatus(StrEnum):
-    """Lifecycle of a goal-mode thread's objective.
+class ThreadStatus(StrEnum):
+    """Lifecycle of a ``plan``/``goal`` thread's run (``goal_status`` on the wire).
 
-    ``idle`` — not pursuing a goal (or a chat thread). Then, in order:
-    ``planning`` (first turn drafts the checklist) → ``awaiting_approval``
-    (paused for the user to approve the plan) → ``running`` (autonomous loop).
+    ``idle`` — not in a plan/goal run (or a plain chat thread). Plan mode:
+    ``planning`` (a turn drafts the plan) → ``awaiting_approval`` (paused for the
+    user to approve) → approval starts a normal execution run and the thread
+    returns to ``chat``/``idle``. Goal mode: ``running`` (autonomous loop).
     Terminal: ``completed`` (evaluator confirmed), ``blocked`` (judged
     impossible / needs a human), ``failed`` (hit the iteration cap), ``stopped``
     (cancelled by the user)."""
@@ -350,12 +358,12 @@ class AppConfig(TimestampMixin, table=True):
     # stack. When null the loop falls back to the thread agent's own model.
     goal_evaluator_model: str | None = None
 
-    # Default agent per composer chat mode, keyed by mode ("ask" | "edit" |
-    # "goal") → agent id. When a mode has an entry, selecting that mode in the
-    # composer switches to (and, for an open thread, reassigns) that agent; the
-    # agent brings its own model/tools/instructions. A missing/blank key means
-    # "no default — keep the current agent". Kept as a free-form JSON blob so the
-    # set of modes can grow without a schema migration.
+    # Default agent per slash command, keyed by command ("chat" | "ask" | "plan"
+    # | "goal") → agent id. When a command has an entry, using it in the composer
+    # switches to (and, for an open thread, reassigns) that agent; the agent
+    # brings its own model/tools/instructions. A missing/blank key means "no
+    # default — keep the current agent". Kept as a free-form JSON blob so the set
+    # of commands can grow without a schema migration.
     default_agents: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
     # Global overrides for pydantic-deep defaults. Currently scoped to subagents:
@@ -403,19 +411,20 @@ class Thread(TimestampMixin, table=True):
     workspace_id: str = Field(foreign_key="workspaces.id", index=True)
     agent_id: str = Field(foreign_key="agents.id", index=True)
 
-    # --- Goal mode -----------------------------------------------------------
-    # A ``chat`` thread ignores every field below. A ``goal`` thread runs the
-    # self-continuing loop in ``agents/goal_loop.py``: plan → (approve) → work
-    # → evaluate → repeat, until ``goal_status`` reaches a terminal state.
+    # --- Plan / goal mode ----------------------------------------------------
+    # A ``chat`` thread ignores every field below. ``plan`` mode drafts a plan
+    # and waits for approval; ``goal`` mode runs the self-continuing loop in
+    # ``agents/goal_loop.py`` (work → evaluate → repeat) until ``status`` reaches
+    # a terminal state. Modes are entered by a slash command (see the frontend
+    # command registry).
     mode: ThreadMode = Field(default=ThreadMode.chat)
-    goal: str = ""  # the objective the agent works toward
+    goal: str = ""  # the objective the agent works toward (goal mode)
     # The completion condition handed to the evaluator; falls back to ``goal``
     # when empty. Kept separate so "what to do" and "what "done" means" can differ.
     success_criteria: str = ""
-    goal_status: GoalStatus = Field(default=GoalStatus.idle)
+    status: ThreadStatus = Field(default=ThreadStatus.idle)
     iteration: int = 0  # evaluation turns spent (mirrors GoalState.turns)
     max_iterations: int = 25  # hard safety cap → GoalState.max_turns
-    require_plan_approval: bool = True  # pause after planning for user approval
     last_reason: str = ""  # evaluator's latest one-sentence verdict, for the UI
     # Latest todo checklist snapshot, persisted so goal progress survives a
     # reconnect (the live list otherwise lives only in transient run deps).

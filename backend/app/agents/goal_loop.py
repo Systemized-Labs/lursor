@@ -42,56 +42,51 @@ from pydantic_deep import (
 )
 
 from app.agents.builder import resolve_model
-from app.db.models import CustomProvider, GoalStatus
+from app.db.models import CustomProvider, ThreadStatus
 
-# AG-UI CUSTOM event carrying goal lifecycle to the UI (status pill, iteration
-# counter, evaluator reason). Sibling of the "todos" event in ``api/chat.py``.
+# AG-UI CUSTOM event carrying plan/goal run lifecycle to the UI (status pill,
+# iteration counter, evaluator reason). Sibling of the "todos" event in
+# ``api/chat.py``. The wire name stays ``goal_status`` for stream compatibility.
 GOAL_STATUS_EVENT_NAME = "goal_status"
 
 # The plan lives as a Markdown doc at the workspace root so the user can read it
 # in the file panel and the agent can revise it across planning turns. Namespaced
-# to avoid clobbering a repo's own PLAN.md.
-PLAN_DOC = "GOAL_PLAN.md"
+# lightly so it's obvious it's the assistant's plan.
+PLAN_DOC = "PLAN.md"
 
-# Run-scoped instructions for a planning turn. The plan is an on-disk artifact
+# Run-scoped instructions for a plan-mode turn. The plan is an on-disk artifact
 # (the user reviews it in the file panel and can ask for revisions), not just
 # chat prose — so we direct the agent to write it to ``PLAN_DOC``.
 PLANNING_INSTRUCTION = (
-    "## Goal planning — do NOT execute yet\n"
-    f"You are planning how to accomplish a goal. Write a clear, step-by-step "
-    f"implementation plan as Markdown to the file `{PLAN_DOC}` at the root of "
-    "your workspace (create it, or overwrite/revise it if it already exists, "
-    "using your file tools). Structure it as an ordered checklist of concrete "
-    "steps plus any key decisions or assumptions. In your chat reply, briefly "
-    "summarise the plan and invite the user to request changes — you'll refine "
-    "it together before they approve.\n"
-    "Do NOT start doing the work yet: this is a planning conversation. The user "
-    "reviews the plan and may go back and forth with you to revise it before "
-    "approving. Nothing runs until they explicitly approve."
+    "## Plan mode — propose, do NOT execute yet\n"
+    f"You are in plan mode. Research what's needed, then write a clear, "
+    f"step-by-step implementation plan as Markdown to the file `{PLAN_DOC}` at "
+    "the root of your workspace (create it, or overwrite/revise it if it already "
+    "exists, using your file tools). Structure it as an ordered checklist of "
+    "concrete steps plus any key decisions or assumptions. In your chat reply, "
+    "briefly summarise the plan and invite the user to request changes — you'll "
+    "refine it together until they're happy with it.\n"
+    "Do NOT start doing the work yet: this is a planning conversation. Beyond "
+    f"reading/searching the codebase and writing `{PLAN_DOC}`, make no changes. "
+    "When the user is ready to execute, they leave plan mode and ask you to carry "
+    "the plan out — nothing else runs while you're still planning."
 )
 
-# Run-scoped instructions for a follow-up planning turn: the user is giving
+# Run-scoped instructions for a follow-up plan-mode turn: the user is giving
 # feedback on the plan already written to ``PLAN_DOC``. Framed as revising an
 # existing draft (read it first, apply the changes) rather than writing anew.
 REFINE_INSTRUCTION = (
-    "## Goal planning — refining the plan with the user\n"
+    "## Plan mode — refining the plan with the user\n"
     f"The user is giving feedback on the plan you already wrote to `{PLAN_DOC}`. "
     f"Read the current `{PLAN_DOC}` with your file tools, apply the requested "
     "changes, and save the updated plan. In your chat reply, briefly say what "
     "you changed and invite further edits.\n"
     "Do NOT start doing the work yet: this is still the planning conversation. "
-    "The user may keep refining, and nothing runs until they explicitly approve."
+    "The user may keep refining; nothing runs until they leave plan mode and ask "
+    "you to execute."
 )
 
-# Seeds the first execution turn once the plan is approved.
-EXECUTION_KICKOFF = (
-    f"Your plan in `{PLAN_DOC}` is approved. Execute it now, working through the "
-    "steps one at a time. Use the write_todos tool to track progress against the "
-    "plan. Surface concrete evidence (command output, exit codes, test results, "
-    "file state) as you go so completion can be verified."
-)
-
-# Seeds the first turn in fully-autonomous mode (approval off — no plan doc yet).
+# Seeds the first turn of the autonomous goal loop (``/goal`` — no plan step).
 AUTONOMOUS_KICKOFF = (
     "Work toward the goal now. Break it into steps with the write_todos tool, "
     "then carry them out, surfacing concrete evidence (command output, exit "
@@ -178,7 +173,7 @@ def messages_to_history(rows) -> list[ModelMessage]:
 class GoalOutcome:
     """Terminal result of a goal loop, folded back onto the thread row."""
 
-    status: GoalStatus
+    status: ThreadStatus
     turns: int
     last_reason: str
 
@@ -223,7 +218,7 @@ def build_continuation_adapter(
 
 
 def encode_goal_status_event(
-    status: GoalStatus,
+    status: ThreadStatus,
     *,
     condition: str,
     iteration: int,
@@ -282,9 +277,9 @@ async def drive_goal_loop(
         if on_evaluation is not None:
             await on_evaluation(state, evaluation)
         if state.achieved:
-            return GoalOutcome(GoalStatus.completed, state.turns, evaluation.reason)
+            return GoalOutcome(ThreadStatus.completed, state.turns, evaluation.reason)
         if evaluation.impossible:
-            return GoalOutcome(GoalStatus.blocked, state.turns, evaluation.reason)
+            return GoalOutcome(ThreadStatus.blocked, state.turns, evaluation.reason)
         if state.exhausted:
-            return GoalOutcome(GoalStatus.failed, state.turns, evaluation.reason)
+            return GoalOutcome(ThreadStatus.failed, state.turns, evaluation.reason)
         seed = goal_continue_directive(condition, evaluation.reason)

@@ -8,18 +8,19 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react"
-import { Clock, Paperclip, PaperPlaneTilt, Play, Square, X } from "@phosphor-icons/react"
+import { Clock, NotePencil, Paperclip, PaperPlaneTilt, Play, Square, Target, X } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { ChatModeSelect } from "@/components/chat/ChatModeSelect"
 import { MentionMenu } from "@/components/chat/mentions/MentionMenu"
 import { useMentions } from "@/components/chat/mentions/use-mentions"
 import type { MentionSource, ResolvedMention } from "@/components/chat/mentions/types"
+import { SlashMenu } from "@/components/chat/commands/SlashMenu"
+import { useSlash } from "@/components/chat/commands/use-slash"
 import type { QueuedMessage } from "@/agui/useChat"
 import type { PendingAttachment } from "@/agui/types"
-import type { ChatMode } from "@/api/types"
+import type { ThreadMode } from "@/api/types"
 
 const NOOP_SOURCES: MentionSource[] = []
 
@@ -73,14 +74,11 @@ export interface ChatComposerProps {
   onEditQueued?: (id: string, text: string) => void
   /** Send the queued messages now (resume a paused queue). */
   onResumeQueue?: () => void
-  /** Current composer mode. Omit to hide the in-toolbar mode dropdown. */
-  mode?: ChatMode
-  /** Called when the user picks a different mode. */
-  onModeChange?: (mode: ChatMode) => void
-  /** Modes selectable right now; others render disabled. Defaults to all. */
-  availableModes?: ChatMode[]
-  /** Lock the dropdown to the current mode (e.g. an open goal/plan thread). */
-  modeLocked?: boolean
+  /** The thread's active sticky mode. When "plan"/"goal", a pill shows in the
+   *  toolbar with an exit control. Omit or "chat" hides it. */
+  activeMode?: ThreadMode
+  /** Called when the user exits the active sticky mode (back to plain chat). */
+  onExitMode?: () => void
   /** Render without the standalone card chrome (border/fill/outer padding) so
    *  the composer blends into a surrounding panel (e.g. the goal control deck). */
   embedded?: boolean
@@ -106,10 +104,8 @@ export function ChatComposer({
   onRemoveQueued,
   onEditQueued,
   onResumeQueue,
-  mode,
-  onModeChange,
-  availableModes,
-  modeLocked = false,
+  activeMode = "chat",
+  onExitMode,
   embedded = false,
 }: ChatComposerProps) {
   const canAttach = !!onAttachmentsChange && !disabled
@@ -128,6 +124,15 @@ export function ChatComposer({
     sources: mentionSources ?? NOOP_SOURCES,
     onResolve: onMentionAdd,
     enabled: (mentionSources?.length ?? 0) > 0,
+  })
+
+  // Slash-command autocomplete (leading `/command`). Only active on a plain
+  // chat thread — a sticky plan/goal thread doesn't take new mode commands.
+  const slash = useSlash({
+    value: input,
+    setValue: onInputChange,
+    textareaRef,
+    enabled: activeMode === "chat",
   })
 
   // Grow the prompt with its content (e.g. a pasted paragraph) up to a fixed
@@ -193,9 +198,10 @@ export function ChatComposer({
     if (e.dataTransfer.files.length) void addFiles(e.dataTransfer.files)
   }
 
-  // The mention menu claims arrows/enter/tab/escape first; only if it doesn't
-  // handle the key does the parent's send-on-enter logic run.
+  // The slash and mention menus claim arrows/enter/tab/escape first; only if
+  // neither handles the key does the parent's send-on-enter logic run.
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (slash.onKeyDown(e)) return
     if (mentions.onKeyDown(e)) return
     onKeyDown(e)
   }
@@ -203,6 +209,13 @@ export function ChatComposer({
   return (
     <div className={cn(!embedded && "px-4 pb-4 pt-2 flex-shrink-0")}>
       <div className={cn("relative w-full", !embedded && "mx-auto max-w-3xl")}>
+        <SlashMenu
+          open={slash.open}
+          rows={slash.rows}
+          activeIndex={slash.activeIndex}
+          onHover={slash.setActiveIndex}
+          onSelect={slash.select}
+        />
         <MentionMenu
           open={mentions.open}
           rows={mentions.rows}
@@ -301,11 +314,21 @@ export function ChatComposer({
             onChange={(e) => {
               onInputChange(e.target.value)
               mentions.refresh()
+              slash.refresh()
             }}
             onKeyDown={handleKeyDown}
-            onKeyUp={mentions.refresh}
-            onClick={mentions.refresh}
-            onSelect={mentions.refresh}
+            onKeyUp={() => {
+              mentions.refresh()
+              slash.refresh()
+            }}
+            onClick={() => {
+              mentions.refresh()
+              slash.refresh()
+            }}
+            onSelect={() => {
+              mentions.refresh()
+              slash.refresh()
+            }}
             onPaste={handlePaste}
             placeholder={willQueue ? "Add to queue…" : placeholder}
             disabled={disabled}
@@ -315,16 +338,10 @@ export function ChatComposer({
               "focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent disabled:bg-transparent dark:disabled:bg-transparent"
             )}
           />
-          {/* Toolbar: mode + attach on the left, send/stop on the right. */}
+          {/* Toolbar: mode pill + attach on the left, send/stop on the right. */}
           <div className="mt-1 flex items-center gap-1">
-            {mode && onModeChange && (
-              <ChatModeSelect
-                mode={mode}
-                onModeChange={onModeChange}
-                availableModes={availableModes}
-                locked={modeLocked}
-                disabled={disabled}
-              />
+            {activeMode !== "chat" && (
+              <ModePill mode={activeMode} onExit={onExitMode} disabled={disabled} />
             )}
             {canAttach && (
               <>
@@ -395,6 +412,43 @@ export function ChatComposer({
         </div>
       </div>
     </div>
+  )
+}
+
+/** A small pill reflecting the thread's active sticky mode (plan/goal), with an
+ *  exit control that returns the thread to plain chat. Data-driven — no
+ *  per-command rendering. */
+function ModePill({
+  mode,
+  onExit,
+  disabled,
+}: {
+  mode: ThreadMode
+  onExit?: () => void
+  disabled?: boolean
+}) {
+  const meta =
+    mode === "plan"
+      ? { label: "Plan mode", Icon: NotePencil }
+      : { label: "Goal mode", Icon: Target }
+  const Icon = meta.Icon
+  return (
+    <span className="flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+      <Icon className="h-3.5 w-3.5" />
+      {meta.label}
+      {onExit && (
+        <button
+          type="button"
+          onClick={onExit}
+          disabled={disabled}
+          title="Exit to chat"
+          aria-label="Exit to chat"
+          className="ml-0.5 rounded-full text-primary/70 hover:text-primary disabled:opacity-50"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </span>
   )
 }
 
