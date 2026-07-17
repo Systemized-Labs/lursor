@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { HttpAgent, type Message, randomUUID } from "@ag-ui/client"
 
-import type { Thread, ThreadMessage, ThreadMode, TurnIntent } from "@/api/types"
+import type {
+  MessageKind,
+  Thread,
+  ThreadMessage,
+  ThreadMode,
+  TurnIntent,
+} from "@/api/types"
 import { threadsApi } from "@/api/threads"
 
 import { expandMentionTokens } from "@/components/chat/mentions/types"
@@ -40,6 +46,7 @@ export function toChatMessages(
     id: m.id,
     role: m.role,
     content: m.content,
+    kind: m.kind,
     // `tool_calls` is an opaque JSON object by default; narrow before mapping.
     toolCalls: Array.isArray(m.tool_calls)
       ? m.tool_calls.map((tc) => ({ id: tc.id, name: tc.name, args: tc.arguments }))
@@ -129,6 +136,9 @@ export interface QueuedMessage {
   /** Per-turn intent captured when the message was submitted (defaults "chat").
    *  Read at send time so a queued turn keeps the intent it was typed with. */
   turnIntent: TurnIntent
+  /** Display kind for the history badge (chat/ask/plan/goal). Distinct from
+   *  `turnIntent` because a plan-mode turn rides the wire as "chat". */
+  kind: MessageKind
 }
 
 /** Plan/goal config applied when a thread is lazily created via `startMode`. */
@@ -155,7 +165,8 @@ export interface UseChat {
   send: (
     text: string,
     attachments?: PendingAttachment[],
-    turnIntent?: TurnIntent
+    turnIntent?: TurnIntent,
+    kind?: MessageKind
   ) => Promise<void>
   /** Enter plan/goal mode on a fresh conversation: lazily creates the thread
    *  (via the same path as `send`, avoiding the load/clobber race) with the mode
@@ -424,7 +435,7 @@ export function useChat(options: UseChatOptions): UseChat {
   // both a live submit and a message drained off the queue. Drains the next
   // queued message once this run settles.
   const performSend = useCallback(
-    async ({ text: trimmed, attachments, turnIntent }: QueuedMessage) => {
+    async ({ text: trimmed, attachments, turnIntent, kind }: QueuedMessage) => {
       const { workspaceId, agentId } = optionsRef.current
       if (!workspaceId || !agentId) {
         setError("Pick an agent before sending a message.")
@@ -484,6 +495,7 @@ export function useChat(options: UseChatOptions): UseChat {
         role: "user",
         content: outgoing,
         toolCalls: [],
+        kind,
         attachments: attachments.map((a) => ({
           url: a.dataUrl,
           mimeType: a.mimeType,
@@ -573,7 +585,8 @@ export function useChat(options: UseChatOptions): UseChat {
     async (
       text: string,
       attachments: PendingAttachment[] = [],
-      turnIntent: TurnIntent = "chat"
+      turnIntent: TurnIntent = "chat",
+      kind: MessageKind = turnIntent
     ) => {
       const trimmed = text.trim()
       if (!trimmed && attachments.length === 0) return
@@ -582,6 +595,7 @@ export function useChat(options: UseChatOptions): UseChat {
         text: trimmed,
         attachments,
         turnIntent,
+        kind,
       }
       // Append while a run is streaming, or while a pending queue already exists,
       // so new messages join the batch in order rather than jumping ahead.
@@ -608,6 +622,7 @@ export function useChat(options: UseChatOptions): UseChat {
         text: trimmed,
         attachments: [],
         turnIntent: "chat",
+        kind: init.mode,
       })
     },
     [performSend]
@@ -627,6 +642,7 @@ export function useChat(options: UseChatOptions): UseChat {
       role: "user",
       content: outgoing,
       toolCalls: [],
+      kind: "goal",
     }
     setMessages((prev) => [...prev, userMessage])
     try {

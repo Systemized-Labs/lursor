@@ -1,3 +1,5 @@
+import type { MessageKind } from "@/api/types"
+
 export type ChatRole = "user" | "assistant" | "system" | "tool"
 
 export interface ChatToolCall {
@@ -44,6 +46,8 @@ export interface ChatMessage {
   toolCalls: ChatToolCall[]
   attachments?: ChatAttachment[]
   streaming?: boolean
+  /** How a user turn was sent (chat/ask/plan/goal), for a history badge. */
+  kind?: MessageKind
 }
 
 /** Goal lifecycle mirrored from the backend `goal_status` CUSTOM event. */

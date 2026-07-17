@@ -224,6 +224,9 @@ export interface WorkspaceInput {
 
 export type MessageRole = "user" | "assistant" | "system" | "tool"
 
+/** How a user turn was sent, surfaced as a history badge on the bubble. */
+export type MessageKind = "chat" | "ask" | "plan" | "goal"
+
 export interface ThreadMessageToolCall {
   id: string
   name: string
@@ -241,6 +244,7 @@ export interface ThreadMessage {
   thread_id: string
   role: MessageRole
   content: string
+  kind?: MessageKind
   // Backend persists this as an opaque JSON object (default `{}`); it is only
   // an array once real tool-call payloads are stored. Callers must narrow.
   tool_calls: ThreadMessageToolCall[] | Record<string, unknown> | null

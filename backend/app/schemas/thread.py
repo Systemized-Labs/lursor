@@ -65,6 +65,7 @@ class MessageRead(BaseModel):
     thread_id: str
     role: str
     content: str
+    kind: str = "chat"
     tool_calls: dict[str, Any]
     attachments: list[MessageAttachment] = []
     created_at: UTCDatetime

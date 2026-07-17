@@ -204,7 +204,7 @@ export function WorkspaceChatPage() {
         toast.error(err instanceof Error ? err.message : "Failed to start")
         return
       }
-      await chat.send(text)
+      await chat.send(text, [], "chat", mode)
       return
     }
     await chat.startMode(text, {
@@ -301,7 +301,8 @@ export function WorkspaceChatPage() {
           return
       }
     }
-    await chat.send(text, atts, "chat")
+    // A plain message in plan mode is a plan-refinement turn — badge it "plan".
+    await chat.send(text, atts, "chat", activeMode === "plan" ? "plan" : "chat")
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

@@ -50,6 +50,10 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE messages ADD COLUMN attachments JSON DEFAULT '[]'")
         )
+    if "kind" not in message_cols:
+        await conn.execute(
+            text("ALTER TABLE messages ADD COLUMN kind VARCHAR DEFAULT 'chat'")
+        )
 
     skill_cols = await columns("skills")
     if "slug" not in skill_cols:

@@ -444,6 +444,10 @@ class Message(TimestampMixin, table=True):
     thread_id: str = Field(foreign_key="threads.id", index=True)
     role: str  # "user" | "assistant" | "system" | "tool"
     content: str = ""
+    # How a user turn was sent, for a history badge: "chat" (plain) | "ask"
+    # (read-only) | "plan" (a plan-mode turn) | "goal" (a one-off goal run).
+    # Assistant/tool rows keep the default and render no badge.
+    kind: str = Field(default="chat")
     tool_calls: dict = Field(default_factory=dict, sa_column=Column(JSON))
     # Media attached to this turn: list of {media_id, mime_type, filename}. The
     # bytes live on disk (see app.media_store); this only holds references.

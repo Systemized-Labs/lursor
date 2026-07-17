@@ -635,12 +635,23 @@ async def chat(
                     }
                 )
         if user_text or attachments:
+            # Tag the turn for the history badge: /ask and /goal ride on `turn`;
+            # a plan-mode turn is inferred from the thread's sticky mode.
+            if turn == "ask":
+                msg_kind = "ask"
+            elif turn == "goal":
+                msg_kind = "goal"
+            elif thread.mode == ThreadMode.plan:
+                msg_kind = "plan"
+            else:
+                msg_kind = "chat"
             session.add(
                 Message(
                     thread_id=thread_id,
                     role="user",
                     content=user_text,
                     attachments=attachments,
+                    kind=msg_kind,
                 )
             )
             if thread.title == "New conversation":
@@ -849,8 +860,9 @@ async def interject_goal(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Message text is required")
 
     # Persist so the interjection survives reconnect and lands in the transcript
-    # (the optimistic bubble the sender rendered is reconciled on reload).
-    session.add(Message(thread_id=thread_id, role="user", content=text))
+    # (the optimistic bubble the sender rendered is reconciled on reload). It's a
+    # steer into a live goal run, so tag it "goal" for the history badge.
+    session.add(Message(thread_id=thread_id, role="user", content=text, kind="goal"))
     await session.commit()
     queue_interjection(thread_id, text)
     return {"queued": True}

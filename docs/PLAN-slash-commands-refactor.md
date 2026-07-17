@@ -495,3 +495,12 @@ goal driver on `turn == "goal"` (condition = the message text), never persisting
 a goal mode; the goal run deck is gated on the live `goalStatus.running` rather
 than `thread.mode`; interject gates on an active run rather than mode. Legacy
 `mode="goal"` threads still load (enum kept) but behave as chat.
+
+### Follow-up: per-turn history badge (2026-07-17)
+
+User bubbles now carry a small badge recording how the turn was sent — `/ask`,
+`/plan`, or `/goal` (plain chat shows none). Persisted via a new `Message.kind`
+column (`chat|ask|plan|goal`, migration in `db/session.py`), computed in `chat()`
+from the turn intent + thread mode (and set to `goal` on interjections), exposed
+on `MessageRead`, threaded through `ChatMessage`/`toChatMessages` (+ optimistic
+send), and rendered by `MessageKindBadge` in `ChatMessageBubble`.
