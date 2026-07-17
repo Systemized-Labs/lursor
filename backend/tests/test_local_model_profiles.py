@@ -16,21 +16,14 @@ mapped. Two pieces cooperate to fix this:
 
 from __future__ import annotations
 
-import os
-import tempfile
-
-_tmp = tempfile.mkdtemp(prefix="lursor-test-profiles-")
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
-os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
-os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
-
-from app.agents.builder import (  # noqa: E402
+# DB / workspace isolation is handled in ``conftest.py`` before any app import.
+from app.agents.builder import (
     _reasoning_chat_template_kwargs,
     build_deep_agent,
     resolve_model,
 )
-from app.agents.tolerant_model import TolerantOpenAIChatModel  # noqa: E402
-from app.db.models import Agent, CustomProvider, ThinkingLevel  # noqa: E402
+from app.agents.tolerant_model import TolerantOpenAIChatModel
+from app.db.models import Agent, CustomProvider, ThinkingLevel
 
 
 def test_resolve_model_attaches_deepseek_profile():

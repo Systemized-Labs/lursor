@@ -10,31 +10,14 @@ This covers the wiring the pure-loop unit tests can't: the continuation adapter,
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 
-import pytest
 from ag_ui.core import RunAgentInput, UserMessage
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from pydantic_ai.models.test import TestModel
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import GoalEvaluation, create_deep_agent, create_default_deps
 
-_tmp = tempfile.mkdtemp(prefix="lursor-goal-test-")
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
-os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
-os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
-
-from app.db.session import init_db  # noqa: E402
-from app.main import app  # noqa: E402
-
-
-@pytest.fixture
-async def client():
-    await init_db()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test/api") as c:
-        yield c
+# DB / workspace isolation and the ``client`` fixture live in ``conftest.py``.
 
 
 class _FakeEvaluator:

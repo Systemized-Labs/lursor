@@ -2,29 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
+from httpx import AsyncClient
 
-import pytest
-from httpx import ASGITransport, AsyncClient
+from app.agents.builder import _subagent_config, build_deep_agent
+from app.db.models import Agent, Subagent, ThinkingLevel
 
-_tmp = tempfile.mkdtemp(prefix="lursor-test-sub-")
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
-os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
-os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
-
-from app.agents.builder import _subagent_config, build_deep_agent  # noqa: E402
-from app.db.models import Agent, Subagent, ThinkingLevel  # noqa: E402
-from app.db.session import init_db  # noqa: E402
-from app.main import app  # noqa: E402
-
-
-@pytest.fixture
-async def client():
-    await init_db()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test/api") as c:
-        yield c
+# DB / workspace isolation and the ``client`` fixture live in ``conftest.py``.
 
 
 async def test_defaults_expose_library_builtins(client: AsyncClient):

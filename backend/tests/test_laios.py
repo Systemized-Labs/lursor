@@ -7,33 +7,11 @@ daemon is needed.
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
-
 import httpx
-import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
-# Point the app at a throwaway DB before importing it. No LAIOS_URL / config, so
-# the startup seed is a no-op and tests start from an empty connections table.
-_tmp = tempfile.mkdtemp(prefix="lursor-laios-test-")
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
-os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
-os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
-os.environ.pop("LAIOS_URL", None)
-os.environ.pop("LAIOS_MASTER_KEY", None)
-
-from app.db.session import init_db  # noqa: E402
-from app.main import app  # noqa: E402
-
-
-@pytest.fixture
-async def client():
-    await init_db()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test/api") as c:
-        yield c
+# DB / workspace isolation, LAIOS env cleanup, and the ``client`` fixture live in
+# ``conftest.py``; laios tests therefore start from an empty connections table.
 
 
 async def _make_connection(client: AsyncClient, **overrides) -> dict:

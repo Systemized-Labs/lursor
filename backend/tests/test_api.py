@@ -3,29 +3,11 @@
 from __future__ import annotations
 
 import os
-import tempfile
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
-# Point the app at throwaway DB + workspace dirs before importing it.
-_tmp = tempfile.mkdtemp(prefix="lursor-test-")
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp}/test.db"
-os.environ["WORKSPACES_DIR"] = f"{_tmp}/workspaces"
-os.environ["SKILLS_DIR"] = f"{_tmp}/skills"
-# Dummy key so provider construction succeeds offline (no network call is made).
-os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
-
-from app.db.session import init_db  # noqa: E402
-from app.main import app  # noqa: E402
-
-
-@pytest.fixture
-async def client():
-    await init_db()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test/api") as c:
-        yield c
+# DB / workspace isolation and the ``client`` fixture live in ``conftest.py``.
 
 
 async def test_health(client: AsyncClient):
@@ -273,13 +255,13 @@ async def test_thread_update_and_run_endpoints(client: AsyncClient):
     assert body["max_iterations"] == 10
 
 
-async def test_pick_folder_and_custom_path(client: AsyncClient, monkeypatch):
+async def test_pick_folder_and_custom_path(client: AsyncClient, monkeypatch, tmp_path):
     """The pick-folder endpoint returns the native dialog's choice, and a custom
     path is honored (and created) when a workspace is made."""
     import subprocess
     from types import SimpleNamespace
 
-    chosen = f"{_tmp}/picked-workspace"
+    chosen = f"{tmp_path}/picked-workspace"
 
     def fake_run(cmd, **kwargs):  # noqa: ANN001
         return SimpleNamespace(returncode=0, stdout=f"{chosen}/\n", stderr="")
@@ -313,19 +295,19 @@ async def test_pick_folder_cancelled(client: AsyncClient, monkeypatch):
     assert r.json()["path"] is None
 
 
-async def test_build_deep_agent_offline(client: AsyncClient):
+async def test_build_deep_agent_offline(client: AsyncClient, tmp_path):
     """The builder should construct a pydantic-ai Agent without hitting the network."""
     from app.agents.builder import build_deep_agent
     from app.db.models import Agent as AgentRow
 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
     row.skills = []
-    agent, deps = build_deep_agent(row, _tmp)
+    agent, deps = build_deep_agent(row, str(tmp_path))
     assert agent is not None
     assert deps is not None
 
 
-async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient):
+async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient, tmp_path):
     """Ask mode (read_only) exposes ONLY read-safe tools to the model.
 
     Guards against the whole class of write paths — not just write_file/edit, but
@@ -366,7 +348,7 @@ async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient):
         seen["tools"] = [t.name for t in info.function_tools]
         return ModelResponse(parts=[TextPart("ok")])
 
-    agent, deps = build_deep_agent(row, _tmp, read_only=True)
+    agent, deps = build_deep_agent(row, str(tmp_path), read_only=True)
     with agent.override(model=FunctionModel(_capture)):
         await agent.run("hi", deps=deps)
 
