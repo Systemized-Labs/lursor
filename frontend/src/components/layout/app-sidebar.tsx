@@ -88,6 +88,7 @@ import {
   seedThreadRead,
   useThreadReads,
 } from "@/hooks/use-thread-reads"
+import { useOptimisticRuns } from "@/hooks/use-optimistic-runs"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ThemePicker } from "@/components/ui/theme-picker"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
@@ -143,9 +144,12 @@ export function AppSidebar() {
   const workspacesQuery = useWorkspaces()
   const githubConfig = useGitHubConfig().data
   const activeRunsQuery = useActiveRuns()
+  // Union the polled server runs with locally-optimistic ones so a just-sent
+  // message shows "working" instantly, before the 3s poll catches up.
+  const optimisticRuns = useOptimisticRuns()
   const activeRuns = useMemo(
-    () => new Set(activeRunsQuery.data ?? []),
-    [activeRunsQuery.data]
+    () => new Set([...(activeRunsQuery.data ?? []), ...optimisticRuns]),
+    [activeRunsQuery.data, optimisticRuns]
   )
 
   // When a background run finishes (its id leaves the active set), refresh the
@@ -164,6 +168,9 @@ export function AppSidebar() {
     }
     if (finished) {
       qc.invalidateQueries({ queryKey: ["threads", "workspace"] })
+      // Reconcile the poll now rather than up to 3s later, so a still-running
+      // goal loop re-appears promptly after its optimistic flag clears.
+      qc.invalidateQueries({ queryKey: threadKeys.activeRuns() })
     }
   }, [activeRuns, qc])
 

@@ -9,6 +9,7 @@ import type {
   TurnIntent,
 } from "@/api/types"
 import { threadsApi } from "@/api/threads"
+import { markRunSettled, markRunStarted } from "@/hooks/use-optimistic-runs"
 
 import { expandMentionTokens } from "@/components/chat/mentions/types"
 
@@ -526,6 +527,9 @@ export function useChat(options: UseChatOptions): UseChat {
       currentAssistantId.current = null
       setIsStreaming(true)
       setError(null)
+      // Show the sidebar "working" dot immediately, without waiting for the
+      // active-runs poll to observe the server-side run (see use-optimistic-runs).
+      markRunStarted(threadId)
 
       try {
         await agent.runAgent(
@@ -580,6 +584,10 @@ export function useChat(options: UseChatOptions): UseChat {
           setError(err instanceof Error ? err.message : "Chat request failed")
         }
       } finally {
+        // Hand the "working" state back to the active-runs poll: the streamed
+        // run has ended, so the poll is now the source of truth (a goal loop that
+        // keeps running server-side is re-shown on its next tick).
+        markRunSettled(threadId)
         if (sendingThreadRef.current === threadId) sendingThreadRef.current = null
         // Only reset shared streaming state if this send still owns the surface.
         // If the user switched conversation mid-send, the newer conversation now
