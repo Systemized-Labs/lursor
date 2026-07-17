@@ -34,11 +34,11 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: "goal",
-    description: "Work autonomously until the goal is met",
+    description: "Work autonomously until the goal is met (one-off)",
     argumentHint: "<success condition>",
     Icon: Target,
-    kind: "thread-mode",
-    enterMode: "goal",
+    kind: "turn-intent",
+    turnIntent: "goal",
     agentKey: "goal",
   },
   {

@@ -253,8 +253,9 @@ export interface ThreadMessage {
 export type ThreadMode = "chat" | "plan" | "goal"
 
 /** Per-turn intent sent with a message. `chat` is full tools (default); `ask`
- *  is a read-only turn. Sticky `plan`/`goal` come from the thread, not here. */
-export type TurnIntent = "chat" | "ask"
+ *  is a read-only turn; `goal` kicks off a one-off autonomous run for that
+ *  submission. All are per-turn — only `plan` is a sticky thread mode. */
+export type TurnIntent = "chat" | "ask" | "goal"
 
 /** Lifecycle of a plan/goal run (mirrors backend `ThreadStatus`; `goal_status`
  *  on the wire). */

@@ -678,8 +678,10 @@ async def chat(
             _strip_inline_images(adapter.run_input, note.strip())
 
     is_plan = thread.mode == ThreadMode.plan
-    is_goal = thread.mode == ThreadMode.goal
-    condition = (thread.success_criteria or thread.goal).strip()
+    # /goal is a one-off per-turn run (turn == "goal"), not a sticky thread mode:
+    # the objective is this message, and the thread stays a plain chat thread.
+    run_goal = turn == "goal"
+    condition = user_text.strip() or (thread.success_criteria or thread.goal).strip()
     accumulated: list[str] = []
     todos_state: dict = {"json": None}
 
@@ -757,10 +759,11 @@ async def chat(
         _publish_lifecycle_finish(thread_id, run_id)
         chat_run_manager.finish(thread_id, "finished")
 
-    if is_goal:
-        # /goal: run the autonomous loop straight away — no approval gate. Load
-        # context in request scope (the detached driver must not touch the
-        # request-scoped session after the response starts).
+    if run_goal:
+        # /goal: run the autonomous loop straight away for this one submission —
+        # no approval gate, no sticky mode. Load context in request scope (the
+        # detached driver must not touch the request-scoped session after the
+        # response starts).
         rows = (
             await session.execute(
                 select(Message)
@@ -831,8 +834,9 @@ async def interject_goal(
     thread = await session.get(Thread, thread_id)
     if thread is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
-    if thread.mode != ThreadMode.goal:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Not a goal thread")
+    # A goal is a one-off run (not a sticky mode), so gate on there being a live
+    # run to steer rather than on the thread's mode. The frontend only interjects
+    # while a goal loop is executing.
     if not chat_run_manager.is_running(thread_id):
         raise HTTPException(status.HTTP_409_CONFLICT, "No active goal run to steer")
 

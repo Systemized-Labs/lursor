@@ -483,3 +483,15 @@ composer pill's ✕ (mode→chat) and asks the agent to carry the plan out as a
 normal full-tool turn (the transcript + `PLAN.md` give it the plan). `RunBanner`
 lost its approve action; `frontend approvePlan` and `useChat.followRun` were
 deleted; the plan smoke tests now assert the exit-to-execute flow.
+
+### Follow-up: `/goal` is now one-off (2026-07-17)
+
+Only `/plan` is a persistent (sticky) mode. `/ask` and `/goal` are one-off
+per-turn intents: `TurnIntent = "chat" | "ask" | "goal"`, and `/goal` is a
+`turn-intent` command (not `thread-mode`). Sending `/goal <condition>` kicks off
+the autonomous loop for that submission with the message as the objective; the
+thread stays a plain `chat` thread (no `mode="goal"`, no pill). Backend keys the
+goal driver on `turn == "goal"` (condition = the message text), never persisting
+a goal mode; the goal run deck is gated on the live `goalStatus.running` rather
+than `thread.mode`; interject gates on an active run rather than mode. Legacy
+`mode="goal"` threads still load (enum kept) but behave as chat.

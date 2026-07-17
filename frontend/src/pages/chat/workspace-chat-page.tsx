@@ -278,6 +278,12 @@ export function WorkspaceChatPage() {
     const parsed = parseSlashCommand(text)
     if (parsed) {
       const { command, args } = parsed
+      // Commands that take an argument need one (e.g. /goal, /plan, /ask).
+      if (command.argumentHint && !args) {
+        toast.error(`Add text, e.g. "/${command.name} ${command.argumentHint}"`)
+        setDraft(text) // keep what they typed so they can finish it
+        return
+      }
       // Switch to the command's default agent when one is configured.
       if (command.agentKey) {
         const target = defaultAgentFor(command.agentKey)
@@ -288,13 +294,6 @@ export function WorkspaceChatPage() {
           await chat.send(args, atts, command.turnIntent ?? "chat")
           return
         case "thread-mode":
-          if (!args) {
-            toast.error(
-              `Add an objective, e.g. "/${command.name} ${command.argumentHint ?? "…"}"`
-            )
-            setDraft(text) // keep what they typed so they can finish it
-            return
-          }
           if (command.enterMode) await enterMode(command.enterMode, args)
           return
         case "action":
@@ -419,34 +418,15 @@ export function WorkspaceChatPage() {
   const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
 
-  // The thread's sticky mode (plan/goal), reflected in the composer pill.
-  const activeMode: ThreadMode = currentThread?.mode ?? "chat"
-  // Prefer the live stream status; fall back to the thread's persisted run state
-  // (e.g. reopening a finished/paused run that isn't currently streaming). Gated
-  // on the thread still being in a sticky mode — leaving plan mode (mode→chat)
-  // hides the banner even though the last plan-status event still lingers.
-  const runView: {
-    status: RunStatus
-    condition: string
-    iteration: number
-    maxIterations: number
-    reason: string
-  } | null =
-    activeMode === "chat"
-      ? null
-      : chat.goalStatus
-        ? { ...chat.goalStatus }
-        : currentThread
-          ? {
-              status: currentThread.status,
-              condition: currentThread.success_criteria || currentThread.goal,
-              iteration: currentThread.iteration,
-              maxIterations: currentThread.max_iterations,
-              reason: currentThread.last_reason,
-            }
-          : null
+  // Plan is the only sticky mode (reflected in the composer pill). Goal is a
+  // one-off per-turn run, so it never leaves the thread "in a mode"; legacy
+  // goal threads (mode="goal") are treated as plain chat here.
+  const activeMode: ThreadMode = currentThread?.mode === "plan" ? "plan" : "chat"
+  // The live run status from the stream (a plan turn's planning/awaiting_approval,
+  // or a goal run's running/terminal). Drives the goal run deck + plan-doc open.
+  const runView = chat.goalStatus
   // The goal loop is actively executing — offer Stop + the run deck, not chat.
-  const goalExecuting = activeMode === "goal" && runView?.status === "running"
+  const goalExecuting = runView?.status === "running"
 
   // Open (or refresh) PLAN.md in the file panel each time a planning turn parks
   // the thread in review, so the user reads the plan as they iterate. Edge-

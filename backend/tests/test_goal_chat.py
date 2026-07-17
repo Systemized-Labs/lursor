@@ -96,18 +96,14 @@ async def test_goal_thread_runs_to_completion(client: AsyncClient, monkeypatch):
     thread = (
         await client.post(
             "/threads",
-            json={
-                "workspace_id": ws["id"],
-                "agent_id": agent["id"],
-                "mode": "goal",
-                "goal": "make the tests pass",
-                "max_iterations": 5,
-            },
+            json={"workspace_id": ws["id"], "agent_id": agent["id"]},
         )
     ).json()
-    assert thread["mode"] == "goal"
+    assert thread["mode"] == "chat"
     assert thread["status"] == "idle"
 
+    # /goal is a one-off run carried on the turn intent, not a sticky mode: the
+    # objective is the message, and the thread stays a plain chat thread.
     run_input = RunAgentInput(
         thread_id=thread["id"],
         run_id="run-1",
@@ -115,7 +111,7 @@ async def test_goal_thread_runs_to_completion(client: AsyncClient, monkeypatch):
         messages=[UserMessage(id="m1", role="user", content="make the tests pass")],
         tools=[],
         context=[],
-        forwarded_props=None,
+        forwarded_props={"turn": "goal"},
     )
     types = await _drain_chat(
         client, thread["id"], run_input.model_dump_json(by_alias=True)
@@ -127,6 +123,8 @@ async def test_goal_thread_runs_to_completion(client: AsyncClient, monkeypatch):
     assert refreshed["status"] == "completed"
     assert refreshed["iteration"] == 1
     assert refreshed["last_reason"] == "looks done"
+    # One-off: the thread is not left in a goal mode.
+    assert refreshed["mode"] == "chat"
 
 
 async def test_interjection_is_consumed_during_execution(
@@ -147,13 +145,7 @@ async def test_interjection_is_consumed_during_execution(
     thread = (
         await client.post(
             "/threads",
-            json={
-                "workspace_id": ws["id"],
-                "agent_id": agent["id"],
-                "mode": "goal",
-                "goal": "make the tests pass",
-                "max_iterations": 5,
-            },
+            json={"workspace_id": ws["id"], "agent_id": agent["id"]},
         )
     ).json()
     tid = thread["id"]
@@ -169,7 +161,7 @@ async def test_interjection_is_consumed_during_execution(
         messages=[UserMessage(id="m1", role="user", content="make the tests pass")],
         tools=[],
         context=[],
-        forwarded_props=None,
+        forwarded_props={"turn": "goal"},
     )
     _assert_valid_lifecycle(
         await _drain_chat(client, tid, run_input.model_dump_json(by_alias=True))
@@ -295,36 +287,19 @@ async def test_plan_conversation_refines_then_executes_on_exit(
     assert captured[-1] is None or "plan" not in (captured[-1] or "").lower()
 
 
-async def test_interject_requires_an_active_goal_run(client: AsyncClient):
-    """The interject endpoint only accepts steering for a live goal run."""
+async def test_interject_requires_an_active_run(client: AsyncClient):
+    """The interject endpoint only accepts steering when a run is in flight."""
     agent = (await client.post("/agents", json={"name": "Goalie4"})).json()
     ws = (await client.post("/workspaces", json={"name": "GoalWS4"})).json()
 
-    # A plain chat thread is not a goal → 409.
-    chat_thread = (
+    # A thread with no run in flight → 409 (nothing to steer).
+    thread = (
         await client.post(
             "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
         )
     ).json()
     r = await client.post(
-        f"/threads/{chat_thread['id']}/goal/interject", json={"content": "hi"}
-    )
-    assert r.status_code == 409, r.text
-
-    # A goal thread with no run in flight → 409 (nothing to steer).
-    goal_thread = (
-        await client.post(
-            "/threads",
-            json={
-                "workspace_id": ws["id"],
-                "agent_id": agent["id"],
-                "mode": "goal",
-                "goal": "build a thing",
-            },
-        )
-    ).json()
-    r = await client.post(
-        f"/threads/{goal_thread['id']}/goal/interject", json={"content": "hi"}
+        f"/threads/{thread['id']}/goal/interject", json={"content": "hi"}
     )
     assert r.status_code == 409, r.text
 
