@@ -80,6 +80,23 @@ function buildUserContent(
   return parts
 }
 
+/** True for the error raised when a fetch/stream is aborted (e.g. the user
+ *  switched conversation or hit stop, which aborts the local run). It's expected,
+ *  not a failure, so callers skip it instead of painting it as a chat error.
+ *
+ *  We match the message, not just `name === "AbortError"`: the AG-UI client
+ *  already swallows genuine `AbortError`s itself, so anything reaching our catch
+ *  is the Chromium body-stream abort, whose DOMException carries the message
+ *  "BodyStreamBuffer was aborted" under a name the library's allowlist misses. */
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true
+  if (err instanceof Error) {
+    if (err.name === "AbortError") return true
+    return /\baborted\b/i.test(err.message)
+  }
+  return false
+}
+
 /** Maps UI messages to AG-UI history (tool-role turns are UI-only). */
 function toAgentMessages(messages: ChatMessage[]): Message[] {
   const result: Message[] = []
@@ -322,7 +339,7 @@ export function useChat(options: UseChatOptions): UseChat {
 
       consumeThreadStream(threadId, handlers, controller.signal)
         .catch((err: unknown) => {
-          if (err instanceof DOMException && err.name === "AbortError") return
+          if (isAbortError(err)) return
           // A finished/absent run closes cleanly; only surface real failures.
           setError(err instanceof Error ? err.message : "Reconnect failed")
         })
@@ -517,10 +534,12 @@ export function useChat(options: UseChatOptions): UseChat {
           }
         )
       } catch (err) {
-        // Only surface the error on the conversation this send belongs to; a
-        // switch mid-send aborts this run and must not paint an error onto the
-        // conversation the user moved to.
-        if (selectedThreadIdRef.current === threadId) {
+        // An aborted run is expected — switching conversation or hitting stop
+        // aborts this send's local stream. Never surface it as an error (the
+        // `selectedThreadIdRef` guard alone is racy: the ref lags the switch by a
+        // render, so the abort rejection can slip through and paint onto the new
+        // conversation). Only surface the error on the conversation it belongs to.
+        if (!isAbortError(err) && selectedThreadIdRef.current === threadId) {
           setError(err instanceof Error ? err.message : "Chat request failed")
         }
       } finally {
