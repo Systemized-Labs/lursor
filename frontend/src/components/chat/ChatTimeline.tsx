@@ -79,13 +79,16 @@ function ChatSkeleton() {
   )
 }
 
-/** How many messages render initially, and how many more each "show older" click
- *  reveals — keeps the DOM small for very long conversations. */
-const DEFAULT_WINDOW_SIZE = 10
+/** How many trailing messages of a freshly-loaded history render initially, and
+ *  how many more each "show older" click reveals — keeps the DOM small for very
+ *  long conversations. Messages that stream in during the open session are always
+ *  shown (see `hiddenCount`), so this only ever hides already-loaded backlog. */
+const DEFAULT_WINDOW_SIZE = 40
 
 export interface ChatTimelineProps {
   isLoadingMessages?: boolean
-  /** Changing this (the thread id) resets the window to the tail. */
+  /** Changing this (the thread id) re-arms windowing for the newly-opened
+   *  conversation's backlog. */
   resetKey?: string
   /** Rendered when there are no messages. */
   empty?: ReactNode
@@ -118,14 +121,33 @@ export function ChatTimeline({
     return s.byId[s.order[s.order.length - 1]]?.role === "user"
   })
 
-  const [visibleCount, setVisibleCount] = useState(windowSize)
-  useEffect(() => setVisibleCount(windowSize), [resetKey, windowSize])
+  // Windowing hides the *leading* N messages of a loaded backlog (a fixed count
+  // cut from the front), not the trailing N. Slicing from the front means new
+  // messages appended while the conversation is open are always shown and nothing
+  // slides out of view mid-run — the previous tail-slice re-mounted rows on every
+  // streamed step, which read as a jump.
+  const [hiddenCount, setHiddenCount] = useState(0)
 
-  const hasOlder = order.length > visibleCount
+  // Re-arm windowing on thread switch: the window is (re)initialized the next time
+  // history populates. Detected during render (cheap derived-state pattern).
+  const resetKeyRef = useRef(resetKey)
+  const initializedRef = useRef(false)
+  if (resetKey !== resetKeyRef.current) {
+    resetKeyRef.current = resetKey
+    initializedRef.current = false
+  }
+  // Once history first populates after a switch, hide all but the last window.
+  useEffect(() => {
+    if (initializedRef.current || order.length === 0) return
+    initializedRef.current = true
+    setHiddenCount(Math.max(0, order.length - windowSize))
+  }, [order.length, windowSize])
+
+  const hasOlder = hiddenCount > 0
   const turns = useMemo(() => {
-    const ids = hasOlder ? order.slice(-visibleCount) : order
+    const ids = hiddenCount > 0 ? order.slice(hiddenCount) : order
     return buildTurns(ids, (id) => store.getState().byId[id]?.role)
-  }, [order, visibleCount, hasOlder, store])
+  }, [order, hiddenCount, store])
 
   // Revealing older messages prepends above the viewport. Capture the scroll
   // offset before the extra turns mount and restore it after, so the message the
@@ -135,7 +157,7 @@ export function ChatTimeline({
   function showOlder() {
     const el = ctxRef.current?.scrollRef.current
     if (el) pendingScrollRef.current = { height: el.scrollHeight, top: el.scrollTop }
-    setVisibleCount((n) => n + windowSize)
+    setHiddenCount((n) => Math.max(0, n - windowSize))
   }
   useLayoutEffect(() => {
     const el = ctxRef.current?.scrollRef.current
@@ -143,7 +165,7 @@ export function ChatTimeline({
     if (!el || !pending) return
     pendingScrollRef.current = null
     el.scrollTop = pending.top + (el.scrollHeight - pending.height)
-  }, [visibleCount])
+  }, [hiddenCount])
 
   if (isLoadingMessages) {
     return (
@@ -167,7 +189,7 @@ export function ChatTimeline({
       {({ isAtBottom, scrollToBottom }: StickToBottomContext) => (
         <>
           <StickToBottom.Content
-            className="mx-auto w-full max-w-3xl space-y-10 px-4 py-5 sm:px-6"
+            className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end space-y-10 px-4 py-5 sm:px-6"
             scrollClassName="[overflow-anchor:none]"
           >
             {hasOlder && (
