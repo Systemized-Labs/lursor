@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Brain, CaretDown } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
@@ -7,8 +7,9 @@ import { MarkdownRenderer } from "@/components/ui/markdown-renderer"
 /**
  * A turn's streamed reasoning ("thinking") tokens, shown as a collapsible block.
  * Reasoning models can emit a long thinking phase before any answer or tool call;
- * without this the transcript looks blank while the model works. Auto-expands
- * while streaming so the user sees progress, then collapses once the answer lands.
+ * without this the transcript looks blank while the model works. Kept collapsed
+ * by default (the user can expand it) — auto-expanding while streaming and then
+ * snapping shut caused a UI flash.
  */
 export function ChatReasoning({
   reasoning,
@@ -17,13 +18,7 @@ export function ChatReasoning({
   reasoning: string
   streaming?: boolean
 }) {
-  const [open, setOpen] = useState(Boolean(streaming))
-
-  // Collapse automatically once the turn stops streaming (the answer has landed);
-  // the user can still reopen it. Only auto-drives on the streaming→done edge.
-  useEffect(() => {
-    if (!streaming) setOpen(false)
-  }, [streaming])
+  const [open, setOpen] = useState(false)
 
   if (!reasoning) return null
 
