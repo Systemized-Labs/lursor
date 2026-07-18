@@ -10,6 +10,8 @@ from __future__ import annotations
 from pydantic_deep import GoalEvaluation
 
 from app.agents.goal_loop import (
+    EVALUATOR_ERROR_REASON,
+    EVALUATOR_UNAVAILABLE_REASON,
     _enqueue_interjections,
     drain_interjections,
     drive_goal_loop,
@@ -119,6 +121,60 @@ async def test_on_evaluation_hook_sees_each_turn():
     )
 
     assert observed == [(1, False), (2, False), (3, True)]
+
+
+# --- evaluator circuit breaker ------------------------------------------------
+
+
+async def test_breaker_trips_when_evaluator_persistently_errors():
+    """A persistently failing evaluator stops the loop fast, not at the turn cap."""
+    turns = {"n": 0}
+
+    async def run_turn(turn_no: int, seed: str | None) -> list:
+        turns["n"] += 1
+        return []
+
+    outcome = await drive_goal_loop(
+        condition="verify something",
+        max_turns=25,
+        run_turn=run_turn,
+        # The vendored evaluator surfaces every model-call failure as this reason.
+        evaluate=_scripted_evaluator(
+            [GoalEvaluation(met=False, reason=EVALUATOR_ERROR_REASON)]
+        ),
+        evaluator_retry_backoff=(0.0, 0.0),  # no real sleeps in tests
+    )
+
+    assert outcome.status == ThreadStatus.blocked
+    assert outcome.last_reason == EVALUATOR_UNAVAILABLE_REASON
+    # Bailed after a single agent turn — retries are eval-only, not full turns —
+    # instead of grinding through all 25.
+    assert turns["n"] == 1
+
+
+async def test_transient_evaluator_error_recovers_and_continues():
+    """One eval error followed by a real verdict retries in-turn, no breaker trip."""
+
+    async def run_turn(turn_no: int, seed: str | None) -> list:
+        return []
+
+    outcome = await drive_goal_loop(
+        condition="ship it",
+        max_turns=10,
+        run_turn=run_turn,
+        # First evaluation errors, the in-turn retry succeeds with a real verdict.
+        evaluate=_scripted_evaluator(
+            [
+                GoalEvaluation(met=False, reason=EVALUATOR_ERROR_REASON),
+                GoalEvaluation(met=True, reason="done"),
+            ]
+        ),
+        evaluator_retry_backoff=(0.0, 0.0),
+    )
+
+    assert outcome.status == ThreadStatus.completed
+    assert outcome.turns == 1
+    assert outcome.last_reason == "done"
 
 
 # --- mid-run interjection -----------------------------------------------------

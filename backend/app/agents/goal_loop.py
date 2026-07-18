@@ -17,6 +17,7 @@ provider stack.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -240,6 +241,52 @@ def encode_goal_status_event(
     return f"data: {event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
 
 
+# The vendored evaluator (``pydantic_deep.goal.GoalEvaluator.evaluate``) never
+# raises — when its model call fails it swallows the exception and returns this
+# exact reason instead of a real verdict. It is therefore our only signal that an
+# evaluation was an *infrastructure* failure rather than a genuine "not met", so
+# the circuit breaker in ``drive_goal_loop`` keys off it. Single point of coupling
+# to the dependency: if pydantic_deep changes the string, update it here.
+EVALUATOR_ERROR_REASON = "Evaluator error; continuing."
+
+# Backoff (seconds) between in-turn evaluator retries. Short and few: a transient
+# blip clears fast, while a persistent misconfig should surface quickly rather
+# than stall a run. The tuple length also bounds the retry count.
+_EVALUATOR_RETRY_BACKOFF: tuple[float, ...] = (1.0, 2.0, 4.0)
+
+# Terminal reason when the circuit breaker trips — the evaluator can't judge
+# completion, so continuing would only feed the agent non-actionable prompts.
+EVALUATOR_UNAVAILABLE_REASON = (
+    "Goal evaluator unavailable — completion could not be verified after repeated "
+    "attempts. Check the evaluator model and its provider credentials "
+    "(goal_evaluator_model, or the thread agent's model)."
+)
+
+
+async def _evaluate_resiliently(
+    evaluate: Callable[[str, list[ModelMessage]], Awaitable[GoalEvaluation]],
+    condition: str,
+    messages: list[ModelMessage],
+    backoff: tuple[float, ...],
+) -> tuple[GoalEvaluation, bool]:
+    """Evaluate with in-turn retries, distinguishing infra errors from verdicts.
+
+    The vendored evaluator returns :data:`EVALUATOR_ERROR_REASON` (never raises)
+    when its model call fails. We retry that — with backoff, without running
+    another expensive agent turn in between — so a transient hiccup doesn't waste
+    a turn or trip the breaker. The returned bool is ``True`` only when *every*
+    attempt came back as an evaluator error, i.e. the evaluator is (probably
+    persistently) unavailable and the loop should stop.
+    """
+    evaluation = await evaluate(condition, messages)
+    for delay in backoff:
+        if evaluation.reason != EVALUATOR_ERROR_REASON:
+            break
+        await asyncio.sleep(delay)
+        evaluation = await evaluate(condition, messages)
+    return evaluation, evaluation.reason == EVALUATOR_ERROR_REASON
+
+
 async def drive_goal_loop(
     *,
     condition: str,
@@ -248,6 +295,7 @@ async def drive_goal_loop(
     evaluate: Callable[[str, list[ModelMessage]], Awaitable[GoalEvaluation]],
     on_evaluation: Callable[[GoalState, GoalEvaluation], Awaitable[None]] | None = None,
     initial_seed: str | None = None,
+    evaluator_retry_backoff: tuple[float, ...] = _EVALUATOR_RETRY_BACKOFF,
 ) -> GoalOutcome:
     """Run execution turns until the goal is met, judged impossible, or capped.
 
@@ -266,13 +314,25 @@ async def drive_goal_loop(
         evaluate: ``(condition, messages) -> GoalEvaluation``.
         on_evaluation: Optional hook after each evaluation (persist/emit status).
         initial_seed: Seed prompt for the first execution turn.
+        evaluator_retry_backoff: Per-retry sleeps for a failing evaluator before
+            the circuit breaker trips. Tests pass zeros to avoid real sleeps.
     """
     state = GoalState(condition=condition, max_turns=max_turns)
     state.started_monotonic = time.monotonic()
     seed = initial_seed
     while True:
         messages = await run_turn(state.turns + 1, seed)
-        evaluation = await evaluate(condition, messages)
+        evaluation, errored = await _evaluate_resiliently(
+            evaluate, condition, messages, evaluator_retry_backoff
+        )
+        if errored:
+            # Circuit breaker: a persistently failing evaluator can't judge
+            # completion. Stop and surface why, rather than grinding to the turn
+            # cap feeding the agent non-actionable "keep going" directives (which
+            # the model rationalises as "no remaining blockers").
+            return GoalOutcome(
+                ThreadStatus.blocked, state.turns, EVALUATOR_UNAVAILABLE_REASON
+            )
         state.record(evaluation)
         if on_evaluation is not None:
             await on_evaluation(state, evaluation)
