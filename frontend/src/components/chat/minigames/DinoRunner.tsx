@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { cn } from "@/lib/utils"
-
+import { drawSprite } from "./sprite"
 /**
  * A tiny, self-contained Chrome-style dino runner — a T-rex hops over cacti.
  * Purely for fun while a goal
@@ -114,23 +114,6 @@ type GameState = {
 const GRAVITY = 2600 // px/s^2
 const BASE_SPEED = 220 // px/s
 const MAX_SPEED = 480
-
-function drawSprite(
-  ctx: CanvasRenderingContext2D,
-  rows: string[],
-  originX: number,
-  originY: number,
-  px: number,
-) {
-  for (let r = 0; r < rows.length; r++) {
-    const row = rows[r]
-    for (let c = 0; c < row.length; c++) {
-      if (row[c] === "1") {
-        ctx.fillRect(originX + c * px, originY + r * px, px, px)
-      }
-    }
-  }
-}
 
 export function DinoRunner({ className }: { className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -495,3 +478,5 @@ function resetGame(s: GameState) {
   s.legFrame = 0
   s.legTimer = 0
 }
+
+export default DinoRunner
