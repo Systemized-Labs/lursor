@@ -11,7 +11,7 @@ import type {
 import { threadsApi } from "@/api/threads"
 import { markRunSettled, markRunStarted } from "@/hooks/use-optimistic-runs"
 
-import { expandMentionTokens } from "@/components/chat/mentions/types"
+import { expandMentionTokens, mentionSlugs } from "@/components/chat/mentions/types"
 
 import { createThreadAgent, mediaUrl } from "./agent"
 import {
@@ -502,6 +502,10 @@ export function useChat(options: UseChatOptions): UseChat {
       // Seed the transport with the current history, then append the new turn.
       agent.setMessages(toAgentMessages(messagesRef.current))
 
+      // Skills the user @-referenced this turn — read off the raw text before the
+      // tokens are collapsed. Their full bodies are force-loaded into the turn
+      // server-side (carried via `forwardedProps.skills`).
+      const referencedSkills = mentionSlugs(trimmed, "skill")
       // Expand `@/files/…` mention tokens into plain workspace-relative paths so
       // the agent reads them as references, not an absolute `/files/` path.
       const outgoing = expandMentionTokens(trimmed)
@@ -534,8 +538,14 @@ export function useChat(options: UseChatOptions): UseChat {
       try {
         await agent.runAgent(
           // Carry the per-turn intent so the backend can build a read-only
-          // ("ask") agent for this turn. Plan/goal threads ignore it.
-          { forwardedProps: { turn: turnIntent } },
+          // ("ask") agent for this turn (plan/goal threads ignore it), plus any
+          // @-referenced skills to force-load into the turn.
+          {
+            forwardedProps: {
+              turn: turnIntent,
+              ...(referencedSkills.length ? { skills: referencedSkills } : {}),
+            },
+          },
           {
             onTextMessageStartEvent: ({ event }) =>
               handlers.onTextStart(event.messageId),

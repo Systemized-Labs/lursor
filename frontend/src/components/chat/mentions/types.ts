@@ -107,13 +107,42 @@ export function mentionRanges(input: string): Array<{ start: number; end: number
  *  file under `/files/`. Collapse it to the bare, backticked workspace path so
  *  the agent resolves it against the workspace root it's already scoped to. */
 export function expandMentionTokens(text: string): string {
-  return text.replace(/(^|\s)@\/files\/(\S+)/g, (_m, lead: string, path: string) => {
-    // Preserve any trailing punctuation (e.g. a sentence-ending period) outside
-    // the backticks so it isn't mistaken for part of the path.
-    const trail = path.match(/[.,;:!?)]+$/)?.[0] ?? ""
-    const clean = trail ? path.slice(0, -trail.length) : path
-    return `${lead}\`${clean}\`${trail}`
-  })
+  return text
+    .replace(/(^|\s)@\/files\/(\S+)/g, (_m, lead: string, path: string) => {
+      // Preserve any trailing punctuation (e.g. a sentence-ending period) outside
+      // the backticks so it isn't mistaken for part of the path.
+      const trail = path.match(/[.,;:!?)]+$/)?.[0] ?? ""
+      const clean = trail ? path.slice(0, -trail.length) : path
+      return `${lead}\`${clean}\`${trail}`
+    })
+    // A skill mention collapses to a readable `@<slug>` marker in the sent text;
+    // the full skill body is force-loaded into the turn server-side (carried via
+    // `forwardedProps.skills`, see {@link mentionSlugs}), not embedded here.
+    .replace(/(^|\s)@\/skill\/(\S+)/g, (_m, lead: string, raw: string) => {
+      const trail = raw.match(/[.,;:!?)]+$/)?.[0] ?? ""
+      const clean = trail ? raw.slice(0, -trail.length) : raw
+      return `${lead}@${clean}${trail}`
+    })
+}
+
+/** Slugs of every committed `@/<category>/<slug>` token of one category, in order
+ *  and de-duplicated. Used to carry referenced skills to the backend so their
+ *  content can be force-loaded into the turn. */
+export function mentionSlugs(text: string, category: string): string[] {
+  const re = new RegExp(`(?:^|\\s)@\\/${category}\\/(\\S+)`, "g")
+  const out: string[] = []
+  const seen = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const raw = m[1]
+    const trail = raw.match(/[.,;:!?)]+$/)?.[0] ?? ""
+    const slug = trail ? raw.slice(0, -trail.length) : raw
+    if (slug && !seen.has(slug)) {
+      seen.add(slug)
+      out.push(slug)
+    }
+  }
+  return out
 }
 
 /** Split a mention query into its category key and the remaining sub-query.

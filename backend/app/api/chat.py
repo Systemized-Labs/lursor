@@ -68,6 +68,7 @@ from app.db.models import (
 from app.db.session import async_session_factory, get_session
 from app.media_store import media_path, save_base64_image
 from app.pricing import compute_cost
+from app.skills import store as skill_store
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,49 @@ def _join_instructions(*parts: str | None) -> str | None:
     """Join non-empty run-scoped instruction blocks with blank lines."""
     kept = [p for p in parts if p]
     return "\n\n".join(kept) if kept else None
+
+
+def _referenced_skill_instructions(
+    slugs: list[str], workspace_path: str
+) -> str | None:
+    """Force-load the full body of every ``@``-referenced skill into this turn.
+
+    Mirrors Claude Code's explicit skill invocation: when the user ``@``-references
+    a skill in the composer, its whole ``SKILL.md`` body is injected into this
+    turn's instructions so the agent is guaranteed to follow it — rather than
+    relying on the agent to discover it via its skill tools. Each slug resolves
+    against the same two scopes the builder uses — this workspace's
+    ``.agents/skills`` first, then the user-global store — so a workspace skill
+    wins a slug collision, matching ``skill_store.merged_skill_dirs``. Unknown or
+    malformed slugs (the list is client-supplied) are skipped.
+    """
+    if not slugs:
+        return None
+    global_root = skill_store.global_skills_root()
+    ws_root = skill_store.workspace_skills_root(workspace_path)
+    sections: list[str] = []
+    seen: set[str] = set()
+    for slug in slugs:
+        if slug in seen:
+            continue
+        seen.add(slug)
+        parsed = None
+        for root in (ws_root, global_root):  # workspace wins on collision
+            with contextlib.suppress(ValueError):
+                parsed = skill_store.read_skill(slug, root)
+            if parsed is not None:
+                break
+        if parsed is None:
+            continue
+        sections.append(f"## {parsed.name}\n\n{parsed.content}".strip())
+    if not sections:
+        return None
+    header = (
+        "The user explicitly referenced the following skill(s) for this turn. "
+        "Treat their instructions as directly in force now and follow them, using "
+        "any bundled resources or scripts they describe:"
+    )
+    return "\n\n".join([header, *sections])
 
 
 def _parse_user_turn(run_input: dict) -> tuple[str, list[dict]]:
@@ -692,11 +736,18 @@ async def chat(
     # Set by the frontend slash-command dispatch. Sticky plan/goal modes come from
     # the thread row, not this flag.
     turn = "chat"
+    # Skills the user @-referenced in the composer this turn (slugs); their full
+    # bodies are force-loaded into the turn below. Client-supplied, so validated
+    # when resolved (see _referenced_skill_instructions).
+    referenced_skill_slugs: list[str] = []
     with contextlib.suppress(Exception):
         body = await request.json()
         forwarded = body.get("forwardedProps") or {}
         if isinstance(forwarded, dict):
             turn = forwarded.get("turn") or "chat"
+            raw_skills = forwarded.get("skills")
+            if isinstance(raw_skills, list):
+                referenced_skill_slugs = [s for s in raw_skills if isinstance(s, str) and s]
         user_text, images = _parse_user_turn(body)
         for img in images:
             with contextlib.suppress(Exception):
@@ -736,6 +787,14 @@ async def chat(
     # List every image attached in this conversation so the agent can inspect any
     # of them via view_image, regardless of the model's own vision support.
     media_instructions = await _thread_media_instructions(session, thread_id)
+
+    # Fold any @-referenced skills into the per-turn instruction blocks so every
+    # driver (chat, /ask, plan, goal) force-loads them. Reuses media_instructions
+    # as the shared base the drivers already thread through.
+    skill_instructions = _referenced_skill_instructions(
+        referenced_skill_slugs, workspace.path
+    )
+    media_instructions = _join_instructions(media_instructions, skill_instructions)
 
     # A "/ask" turn on a chat thread builds a read-only agent (no write/edit/shell).
     read_only = thread.mode == ThreadMode.chat and turn == "ask"

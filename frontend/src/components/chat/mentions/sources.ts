@@ -1,18 +1,45 @@
 import { useMemo } from "react"
-import { FileCode, Folder } from "@phosphor-icons/react"
+import { FileCode, Folder, Sparkle } from "@phosphor-icons/react"
 
 import { filesApi } from "@/api/files"
+import { useSkills } from "@/api/skills"
+import type { Skill } from "@/api/types"
 import type { MentionItem, MentionSource } from "./types"
 
 const SEARCH_LIMIT = 50
 
-/** Mention sources for the workspace chat composer: a single `@files` category
- *  backed by a fuzzy search over the whole workspace tree. */
+/** Mention sources for the workspace chat composer:
+ *  - `@files` — fuzzy search over the whole workspace tree (lazy).
+ *  - `@skill` — global + this workspace's skills (pre-loaded, root-searchable).
+ *    Referencing a skill force-loads its full body into that turn server-side.
+ */
 export function useWorkspaceChatMentionSources(
   workspaceId: string | undefined
 ): MentionSource[] {
+  // Skills come from two scopes, exactly what the agent sees at build time:
+  // user-global plus this workspace's own, the workspace winning on a slug
+  // collision (see backend `merged_skill_dirs`). Small lists, so pre-load them
+  // and let the menu filter locally rather than hitting the server per keystroke.
+  const globalSkills = useSkills({ scope: "global" })
+  const workspaceSkills = useSkills(
+    workspaceId ? { scope: "workspace", workspace_id: workspaceId } : undefined
+  )
+
   return useMemo<MentionSource[]>(() => {
     if (!workspaceId) return []
+
+    const bySlug = new Map<string, Skill>()
+    for (const s of globalSkills.data ?? []) bySlug.set(s.slug, s)
+    for (const s of workspaceSkills.data ?? []) bySlug.set(s.slug, s) // workspace wins
+    const skillItems = [...bySlug.values()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map<MentionItem>((s) => ({
+        id: s.id,
+        label: s.name,
+        slug: s.slug,
+        sublabel: s.description || undefined,
+      }))
+
     return [
       {
         key: "files",
@@ -37,6 +64,12 @@ export function useWorkspaceChatMentionSources(
           })
         },
       },
+      {
+        key: "skill",
+        label: "Skills",
+        icon: Sparkle,
+        items: skillItems,
+      },
     ]
-  }, [workspaceId])
+  }, [workspaceId, globalSkills.data, workspaceSkills.data])
 }
