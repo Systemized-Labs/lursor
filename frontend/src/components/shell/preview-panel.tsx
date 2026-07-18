@@ -7,6 +7,7 @@ import {
 } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
+import { consumePendingPreview, subscribeOpenPreview } from "@/lib/open-preview"
 
 /** Common local dev-server ports, offered as one-tap shortcuts in the empty state. */
 const COMMON_PORTS = [3000, 5173, 8000, 8080] as const
@@ -107,6 +108,19 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
     setLoading(false)
     writeSavedUrl(workspaceId, "")
   }, [workspaceId])
+
+  // Navigate to URLs requested from elsewhere (e.g. the right-click "Open in
+  // Lursor Browser" on a chat link). Consume a pending request on mount and
+  // whenever a new one is parked, so a freshly-opened preview tab or an
+  // already-open panel both react.
+  useEffect(() => {
+    const tryOpen = () => {
+      const request = consumePendingPreview(workspaceId)
+      if (request) navigate(request.url)
+    }
+    tryOpen()
+    return subscribeOpenPreview(tryOpen)
+  }, [workspaceId, navigate])
 
   const hasUrl = url !== ""
 

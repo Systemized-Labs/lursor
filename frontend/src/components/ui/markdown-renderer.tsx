@@ -1,10 +1,25 @@
 import { Children, isValidElement, useState, type ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import { Check, Copy } from '@phosphor-icons/react'
+import {
+  ArrowSquareOut,
+  Check,
+  Copy,
+  Globe,
+  LinkSimple,
+} from '@phosphor-icons/react'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
 import { cn, copyToClipboard } from '@/lib/utils'
 import { processChildrenWithIcons } from '@/lib/emoji-icons'
+import { openExternal } from '@/lib/open-external'
+import { requestOpenPreview } from '@/lib/open-preview'
 
 interface MarkdownRendererProps {
   children: string
@@ -70,6 +85,61 @@ function CodeBlock({ children }: { children: ReactNode }) {
   )
 }
 
+/**
+ * A markdown anchor with a right-click menu — the Cursor-style link actions:
+ * open in the in-app "Lursor Browser" (the preview dock), open in the system
+ * browser, or copy the link. Left-click still follows the link as usual.
+ *
+ * The "Lursor Browser" action targets the active workspace's preview panel, so
+ * it's only offered inside a workspace route and only for http(s) URLs.
+ */
+function MarkdownLink({
+  href,
+  children,
+  ...props
+}: {
+  href?: string
+  children?: ReactNode
+}) {
+  const { pathname } = useLocation()
+  const url = href ?? ''
+  const isWebLink = /^https?:\/\//i.test(url)
+  const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
+
+  const anchor = (
+    <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+      {processChildrenWithIcons(children, 'a')}
+    </a>
+  )
+
+  // Only web links get the menu; anchors, mailto:, etc. keep default behavior.
+  if (!isWebLink) return anchor
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
+      <ContextMenuContent>
+        {workspaceId && (
+          <ContextMenuItem
+            onSelect={() => requestOpenPreview({ workspaceId, url })}
+          >
+            <Globe />
+            Open in Lursor Browser
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem onSelect={() => openExternal(url)}>
+          <ArrowSquareOut />
+          Open in External Browser
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void copyToClipboard(url)}>
+          <LinkSimple />
+          Copy Link
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
 export function MarkdownRenderer({ children, className }: MarkdownRendererProps) {
   return (
     <div
@@ -125,9 +195,9 @@ export function MarkdownRenderer({ children, className }: MarkdownRendererProps)
             </div>
           ),
           a: ({ href, children, ...props }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-              {processChildrenWithIcons(children, 'a')}
-            </a>
+            <MarkdownLink href={href} {...props}>
+              {children}
+            </MarkdownLink>
           ),
           p: ({ children }) => (
             <p>{processChildrenWithIcons(children, 'p')}</p>

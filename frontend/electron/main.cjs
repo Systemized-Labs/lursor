@@ -6,7 +6,7 @@
 // on http://localhost:8791 (see the repo README / scripts/dev.sh).
 
 const path = require("node:path")
-const { app, BrowserWindow, nativeImage, shell } = require("electron")
+const { app, BrowserWindow, nativeImage, shell, ipcMain } = require("electron")
 
 const isDev = !app.isPackaged
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173"
@@ -69,6 +69,17 @@ function createWindow() {
     mainWindow = null
   })
 }
+
+// Renderer-invoked "open in system browser" (context menu on chat links). Guard
+// the scheme here too — never hand arbitrary URIs to the OS.
+ipcMain.handle("open-external", (_event, url) => {
+  if (
+    typeof url === "string" &&
+    (url.startsWith("http://") || url.startsWith("https://"))
+  ) {
+    return shell.openExternal(url)
+  }
+})
 
 app.whenReady().then(() => {
   // In dev the dock/taskbar shows Electron's default icon; set ours. Packaged

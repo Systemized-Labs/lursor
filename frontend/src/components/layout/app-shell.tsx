@@ -23,6 +23,11 @@ import {
   subscribeOpenFile,
   type OpenFileRequest,
 } from "@/lib/open-file"
+import {
+  peekPendingPreview,
+  subscribeOpenPreview,
+  type OpenPreviewRequest,
+} from "@/lib/open-preview"
 
 /** Titles for the full-screen dock views shown via the mobile bottom bar. */
 const MOBILE_DOCK_TITLES: Record<DockKind, string> = {
@@ -97,6 +102,27 @@ export function AppShell() {
     if (!dock.tabs.some((t) => t.kind === "file")) dock.openTab("file")
     dock.setCollapsed(false)
   }, [openFileTick, workspaceId, dock, isMobile])
+
+  // Global "open this URL in the preview" requests (from the right-click menu on
+  // chat links): reveal the preview surface for the target workspace so the
+  // PreviewPanel mounts and navigates. On mobile that's the full-screen preview
+  // view; on desktop, the side dock's preview tab.
+  const [openPreviewTick, setOpenPreviewTick] = useState(0)
+  const handledPreviewRef = useRef<OpenPreviewRequest | null>(null)
+  useEffect(() => subscribeOpenPreview(() => setOpenPreviewTick((t) => t + 1)), [])
+  useEffect(() => {
+    const pending = peekPendingPreview()
+    if (!pending || pending.workspaceId !== workspaceId) return
+    // Guard by request identity so re-renders don't re-open the dock repeatedly.
+    if (handledPreviewRef.current === pending) return
+    handledPreviewRef.current = pending
+    if (isMobile) {
+      showMobileKind("preview")
+      return
+    }
+    if (!dock.tabs.some((t) => t.kind === "preview")) dock.openTab("preview")
+    dock.setCollapsed(false)
+  }, [openPreviewTick, workspaceId, dock, isMobile, showMobileKind])
 
   // Full-bleed surfaces (e.g. a chat thread) manage their own scroll and fill
   // the panel edge to edge; everything else keeps the padded, centered column.
