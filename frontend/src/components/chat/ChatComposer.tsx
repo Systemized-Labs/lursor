@@ -21,7 +21,7 @@ import type { MentionSource, ResolvedMention } from "@/components/chat/mentions/
 import { SlashMenu } from "@/components/chat/commands/SlashMenu"
 import { useSlash } from "@/components/chat/commands/use-slash"
 import { commandRange } from "@/components/chat/commands/registry"
-import type { QueuedMessage } from "@/agui/useChat"
+import type { QueuedMessage } from "@/agui/chatStore"
 import type { PendingAttachment } from "@/agui/types"
 import type { ThreadMode } from "@/api/types"
 
