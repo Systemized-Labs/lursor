@@ -54,6 +54,10 @@ _IGNORED_DIRS = frozenset(
         ".turbo",
         "target",
         ".DS_Store",
+        # Lursor's own per-workspace config lives here (workspace-scoped skills
+        # under .agents/skills). It's managed from the Skills page, not the file
+        # explorer, so keep it out of the tree and @files search.
+        ".agents",
     }
 )
 
