@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 import {
   Check,
   Copy,
@@ -195,7 +195,7 @@ export interface ChatAssistantGroupProps {
  * a stack of look-alike blocks, and mirrors how the run persists (one assistant
  * message) on reload. No bubble/avatar — the transcript reads like a document.
  */
-export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
+function ChatAssistantGroupImpl({ messages }: ChatAssistantGroupProps) {
   const isStreaming = messages.some((m) => m.streaming)
   const hasBody = messages.some(
     (m) => m.content !== "" || m.toolCalls.length > 0 || Boolean(m.reasoning)
@@ -234,6 +234,26 @@ export function ChatAssistantGroup({ messages }: ChatAssistantGroupProps) {
   )
 }
 
+/** True when both arrays hold the same message objects in the same order. The
+ *  reducer preserves object identity for messages a streamed event didn't touch
+ *  (returning `m` unchanged), so a settled turn's messages keep the same
+ *  references even though {@link groupTurns} rebuilds the enclosing array each
+ *  render. That lets settled groups skip re-rendering (and re-parsing their
+ *  markdown) on every token of the *streaming* turn — the re-render that flashed. */
+function sameMessages(a: ChatMessage[], b: ChatMessage[]) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+/** {@link ChatAssistantGroupImpl}, memoized so only the turn whose messages
+ *  actually changed re-renders as tokens stream in. */
+export const ChatAssistantGroup = memo(ChatAssistantGroupImpl, (prev, next) =>
+  sameMessages(prev.messages, next.messages)
+)
+
 export interface ChatMessageBubbleProps {
   message: ChatMessage
   /** Run user-message text through the emoji→icon renderer. */
@@ -245,7 +265,7 @@ export interface ChatMessageBubbleProps {
  * {@link ChatAssistantGroup}); user messages render as a subtle, unshadowed card
  * so the prompt is distinguishable without breaking the document flow.
  */
-export function ChatMessageBubble({ message, renderIcons }: ChatMessageBubbleProps) {
+function ChatMessageBubbleImpl({ message, renderIcons }: ChatMessageBubbleProps) {
   if (message.role !== "user") {
     return <ChatAssistantGroup messages={[message]} />
   }
@@ -292,3 +312,8 @@ export function ChatMessageBubble({ message, renderIcons }: ChatMessageBubblePro
     </div>
   )
 }
+
+/** {@link ChatMessageBubbleImpl}, memoized. A user bubble never changes once
+ *  sent, and the reducer keeps its message object identity, so it skips the
+ *  re-render every streamed token would otherwise trigger. */
+export const ChatMessageBubble = memo(ChatMessageBubbleImpl)
