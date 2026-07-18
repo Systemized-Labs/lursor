@@ -32,7 +32,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
     | undefined
 
   if (!codeEl) {
-    return <pre className="overflow-x-auto p-3 text-xs">{children}</pre>
+    return <pre className="max-h-96 overflow-auto p-3 text-xs">{children}</pre>
   }
 
   const className = codeEl.props.className ?? ''
@@ -63,7 +63,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
+      <pre className="max-h-96 overflow-auto p-3 text-xs leading-relaxed">
         <code className={className}>{codeEl.props.children}</code>
       </pre>
     </div>
