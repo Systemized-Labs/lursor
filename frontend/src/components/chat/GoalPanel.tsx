@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react"
+import { useState, type ReactNode, Suspense } from "react"
 import {
   CaretDown,
   CheckCircle,
@@ -12,7 +12,7 @@ import {
 } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
-import { DinoRunner } from "@/components/chat/minigames/DinoRunner"
+import { MINIGAMES, loadSelectedGame, saveSelectedGame, type MinigameId } from "@/components/chat/minigames"
 import { cn } from "@/lib/utils"
 import type { AgentTodo, TodoStatus } from "@/agui/types"
 
@@ -59,6 +59,7 @@ export function GoalRunPanel({
   children: ReactNode
 }) {
   const [tasksOpen, setTasksOpen] = useState(false)
+  const [selectedGame, setSelectedGame] = useState<MinigameId>(loadSelectedGame)
   const total = todos.length
   const completed = todos.filter((t) => t.status === "completed").length
   const active = todos.find((t) => t.status === "in_progress")
@@ -67,6 +68,13 @@ export function GoalRunPanel({
   const activity = active?.activeForm || active?.content || reason || "Working…"
   const pct = total ? Math.round((completed / total) * 100) : 0
 
+  const activeMeta = MINIGAMES.find((g) => g.id === selectedGame) ?? MINIGAMES[0]
+  const ActiveGame = activeMeta.Component
+
+  const pickGame = (id: MinigameId) => {
+    setSelectedGame(id)
+    saveSelectedGame(id)
+  }
   return (
     <div className="px-4 pb-4 pt-1 sm:px-6">
       <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm">
@@ -164,7 +172,7 @@ export function GoalRunPanel({
             <div className="space-y-1 px-1.5 pb-1">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-medium text-muted-foreground">
-                  Dino runner
+                  {activeMeta.name}
                 </span>
                 <button
                   type="button"
@@ -175,7 +183,37 @@ export function GoalRunPanel({
                   Hide
                 </button>
               </div>
-              <DinoRunner className="h-28" />
+              <div className="flex items-center gap-1">
+                {MINIGAMES.map((g) => {
+                  const Icon = g.Icon
+                  const active = g.id === selectedGame
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => pickGame(g.id)}
+                      className={cn(
+                        "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                        active
+                          ? "bg-primary/15 text-primary"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                      )}
+                    >
+                      <Icon className="h-3 w-3" />
+                      {g.name}
+                    </button>
+                  )
+                })}
+              </div>
+              <Suspense
+                fallback={
+                  <div className="flex h-28 items-center justify-center rounded-xl border border-border/60 bg-muted/30">
+                    <CircleNotch className="h-4 w-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
+                  </div>
+                }
+              >
+                <ActiveGame key={selectedGame} className="h-28" />
+              </Suspense>
             </div>
           ) : (
             <button

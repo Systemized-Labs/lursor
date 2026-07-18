@@ -55,9 +55,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
+# Allow any origin. Using a regex (rather than allow_origins=["*"]) so the
+# request origin is reflected back, which browsers require when credentials are
+# enabled — this makes any localhost port (Vite may drift to 5174/5175/...) work.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
