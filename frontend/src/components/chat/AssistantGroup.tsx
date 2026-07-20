@@ -4,7 +4,6 @@ import { useStore } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 
 import { copyToClipboard } from "@/lib/utils"
-import { ChatReasoning } from "@/components/chat/ChatReasoning"
 import { ChatToolCalls } from "@/components/chat/ChatToolCalls"
 import {
   ChatSubagentCalls,
@@ -17,11 +16,10 @@ import type { ChatMessage } from "@/agui/types"
 import { StreamingText } from "./StreamingText"
 import { StreamingDots } from "./StreamingDots"
 
-/** A message carries something to show (answer text, tools, or reasoning). */
+/** A message carries something to show (answer text or tools). Reasoning is
+ *  intentionally excluded — agent thoughts are hidden from the UI. */
 function hasBody(m: ChatMessage | undefined): boolean {
-  return Boolean(
-    m && (m.content !== "" || m.toolCalls.length > 0 || Boolean(m.reasoning))
-  )
+  return Boolean(m && (m.content !== "" || m.toolCalls.length > 0))
 }
 
 /** Hover action that copies a settled turn's text to the clipboard. */
@@ -65,14 +63,6 @@ const AssistantSegment = memo(function AssistantSegment({
   const otherCalls = seg.toolCalls.filter((t) => t.name !== SUBAGENT_TOOL_NAME)
   return (
     <div className={first ? undefined : "mt-3"}>
-      {seg.reasoning && (
-        <div className={seg.content !== "" ? "mb-3" : undefined}>
-          <ChatReasoning
-            reasoning={seg.reasoning}
-            streaming={Boolean(seg.streaming) && !seg.reasoningDone}
-          />
-        </div>
-      )}
       {seg.content !== "" && (
         <StreamingText text={seg.content} streaming={Boolean(seg.streaming)} />
       )}
