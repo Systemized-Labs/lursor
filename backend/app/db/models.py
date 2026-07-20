@@ -84,14 +84,12 @@ class ToolChoice(StrEnum):
 
 
 class ThreadMode(StrEnum):
-    """How a thread is driven, selected per-turn via a slash command.
+    """How a thread is driven. Retained for backward compatibility only.
 
-    ``chat`` is the classic turn-based conversation (a plain message, or ``/ask``
-    for a read-only turn). ``plan`` is Claude-Code-style plan mode: the agent
-    proposes a plan and waits for approval before executing (``/plan``). ``goal``
-    runs the self-continuing goal loop until an evaluator judges it done
-    (``/goal``; see ``agents/goal_loop.py``). ``plan`` and ``goal`` are sticky —
-    they own the thread until it returns to ``chat``."""
+    Modes are no longer sticky: ``/ask``, ``/goal`` and ``/plan`` are all per-turn
+    intents forwarded on the request (see ``api/chat.py``), so live threads stay at
+    the ``chat`` default. ``plan`` and ``goal`` remain here so rows written by older
+    (sticky-mode) builds still load; they behave as plain ``chat`` threads now."""
 
     chat = "chat"
     plan = "plan"
@@ -101,10 +99,11 @@ class ThreadMode(StrEnum):
 class ThreadStatus(StrEnum):
     """Lifecycle of a ``plan``/``goal`` thread's run (``goal_status`` on the wire).
 
-    ``idle`` — not in a plan/goal run (or a plain chat thread). Plan mode:
-    ``planning`` (a turn drafts the plan) → ``awaiting_approval`` (paused for the
-    user to approve) → approval starts a normal execution run and the thread
-    returns to ``chat``/``idle``. Goal mode: ``running`` (autonomous loop).
+    ``idle`` — not in a plan/goal run (or a plain chat thread). A ``/plan`` turn:
+    ``planning`` (drafts the plan) → ``awaiting_approval`` (parked; the user reviews
+    the plan doc and may send another ``/plan`` to refine it). Sending a plain chat
+    turn carries the plan out and clears the park back to ``idle``. ``/goal``:
+    ``running`` (autonomous loop).
     Terminal: ``completed`` (evaluator confirmed), ``blocked`` (judged
     impossible / needs a human), ``failed`` (hit the iteration cap), ``stopped``
     (cancelled by the user)."""

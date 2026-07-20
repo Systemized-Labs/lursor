@@ -25,11 +25,11 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: "plan",
-    description: "Propose a plan, then approve to run it",
+    description: "Propose a plan without executing it",
     argumentHint: "<objective>",
     Icon: NotePencil,
-    kind: "thread-mode",
-    enterMode: "plan",
+    kind: "turn-intent",
+    turnIntent: "plan",
     agentKey: "plan",
   },
   {

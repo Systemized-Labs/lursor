@@ -137,8 +137,8 @@ def planning_instruction() -> str:
         "— you'll refine it together until they're happy with it.\n"
         "Do NOT start doing the work yet: this is a planning conversation. Beyond "
         f"reading/searching the codebase and writing your plan file in `{PLAN_DIR}/`"
-        ", make no changes. When the user is ready to execute, they leave plan mode "
-        "and ask you to carry the plan out — nothing runs while you're still planning."
+        ", make no changes. Nothing runs while you're planning; when the user is "
+        "ready to execute they'll ask you to carry the plan out in a normal message."
     )
 
 
@@ -154,8 +154,8 @@ def refine_instruction(plan_doc: str) -> str:
         "the requested changes, and save the updated plan. In your chat reply, "
         "briefly say what you changed and invite further edits.\n"
         "Do NOT start doing the work yet: this is still the planning conversation. "
-        "The user may keep refining; nothing runs until they leave plan mode and "
-        "ask you to execute."
+        "The user may keep refining (another `/plan` message); nothing runs until "
+        "they ask you to execute in a normal message."
     )
 
 # Seeds the first turn of the autonomous goal loop (``/goal`` — no plan step).

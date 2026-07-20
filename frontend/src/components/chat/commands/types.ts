@@ -1,16 +1,15 @@
 import type { Icon } from "@phosphor-icons/react"
 
-import type { DefaultAgentsSettings, ThreadMode, TurnIntent } from "@/api/types"
+import type { DefaultAgentsSettings, TurnIntent } from "@/api/types"
 
 /**
  * What a slash command *does*, as a closed set the dispatch switches on. The
- * UI shell (parser, menu, dispatch, pill) is generic over these three kinds, so
- * adding a command is a single {@link SlashCommand} entry in the registry — no
- * new branches in the composer or page. See `registry.ts`.
+ * UI shell (parser, menu, dispatch) is generic over these kinds, so adding a
+ * command is a single {@link SlashCommand} entry in the registry — no new
+ * branches in the composer or page. See `registry.ts`.
  */
 export type CommandKind =
-  | "turn-intent" // per-message modifier, e.g. /ask (stateless)
-  | "thread-mode" // sticky mode owning the thread, e.g. /plan, /goal
+  | "turn-intent" // per-message intent, e.g. /ask, /goal, /plan (stateless)
   | "action" // fire-and-forget local action, e.g. /clear (no agent turn)
 
 /** A named local action a command can trigger (kind === "action"). */
@@ -74,8 +73,6 @@ export interface SlashCommand {
   agentKey?: keyof DefaultAgentsSettings
   /** kind === "turn-intent": the per-turn intent to send. */
   turnIntent?: TurnIntent
-  /** kind === "thread-mode": the sticky mode to enter. */
-  enterMode?: ThreadMode
   /** kind === "action": the local action to run. */
   action?: CommandAction
 }

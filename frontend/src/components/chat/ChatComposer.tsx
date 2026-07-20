@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react"
-import { Clock, NotePencil, Paperclip, PaperPlaneTilt, Play, Square, Target, X } from "@phosphor-icons/react"
+import { Clock, Paperclip, PaperPlaneTilt, Play, Square, X } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -23,7 +23,6 @@ import { useSlash } from "@/components/chat/commands/use-slash"
 import { commandRange } from "@/components/chat/commands/registry"
 import type { QueuedMessage } from "@/agui/chatStore"
 import type { PendingAttachment } from "@/agui/types"
-import type { ThreadMode } from "@/api/types"
 
 const NOOP_SOURCES: MentionSource[] = []
 
@@ -109,11 +108,6 @@ export interface ChatComposerProps {
   onEditQueued?: (id: string, text: string) => void
   /** Send the queued messages now (resume a paused queue). */
   onResumeQueue?: () => void
-  /** The thread's active sticky mode. When "plan"/"goal", a pill shows in the
-   *  toolbar with an exit control. Omit or "chat" hides it. */
-  activeMode?: ThreadMode
-  /** Called when the user exits the active sticky mode (back to plain chat). */
-  onExitMode?: () => void
   /** Render without the standalone card chrome (border/fill/outer padding) so
    *  the composer blends into a surrounding panel (e.g. the goal control deck). */
   embedded?: boolean
@@ -139,8 +133,6 @@ export function ChatComposer({
   onRemoveQueued,
   onEditQueued,
   onResumeQueue,
-  activeMode = "chat",
-  onExitMode,
   embedded = false,
 }: ChatComposerProps) {
   const canAttach = !!onAttachmentsChange && !disabled
@@ -170,13 +162,12 @@ export function ChatComposer({
     enabled: (mentionSources?.length ?? 0) > 0,
   })
 
-  // Slash-command autocomplete (leading `/command`). Only active on a plain
-  // chat thread — a sticky plan/goal thread doesn't take new mode commands.
+  // Slash-command autocomplete (leading `/command`).
   const slash = useSlash({
     value: input,
     setValue: onInputChange,
     textareaRef,
-    enabled: activeMode === "chat",
+    enabled: true,
   })
 
   // Grow the prompt with its content (e.g. a pasted paragraph) up to a fixed
@@ -401,11 +392,8 @@ export function ChatComposer({
               )}
             />
           </div>
-          {/* Toolbar: mode pill + attach on the left, send/stop on the right. */}
+          {/* Toolbar: attach on the left, send/stop on the right. */}
           <div className="mt-1 flex items-center gap-1">
-            {activeMode !== "chat" && (
-              <ModePill mode={activeMode} onExit={onExitMode} disabled={disabled} />
-            )}
             {canAttach && (
               <>
                 <input
@@ -475,43 +463,6 @@ export function ChatComposer({
         </div>
       </div>
     </div>
-  )
-}
-
-/** A small pill reflecting the thread's active sticky mode (plan/goal), with an
- *  exit control that returns the thread to plain chat. Data-driven — no
- *  per-command rendering. */
-function ModePill({
-  mode,
-  onExit,
-  disabled,
-}: {
-  mode: ThreadMode
-  onExit?: () => void
-  disabled?: boolean
-}) {
-  const meta =
-    mode === "plan"
-      ? { label: "Plan mode", Icon: NotePencil }
-      : { label: "Goal mode", Icon: Target }
-  const Icon = meta.Icon
-  return (
-    <span className="flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-      <Icon className="h-3.5 w-3.5" />
-      {meta.label}
-      {onExit && (
-        <button
-          type="button"
-          onClick={onExit}
-          disabled={disabled}
-          title="Exit to chat"
-          aria-label="Exit to chat"
-          className="ml-0.5 rounded-full text-primary/70 hover:text-primary disabled:opacity-50"
-        >
-          <X className="h-3 w-3" />
-        </button>
-      )}
-    </span>
   )
 }
 

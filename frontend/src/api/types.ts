@@ -261,14 +261,15 @@ export interface ThreadMessage {
   created_at: string
 }
 
-/** How a thread is driven. `chat` is the default; `plan` and `goal` are sticky
- *  modes entered by a slash command (see the command registry). */
+/** How a thread is driven. Retained for backward compatibility with rows written
+ *  by older builds — modes are no longer sticky (see {@link TurnIntent}); live
+ *  threads stay `chat`. */
 export type ThreadMode = "chat" | "plan" | "goal"
 
 /** Per-turn intent sent with a message. `chat` is full tools (default); `ask`
- *  is a read-only turn; `goal` kicks off a one-off autonomous run for that
- *  submission. All are per-turn — only `plan` is a sticky thread mode. */
-export type TurnIntent = "chat" | "ask" | "goal"
+ *  is a read-only turn; `goal` kicks off a one-off autonomous run; `plan`
+ *  proposes a plan doc without executing. All are per-turn — none are sticky. */
+export type TurnIntent = "chat" | "ask" | "goal" | "plan"
 
 /** Lifecycle of a plan/goal run (mirrors backend `ThreadStatus`; `goal_status`
  *  on the wire). */

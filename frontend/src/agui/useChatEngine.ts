@@ -5,7 +5,6 @@ import type {
   MessageKind,
   Thread,
   ThreadMessage,
-  ThreadMode,
   TurnIntent,
 } from "@/api/types"
 import { threadsApi } from "@/api/threads"
@@ -120,14 +119,6 @@ export interface UseChatEngineOptions {
   onThreadCreated?: (thread: Thread) => void
 }
 
-/** Plan/goal config applied when a thread is lazily created via `startMode`. */
-export interface ThreadModeInit {
-  mode: ThreadMode
-  goal: string
-  successCriteria: string
-  maxIterations: number
-}
-
 export interface ChatEngine {
   /** The store the surface subscribes to for messages/todos/status/queue. */
   store: ChatStore
@@ -137,7 +128,6 @@ export interface ChatEngine {
     turnIntent?: TurnIntent,
     kind?: MessageKind
   ) => Promise<void>
-  startMode: (text: string, init: ThreadModeInit) => Promise<void>
   interject: (text: string) => Promise<void>
   stop: () => void
   removeQueued: (id: string) => void
@@ -163,8 +153,6 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
 
   const agentRef = useRef<HttpAgent | null>(null)
   const agentThreadRef = useRef<string | null>(null)
-  // Set by `startMode`, consumed by the next lazy thread-create in performSend.
-  const pendingModeInitRef = useRef<ThreadModeInit | null>(null)
   const reconnectAbortRef = useRef<AbortController | null>(null)
   const currentAssistantId = useRef<string | null>(null)
   // Thread `send` is actively driving via the live POST stream. Set synchronously
@@ -358,26 +346,14 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
       }
 
       // Lazily create the thread on first send so "New conversation" leaves no
-      // orphan threads behind. A pending mode init makes it a plan/goal thread.
+      // orphan threads behind.
       let threadId = store.getState().selectedThreadId
       if (!threadId) {
-        const modeInit = pendingModeInitRef.current
-        pendingModeInitRef.current = null
         try {
           const thread = await threadsApi.create({
             workspace_id: workspaceId,
             agent_id: agentId,
-            title: modeInit
-              ? modeInit.goal.slice(0, 60) || "New conversation"
-              : "New conversation",
-            ...(modeInit
-              ? {
-                  mode: modeInit.mode,
-                  goal: modeInit.goal,
-                  success_criteria: modeInit.successCriteria,
-                  max_iterations: modeInit.maxIterations,
-                }
-              : {}),
+            title: "New conversation",
           })
           threadId = thread.id
           // Claim this thread as ours before the URL update, so the resulting
@@ -531,24 +507,6 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
     [store, performSend]
   )
 
-  // Enter plan/goal mode on a fresh conversation, routing through performSend's
-  // lazy-create so the thread is created and claimed before the URL updates.
-  const startMode = useCallback(
-    async (text: string, init: ThreadModeInit) => {
-      const trimmed = text.trim()
-      if (!trimmed) return
-      pendingModeInitRef.current = init
-      await performSend({
-        id: randomUUID(),
-        text: trimmed,
-        attachments: [],
-        turnIntent: "chat",
-        kind: init.mode,
-      })
-    },
-    [performSend]
-  )
-
   // Steer a running goal without opening a second run: POST to the interject
   // endpoint (the backend buffers it into the next turn) and optimistically show it.
   const interject = useCallback(
@@ -599,7 +557,6 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
   return {
     store,
     send,
-    startMode,
     interject,
     stop,
     removeQueued,

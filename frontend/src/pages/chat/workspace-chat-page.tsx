@@ -37,10 +37,7 @@ import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sourc
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
-import type { DefaultAgentsSettings, ThreadMode } from "@/api/types"
-
-/** Default iteration cap for a `/goal` run (backend default). */
-const GOAL_MAX_ITERATIONS = 25
+import type { DefaultAgentsSettings } from "@/api/types"
 
 /** Fallback plan-doc path for legacy threads that predate per-thread plan paths.
  *  Fresh plans carry their own `.agents/plan/PLAN-<slug>.md` path on the run's
@@ -188,52 +185,6 @@ export function WorkspaceChatPage() {
     setSearchParams({})
   }
 
-  // Enter a sticky mode (plan/goal). On a fresh conversation, lazily creates the
-  // thread with the mode config; on an open chat thread, promotes it in place.
-  async function enterMode(mode: ThreadMode, text: string) {
-    if (!workspaceId || !selectedAgentId) {
-      toast.error("Pick an agent before starting a plan or goal.")
-      return
-    }
-    if (selectedThreadId) {
-      try {
-        await updateThread.mutateAsync({
-          id: selectedThreadId,
-          input: {
-            mode,
-            goal: text,
-            success_criteria: "",
-            max_iterations: GOAL_MAX_ITERATIONS,
-          },
-        })
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to start")
-        return
-      }
-      await chat.send(text, [], "chat", mode)
-      return
-    }
-    await chat.startMode(text, {
-      mode,
-      goal: text,
-      successCriteria: "",
-      maxIterations: GOAL_MAX_ITERATIONS,
-    })
-  }
-
-  // Return a plan/goal thread to plain chat (exit the sticky mode).
-  async function handleExitMode() {
-    if (!selectedThreadId) return
-    try {
-      await updateThread.mutateAsync({
-        id: selectedThreadId,
-        input: { mode: "chat" },
-      })
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to exit mode")
-    }
-  }
-
   function runCommandAction(action: CommandAction) {
     if (action === "new-conversation") handleNewConversation()
   }
@@ -293,16 +244,14 @@ export function WorkspaceChatPage() {
         case "turn-intent":
           await chat.send(args, atts, command.turnIntent ?? "chat")
           return
-        case "thread-mode":
-          if (command.enterMode) await enterMode(command.enterMode, args)
-          return
         case "action":
           if (command.action) runCommandAction(command.action)
           return
       }
     }
-    // A plain message in plan mode is a plan-refinement turn — badge it "plan".
-    await chat.send(text, atts, "chat", activeMode === "plan" ? "plan" : "chat")
+    // A plain message always executes as a normal chat turn. To refine a parked
+    // plan instead, the user sends `/plan …` again.
+    await chat.send(text, atts, "chat")
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -331,30 +280,27 @@ export function WorkspaceChatPage() {
   const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
 
-  // Plan is the only sticky mode (reflected in the composer pill). Goal is a
-  // one-off per-turn run; legacy goal threads are treated as plain chat here.
-  const activeMode: ThreadMode = currentThread?.mode === "plan" ? "plan" : "chat"
   const runView = goalStatus
   const goalExecuting = runView?.status === "running"
 
-  // Open the thread's plan doc in the file panel when a planning turn parks it in
+  // Open the thread's plan doc in the file panel when a `/plan` turn parks it in
   // review. Two sources of "parked": the live goal-status event (fresh, carries the
   // exact per-thread path) and the persisted thread (survives a reload, when the
-  // live event is gone). Edge-triggered per thread so it opens once each time a
-  // thread enters review (and reopens on the next refinement), and opens when you
+  // live event is gone — a parked plan is `status === "awaiting_approval"` with a
+  // `plan_path`). Edge-triggered per thread so it opens once each time a thread
+  // enters review (and reopens on the next `/plan` refinement), and opens when you
   // switch to / reload an already-parked plan thread. Path prefers the live event,
   // then the persisted field, then the legacy top-level PLAN.md.
   const prevParkedRef = useRef<{ id?: string; parked: boolean }>({ parked: false })
   useEffect(() => {
     const parked =
       runView?.status === "awaiting_approval" ||
-      (currentThread?.mode === "plan" &&
-        currentThread?.status === "awaiting_approval")
+      (currentThread?.status === "awaiting_approval" && !!currentThread?.plan_path)
     const prev = prevParkedRef.current
     // Only treat it as a fresh edge within the same thread; switching threads
     // starts each one's edge at "not parked" so its plan opens on arrival.
     const wasParked = prev.id === selectedThreadId ? prev.parked : false
-    prevParkedRef.current = { id: selectedThreadId, parked }
+    prevParkedRef.current = { id: selectedThreadId ?? undefined, parked }
     if (parked && !wasParked && workspaceId) {
       const path = runView?.planPath || currentThread?.plan_path || LEGACY_PLAN_DOC
       requestOpenFile({ workspaceId, path, name: baseName(path) })
@@ -363,7 +309,6 @@ export function WorkspaceChatPage() {
     selectedThreadId,
     runView?.status,
     runView?.planPath,
-    currentThread?.mode,
     currentThread?.status,
     currentThread?.plan_path,
     workspaceId,
@@ -530,11 +475,7 @@ export function WorkspaceChatPage() {
             onStop={chat.stop}
             isSending={isStreaming}
             disabled={noAgents}
-            placeholder={
-              activeMode === "plan"
-                ? "Refine the plan, or exit plan mode (✕) to execute…"
-                : "Type a message, or / for commands…"
-            }
+            placeholder="Type a message, or / for commands…"
             attachments={attachments}
             onAttachmentsChange={setAttachments}
             mentionSources={mentionSources}
@@ -543,8 +484,6 @@ export function WorkspaceChatPage() {
             onRemoveQueued={chat.removeQueued}
             onEditQueued={chat.editQueued}
             onResumeQueue={chat.resumeQueue}
-            activeMode={activeMode}
-            onExitMode={() => void handleExitMode()}
           />
         )}
       </div>
