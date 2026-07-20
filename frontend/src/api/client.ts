@@ -1,6 +1,23 @@
-export const API_BASE: string =
-  (import.meta.env.VITE_API_BASE as string | undefined) ??
-  "http://localhost:8791/api"
+function resolveApiBase(): string {
+  const configured =
+    (import.meta.env.VITE_API_BASE as string | undefined) ??
+    "http://localhost:8791/api"
+
+  // When the app is opened from another device over the LAN (e.g. a phone at
+  // http://192.168.x.x:5173), a hardcoded `localhost` would resolve to that
+  // device instead of the machine running the API. Talk to the API on whichever
+  // host served the page, port 8791. Localhost and Electron (file://) fall
+  // through to the configured value unchanged.
+  if (typeof window !== "undefined" && window.location.protocol.startsWith("http")) {
+    const host = window.location.hostname
+    if (host !== "localhost" && host !== "127.0.0.1") {
+      return `${window.location.protocol}//${host}:8791/api`
+    }
+  }
+  return configured
+}
+
+export const API_BASE: string = resolveApiBase()
 
 export class ApiError extends Error {
   status: number

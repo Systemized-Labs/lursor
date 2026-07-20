@@ -26,7 +26,9 @@ echo "Installing frontend dependencies ..."
 (cd "$ROOT_DIR/frontend" && bun install)
 
 echo "Starting backend on :8791 ..."
-(cd "$ROOT_DIR/backend" && uv run uvicorn app.main:app --reload --port 8791) &
+# Bind to 0.0.0.0 so the API is reachable from other devices on the LAN (e.g.
+# a phone hitting http://<this-machine-ip>:8791), not just localhost.
+(cd "$ROOT_DIR/backend" && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8791) &
 
 echo "Starting $FRONTEND_LABEL ..."
 (cd "$ROOT_DIR/frontend" && bun run "$FRONTEND_CMD") &
