@@ -37,6 +37,53 @@ OPENROUTER_PREFIX = "openrouter:"
 CUSTOM_PREFIX = "custom:"
 
 
+async def describe_image_bytes(raw: bytes, mime: str, question: str) -> str:
+    """Answer ``question`` about raw image ``bytes`` via the vision model.
+
+    The shared core behind :func:`make_view_image_tool` and the browser-QA
+    ``view_app`` tool: it makes one isolated call to ``settings.vision_model``
+    (through OpenRouter) with the image plus the question and returns only the
+    text answer, so image bytes never enter a text-only agent's context and it
+    works regardless of the agent model's own modalities. Never raises — every
+    failure is returned as an ``"Error: ..."`` string so a caller can surface it
+    without crashing the run.
+    """
+    settings = get_settings()
+    if not settings.openrouter_api_key:
+        return "Error: no OpenRouter API key configured; cannot read images."
+    if len(raw) > _MAX_IMAGE_BYTES:
+        return (
+            f"Error: image is {len(raw)} bytes, over the "
+            f"{_MAX_IMAGE_BYTES}-byte limit."
+        )
+
+    data_url = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+    client = AsyncOpenAI(
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+    )
+    try:
+        completion = await client.chat.completions.create(
+            model=settings.vision_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": question},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            max_tokens=1500,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface as text, don't crash the run
+        logger.warning("describe_image_bytes: vision call failed: %s", exc)
+        return f"Error: vision model call failed: {exc}"
+
+    answer = (completion.choices[0].message.content or "").strip()
+    return answer or "Error: vision model returned an empty response."
+
+
 def make_view_image_tool(
     workspace_path: str | Path,
 ) -> Callable[..., Awaitable[str]]:
@@ -79,40 +126,7 @@ def make_view_image_tool(
         if not resolved.is_file():
             return f"Error: no such image file: {image_path}"
         raw = resolved.read_bytes()
-        if len(raw) > _MAX_IMAGE_BYTES:
-            return (
-                f"Error: image is {len(raw)} bytes, over the "
-                f"{_MAX_IMAGE_BYTES}-byte limit for view_image."
-            )
-
-        data_url = (
-            f"data:{mime_for_path(resolved)};base64,"
-            f"{base64.b64encode(raw).decode()}"
-        )
-        client = AsyncOpenAI(
-            api_key=settings.openrouter_api_key,
-            base_url=settings.openrouter_base_url,
-        )
-        try:
-            completion = await client.chat.completions.create(
-                model=settings.vision_model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": question},
-                            {"type": "image_url", "image_url": {"url": data_url}},
-                        ],
-                    }
-                ],
-                max_tokens=1500,
-            )
-        except Exception as exc:  # noqa: BLE001 - surface as text, don't crash the run
-            logger.warning("view_image: vision call failed: %s", exc)
-            return f"Error: vision model call failed: {exc}"
-
-        answer = (completion.choices[0].message.content or "").strip()
-        return answer or "Error: vision model returned an empty response."
+        return await describe_image_bytes(raw, mime_for_path(resolved), question)
 
     return view_image
 

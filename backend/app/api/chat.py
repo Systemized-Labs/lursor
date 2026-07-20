@@ -38,9 +38,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from starlette.responses import StreamingResponse
 
+from app.agents.browser_qa import wrap_evaluate_with_visual_qa
 from app.agents.builder import build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
-from app.agents.preview_service import preview_service
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     PLAN_DIR,
@@ -57,6 +57,7 @@ from app.agents.goal_loop import (
     refine_instruction,
     scan_plan_dir,
 )
+from app.agents.preview_service import preview_service
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
 from app.db.models import (
@@ -528,6 +529,7 @@ async def _build_agent_and_context(
         deep_defaults,
         workspace_name=workspace.name,
         workspace_description=workspace.description or None,
+        workspace_id=workspace.id,
         read_only=read_only,
         web_search_provider=app_config.web_search_provider if app_config else None,
         # A UI-saved key (on AppConfig) wins over the environment fallback.
@@ -610,6 +612,7 @@ async def _run_goal_execution(
     max_turns: int,
     media_instructions: str | None,
     initial_history: list[ModelMessage],
+    workspace_id: str,
     kickoff: str = AUTONOMOUS_KICKOFF,
 ) -> None:
     """Drive the autonomous goal loop (``/goal``).
@@ -663,11 +666,17 @@ async def _run_goal_execution(
             )
             publish_status(ThreadStatus.running, state.turns, evaluation.reason)
 
+        # Judge completion against the *rendered* app, not just the transcript:
+        # wrap the transcript evaluator so each evaluation also gets a live
+        # screenshot of the dev server described by the vision model. Degrades to
+        # plain transcript evaluation when browser QA is off or no server is up.
+        evaluate = wrap_evaluate_with_visual_qa(evaluator.evaluate, workspace_id)
+
         outcome = await drive_goal_loop(
             condition=condition,
             max_turns=max_turns,
             run_turn=run_turn,
-            evaluate=evaluator.evaluate,
+            evaluate=evaluate,
             on_evaluation=on_evaluation,
             initial_seed=kickoff,
         )
@@ -984,6 +993,7 @@ async def chat(
                 max_turns=max_iter,
                 media_instructions=media_instructions,
                 initial_history=initial_history,
+                workspace_id=workspace.id,
                 kickoff=AUTONOMOUS_KICKOFF,
             )
 

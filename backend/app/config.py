@@ -73,6 +73,19 @@ class Settings(BaseSettings):
     # "openrouter:" prefix — this hits OpenRouter's chat API directly.
     vision_model: str = "google/gemini-2.5-flash-lite"
 
+    # --- Browser QA ---
+    # Give executing agents a headless browser so they can *see* and test the web
+    # app they build: `view_app` screenshots are analysed by the vision model,
+    # console/network errors are captured, and the agent can drive the page
+    # (click/type). It also feeds the goal-mode evaluator a live screenshot so
+    # completion is judged on what actually rendered, not the transcript. Chromium
+    # is downloaded automatically on first use (no user setup). Turn this off to
+    # remove the browser tools and visual goal verification entirely.
+    browser_qa_enabled: bool = True
+    # Run the QA browser without a visible window. Almost always True on a server;
+    # set False locally to watch the agent drive the page.
+    browser_qa_headless: bool = True
+
     # --- laios control plane ---
     # Used to auto-seed a "local" laios connection on startup when Lursor runs
     # alongside a daemon (the supervisor injects these). LAIOS_MASTER_KEY takes

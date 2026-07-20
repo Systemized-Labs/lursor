@@ -141,6 +141,24 @@ class PreviewService:
         await self._scan(workspace_id)
         return bool(result)
 
+    def current_preview_url(self, workspace_id: str) -> str | None:
+        """Best dev-server URL for a workspace, or ``None`` if none is known yet.
+
+        Prefers a server that has already answered a readiness probe; falls back
+        to the most-recently-detected URL that isn't confirmed ready. Used by the
+        browser-QA tools (default target for ``open_app``/``view_app``) and by the
+        goal-mode visual evaluator to screenshot the live app. Last one wins, so a
+        server started later in the run takes precedence over an earlier one.
+        """
+        state = self._ws.get(workspace_id)
+        if state is None:
+            return None
+        ready = [p.url for p in state.procs.values() if p.url and p.ready]
+        if ready:
+            return ready[-1]
+        known = [p.url for p in state.procs.values() if p.url]
+        return known[-1] if known else None
+
     def output(self, workspace_id: str, process_id: str) -> str | None:
         """Return the captured stdout+stderr tail for a process, or None."""
         state = self._ws.get(workspace_id)

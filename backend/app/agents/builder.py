@@ -7,9 +7,10 @@ filesystem is rooted at the workspace directory via a ``LocalBackend``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 from pydantic_ai import Agent as PydanticAgent
@@ -25,11 +26,12 @@ from pydantic_ai.retries import (
 )
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext, ToolDefinition
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 from pydantic_deep.prompts import BASE_PROMPT
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from app.agents.browser_qa import BrowserQACapability
 from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
@@ -42,9 +44,8 @@ from app.agents.web_search import (
 )
 from app.config import get_settings
 from app.db.models import Agent as AgentRow
-from app.db.models import CustomProvider
+from app.db.models import CustomProvider, ToolChoice
 from app.db.models import Subagent as SubagentRow
-from app.db.models import ToolChoice
 from app.skills import store as skill_store
 
 settings = get_settings()
@@ -71,6 +72,18 @@ DEV_SERVER_DIRECTIVE = (
     "the user the URL it printed. Lursor detects the server automatically: the "
     "Preview panel opens to it once it responds, and any further servers appear "
     "as one-tap chips there."
+)
+
+# Appended to executing agents (when browser QA is enabled) so the model knows to
+# actually verify its UI work in the browser rather than assume it renders. The
+# per-run browser capability (see ``browser_qa.py``) also injects tool-specific
+# guidance; this is the top-level nudge to QA at all.
+BROWSER_QA_DIRECTIVE = (
+    "# Verify your UI work in the browser\n"
+    "- After building or changing anything visual, QA it: open the running app "
+    "with `open_app`, then `view_app` to see it and `get_console_logs` / "
+    "`get_network_errors` to catch runtime errors. Fix what's broken and re-check "
+    "before telling the user it's done — don't assume the page renders correctly."
 )
 
 
@@ -428,6 +441,7 @@ def build_deep_agent(
     exa_api_key: str | None = None,
     workspace_name: str | None = None,
     workspace_description: str | None = None,
+    workspace_id: str | None = None,
     _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
@@ -607,6 +621,24 @@ def build_deep_agent(
         )
     library_web_search = row.web_search and not use_custom_web_search
 
+    # Browser QA: give executing agents a headless browser to see and test the app
+    # they build (see ``browser_qa.py``). A fresh capability per build keeps its
+    # single page/telemetry from colliding across concurrent runs. Gated to
+    # non-read-only agents (it can drive/execute JS), to callers that pass a
+    # ``workspace_id`` (needed to resolve the dev-server URL — top-level runs, not
+    # subagents), and to the app-wide toggle. Chromium installs itself on first use.
+    browser_qa_on = (
+        not read_only and workspace_id is not None and settings.browser_qa_enabled
+    )
+    if browser_qa_on:
+        capabilities.append(
+            BrowserQACapability(
+                workspace_id=workspace_id,
+                media_dir=settings.media_dir,
+                headless=settings.browser_qa_headless,
+            )
+        )
+
     model = resolve_model(
         model_override or row.model or settings.default_model, custom_providers or {}
     )
@@ -638,6 +670,8 @@ def build_deep_agent(
     )
     if not read_only:
         instructions = f"{instructions}\n\n{DEV_SERVER_DIRECTIVE}"
+    if browser_qa_on:
+        instructions = f"{instructions}\n\n{BROWSER_QA_DIRECTIVE}"
 
     agent = create_deep_agent(
         model=model,
