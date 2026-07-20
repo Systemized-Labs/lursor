@@ -1,4 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   CaretRight,
@@ -8,6 +15,7 @@ import {
   FolderPlus,
   Pencil,
   Trash,
+  UploadSimple,
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
@@ -67,6 +75,7 @@ interface ExplorerContextValue {
   isExpanded: (path: string) => boolean
   toggle: (path: string) => void
   requestCreate: (parentPath: string, isDir: boolean) => void
+  requestUpload: (parentPath: string) => void
   requestRename: (entry: DirEntry) => void
   requestDelete: (entry: DirEntry) => void
 }
@@ -102,6 +111,10 @@ export function FileExplorer({
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [pending, setPending] = useState<Pending | null>(null)
   const [toDelete, setToDelete] = useState<DirEntry | null>(null)
+  // Hidden native picker, reused for every upload; its target folder is stashed
+  // in a ref between the menu click and the resulting `change` event.
+  const uploadInputRef = useRef<HTMLInputElement>(null)
+  const uploadTarget = useRef<string>("")
 
   const invalidateTree = useCallback(
     () => qc.invalidateQueries({ queryKey: ["files", workspaceId, "dir"] }),
@@ -127,6 +140,12 @@ export function FileExplorer({
   const requestCreate = useCallback((parentPath: string, isDir: boolean) => {
     setPending({ mode: "create", parentPath, isDir })
   }, [])
+  const requestUpload = useCallback((parentPath: string) => {
+    uploadTarget.current = parentPath
+    // Reset first so re-picking the same files still fires `change`.
+    if (uploadInputRef.current) uploadInputRef.current.value = ""
+    uploadInputRef.current?.click()
+  }, [])
   const requestRename = useCallback((entry: DirEntry) => {
     setPending({ mode: "rename", entry })
   }, [])
@@ -142,6 +161,18 @@ export function FileExplorer({
       if (!vars.isDir) onOpenFile(entry.path, entry.name)
     },
     onError: (err) => toast.error(errMessage(err, "Could not create")),
+  })
+
+  const uploadMut = useMutation({
+    mutationFn: ({ parentPath, files }: { parentPath: string; files: File[] }) =>
+      filesApi.upload(workspaceId, parentPath, files),
+    onSuccess: (entries, vars) => {
+      void invalidateTree()
+      if (vars.parentPath) expand(vars.parentPath)
+      const n = entries.length
+      toast.success(`Uploaded ${n} file${n === 1 ? "" : "s"}`)
+    },
+    onError: (err) => toast.error(errMessage(err, "Could not upload")),
   })
 
   const renameMut = useMutation({
@@ -184,6 +215,7 @@ export function FileExplorer({
     isExpanded,
     toggle,
     requestCreate,
+    requestUpload,
     requestRename,
     requestDelete,
   }
@@ -205,8 +237,26 @@ export function FileExplorer({
             <FolderPlus className="mr-2 h-4 w-4" />
             New folder
           </ContextMenuItem>
+          <ContextMenuItem onSelect={() => requestUpload("")}>
+            <UploadSimple className="mr-2 h-4 w-4" />
+            Upload files
+          </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
+      {/* Shared native picker for every "Upload files" action. */}
+      <input
+        ref={uploadInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? [])
+          if (files.length) {
+            uploadMut.mutate({ parentPath: uploadTarget.current, files })
+          }
+        }}
+      />
 
       <NameDialog
         pending={pending}
@@ -274,6 +324,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
     isExpanded,
     toggle,
     requestCreate,
+    requestUpload,
     requestRename,
     requestDelete,
   } = useExplorer()
@@ -343,6 +394,12 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
             <FolderPlus className="mr-2 h-4 w-4" />
             New folder
           </ContextMenuItem>
+          {entry.is_dir && (
+            <ContextMenuItem onSelect={() => requestUpload(entry.path)}>
+              <UploadSimple className="mr-2 h-4 w-4" />
+              Upload files
+            </ContextMenuItem>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => requestRename(entry)}>
             <Pencil className="mr-2 h-4 w-4" />

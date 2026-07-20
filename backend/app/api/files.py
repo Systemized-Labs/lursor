@@ -21,7 +21,16 @@ import os
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    status,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -345,6 +354,52 @@ async def write_file(
         ) from exc
 
     return WriteFileResponse(path=payload.path, size=target.stat().st_size)
+
+
+@router.post("/upload", response_model=list[DirEntry], status_code=status.HTTP_201_CREATED)
+async def upload_files(
+    workspace_id: str,
+    files: list[UploadFile] = File(...),
+    path: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> list[DirEntry]:
+    """Upload one or more files into a workspace folder.
+
+    ``path`` is the workspace-relative destination directory ("" for the root).
+    Each file's raw bytes are written verbatim, so binary uploads (images,
+    archives, …) round-trip intact. A filename may carry its own relative
+    subpath (as browsers send for a folder upload), and intermediate directories
+    are created as needed. Every resolved target is confined to the workspace
+    root; anything escaping it is rejected.
+    """
+    root = await _workspace_root(workspace_id, session)
+    dest = _safe_join(root, path)
+    if dest.exists() and not dest.is_dir():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Destination is not a folder")
+
+    created: list[DirEntry] = []
+    for upload in files:
+        # Browsers send folder uploads with the relative path in the filename;
+        # normalize separators and drop leading slashes so it stays relative.
+        rel_name = (upload.filename or "").replace("\\", "/").strip().lstrip("/")
+        if not rel_name:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "File is missing a name")
+
+        target = _safe_join(dest, rel_name)
+        if target == root or target.is_dir():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Not a writable file path")
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(await upload.read())
+        except OSError as exc:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not save file: {exc}"
+            ) from exc
+
+        created.append(DirEntry(name=target.name, path=_rel(root, target), is_dir=False))
+
+    return created
 
 
 @router.post("/create", response_model=DirEntry, status_code=status.HTTP_201_CREATED)

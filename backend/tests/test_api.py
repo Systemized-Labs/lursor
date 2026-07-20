@@ -510,3 +510,44 @@ async def test_prompt_generation_validation(client: AsyncClient):
     assert (
         await client.post("/agents/prompt/improve", json={"current": ""})
     ).status_code == 400
+
+
+async def test_file_upload_into_folder(client: AsyncClient):
+    """Uploading files lands raw bytes in the target folder, binary intact."""
+    ws = (await client.post("/workspaces", json={"name": "Uploads"})).json()
+    wid = ws["id"]
+
+    # Two files into a subfolder: a text file and a binary one with a NUL byte.
+    png_bytes = b"\x89PNG\r\n\x00\x01logo"
+    r = await client.post(
+        f"/workspaces/{wid}/files/upload",
+        data={"path": "assets"},
+        files=[
+            ("files", ("notes.txt", b"hello world", "text/plain")),
+            ("files", ("logo.png", png_bytes, "image/png")),
+        ],
+    )
+    assert r.status_code == 201
+    created = {e["path"] for e in r.json()}
+    assert created == {"assets/notes.txt", "assets/logo.png"}
+
+    # The folder is now listed and the binary round-trips byte-for-byte.
+    listed = (
+        await client.get(f"/workspaces/{wid}/files/list", params={"path": "assets"})
+    ).json()
+    assert {e["name"] for e in listed} == {"notes.txt", "logo.png"}
+    raw = await client.get(
+        f"/workspaces/{wid}/files/raw", params={"path": "assets/logo.png"}
+    )
+    assert raw.content == png_bytes
+
+
+async def test_file_upload_rejects_traversal(client: AsyncClient):
+    """A filename that climbs out of the workspace root is refused."""
+    ws = (await client.post("/workspaces", json={"name": "Escape"})).json()
+    r = await client.post(
+        f"/workspaces/{ws['id']}/files/upload",
+        data={"path": ""},
+        files=[("files", ("../escape.txt", b"nope", "text/plain"))],
+    )
+    assert r.status_code == 400

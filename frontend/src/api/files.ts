@@ -49,6 +49,20 @@ export const filesApi = {
       `/workspaces/${workspaceId}/files/write`,
       { path, content }
     ),
+  /** Upload files into a workspace folder ("" for the root). Bytes round-trip
+   * verbatim, so binary files (images, archives, …) upload intact. */
+  upload: (workspaceId: string, path: string, files: File[]) => {
+    const form = new FormData()
+    form.append("path", path)
+    for (const file of files) {
+      // Preserve any relative subpath the browser attached (folder uploads).
+      form.append("files", file, file.webkitRelativePath || file.name)
+    }
+    return api.upload<DirEntry[]>(
+      `/workspaces/${workspaceId}/files/upload`,
+      form
+    )
+  },
   create: (workspaceId: string, path: string, isDir: boolean) =>
     api.post<DirEntry>(`/workspaces/${workspaceId}/files/create`, {
       path,
