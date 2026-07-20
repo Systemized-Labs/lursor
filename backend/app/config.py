@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # Default model used when an agent row does not specify one.
     # Models are served through OpenRouter (prefix "openrouter:").
     default_model: str = "openrouter:qwen/qwen3.7-max"
+    # Global default model for ``/compact`` conversation summarization. Compaction
+    # is a cheap, throwaway task, so it runs on a small/fast cloud model rather
+    # than the (possibly heavy or offline) thread agent's model. An explicit
+    # ``AppConfig.compaction_model`` override still wins over this.
+    default_compaction_model: str = "openrouter:google/gemini-2.5-flash"
     openrouter_api_key: str | None = None
     # Base URL for OpenRouter's REST API; "/models" is appended to list models.
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

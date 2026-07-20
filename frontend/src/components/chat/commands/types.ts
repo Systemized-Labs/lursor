@@ -13,7 +13,7 @@ export type CommandKind =
   | "action" // fire-and-forget local action, e.g. /clear (no agent turn)
 
 /** A named local action a command can trigger (kind === "action"). */
-export type CommandAction = "new-conversation"
+export type CommandAction = "new-conversation" | "compact"
 
 /** The active `/…` command token under the caret. */
 export interface ActiveSlash {

@@ -9,6 +9,7 @@ import { useStickToBottom } from "use-stick-to-bottom"
 import { useAgents } from "@/api/agents"
 import {
   threadKeys,
+  threadsApi,
   useActiveRuns,
   useThreads,
   useUpdateThread,
@@ -97,7 +98,7 @@ export function WorkspaceChatPage() {
       setSearchParams({ c: thread.id }, { replace: true })
     },
   })
-  const { store, loadConversation, startNewConversation } = chat
+  const { store, loadConversation, reloadMessages, startNewConversation } = chat
 
   // Reactive slices of chat state. Each is low-frequency (start/end/settle), so
   // subscribing here never re-renders the page per streamed token.
@@ -185,8 +186,37 @@ export function WorkspaceChatPage() {
     setSearchParams({})
   }
 
-  function runCommandAction(action: CommandAction) {
+  // Condense the open conversation into a single summary, then reload so the
+  // timeline shows the summary in place of the messages it subsumed.
+  async function handleCompact() {
+    const threadId = selectedThreadId
+    if (!threadId) {
+      toast.error("Nothing to compact yet")
+      return
+    }
+    if (isStreaming) {
+      toast.error("Can't compact while the agent is working")
+      return
+    }
+    const toastId = toast.loading("Compacting conversation…")
+    try {
+      const res = await threadsApi.compact(threadId)
+      if (res.compacted) {
+        await reloadMessages()
+        toast.success("Conversation compacted", { id: toastId })
+      } else {
+        toast.info(res.reason ?? "Nothing to compact", { id: toastId })
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to compact", {
+        id: toastId,
+      })
+    }
+  }
+
+  async function runCommandAction(action: CommandAction) {
     if (action === "new-conversation") handleNewConversation()
+    else if (action === "compact") await handleCompact()
   }
 
   function startEditingTitle() {
@@ -245,7 +275,7 @@ export function WorkspaceChatPage() {
           await chat.send(args, atts, command.turnIntent ?? "chat")
           return
         case "action":
-          if (command.action) runCommandAction(command.action)
+          if (command.action) await runCommandAction(command.action)
           return
       }
     }

@@ -41,6 +41,7 @@ from starlette.responses import StreamingResponse
 from app.agents.browser_qa import wrap_evaluate_with_visual_qa
 from app.agents.builder import build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
+from app.agents.compaction import summarize_thread
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     PLAN_DIR,
@@ -982,7 +983,7 @@ async def chat(
         rows = (
             await session.execute(
                 select(Message)
-                .where(Message.thread_id == thread_id)
+                .where(Message.thread_id == thread_id, Message.compacted == False)  # noqa: E712
                 .order_by(Message.created_at)
             )
         ).scalars().all()
@@ -1076,3 +1077,78 @@ async def interject_goal(
     await session.commit()
     queue_interjection(thread_id, text)
     return {"queued": True}
+
+
+@router.post("/{thread_id}/compact", status_code=status.HTTP_200_OK)
+async def compact_thread(
+    thread_id: str, session: AsyncSession = Depends(get_session)
+) -> dict[str, bool | str]:
+    """Condense a conversation into a single carry-forward summary (``/compact``).
+
+    Summarizes every currently-visible message with the compaction model (an app
+    config override, else the thread agent's model), marks those messages
+    ``compacted`` (hidden, not deleted), and inserts a ``kind="summary"`` assistant
+    message in their place. Later turns then send only the summary plus new
+    messages, cutting token cost while keeping the thread's context.
+    """
+    thread = await session.get(Thread, thread_id)
+    if thread is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
+    # Compacting mid-run would race the run's own message writes and yank context
+    # out from under it, so require a settled thread.
+    if chat_run_manager.is_running(thread_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Can't compact while a run is active"
+        )
+
+    rows = (
+        await session.execute(
+            select(Message)
+            .where(Message.thread_id == thread_id, Message.compacted == False)  # noqa: E712
+            .order_by(Message.created_at)
+        )
+    ).scalars().all()
+    # Nothing meaningful to condense — a single message (or an existing lone
+    # summary) already is the compact form.
+    if len(rows) < 2:
+        return {"compacted": False, "reason": "Not enough history to compact"}
+
+    app_config = (await session.execute(select(AppConfig))).scalars().first()
+    providers = (await session.execute(select(CustomProvider))).scalars().all()
+    custom_providers = {p.id: p for p in providers}
+    # An explicit override wins; otherwise summarize on the global default (a small,
+    # fast cloud model) rather than the thread agent's model, which may be heavy or
+    # offline.
+    model_str = (
+        app_config.compaction_model if app_config else None
+    ) or settings.default_compaction_model
+
+    try:
+        summary = await summarize_thread(list(rows), model_str, custom_providers)
+    except Exception as exc:  # noqa: BLE001 — surface any model/provider failure cleanly
+        # The summarizer model may be unreachable or unknown to its provider (e.g.
+        # a local proxy that no longer serves it). Return a clean 502 so the UI can
+        # show the reason, rather than letting it bubble up as an opaque 500.
+        logger.warning("compact: summarization failed for thread %s: %s", thread_id, exc)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"Compaction failed ({model_str}): {exc}",
+        ) from exc
+    if not summary:
+        return {"compacted": False, "reason": "Summarizer produced no output"}
+
+    for row in rows:
+        row.compacted = True
+        session.add(row)
+    session.add(
+        Message(
+            thread_id=thread_id,
+            role="assistant",
+            content=summary,
+            kind="summary",
+        )
+    )
+    thread.updated_at = datetime.now(UTC)
+    session.add(thread)
+    await session.commit()
+    return {"compacted": True}

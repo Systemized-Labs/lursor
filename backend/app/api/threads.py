@@ -95,8 +95,13 @@ async def update_thread(
 async def list_messages(thread_id: str, session: AsyncSession = Depends(get_session)):
     if await session.get(Thread, thread_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found")
+    # Messages folded into a ``/compact`` summary are hidden (but kept in the DB):
+    # the UI shows the summary in their place, and later turns send only the
+    # summary plus newer messages.
     result = await session.execute(
-        select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at)
+        select(Message)
+        .where(Message.thread_id == thread_id, Message.compacted == False)  # noqa: E712
+        .order_by(Message.created_at)
     )
     return result.scalars().all()
 

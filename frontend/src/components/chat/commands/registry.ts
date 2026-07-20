@@ -1,4 +1,5 @@
 import {
+  ArrowsInLineVertical,
   ListChecks,
   NotePencil,
   Question,
@@ -40,6 +41,13 @@ export const COMMANDS: SlashCommand[] = [
     kind: "turn-intent",
     turnIntent: "goal",
     agentKey: "goal",
+  },
+  {
+    name: "compact",
+    description: "Summarize the conversation to free up context",
+    Icon: ArrowsInLineVertical,
+    kind: "action",
+    action: "compact",
   },
   {
     name: "clear",

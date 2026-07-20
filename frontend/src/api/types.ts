@@ -232,8 +232,10 @@ export interface WorkspaceInput {
 
 export type MessageRole = "user" | "assistant" | "system" | "tool"
 
-/** How a user turn was sent, surfaced as a history badge on the bubble. */
-export type MessageKind = "chat" | "ask" | "plan" | "goal"
+/** How a user turn was sent, surfaced as a history badge on the bubble. The
+ *  assistant-authored `summary` marks a `/compact` digest that stands in for the
+ *  messages it condensed (rendered as a distinct card, not a normal reply). */
+export type MessageKind = "chat" | "ask" | "plan" | "goal" | "summary"
 
 export interface ThreadMessageToolCall {
   id: string

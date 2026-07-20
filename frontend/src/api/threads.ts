@@ -30,6 +30,13 @@ export const threadsApi = {
   // Steer a running goal: buffer a user message for the loop's next turn.
   interjectGoal: (id: string, content: string) =>
     api.post<{ queued: boolean }>(`/threads/${id}/goal/interject`, { content }),
+  // Condense the conversation into a single carry-forward summary (/compact).
+  // `compacted` is false when there wasn't enough history to condense.
+  compact: (id: string) =>
+    api.post<{ compacted: boolean; reason?: string }>(
+      `/threads/${id}/compact`,
+      {}
+    ),
 }
 
 export const threadKeys = {

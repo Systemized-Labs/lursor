@@ -1,5 +1,5 @@
 import { memo, useState } from "react"
-import { Check, Copy } from "@phosphor-icons/react"
+import { ArrowsInLineVertical, Check, Copy } from "@phosphor-icons/react"
 import { useStore } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 
@@ -62,6 +62,22 @@ const AssistantSegment = memo(function AssistantSegment({
 }) {
   const seg = useChatMessage(id)
   if (!hasBody(seg) || !seg) return null
+
+  // A `/compact` digest stands in for the messages it condensed — render it as a
+  // distinct, bordered card rather than a normal reply so the seam is obvious.
+  if (seg.kind === "summary") {
+    return (
+      <div className={first ? undefined : "mt-3"}>
+        <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
+          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <ArrowsInLineVertical className="h-3.5 w-3.5" />
+            Conversation summarized
+          </div>
+          <StreamingText text={seg.content} streaming={false} />
+        </div>
+      </div>
+    )
+  }
 
   const subagentCalls = seg.toolCalls.filter((t) => t.name === SUBAGENT_TOOL_NAME)
   return (

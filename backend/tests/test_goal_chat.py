@@ -354,3 +354,84 @@ async def test_interject_requires_an_active_run(client: AsyncClient):
     # Unknown thread → 404.
     r = await client.post("/threads/does-not-exist/goal/interject", json={"content": "hi"})
     assert r.status_code == 404, r.text
+
+
+def _chat_input(mid: str, content: str) -> str:
+    """A plain (turn-less) chat RunAgentInput body, serialized for POST /chat."""
+    return RunAgentInput(
+        thread_id="ignored",
+        run_id=mid,
+        state=None,
+        messages=[UserMessage(id=mid, role="user", content=content)],
+        tools=[],
+        context=[],
+        forwarded_props=None,
+    ).model_dump_json(by_alias=True)
+
+
+async def test_compact_condenses_history_into_a_summary(
+    client: AsyncClient, monkeypatch
+):
+    """/compact hides prior messages behind a single summary the model then sees."""
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    # Stub the summarizer so the test stays offline and asserts a known digest.
+    seen: dict = {}
+
+    async def _fake_summarize(messages, model_str, custom_providers=None):
+        seen["count"] = len(messages)
+        return "SUMMARY: condensed transcript"
+
+    monkeypatch.setattr("app.api.chat.summarize_thread", _fake_summarize)
+
+    agent = (await client.post("/agents", json={"name": "Compactor"})).json()
+    ws = (await client.post("/workspaces", json={"name": "CompactWS"})).json()
+    tid = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()["id"]
+
+    # Two plain chat turns → user + assistant messages persisted each turn.
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _chat_input("m1", "hello")))
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _chat_input("m2", "more")))
+    before = (await client.get(f"/threads/{tid}/messages")).json()
+    assert len(before) >= 2
+
+    r = await client.post(f"/threads/{tid}/compact")
+    assert r.status_code == 200, r.text
+    assert r.json()["compacted"] is True
+    assert seen["count"] == len(before)  # every visible message was summarized
+
+    # The thread now shows only the summary, marked with its own kind.
+    after = (await client.get(f"/threads/{tid}/messages")).json()
+    assert len(after) == 1
+    assert after[0]["role"] == "assistant"
+    assert after[0]["kind"] == "summary"
+    assert after[0]["content"] == "SUMMARY: condensed transcript"
+
+
+async def test_compact_needs_history_and_a_real_thread(
+    client: AsyncClient, monkeypatch
+):
+    """Compact is a no-op on a thread too short to condense, and 404s if missing."""
+    async def _fake_summarize(messages, model_str, custom_providers=None):
+        raise AssertionError("summarizer must not run without enough history")
+
+    monkeypatch.setattr("app.api.chat.summarize_thread", _fake_summarize)
+
+    agent = (await client.post("/agents", json={"name": "Compactor2"})).json()
+    ws = (await client.post("/workspaces", json={"name": "CompactWS2"})).json()
+    tid = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()["id"]
+
+    # Empty thread → nothing to compact (summarizer never invoked).
+    r = await client.post(f"/threads/{tid}/compact")
+    assert r.status_code == 200, r.text
+    assert r.json()["compacted"] is False
+
+    # Unknown thread → 404.
+    r = await client.post("/threads/does-not-exist/compact")
+    assert r.status_code == 404, r.text

@@ -135,6 +135,10 @@ export interface ChatEngine {
   resumeQueue: () => void
   clearQueue: () => void
   loadConversation: (threadId: string) => Promise<void>
+  /** Re-fetch the open thread's persisted messages and reset the store to them.
+   *  Unlike {@link loadConversation} it doesn't bail on the already-open thread,
+   *  so it's the way to reflect a server-side history change (e.g. /compact). */
+  reloadMessages: () => Promise<void>
   startNewConversation: () => void
 }
 
@@ -316,6 +320,25 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
     },
     [store, abortLocalStreams, reconnectToRun]
   )
+
+  // Reload the open thread's persisted messages in place. Guards against a
+  // concurrent send/load with the monotonic seq (a newer open wins), and bails
+  // while a run streams so it can't clobber the live transcript.
+  const reloadMessages = useCallback(async () => {
+    const threadId = store.getState().selectedThreadId
+    if (!threadId || store.getState().isStreaming) return
+    const seq = ++loadSeq.current
+    try {
+      const persisted = await threadsApi.messages(threadId)
+      if (loadSeq.current !== seq) return
+      store.getState().resetMessages(toChatMessages(persisted, threadId))
+    } catch (err) {
+      if (loadSeq.current !== seq) return
+      store
+        .getState()
+        .setError(err instanceof Error ? err.message : "Failed to reload conversation")
+    }
+  }, [store])
 
   const startNewConversation = useCallback(() => {
     abortLocalStreams()
@@ -564,6 +587,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
     resumeQueue,
     clearQueue,
     loadConversation,
+    reloadMessages,
     startNewConversation,
   }
 }

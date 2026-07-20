@@ -372,6 +372,12 @@ class AppConfig(TimestampMixin, table=True):
     # stack. When null the loop falls back to the thread agent's own model.
     goal_evaluator_model: str | None = None
 
+    # Per-app override for the ``/compact`` summarization model (see
+    # ``agents/compaction.py``). When null, compaction uses the global
+    # ``settings.default_compaction_model`` — a small/fast cloud model — rather
+    # than the (possibly heavy or offline) thread agent's model.
+    compaction_model: str | None = None
+
     # Default agent per slash command, keyed by command ("chat" | "ask" | "plan"
     # | "goal") → agent id. When a command has an entry, using it in the composer
     # switches to (and, for an open thread, reassigns) that agent; the agent
@@ -475,6 +481,12 @@ class Message(TimestampMixin, table=True):
     # Media attached to this turn: list of {media_id, mime_type, filename}. The
     # bytes live on disk (see app.media_store); this only holds references.
     attachments: list = Field(default_factory=list, sa_column=Column(JSON))
+    # Rolled into an earlier ``/compact`` summary and hidden from the thread going
+    # forward. The row is kept (never deleted) so history isn't lost, but it is
+    # excluded from the messages the UI shows and the context sent to the model —
+    # its content now lives condensed in the ``kind="summary"`` message that
+    # replaced it. See ``agents/compaction.py`` and the compact endpoint.
+    compacted: bool = Field(default=False, index=True)
 
     thread: Thread | None = Relationship(back_populates="messages")
 

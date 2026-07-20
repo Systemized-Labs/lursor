@@ -54,6 +54,11 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE messages ADD COLUMN kind VARCHAR DEFAULT 'chat'")
         )
+    # ``/compact`` marks superseded messages hidden rather than deleting them.
+    if "compacted" not in message_cols:
+        await conn.execute(
+            text("ALTER TABLE messages ADD COLUMN compacted BOOLEAN DEFAULT 0")
+        )
 
     skill_cols = await columns("skills")
     if "slug" not in skill_cols:
@@ -115,6 +120,10 @@ async def _apply_lightweight_migrations(conn) -> None:
     if "goal_evaluator_model" not in app_config_cols:
         await conn.execute(
             text("ALTER TABLE app_config ADD COLUMN goal_evaluator_model VARCHAR")
+        )
+    if "compaction_model" not in app_config_cols:
+        await conn.execute(
+            text("ALTER TABLE app_config ADD COLUMN compaction_model VARCHAR")
         )
     if "default_agents" not in app_config_cols:
         await conn.execute(
