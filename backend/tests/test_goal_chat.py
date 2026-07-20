@@ -278,16 +278,24 @@ async def test_plan_conversation_refines_then_executes_on_exit(
             forwarded_props=None,
         ).model_dump_json(by_alias=True)
 
-    # First message → fresh plan (PLANNING_INSTRUCTION), awaiting approval.
+    # First message → fresh plan (PLANNING_INSTRUCTION), awaiting approval. The plan
+    # gets its own doc under .agents/plan/, named from the plan idea (thread title),
+    # persisted on the thread and referenced in the instruction.
     _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m1", "refactor it")))
-    assert (await client.get(f"/threads/{tid}")).json()["status"] == "awaiting_approval"
+    parked = (await client.get(f"/threads/{tid}")).json()
+    assert parked["status"] == "awaiting_approval"
+    assert parked["plan_path"] == ".agents/plan/PLAN-refactor-it.md"
     assert "do NOT execute yet" in captured[-1]
+    assert parked["plan_path"] in captured[-1]
 
     # Second message while still in plan mode → refinement (REFINE_INSTRUCTION),
-    # still parked awaiting review — no execution.
+    # still parked awaiting review — no execution. Same doc is reused.
     _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m2", "also add tests")))
-    assert (await client.get(f"/threads/{tid}")).json()["status"] == "awaiting_approval"
+    refined = (await client.get(f"/threads/{tid}")).json()
+    assert refined["status"] == "awaiting_approval"
+    assert refined["plan_path"] == ".agents/plan/PLAN-refactor-it.md"
     assert "refining the plan with the user" in captured[-1]
+    assert refined["plan_path"] in captured[-1]
 
     # Leave plan mode → a normal chat turn executes (no planning instruction).
     r = await client.patch(f"/threads/{tid}", json={"mode": "chat"})

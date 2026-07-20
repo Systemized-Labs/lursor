@@ -74,4 +74,6 @@ export interface AgentGoalStatus {
   iteration: number
   maxIterations: number
   reason: string
+  /** Plan mode: workspace-relative path of the doc this run wrote (else ""). */
+  planPath: string
 }

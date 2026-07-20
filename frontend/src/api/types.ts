@@ -292,6 +292,8 @@ export interface Thread {
   goal: string
   success_criteria: string
   status: RunStatus
+  // Plan mode: workspace-relative path of this thread's plan doc (else "").
+  plan_path: string
   iteration: number
   max_iterations: number
   last_reason: string

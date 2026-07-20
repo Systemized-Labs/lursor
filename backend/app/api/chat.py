@@ -20,6 +20,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 from ag_ui.core import (
     CustomEvent,
@@ -42,15 +43,17 @@ from app.agents.chat_run_manager import chat_run_manager
 from app.agents.preview_service import preview_service
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
-    PLANNING_INSTRUCTION,
-    REFINE_INSTRUCTION,
+    PLAN_DIR,
     build_continuation_adapter,
     build_goal_evaluator,
     build_steer_capability,
     drive_goal_loop,
     encode_goal_status_event,
     messages_to_history,
+    plan_doc_path,
+    planning_instruction,
     queue_interjection,
+    refine_instruction,
 )
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
@@ -303,6 +306,7 @@ async def _set_thread_state(
     *,
     status: ThreadStatus | None = None,
     mode: ThreadMode | None = None,
+    plan_path: str | None = None,
     iteration: int | None = None,
     last_reason: str | None = None,
     todos: list[dict] | None = None,
@@ -320,6 +324,8 @@ async def _set_thread_state(
             thread.status = status
         if mode is not None:
             thread.mode = mode
+        if plan_path is not None:
+            thread.plan_path = plan_path
         if iteration is not None:
             thread.iteration = iteration
         if last_reason is not None:
@@ -565,8 +571,14 @@ def _publish_lifecycle_finish(thread_id: str, run_id: str) -> None:
     )
 
 
-def _goal_status_publisher(thread_id: str, condition: str, max_iter: int):
-    """A ``(status, iteration, reason)`` closure that emits goal-status events."""
+def _goal_status_publisher(
+    thread_id: str, condition: str, max_iter: int, plan_path: str = ""
+):
+    """A ``(status, iteration, reason)`` closure that emits goal-status events.
+
+    ``plan_path`` is stamped onto every event for plan-mode runs so the UI can
+    open the thread's specific plan doc when it parks for review.
+    """
 
     def publish(status_: ThreadStatus, iteration: int, reason: str = "") -> None:
         chat_run_manager.publish(
@@ -577,6 +589,7 @@ def _goal_status_publisher(thread_id: str, condition: str, max_iter: int):
                 iteration=iteration,
                 max_iterations=max_iter,
                 reason=reason,
+                plan_path=plan_path,
             ),
         )
 
@@ -849,37 +862,53 @@ async def chat(
         else:
             chat_run_manager.finish(thread_id, "finished")
 
+    # Each plan thread writes to its own doc under `.agents/plan/`, named from the
+    # plan idea (the thread title) on the first planning turn and reused thereafter.
+    # Older threads keep whatever `plan_path` they were assigned; if a thread has
+    # none yet (fresh plan turn, or a legacy thread) we derive one now. Persisted
+    # below so refinement turns and reconnects resolve the same file.
+    plan_doc = thread.plan_path or plan_doc_path(thread.title)
+
     # A plan thread parked in `awaiting_approval` and receiving another message is
     # a *refinement* turn: the user is giving feedback on the plan already written
-    # to PLAN.md, so we frame the turn as revising the existing draft. Any other
+    # to `plan_doc`, so we frame the turn as revising the existing draft. Any other
     # status starts a fresh planning round with the from-scratch instruction. The
     # request adapter already carries the full frontend transcript (useChat sets
     # the agent's messages before each run) and any image attachments, so the
     # planning turn has full conversational context without re-seeding from the DB.
-    planning_instruction = (
-        REFINE_INSTRUCTION
+    plan_instruction = (
+        refine_instruction(plan_doc)
         if is_plan and thread.status == ThreadStatus.awaiting_approval
-        else PLANNING_INSTRUCTION
+        else planning_instruction(plan_doc)
     )
 
     async def plan_driver() -> None:
-        # Plan mode: one turn that writes/revises PLAN.md, then ends in
+        # Plan mode: one turn that writes/revises the plan doc, then ends in
         # `awaiting_approval` so the thread is free for the user to iterate (send
         # more messages to refine). Nothing executes while in plan mode; the user
         # leaves plan mode (mode→chat) and chats normally to carry the plan out.
         # Wrapped in a manual lifecycle so status events sit inside RUN_STARTED…FINISHED.
         run_id = uuid.uuid4().hex
-        publish_status = _goal_status_publisher(thread_id, condition, thread.max_iterations)
+        publish_status = _goal_status_publisher(
+            thread_id, condition, thread.max_iterations, plan_path=plan_doc
+        )
         _publish_lifecycle_start(thread_id, run_id)
         try:
-            await _set_thread_state(thread_id, status=ThreadStatus.planning)
+            # Make sure `.agents/plan/` exists so the agent's write lands (its file
+            # tools may not create parent dirs), and pin the resolved path on the
+            # thread so later refinement turns + the UI open the same doc.
+            with contextlib.suppress(OSError):
+                (Path(workspace.path) / PLAN_DIR).mkdir(parents=True, exist_ok=True)
+            await _set_thread_state(
+                thread_id, status=ThreadStatus.planning, plan_path=plan_doc
+            )
             publish_status(ThreadStatus.planning, 0)
             await _stream_turn(
                 thread_id,
                 adapter,
                 deps,
                 message_history=None,
-                instructions=_join_instructions(media_instructions, planning_instruction),
+                instructions=_join_instructions(media_instructions, plan_instruction),
                 accumulated=accumulated,
                 todos_state=todos_state,
                 strip_lifecycle=True,

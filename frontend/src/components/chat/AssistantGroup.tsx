@@ -4,7 +4,6 @@ import { useStore } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 
 import { copyToClipboard } from "@/lib/utils"
-import { ChatToolCalls } from "@/components/chat/ChatToolCalls"
 import {
   ChatSubagentCalls,
   SUBAGENT_TOOL_NAME,
@@ -14,12 +13,17 @@ import { useChatMessage, useChatStoreApi } from "@/agui/chatStore"
 import type { ChatMessage } from "@/agui/types"
 
 import { StreamingText } from "./StreamingText"
-import { StreamingDots } from "./StreamingDots"
 
-/** A message carries something to show (answer text or tools). Reasoning is
- *  intentionally excluded — agent thoughts are hidden from the UI. */
+/** A message carries something to show inline (answer text or a subagent call).
+ *  Reasoning is intentionally excluded — agent thoughts are hidden from the UI.
+ *  Regular tool calls are excluded too: they render in the bottom tool-activity
+ *  bar, not the transcript, so text reads cleanly. */
 function hasBody(m: ChatMessage | undefined): boolean {
-  return Boolean(m && (m.content !== "" || m.toolCalls.length > 0))
+  return Boolean(
+    m &&
+      (m.content !== "" ||
+        m.toolCalls.some((t) => t.name === SUBAGENT_TOOL_NAME))
+  )
 }
 
 /** Hover action that copies a settled turn's text to the clipboard. */
@@ -60,7 +64,6 @@ const AssistantSegment = memo(function AssistantSegment({
   if (!hasBody(seg) || !seg) return null
 
   const subagentCalls = seg.toolCalls.filter((t) => t.name === SUBAGENT_TOOL_NAME)
-  const otherCalls = seg.toolCalls.filter((t) => t.name !== SUBAGENT_TOOL_NAME)
   return (
     <div className={first ? undefined : "mt-3"}>
       {seg.content !== "" && (
@@ -69,15 +72,6 @@ const AssistantSegment = memo(function AssistantSegment({
       {subagentCalls.length > 0 && (
         <div className={seg.content !== "" ? "mt-3" : undefined}>
           <ChatSubagentCalls calls={subagentCalls} />
-        </div>
-      )}
-      {otherCalls.length > 0 && (
-        <div
-          className={
-            seg.content !== "" || subagentCalls.length > 0 ? "mt-3" : undefined
-          }
-        >
-          <ChatToolCalls toolCalls={otherCalls} />
         </div>
       )}
     </div>
@@ -125,24 +119,18 @@ export const AssistantGroup = memo(function AssistantGroup({
   const isStreaming = useStore(store, (s) => ids.some((id) => s.byId[id]?.streaming))
   const bodyShown = useStore(store, (s) => ids.some((id) => hasBody(s.byId[id])))
 
+  // Nothing to show inline yet (streaming, no text/subagent) — the working dots
+  // and live tool ticker live in the bottom activity cluster, not the transcript.
+  if (isStreaming && !bodyShown) return null
+
   return (
     <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
-      {isStreaming && !bodyShown ? (
-        <StreamingDots lead />
-      ) : (
-        <div className="min-w-0 text-sm text-foreground">
-          {ids.map((id, i) => (
-            <AssistantSegment key={id} id={id} first={i === 0} />
-          ))}
-          {isStreaming ? (
-            <div className="mt-2">
-              <StreamingDots />
-            </div>
-          ) : (
-            <AssistantFooter ids={ids} />
-          )}
-        </div>
-      )}
+      <div className="min-w-0 text-sm text-foreground">
+        {ids.map((id, i) => (
+          <AssistantSegment key={id} id={id} first={i === 0} />
+        ))}
+        {!isStreaming && <AssistantFooter ids={ids} />}
+      </div>
     </div>
   )
 })

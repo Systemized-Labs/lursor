@@ -28,6 +28,7 @@ import {
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatTimeline } from "@/components/chat/ChatTimeline"
 import { RunningProcessesBar } from "@/components/chat/running-processes-bar"
+import { ChatLiveActivity } from "@/components/chat/ChatLiveActivity"
 import { ChatTodoList } from "@/components/chat/ChatTodoList"
 import { GoalRunPanel } from "@/components/chat/GoalPanel"
 import { parseSlashCommand } from "@/components/chat/commands/registry"
@@ -41,9 +42,17 @@ import type { DefaultAgentsSettings, RunStatus, ThreadMode } from "@/api/types"
 /** Default iteration cap for a `/goal` run (backend default). */
 const GOAL_MAX_ITERATIONS = 25
 
-/** Workspace-relative path the plan agent writes its plan to; opened in the file
- *  panel during plan review. */
-const PLAN_DOC = "PLAN.md"
+/** Fallback plan-doc path for legacy threads that predate per-thread plan paths.
+ *  Fresh plans carry their own `.agents/plan/PLAN-<slug>.md` path on the run's
+ *  goal-status event (and persisted on the thread), opened in the file panel
+ *  during plan review. */
+const LEGACY_PLAN_DOC = "PLAN.md"
+
+/** Basename of a workspace-relative path, for a file tab's display label. */
+function baseName(path: string): string {
+  const i = path.lastIndexOf("/")
+  return i === -1 ? path : path.slice(i + 1)
+}
 
 /**
  * The chat surface for a workspace. Built on a normalized store + engine
@@ -328,17 +337,20 @@ export function WorkspaceChatPage() {
   const runView = goalStatus
   const goalExecuting = runView?.status === "running"
 
-  // Open (or refresh) PLAN.md in the file panel each time a planning turn parks
-  // the thread in review. Edge-triggered on entering `awaiting_approval`.
+  // Open (or refresh) the thread's plan doc in the file panel each time a planning
+  // turn parks the thread in review. Edge-triggered on entering `awaiting_approval`.
+  // The run's goal-status event carries the exact per-thread path; fall back to the
+  // persisted thread field, then the legacy top-level PLAN.md.
   const prevStatusRef = useRef<RunStatus | null>(null)
   useEffect(() => {
     const status = runView?.status ?? null
     const prev = prevStatusRef.current
     prevStatusRef.current = status
     if (status === "awaiting_approval" && prev !== "awaiting_approval" && workspaceId) {
-      requestOpenFile({ workspaceId, path: PLAN_DOC, name: PLAN_DOC })
+      const path = runView?.planPath || currentThread?.plan_path || LEGACY_PLAN_DOC
+      requestOpenFile({ workspaceId, path, name: baseName(path) })
     }
-  }, [runView?.status, workspaceId])
+  }, [runView?.status, runView?.planPath, currentThread?.plan_path, workspaceId])
 
   if (workspaceQuery.isLoading) {
     return <p className="p-6 text-sm text-muted-foreground">Loading workspace…</p>
@@ -459,6 +471,10 @@ export function WorkspaceChatPage() {
         {error ? (
           <p className="px-4 pb-1 text-sm text-destructive">{error}</p>
         ) : null}
+
+        {/* Live agent activity for the running turn: the latest tool call in a
+            single-slot ticker above the "working" dots, cleared once it settles. */}
+        <ChatLiveActivity />
 
         {/* Running background processes (dev servers, watchers) — click one to
             open its read-only output on the right. */}

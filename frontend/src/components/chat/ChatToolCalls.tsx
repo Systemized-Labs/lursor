@@ -91,7 +91,7 @@ function ToolCallRow({
  * incoming row fades in from below, so an active turn stays one line tall
  * instead of growing an ever-taller stack (Cursor-style).
  */
-function ToolTicker({
+export function ToolTicker({
   toolCalls,
   compact,
 }: {
@@ -179,7 +179,7 @@ export function ChatToolCalls({
   }
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-2">
       <ToolTicker toolCalls={toolCalls} compact={compact} />
       <button
         type="button"

@@ -542,6 +542,47 @@ async def test_file_upload_into_folder(client: AsyncClient):
     assert raw.content == png_bytes
 
 
+async def test_file_tree_exposes_plans_but_hides_rest_of_agents(client: AsyncClient):
+    """`.agents/plan/` is browsable in the tree; the rest of `.agents/` stays hidden."""
+    ws = (await client.post("/workspaces", json={"name": "PlanTree"})).json()
+    wid = ws["id"]
+
+    # A plan doc, a skill file, and an ordinary source file.
+    for path in (
+        ".agents/plan/PLAN-refactor.md",
+        ".agents/skills/note/SKILL.md",
+        "src/main.py",
+    ):
+        r = await client.put(
+            f"/workspaces/{wid}/files/write", json={"path": path, "content": "x"}
+        )
+        assert r.status_code == 200, r.text
+
+    # Root: `.agents` is now visible (alongside real source), unlike other noise.
+    root = (await client.get(f"/workspaces/{wid}/files/list")).json()
+    names = {e["name"] for e in root}
+    assert ".agents" in names
+    assert "src" in names
+
+    # Inside `.agents`: only the plan folder shows; skills stay hidden.
+    agents = (
+        await client.get(f"/workspaces/{wid}/files/list", params={"path": ".agents"})
+    ).json()
+    assert {e["name"] for e in agents} == {"plan"}
+
+    # Inside `.agents/plan`: the plan doc is listed and readable.
+    plans = (
+        await client.get(
+            f"/workspaces/{wid}/files/list", params={"path": ".agents/plan"}
+        )
+    ).json()
+    assert {e["name"] for e in plans} == {"PLAN-refactor.md"}
+    read = await client.get(
+        f"/workspaces/{wid}/files/read", params={"path": ".agents/plan/PLAN-refactor.md"}
+    )
+    assert read.status_code == 200 and read.json()["content"] == "x"
+
+
 async def test_file_upload_rejects_traversal(client: AsyncClient):
     """A filename that climbs out of the workspace root is refused."""
     ws = (await client.post("/workspaces", json={"name": "Escape"})).json()

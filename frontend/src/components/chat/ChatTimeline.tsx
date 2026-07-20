@@ -15,7 +15,6 @@ import type { ChatRole } from "@/agui/types"
 
 import { MessageRow } from "./MessageRow"
 import { AssistantGroup } from "./AssistantGroup"
-import { ChatPendingReply } from "./StreamingDots"
 
 /** A conversational exchange: a user prompt and the assistant reply it drew. */
 interface Turn {
@@ -114,12 +113,6 @@ export function ChatTimeline({
   const store = useChatStoreApi()
   const order = useStore(store, (s) => s.order)
   const isStreaming = useStore(store, (s) => s.isStreaming)
-  // Streaming has begun but the assistant hasn't emitted its first event: the
-  // last message is still the user's prompt. Show a working loader hugging it.
-  const awaitingReply = useStore(store, (s) => {
-    if (!s.isStreaming) return false
-    return s.byId[s.order[s.order.length - 1]]?.role === "user"
-  })
 
   // Windowing hides the *leading* N messages of a loaded backlog (a fixed count
   // cut from the front), not the trailing N. Slicing from the front means new
@@ -206,14 +199,10 @@ export function ChatTimeline({
                 </Button>
               </div>
             )}
-            {turns.map((turn, i) => (
+            {turns.map((turn) => (
               <div key={turn.id} className="space-y-4">
                 {turn.userId && <MessageRow id={turn.userId} />}
-                {turn.assistantIds ? (
-                  <AssistantGroup ids={turn.assistantIds} />
-                ) : (
-                  awaitingReply && i === turns.length - 1 && <ChatPendingReply />
-                )}
+                {turn.assistantIds && <AssistantGroup ids={turn.assistantIds} />}
               </div>
             ))}
           </StickToBottom.Content>

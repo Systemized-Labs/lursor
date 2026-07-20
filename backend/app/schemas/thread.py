@@ -42,6 +42,7 @@ class ThreadRead(BaseModel):
     goal: str
     success_criteria: str
     status: ThreadStatus
+    plan_path: str = ""
     iteration: int
     max_iterations: int
     last_reason: str

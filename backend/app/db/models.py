@@ -438,6 +438,11 @@ class Thread(TimestampMixin, table=True):
     # when empty. Kept separate so "what to do" and "what "done" means" can differ.
     success_criteria: str = ""
     status: ThreadStatus = Field(default=ThreadStatus.idle)
+    # Workspace-relative path of this plan thread's on-disk doc (plan mode). Set on
+    # the first planning turn (``.agents/plan/PLAN-<slug>.md``) and reused across
+    # refinement turns; empty for chat/goal threads. Lets the UI open the exact
+    # plan file instead of a shared ``PLAN.md``.
+    plan_path: str = ""
     iteration: int = 0  # evaluation turns spent (mirrors GoalState.turns)
     max_iterations: int = 25  # hard safety cap → GoalState.max_turns
     last_reason: str = ""  # evaluator's latest one-sentence verdict, for the UI

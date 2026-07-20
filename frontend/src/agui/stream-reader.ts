@@ -39,6 +39,7 @@ export function parseGoalStatus(value: unknown): AgentGoalStatus | null {
     iteration: typeof v.iteration === "number" ? v.iteration : 0,
     maxIterations: typeof v.maxIterations === "number" ? v.maxIterations : 0,
     reason: typeof v.reason === "string" ? v.reason : "",
+    planPath: typeof v.planPath === "string" ? v.planPath : "",
   }
 }
 

@@ -44,48 +44,74 @@ from pydantic_deep import (
 
 from app.agents.builder import resolve_model
 from app.db.models import CustomProvider, ThreadStatus
+from app.workspace_paths import slugify
 
 # AG-UI CUSTOM event carrying plan/goal run lifecycle to the UI (status pill,
 # iteration counter, evaluator reason). Sibling of the "todos" event in
 # ``api/chat.py``. The wire name stays ``goal_status`` for stream compatibility.
 GOAL_STATUS_EVENT_NAME = "goal_status"
 
-# The plan lives as a Markdown doc at the workspace root so the user can read it
-# in the file panel and the agent can revise it across planning turns. Namespaced
-# lightly so it's obvious it's the assistant's plan.
-PLAN_DOC = "PLAN.md"
+# Plans live under this workspace-relative folder (created on demand) rather than
+# a single top-level ``PLAN.md``, so each plan thread keeps its own named doc and
+# past plans aren't clobbered. Mirrors the existing ``.agents/skills`` convention.
+PLAN_DIR = ".agents/plan"
+
+# Legacy single-file location. Plan threads created before per-thread naming may
+# still point here; kept so old threads keep opening the right file.
+LEGACY_PLAN_DOC = "PLAN.md"
+
+
+def plan_doc_path(title: str) -> str:
+    """Workspace-relative path for a plan thread's doc, from its title/idea.
+
+    Names it ``.agents/plan/PLAN-<slug>.md`` where ``<slug>`` is a filesystem-
+    friendly slug of the plan idea (the thread title). The ``PLAN-`` prefix keeps
+    the name recognisable as a plan doc (and matches the repo's ``docs/PLAN-*.md``
+    convention). Falls back to a bare ``PLAN.md`` slug when the title has no usable
+    characters.
+    """
+    slug = slugify(title)
+    if slug == "workspace":  # slugify's fallback for empty/symbol-only input
+        slug = "plan"
+    return f"{PLAN_DIR}/PLAN-{slug}.md"
+
 
 # Run-scoped instructions for a plan-mode turn. The plan is an on-disk artifact
 # (the user reviews it in the file panel and can ask for revisions), not just
-# chat prose — so we direct the agent to write it to ``PLAN_DOC``.
-PLANNING_INSTRUCTION = (
-    "## Plan mode — propose, do NOT execute yet\n"
-    f"You are in plan mode. Research what's needed, then write a clear, "
-    f"step-by-step implementation plan as Markdown to the file `{PLAN_DOC}` at "
-    "the root of your workspace (create it, or overwrite/revise it if it already "
-    "exists, using your file tools). Structure it as an ordered checklist of "
-    "concrete steps plus any key decisions or assumptions. In your chat reply, "
-    "briefly summarise the plan and invite the user to request changes — you'll "
-    "refine it together until they're happy with it.\n"
-    "Do NOT start doing the work yet: this is a planning conversation. Beyond "
-    f"reading/searching the codebase and writing `{PLAN_DOC}`, make no changes. "
-    "When the user is ready to execute, they leave plan mode and ask you to carry "
-    "the plan out — nothing else runs while you're still planning."
-)
+# chat prose — so we direct the agent to write it to ``plan_doc``.
+def planning_instruction(plan_doc: str) -> str:
+    """From-scratch plan-mode instruction targeting ``plan_doc``."""
+    return (
+        "## Plan mode — propose, do NOT execute yet\n"
+        f"You are in plan mode. Research what's needed, then write a clear, "
+        f"step-by-step implementation plan as Markdown to the file `{plan_doc}` "
+        "in your workspace (create it, or overwrite/revise it if it already "
+        "exists, using your file tools). Structure it as an ordered checklist of "
+        "concrete steps plus any key decisions or assumptions. In your chat "
+        "reply, briefly summarise the plan and invite the user to request changes "
+        "— you'll refine it together until they're happy with it.\n"
+        "Do NOT start doing the work yet: this is a planning conversation. Beyond "
+        f"reading/searching the codebase and writing `{plan_doc}`, make no "
+        "changes. When the user is ready to execute, they leave plan mode and ask "
+        "you to carry the plan out — nothing else runs while you're still planning."
+    )
+
 
 # Run-scoped instructions for a follow-up plan-mode turn: the user is giving
-# feedback on the plan already written to ``PLAN_DOC``. Framed as revising an
+# feedback on the plan already written to ``plan_doc``. Framed as revising an
 # existing draft (read it first, apply the changes) rather than writing anew.
-REFINE_INSTRUCTION = (
-    "## Plan mode — refining the plan with the user\n"
-    f"The user is giving feedback on the plan you already wrote to `{PLAN_DOC}`. "
-    f"Read the current `{PLAN_DOC}` with your file tools, apply the requested "
-    "changes, and save the updated plan. In your chat reply, briefly say what "
-    "you changed and invite further edits.\n"
-    "Do NOT start doing the work yet: this is still the planning conversation. "
-    "The user may keep refining; nothing runs until they leave plan mode and ask "
-    "you to execute."
-)
+def refine_instruction(plan_doc: str) -> str:
+    """Refinement plan-mode instruction targeting the existing ``plan_doc``."""
+    return (
+        "## Plan mode — refining the plan with the user\n"
+        f"The user is giving feedback on the plan you already wrote to "
+        f"`{plan_doc}`. Read the current `{plan_doc}` with your file tools, apply "
+        "the requested changes, and save the updated plan. In your chat reply, "
+        "briefly say what you changed and invite further edits.\n"
+        "Do NOT start doing the work yet: this is still the planning conversation. "
+        "The user may keep refining; nothing runs until they leave plan mode and "
+        "ask you to execute."
+    )
 
 # Seeds the first turn of the autonomous goal loop (``/goal`` — no plan step).
 AUTONOMOUS_KICKOFF = (
@@ -156,7 +182,7 @@ def messages_to_history(rows) -> list[ModelMessage]:
     The execution run starts fresh (planning turns have finished and their live
     message history is gone), so it seeds context from the persisted transcript.
     Only user/assistant text is stored, which is enough — the detailed plan lives
-    in ``PLAN_DOC`` on disk, which the execution agent reads.
+    in the thread's plan doc on disk, which the execution agent reads.
     """
     history: list[ModelMessage] = []
     for m in rows:
@@ -225,8 +251,13 @@ def encode_goal_status_event(
     iteration: int,
     max_iterations: int,
     reason: str = "",
+    plan_path: str = "",
 ) -> str:
-    """SSE-framed AG-UI CUSTOM event announcing the goal's current state."""
+    """SSE-framed AG-UI CUSTOM event announcing the goal's current state.
+
+    ``plan_path`` (for plan-mode runs) carries the workspace-relative doc the turn
+    wrote to, so the UI can open the right file when the thread parks for review.
+    """
     event = CustomEvent(
         type=EventType.CUSTOM,
         name=GOAL_STATUS_EVENT_NAME,
@@ -236,6 +267,7 @@ def encode_goal_status_event(
             "iteration": iteration,
             "maxIterations": max_iterations,
             "reason": reason,
+            "planPath": plan_path,
         },
     )
     return f"data: {event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"

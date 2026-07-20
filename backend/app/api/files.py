@@ -65,10 +65,31 @@ _IGNORED_DIRS = frozenset(
         ".DS_Store",
         # Lursor's own per-workspace config lives here (workspace-scoped skills
         # under .agents/skills). It's managed from the Skills page, not the file
-        # explorer, so keep it out of the tree and @files search.
+        # explorer, so keep it out of the tree and @files search. The one
+        # exception is the plan folder — see ``_tree_hidden``.
         ".agents",
     }
 )
+
+# Within the otherwise-hidden ``.agents`` folder, plans are meant to be read and
+# revisited, so we expose ``.agents/plan/`` (and its contents) in the file tree.
+_PLAN_SUBDIR = ".agents/plan"
+
+
+def _tree_hidden(rel: str, name: str) -> bool:
+    """Whether a child should be omitted from the file tree.
+
+    ``.agents`` is normally hidden (workspace-scoped agent config), but we let the
+    ``.agents`` container and its ``plan/`` subtree through so users can browse and
+    reopen past plans. Everything else under ``.agents`` (e.g. ``skills``) stays
+    hidden and is managed from its own page. All other noise dirs are hidden by
+    name as before.
+    """
+    if rel == ".agents" or rel == _PLAN_SUBDIR or rel.startswith(f"{_PLAN_SUBDIR}/"):
+        return False
+    if rel.startswith(".agents/"):
+        return True
+    return name in _IGNORED_DIRS
 
 # Files larger than this are not returned inline (the editor shows a notice).
 _MAX_READ_BYTES = 2 * 1024 * 1024
@@ -180,12 +201,11 @@ async def list_directory(
     entries: list[DirEntry] = []
     with contextlib.suppress(OSError):
         for child in target.iterdir():
-            if child.name in _IGNORED_DIRS:
+            rel = _rel(root, child)
+            if _tree_hidden(rel, child.name):
                 continue
             is_dir = child.is_dir()
-            entries.append(
-                DirEntry(name=child.name, path=_rel(root, child), is_dir=is_dir)
-            )
+            entries.append(DirEntry(name=child.name, path=rel, is_dir=is_dir))
 
     entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
     return entries

@@ -143,6 +143,7 @@ async def _apply_lightweight_migrations(conn) -> None:
             "ALTER TABLE threads ADD COLUMN success_criteria VARCHAR DEFAULT ''"
         ),
         "status": "ALTER TABLE threads ADD COLUMN status VARCHAR DEFAULT 'idle'",
+        "plan_path": "ALTER TABLE threads ADD COLUMN plan_path VARCHAR DEFAULT ''",
         "iteration": "ALTER TABLE threads ADD COLUMN iteration INTEGER DEFAULT 0",
         "max_iterations": "ALTER TABLE threads ADD COLUMN max_iterations INTEGER DEFAULT 25",
         "last_reason": "ALTER TABLE threads ADD COLUMN last_reason VARCHAR DEFAULT ''",
