@@ -163,9 +163,8 @@ export function ChatToolCalls({
   if (expanded) {
     return (
       <div className="space-y-1.5">
-        {toolCalls.map((tc) => (
-          <ToolCallRow key={tc.id} toolCall={tc} compact={compact} />
-        ))}
+        {/* Collapse control stays at the top so it's always reachable even when
+            the list is long enough to scroll. */}
         <button
           type="button"
           onClick={() => setExpanded(false)}
@@ -174,6 +173,13 @@ export function ChatToolCalls({
           <CaretUp className="h-3 w-3 shrink-0" />
           Show less
         </button>
+        {/* Cap the height and scroll internally so expanding never pushes the
+            list past the viewport where overflow-hidden ancestors clip it. */}
+        <div className="max-h-72 space-y-1.5 overflow-y-auto">
+          {toolCalls.map((tc) => (
+            <ToolCallRow key={tc.id} toolCall={tc} compact={compact} />
+          ))}
+        </div>
       </div>
     )
   }

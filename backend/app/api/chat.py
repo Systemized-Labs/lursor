@@ -757,10 +757,10 @@ async def chat(
     # attached images are written to the media store and referenced on the row.
     user_text = ""
     attachments: list[dict] = []
-    # Per-turn intent ("chat"/"ask") rides on the AG-UI request as a forwarded
-    # prop; "chat" (full tools) is the default, "ask" builds a read-only agent.
-    # Set by the frontend slash-command dispatch. Sticky plan/goal modes come from
-    # the thread row, not this flag.
+    # Per-turn intent rides on the AG-UI request as a forwarded prop, set by the
+    # frontend slash-command dispatch: "chat" (full tools, the default), "ask"
+    # (read-only agent), "goal" (one-off autonomous run) or "plan" (propose a plan
+    # doc without executing). All are per-turn — no sticky thread mode is involved.
     turn = "chat"
     # Skills the user @-referenced in the composer this turn (slugs); their full
     # bodies are force-loaded into the turn below. Client-supplied, so validated
@@ -786,13 +786,13 @@ async def chat(
                     }
                 )
         if user_text or attachments:
-            # Tag the turn for the history badge: /ask and /goal ride on `turn`;
-            # a plan-mode turn is inferred from the thread's sticky mode.
+            # Tag the turn for the history badge: /ask, /goal and /plan all ride on
+            # the per-turn `turn` flag (plan is no longer a sticky thread mode).
             if turn == "ask":
                 msg_kind = "ask"
             elif turn == "goal":
                 msg_kind = "goal"
-            elif thread.mode == ThreadMode.plan:
+            elif turn == "plan":
                 msg_kind = "plan"
             else:
                 msg_kind = "chat"
@@ -847,7 +847,10 @@ async def chat(
             )
             _strip_inline_images(adapter.run_input, note.strip())
 
-    is_plan = thread.mode == ThreadMode.plan
+    # /plan and /goal are both one-off per-turn runs, not sticky thread modes: the
+    # objective is this message. A /plan turn writes/refines a plan doc and parks in
+    # `awaiting_approval`; the user then chats normally to carry the plan out.
+    is_plan = turn == "plan"
     # /goal is a one-off per-turn run (turn == "goal"), not a sticky thread mode:
     # the objective is this message, and the thread stays a plain chat thread.
     run_goal = turn == "goal"
@@ -857,6 +860,13 @@ async def chat(
 
     async def chat_driver() -> None:
         # Plain chat (or /ask): one turn, natural AG-UI lifecycle intact.
+        # An executing chat turn on a thread parked in `awaiting_approval` (from a
+        # prior /plan) means the user is carrying the plan out and moving on, so
+        # clear the parked state — a later /plan then starts a fresh plan rather
+        # than refining the old one, and the plan doc stops auto-reopening. /ask is
+        # read-only, so it leaves any parked plan untouched.
+        if turn == "chat" and thread.status == ThreadStatus.awaiting_approval:
+            await _set_thread_state(thread_id, status=ThreadStatus.idle)
         try:
             await _stream_turn(
                 thread_id,
@@ -874,11 +884,12 @@ async def chat(
         else:
             chat_run_manager.finish(thread_id, "finished")
 
-    # A plan thread parked in `awaiting_approval` and receiving another message is
-    # a *refinement* turn: the user is giving feedback on the plan already written,
-    # so we reuse that thread's doc and frame the turn as revising the existing
-    # draft. A fresh round lets the agent research and write a NEW plan doc, naming
-    # it itself (resolved after the turn — see `plan_driver`). The request adapter
+    # A /plan turn on a thread already parked in `awaiting_approval` is a
+    # *refinement*: the user is giving feedback on the plan already written, so we
+    # reuse that thread's doc and frame the turn as revising the existing draft. A
+    # fresh /plan (thread not parked) lets the agent research and write a NEW plan
+    # doc, naming it itself (resolved after the turn — see `plan_driver`). The
+    # request adapter
     # already carries the full frontend transcript and any image attachments, so the
     # planning turn has full conversational context without re-seeding from the DB.
     is_refine = is_plan and thread.status == ThreadStatus.awaiting_approval
