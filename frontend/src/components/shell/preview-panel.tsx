@@ -8,9 +8,20 @@ import {
 
 import { cn } from "@/lib/utils"
 import { consumePendingPreview, subscribeOpenPreview } from "@/lib/open-preview"
+import {
+  usePreviewServersFor,
+  type DetectedServer,
+} from "@/lib/processes"
 
 /** Common local dev-server ports, offered as one-tap shortcuts in the empty state. */
 const COMMON_PORTS = [3000, 5173, 8000, 8080] as const
+
+/** True when two addresses resolve to the same normalized URL (ignores trailing `/`). */
+function sameUrl(a: string, b: string): boolean {
+  const na = normalizeUrl(a)
+  const nb = normalizeUrl(b)
+  return na !== null && na === nb
+}
 
 const STORAGE_PREFIX = "lursor:preview:"
 const keyFor = (workspaceId?: string) => `${STORAGE_PREFIX}${workspaceId ?? "_global"}`
@@ -57,13 +68,20 @@ interface PreviewPanelProps {
 
 /**
  * A web preview pane: an address bar plus an iframe rendering a URL — typically
- * the dev server an agent has started in the workspace terminal. The last URL is
+ * the dev server an agent has started in the workspace. The last URL is
  * persisted per workspace so the preview reopens where it left off.
+ *
+ * Dev servers the agent starts are auto-detected by the backend and offered as
+ * one-tap chips (with a live starting/ready state) — no port guessing. When the
+ * server the user is previewing flips from starting to ready, the iframe reloads
+ * itself so a first-load connection error is replaced by the running app.
  *
  * Cross-origin pages that send `X-Frame-Options`/`frame-ancestors` can't be
  * framed; the "open externally" affordance is always available as a fallback.
  */
 export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
+  // Dev servers the backend detected for this workspace (stream-derived).
+  const detected = usePreviewServersFor(workspaceId)
   // The committed URL currently loaded in the iframe.
   const [url, setUrl] = useState<string>(() => readSavedUrl(workspaceId))
   // The editable address-bar value (may differ from `url` while typing).
@@ -122,7 +140,30 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
     return subscribeOpenPreview(tryOpen)
   }, [workspaceId, navigate])
 
+  // When the server currently in the iframe transitions starting -> ready,
+  // reload it so a first-load "connection refused" gives way to the live app.
+  const prevStatuses = useRef<Record<string, DetectedServer["status"]>>({})
+  useEffect(() => {
+    for (const server of detected) {
+      const prev = prevStatuses.current[server.url]
+      if (
+        prev === "starting" &&
+        server.status === "ready" &&
+        url &&
+        sameUrl(url, server.url)
+      ) {
+        setLoading(true)
+        setReloadKey((k) => k + 1)
+      }
+    }
+    prevStatuses.current = Object.fromEntries(
+      detected.map((s) => [s.url, s.status])
+    )
+  }, [detected, url])
+
   const hasUrl = url !== ""
+  // Detected servers not already loaded — offered as one-tap chips.
+  const otherServers = detected.filter((s) => !sameUrl(url, s.url))
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -188,6 +229,22 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
         )}
       </div>
 
+      {/* Detected dev servers not currently loaded — one-tap to preview. */}
+      {hasUrl && otherServers.length > 0 && (
+        <div className="flex items-center gap-1.5 overflow-x-auto border-b border-border/40 px-2 py-1.5 shrink-0">
+          <span className="text-[11px] text-muted-foreground shrink-0">
+            Detected
+          </span>
+          {otherServers.map((server) => (
+            <DetectedServerChip
+              key={server.shellId}
+              server={server}
+              onPick={() => navigate(server.url)}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Body */}
       {hasUrl ? (
         <div className="relative flex-1 min-h-0 bg-background">
@@ -200,34 +257,84 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
           />
         </div>
       ) : (
-        <PreviewEmptyState onPick={navigate} />
+        <PreviewEmptyState servers={detected} onPick={navigate} />
       )}
     </div>
   )
 }
 
-/** Shown when no URL is loaded: prompt plus one-tap common dev-server ports. */
-function PreviewEmptyState({ onPick }: { onPick: (url: string) => void }) {
+/** A one-tap chip for a detected dev server, showing its live starting/ready state. */
+function DetectedServerChip({
+  server,
+  onPick,
+}: {
+  server: DetectedServer
+  onPick: () => void
+}) {
+  const ready = server.status === "ready"
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      title={server.command || server.url}
+      className="flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-0.5 text-xs text-foreground transition-colors hover:bg-muted shrink-0"
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full shrink-0",
+          ready ? "bg-emerald-500" : "bg-amber-500 animate-pulse"
+        )}
+        aria-hidden
+      />
+      <span>:{server.port}</span>
+      <span className="text-muted-foreground">
+        {ready ? "ready" : "starting"}
+      </span>
+    </button>
+  )
+}
+
+/**
+ * Shown when no URL is loaded. Prefers the dev servers the backend detected;
+ * falls back to common dev-server ports when nothing has been detected yet.
+ */
+function PreviewEmptyState({
+  servers,
+  onPick,
+}: {
+  servers: DetectedServer[]
+  onPick: (url: string) => void
+}) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6 text-center">
       <Globe className="h-8 w-8 text-muted-foreground" />
       <div className="space-y-1">
         <p className="text-sm font-medium text-foreground">Web preview</p>
         <p className="text-xs text-muted-foreground">
-          Enter a URL above, or open a running dev server.
+          {servers.length > 0
+            ? "Open a detected dev server, or enter a URL above."
+            : "Enter a URL above, or open a running dev server."}
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
-        {COMMON_PORTS.map((port) => (
-          <button
-            key={port}
-            type="button"
-            onClick={() => onPick(`localhost:${port}`)}
-            className="rounded-md bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-          >
-            localhost:{port}
-          </button>
-        ))}
+        {servers.length > 0
+          ? servers.map((server) => (
+              <DetectedServerChip
+                key={server.shellId}
+                server={server}
+                onPick={() => onPick(server.url)}
+              />
+            ))
+          : COMMON_PORTS.map((port) => (
+              <button
+                key={port}
+                type="button"
+                onClick={() => onPick(`localhost:${port}`)}
+                className="rounded-md bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+              >
+                localhost:{port}
+              </button>
+            ))}
       </div>
     </div>
   )

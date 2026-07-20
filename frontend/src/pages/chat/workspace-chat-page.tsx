@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatTimeline } from "@/components/chat/ChatTimeline"
+import { RunningProcessesBar } from "@/components/chat/running-processes-bar"
 import { ChatTodoList } from "@/components/chat/ChatTodoList"
 import { GoalRunPanel } from "@/components/chat/GoalPanel"
 import { parseSlashCommand } from "@/components/chat/commands/registry"
@@ -458,6 +459,10 @@ export function WorkspaceChatPage() {
         {error ? (
           <p className="px-4 pb-1 text-sm text-destructive">{error}</p>
         ) : null}
+
+        {/* Running background processes (dev servers, watchers) — click one to
+            open its read-only output on the right. */}
+        <RunningProcessesBar workspaceId={workspaceId} />
 
         {goalExecuting ? (
           <GoalRunPanel

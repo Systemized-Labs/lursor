@@ -17,6 +17,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useDockState } from "@/hooks/use-dock-state"
 import type { DockKind } from "@/hooks/use-dock-state"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { usePreviewWatch } from "@/hooks/use-preview-watch"
 import { cn } from "@/lib/utils"
 import {
   peekPendingFile,
@@ -54,6 +55,9 @@ export function AppShell() {
   // panels were up.
   const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
   const dock = useDockState(workspaceId)
+  // Keep the detected dev-server list live for the active workspace, so servers
+  // the agent starts are known even before the Preview panel is opened.
+  usePreviewWatch(workspaceId)
   // Workspace name feeds the mobile header title (cached — the chat page shares
   // this query).
   const workspaceForTitle = useWorkspace(workspaceId)

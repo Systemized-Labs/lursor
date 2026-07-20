@@ -39,6 +39,7 @@ from starlette.responses import StreamingResponse
 
 from app.agents.builder import build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
+from app.agents.preview_service import preview_service
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     PLANNING_INSTRUCTION,
@@ -941,6 +942,11 @@ async def chat(
         driver = plan_driver
     else:
         driver = chat_driver
+
+    # Hand the run's backend to the preview service so a dev server the agent
+    # starts surfaces in the Preview panel — even after this turn ends (the
+    # server outlives the run; the service keeps watching the retained backend).
+    preview_service.register(workspace.id, deps.backend)
 
     if not chat_run_manager.start_run(thread_id, driver):
         raise HTTPException(

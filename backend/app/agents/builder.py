@@ -55,6 +55,24 @@ settings = get_settings()
 # the model still switches languages when the user writes in, or asks for, one.
 DEFAULT_LANGUAGE_DIRECTIVE = "Always respond in English by default."
 
+# Appended to executing agents so dev servers land in the Preview panel. Plain
+# `execute` blocks until the command exits and reaps the process tree on its
+# timeout, so a server started that way is killed before the user sees it; the
+# `run_in_background` tool keeps it alive and Lursor's watcher then detects the
+# port and surfaces it in Preview automatically. Only added when the agent can
+# actually execute (read-only "ask" mode has no such tools).
+DEV_SERVER_DIRECTIVE = (
+    "# Dev servers & long-running processes\n"
+    "- Start dev servers, watchers, and any process that does not exit on its "
+    "own (`npm run dev`, `vite`, `uvicorn`, etc.) with the `run_in_background` "
+    "tool, never plain `execute` — `execute` blocks and its timeout kills the "
+    "process, so the server never stays up.\n"
+    "- After starting one, read its output to confirm it is listening and tell "
+    "the user the URL it printed. Lursor detects the server automatically: the "
+    "Preview panel opens to it once it responds, and any further servers appear "
+    "as one-tap chips there."
+)
+
 
 def _environment_instructions(
     workspace_path: str | Path,
@@ -618,6 +636,8 @@ def build_deep_agent(
     instructions = (
         f"{base_instructions}\n\n{environment}\n\n{DEFAULT_LANGUAGE_DIRECTIVE}"
     )
+    if not read_only:
+        instructions = f"{instructions}\n\n{DEV_SERVER_DIRECTIVE}"
 
     agent = create_deep_agent(
         model=model,

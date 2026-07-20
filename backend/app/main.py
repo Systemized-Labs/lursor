@@ -17,6 +17,7 @@ from app.api import (
     laios,
     models,
     prompt_templates,
+    preview,
     providers,
     skills,
     subagents,
@@ -89,6 +90,7 @@ for module in (
     git,
     github,
     laios,
+    preview,
     settings_api,
 ):
     app.include_router(module.router, prefix="/api")
