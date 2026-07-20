@@ -47,6 +47,7 @@ from app.agents.goal_loop import (
     build_continuation_adapter,
     build_goal_evaluator,
     build_steer_capability,
+    detect_written_plan,
     drive_goal_loop,
     encode_goal_status_event,
     messages_to_history,
@@ -54,6 +55,7 @@ from app.agents.goal_loop import (
     planning_instruction,
     queue_interjection,
     refine_instruction,
+    scan_plan_dir,
 )
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
@@ -571,16 +573,17 @@ def _publish_lifecycle_finish(thread_id: str, run_id: str) -> None:
     )
 
 
-def _goal_status_publisher(
-    thread_id: str, condition: str, max_iter: int, plan_path: str = ""
-):
+def _goal_status_publisher(thread_id: str, condition: str, max_iter: int):
     """A ``(status, iteration, reason)`` closure that emits goal-status events.
 
-    ``plan_path`` is stamped onto every event for plan-mode runs so the UI can
-    open the thread's specific plan doc when it parks for review.
+    The optional ``plan_path`` per call is stamped onto the event for plan-mode
+    runs so the UI can open the thread's specific plan doc when it parks for
+    review (empty for goal mode and the pre-detection planning phase).
     """
 
-    def publish(status_: ThreadStatus, iteration: int, reason: str = "") -> None:
+    def publish(
+        status_: ThreadStatus, iteration: int, reason: str = "", plan_path: str = ""
+    ) -> None:
         chat_run_manager.publish(
             thread_id,
             encode_goal_status_event(
@@ -862,24 +865,18 @@ async def chat(
         else:
             chat_run_manager.finish(thread_id, "finished")
 
-    # Each plan thread writes to its own doc under `.agents/plan/`, named from the
-    # plan idea (the thread title) on the first planning turn and reused thereafter.
-    # Older threads keep whatever `plan_path` they were assigned; if a thread has
-    # none yet (fresh plan turn, or a legacy thread) we derive one now. Persisted
-    # below so refinement turns and reconnects resolve the same file.
-    plan_doc = thread.plan_path or plan_doc_path(thread.title)
-
     # A plan thread parked in `awaiting_approval` and receiving another message is
-    # a *refinement* turn: the user is giving feedback on the plan already written
-    # to `plan_doc`, so we frame the turn as revising the existing draft. Any other
-    # status starts a fresh planning round with the from-scratch instruction. The
-    # request adapter already carries the full frontend transcript (useChat sets
-    # the agent's messages before each run) and any image attachments, so the
+    # a *refinement* turn: the user is giving feedback on the plan already written,
+    # so we reuse that thread's doc and frame the turn as revising the existing
+    # draft. A fresh round lets the agent research and write a NEW plan doc, naming
+    # it itself (resolved after the turn — see `plan_driver`). The request adapter
+    # already carries the full frontend transcript and any image attachments, so the
     # planning turn has full conversational context without re-seeding from the DB.
+    is_refine = is_plan and thread.status == ThreadStatus.awaiting_approval
     plan_instruction = (
-        refine_instruction(plan_doc)
-        if is_plan and thread.status == ThreadStatus.awaiting_approval
-        else planning_instruction(plan_doc)
+        refine_instruction(thread.plan_path or plan_doc_path(thread.title))
+        if is_refine
+        else planning_instruction()
     )
 
     async def plan_driver() -> None:
@@ -889,20 +886,23 @@ async def chat(
         # leaves plan mode (mode→chat) and chats normally to carry the plan out.
         # Wrapped in a manual lifecycle so status events sit inside RUN_STARTED…FINISHED.
         run_id = uuid.uuid4().hex
-        publish_status = _goal_status_publisher(
-            thread_id, condition, thread.max_iterations, plan_path=plan_doc
-        )
+        publish_status = _goal_status_publisher(thread_id, condition, thread.max_iterations)
+        # On a refinement the agent edits the doc the thread already points at; on a
+        # fresh round it picks the filename itself, so we snapshot the plan folder now
+        # and detect what it wrote afterwards. Bound before the try so the cancel
+        # handler can resolve a partially-written plan.
+        known_path = thread.plan_path if is_refine else ""
+        before: dict[str, float] = {} if is_refine else scan_plan_dir(workspace.path)
         _publish_lifecycle_start(thread_id, run_id)
         try:
             # Make sure `.agents/plan/` exists so the agent's write lands (its file
-            # tools may not create parent dirs), and pin the resolved path on the
-            # thread so later refinement turns + the UI open the same doc.
+            # tools may not create parent dirs).
             with contextlib.suppress(OSError):
                 (Path(workspace.path) / PLAN_DIR).mkdir(parents=True, exist_ok=True)
             await _set_thread_state(
-                thread_id, status=ThreadStatus.planning, plan_path=plan_doc
+                thread_id, status=ThreadStatus.planning, plan_path=known_path or None
             )
-            publish_status(ThreadStatus.planning, 0)
+            publish_status(ThreadStatus.planning, 0, plan_path=known_path)
             await _stream_turn(
                 thread_id,
                 adapter,
@@ -914,15 +914,36 @@ async def chat(
                 strip_lifecycle=True,
                 kind="plan",
             )
+            # Resolve the doc the agent wrote (fresh round) or reuse the known one
+            # (refinement). Falls back to a title-derived name only if the agent left
+            # no detectable plan file. Pin it so the UI + later turns open the same doc.
+            plan_doc = (
+                known_path
+                or detect_written_plan(workspace.path, before)
+                or plan_doc_path(thread.title)
+            )
             await _set_thread_state(
                 thread_id,
                 status=ThreadStatus.awaiting_approval,
+                plan_path=plan_doc,
                 todos=_todos_snapshot(deps),
             )
-            publish_status(ThreadStatus.awaiting_approval, 0)
+            publish_status(ThreadStatus.awaiting_approval, 0, plan_path=plan_doc)
         except asyncio.CancelledError:
             await _persist_message(thread_id, "assistant", "".join(accumulated))
-            await _set_thread_state(thread_id, status=ThreadStatus.awaiting_approval)
+            # Stopped mid-turn: the agent may still have written (part of) a plan, so
+            # resolve and pin whatever doc it left rather than losing the pointer.
+            stopped_doc = (
+                known_path
+                or detect_written_plan(workspace.path, before)
+                or thread.plan_path
+                or None
+            )
+            await _set_thread_state(
+                thread_id,
+                status=ThreadStatus.awaiting_approval,
+                plan_path=stopped_doc,
+            )
             raise
         except Exception as exc:
             chat_run_manager.publish(

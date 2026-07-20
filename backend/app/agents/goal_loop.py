@@ -18,10 +18,12 @@ provider stack.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from ag_ui.core import CustomEvent, EventType, RunAgentInput, UserMessage
 from pydantic_ai import Agent as PydanticAgent
@@ -62,12 +64,12 @@ LEGACY_PLAN_DOC = "PLAN.md"
 
 
 def plan_doc_path(title: str) -> str:
-    """Workspace-relative path for a plan thread's doc, from its title/idea.
+    """Fallback workspace-relative plan-doc path, derived from the thread title.
 
-    Names it ``.agents/plan/PLAN-<slug>.md`` where ``<slug>`` is a filesystem-
-    friendly slug of the plan idea (the thread title). The ``PLAN-`` prefix keeps
-    the name recognisable as a plan doc (and matches the repo's ``docs/PLAN-*.md``
-    convention). Falls back to a bare ``PLAN.md`` slug when the title has no usable
+    Used only when the agent didn't leave a detectable plan file (see
+    :func:`detect_written_plan`) — normally the agent names its own doc. Names it
+    ``.agents/plan/PLAN-<slug>.md`` where ``<slug>`` slugifies the plan idea (the
+    thread title). Falls back to ``PLAN-plan.md`` when the title has no usable
     characters.
     """
     slug = slugify(title)
@@ -76,24 +78,67 @@ def plan_doc_path(title: str) -> str:
     return f"{PLAN_DIR}/PLAN-{slug}.md"
 
 
+def scan_plan_dir(workspace_path: str | Path) -> dict[str, float]:
+    """Map ``PLAN_DIR``'s Markdown files to their mtimes (empty if it's absent).
+
+    Used to snapshot the plan folder around a planning turn so we can tell which
+    doc the agent wrote (see :func:`detect_written_plan`).
+    """
+    root = Path(workspace_path) / PLAN_DIR
+    if not root.is_dir():
+        return {}
+    out: dict[str, float] = {}
+    for entry in root.iterdir():
+        if entry.is_file() and entry.suffix == ".md":
+            with contextlib.suppress(OSError):
+                out[entry.name] = entry.stat().st_mtime
+    return out
+
+
+def detect_written_plan(
+    workspace_path: str | Path, before: dict[str, float]
+) -> str | None:
+    """Return the plan doc the agent just wrote, or ``None`` if it wrote nothing.
+
+    Compares the current ``PLAN_DIR`` contents against a pre-turn snapshot
+    (``before``). A file is "written" if it's new or its mtime advanced. Prefers a
+    ``PLAN-``-prefixed name (what we ask the agent to use); ties broken by most
+    recent mtime. Returns a workspace-relative POSIX path.
+    """
+    after = scan_plan_dir(workspace_path)
+    changed = [
+        name
+        for name, mtime in after.items()
+        if name not in before or mtime > before[name]
+    ]
+    if not changed:
+        return None
+    changed.sort(key=lambda name: (not name.startswith("PLAN-"), -after[name]))
+    return f"{PLAN_DIR}/{changed[0]}"
+
+
 # Run-scoped instructions for a plan-mode turn. The plan is an on-disk artifact
 # (the user reviews it in the file panel and can ask for revisions), not just
-# chat prose — so we direct the agent to write it to ``plan_doc``.
-def planning_instruction(plan_doc: str) -> str:
-    """From-scratch plan-mode instruction targeting ``plan_doc``."""
+# chat prose — so we direct the agent to write it, choosing its own descriptive
+# filename. We detect which file it wrote afterwards (see ``detect_written_plan``).
+def planning_instruction() -> str:
+    """From-scratch plan-mode instruction; the agent names its own plan doc."""
     return (
         "## Plan mode — propose, do NOT execute yet\n"
-        f"You are in plan mode. Research what's needed, then write a clear, "
-        f"step-by-step implementation plan as Markdown to the file `{plan_doc}` "
-        "in your workspace (create it, or overwrite/revise it if it already "
-        "exists, using your file tools). Structure it as an ordered checklist of "
-        "concrete steps plus any key decisions or assumptions. In your chat "
+        "You are in plan mode. Research what's needed, then write a clear, "
+        "step-by-step implementation plan as Markdown to a new file in the "
+        f"`{PLAN_DIR}/` folder of your workspace, using your file tools. Name the "
+        "file `PLAN-<slug>.md`, where `<slug>` is a short, descriptive summary of "
+        "what this plan is about — a few words, lowercase, hyphen-separated, using "
+        "only letters, numbers and hyphens (e.g. `PLAN-stripe-checkout.md` or "
+        "`PLAN-dark-mode-toggle.md`). Structure the plan as an ordered checklist "
+        "of concrete steps plus any key decisions or assumptions. In your chat "
         "reply, briefly summarise the plan and invite the user to request changes "
         "— you'll refine it together until they're happy with it.\n"
         "Do NOT start doing the work yet: this is a planning conversation. Beyond "
-        f"reading/searching the codebase and writing `{plan_doc}`, make no "
-        "changes. When the user is ready to execute, they leave plan mode and ask "
-        "you to carry the plan out — nothing else runs while you're still planning."
+        f"reading/searching the codebase and writing your plan file in `{PLAN_DIR}/`"
+        ", make no changes. When the user is ready to execute, they leave plan mode "
+        "and ask you to carry the plan out — nothing runs while you're still planning."
     )
 
 

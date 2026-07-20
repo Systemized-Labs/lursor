@@ -37,7 +37,7 @@ import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sourc
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
-import type { DefaultAgentsSettings, RunStatus, ThreadMode } from "@/api/types"
+import type { DefaultAgentsSettings, ThreadMode } from "@/api/types"
 
 /** Default iteration cap for a `/goal` run (backend default). */
 const GOAL_MAX_ITERATIONS = 25
@@ -337,20 +337,37 @@ export function WorkspaceChatPage() {
   const runView = goalStatus
   const goalExecuting = runView?.status === "running"
 
-  // Open (or refresh) the thread's plan doc in the file panel each time a planning
-  // turn parks the thread in review. Edge-triggered on entering `awaiting_approval`.
-  // The run's goal-status event carries the exact per-thread path; fall back to the
-  // persisted thread field, then the legacy top-level PLAN.md.
-  const prevStatusRef = useRef<RunStatus | null>(null)
+  // Open the thread's plan doc in the file panel when a planning turn parks it in
+  // review. Two sources of "parked": the live goal-status event (fresh, carries the
+  // exact per-thread path) and the persisted thread (survives a reload, when the
+  // live event is gone). Edge-triggered per thread so it opens once each time a
+  // thread enters review (and reopens on the next refinement), and opens when you
+  // switch to / reload an already-parked plan thread. Path prefers the live event,
+  // then the persisted field, then the legacy top-level PLAN.md.
+  const prevParkedRef = useRef<{ id?: string; parked: boolean }>({ parked: false })
   useEffect(() => {
-    const status = runView?.status ?? null
-    const prev = prevStatusRef.current
-    prevStatusRef.current = status
-    if (status === "awaiting_approval" && prev !== "awaiting_approval" && workspaceId) {
+    const parked =
+      runView?.status === "awaiting_approval" ||
+      (currentThread?.mode === "plan" &&
+        currentThread?.status === "awaiting_approval")
+    const prev = prevParkedRef.current
+    // Only treat it as a fresh edge within the same thread; switching threads
+    // starts each one's edge at "not parked" so its plan opens on arrival.
+    const wasParked = prev.id === selectedThreadId ? prev.parked : false
+    prevParkedRef.current = { id: selectedThreadId, parked }
+    if (parked && !wasParked && workspaceId) {
       const path = runView?.planPath || currentThread?.plan_path || LEGACY_PLAN_DOC
       requestOpenFile({ workspaceId, path, name: baseName(path) })
     }
-  }, [runView?.status, runView?.planPath, currentThread?.plan_path, workspaceId])
+  }, [
+    selectedThreadId,
+    runView?.status,
+    runView?.planPath,
+    currentThread?.mode,
+    currentThread?.status,
+    currentThread?.plan_path,
+    workspaceId,
+  ])
 
   if (workspaceQuery.isLoading) {
     return <p className="p-6 text-sm text-muted-foreground">Loading workspace…</p>

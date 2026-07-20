@@ -7,6 +7,10 @@
  * "N unmodified lines" row, matching a Cursor/GitHub-style diff view.
  */
 
+import { wordDiff, type Range } from "./word-diff"
+
+export type { Range } from "./word-diff"
+
 /** A single rendered row within a hunk. */
 export interface DiffLine {
   type: "context" | "add" | "del"
@@ -16,6 +20,9 @@ export interface DiffLine {
   newNo: number | null
   /** Line text without its leading +/-/space marker. */
   content: string
+  /** Changed character ranges within `content`, for word-level highlighting.
+   *  Only set on `add`/`del` lines that pair up as an edit; absent otherwise. */
+  changed?: Range[]
 }
 
 /** A contiguous change region, with the count of lines skipped before it. */
@@ -69,5 +76,36 @@ export function parseDiff(patch: string): DiffHunk[] {
     prevNewEnd = newNo
   }
 
+  for (const hunk of hunks) annotateWordDiffs(hunk.lines)
   return hunks
+}
+
+/**
+ * Within a hunk, pair each maximal run of removed lines with the added run that
+ * immediately follows it, index-for-index, and record the intra-line word-diff
+ * on both sides. Unpaired extras (more dels than adds, or vice versa) get no
+ * word ranges and render as a plain whole-line tint.
+ */
+function annotateWordDiffs(lines: DiffLine[]): void {
+  let i = 0
+  while (i < lines.length) {
+    if (lines[i].type !== "del") {
+      i++
+      continue
+    }
+    let delEnd = i
+    while (delEnd < lines.length && lines[delEnd].type === "del") delEnd++
+    let addEnd = delEnd
+    while (addEnd < lines.length && lines[addEnd].type === "add") addEnd++
+
+    const pairs = Math.min(delEnd - i, addEnd - delEnd)
+    for (let k = 0; k < pairs; k++) {
+      const del = lines[i + k]
+      const add = lines[delEnd + k]
+      const { del: delRanges, add: addRanges } = wordDiff(del.content, add.content)
+      del.changed = delRanges
+      add.changed = addRanges
+    }
+    i = addEnd
+  }
 }

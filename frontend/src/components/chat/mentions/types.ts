@@ -115,6 +115,14 @@ export function expandMentionTokens(text: string): string {
       const clean = trail ? path.slice(0, -trail.length) : path
       return `${lead}\`${clean}\`${trail}`
     })
+    // A plan mention carries just the doc's basename; rebuild the full
+    // `.agents/plan/<name>` workspace path and backtick it so the agent reads it
+    // against its workspace root, exactly like a file reference.
+    .replace(/(^|\s)@\/plan\/(\S+)/g, (_m, lead: string, name: string) => {
+      const trail = name.match(/[.,;:!?)]+$/)?.[0] ?? ""
+      const clean = trail ? name.slice(0, -trail.length) : name
+      return `${lead}\`.agents/plan/${clean}\`${trail}`
+    })
     // A skill mention collapses to a readable `@<slug>` marker in the sent text;
     // the full skill body is force-loaded into the turn server-side (carried via
     // `forwardedProps.skills`, see {@link mentionSlugs}), not embedded here.

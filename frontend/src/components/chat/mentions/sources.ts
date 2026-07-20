@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { FileCode, Folder, Sparkle } from "@phosphor-icons/react"
+import { FileCode, Folder, ListChecks, Sparkle } from "@phosphor-icons/react"
 
 import { filesApi } from "@/api/files"
 import { useSkills } from "@/api/skills"
@@ -8,8 +8,13 @@ import type { MentionItem, MentionSource } from "./types"
 
 const SEARCH_LIMIT = 50
 
+/** Workspace-relative folder holding plan docs. Kept out of `@files` search
+ *  (see backend `_IGNORED_DIRS`), so plans get their own mention category. */
+const PLAN_DIR = ".agents/plan"
+
 /** Mention sources for the workspace chat composer:
  *  - `@files` — fuzzy search over the whole workspace tree (lazy).
+ *  - `@plan` — the plan docs under `.agents/plan/` (hidden from `@files`).
  *  - `@skill` — global + this workspace's skills (pre-loaded, root-searchable).
  *    Referencing a skill force-loads its full body into that turn server-side.
  */
@@ -62,6 +67,23 @@ export function useWorkspaceChatMentionSources(
               sublabel: slash === -1 ? undefined : e.path.slice(0, slash),
             }
           })
+        },
+      },
+      {
+        key: "plan",
+        label: "Plans",
+        icon: ListChecks,
+        // Plan docs live under `.agents/plan/`, which `@files` search skips — so
+        // list that folder directly (it's exposed to `/files/list`) and filter to
+        // Markdown plans. `query` narrows by filename; the slug is the basename,
+        // rebuilt into the full path on send (see `expandMentionTokens`).
+        browse: async (query: string) => {
+          const entries = await filesApi.list(workspaceId, PLAN_DIR)
+          const q = query.toLowerCase()
+          return entries
+            .filter((e) => !e.is_dir && e.name.toLowerCase().endsWith(".md"))
+            .filter((e) => !q || e.name.toLowerCase().includes(q))
+            .map<MentionItem>((e) => ({ id: e.path, label: e.name, slug: e.name }))
         },
       },
       {

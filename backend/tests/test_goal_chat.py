@@ -279,14 +279,15 @@ async def test_plan_conversation_refines_then_executes_on_exit(
         ).model_dump_json(by_alias=True)
 
     # First message → fresh plan (PLANNING_INSTRUCTION), awaiting approval. The plan
-    # gets its own doc under .agents/plan/, named from the plan idea (thread title),
-    # persisted on the thread and referenced in the instruction.
+    # gets its own doc under .agents/plan/; the agent names it, but the offline
+    # TestModel writes nothing, so the path falls back to a title-derived slug.
     _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m1", "refactor it")))
     parked = (await client.get(f"/threads/{tid}")).json()
     assert parked["status"] == "awaiting_approval"
     assert parked["plan_path"] == ".agents/plan/PLAN-refactor-it.md"
     assert "do NOT execute yet" in captured[-1]
-    assert parked["plan_path"] in captured[-1]
+    # The fresh instruction directs the agent to name its own file under .agents/plan/.
+    assert ".agents/plan/" in captured[-1]
 
     # Second message while still in plan mode → refinement (REFINE_INSTRUCTION),
     # still parked awaiting review — no execution. Same doc is reused.
@@ -303,6 +304,36 @@ async def test_plan_conversation_refines_then_executes_on_exit(
     _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m3", "go ahead")))
     assert (await client.get(f"/threads/{tid}")).json()["mode"] == "chat"
     assert captured[-1] is None or "plan" not in (captured[-1] or "").lower()
+
+
+def test_detect_written_plan_picks_the_agent_named_doc(tmp_path):
+    """`detect_written_plan` finds the file a planning turn wrote, agent-named."""
+    from app.agents.goal_loop import PLAN_DIR, detect_written_plan, scan_plan_dir
+
+    plan_dir = tmp_path / PLAN_DIR
+    plan_dir.mkdir(parents=True)
+
+    # Nothing written yet → no plan detected.
+    before = scan_plan_dir(tmp_path)
+    assert detect_written_plan(tmp_path, before) is None
+
+    # The agent writes a descriptively-named doc → that's the plan.
+    (plan_dir / "PLAN-stripe-checkout.md").write_text("# plan", encoding="utf-8")
+    assert (
+        detect_written_plan(tmp_path, before)
+        == f"{PLAN_DIR}/PLAN-stripe-checkout.md"
+    )
+
+    # A later refinement snapshot that sees no change → nothing new detected.
+    after = scan_plan_dir(tmp_path)
+    assert detect_written_plan(tmp_path, after) is None
+
+    # A non-PLAN- markdown also written the same round loses to the PLAN- name.
+    (plan_dir / "notes.md").write_text("scratch", encoding="utf-8")
+    assert (
+        detect_written_plan(tmp_path, before)
+        == f"{PLAN_DIR}/PLAN-stripe-checkout.md"
+    )
 
 
 async def test_interject_requires_an_active_run(client: AsyncClient):
