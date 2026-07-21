@@ -112,34 +112,34 @@ export function RightDock({
               </div>
             )
           })}
-        </div>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              title="Add panel"
-              aria-label="Add panel"
-              className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
-            >
-              <Plus className="h-4 w-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Panels</DropdownMenuLabel>
-              {DOCK_KINDS.map((kind) => {
-                const Icon = TAB_META[kind].icon
-                return (
-                  <DropdownMenuItem key={kind} onClick={() => onOpenTab(kind)}>
-                    <Icon className="h-4 w-4" />
-                    <span>{TAB_META[kind].title}</span>
-                  </DropdownMenuItem>
-                )
-              })}
-            </DropdownMenuGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                title="Add panel"
+                aria-label="Add panel"
+                className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Panels</DropdownMenuLabel>
+                {DOCK_KINDS.map((kind) => {
+                  const Icon = TAB_META[kind].icon
+                  return (
+                    <DropdownMenuItem key={kind} onClick={() => onOpenTab(kind)}>
+                      <Icon className="h-4 w-4" />
+                      <span>{TAB_META[kind].title}</span>
+                    </DropdownMenuItem>
+                  )
+                })}
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
 
         <button
           type="button"
