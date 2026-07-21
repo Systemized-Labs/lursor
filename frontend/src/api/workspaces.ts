@@ -71,6 +71,22 @@ export function useDeleteWorkspace() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => workspacesApi.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: workspaceKeys.all }),
+    // Optimistically drop the workspace from the list so the UI updates
+    // instantly instead of waiting on the network round-trip.
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: workspaceKeys.all })
+      const previous = qc.getQueryData<Workspace[]>(workspaceKeys.all)
+      qc.setQueryData<Workspace[]>(workspaceKeys.all, (old) =>
+        (old ?? []).filter((ws) => ws.id !== id)
+      )
+      return { previous }
+    },
+    // Restore the previous list if the delete fails.
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        qc.setQueryData(workspaceKeys.all, context.previous)
+      }
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: workspaceKeys.all }),
   })
 }

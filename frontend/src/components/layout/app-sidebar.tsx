@@ -34,7 +34,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
-import type { Thread } from "@/api/types"
+import type { Thread, Workspace } from "@/api/types"
 import {
   threadKeys,
   threadsApi,
@@ -213,7 +213,6 @@ export function AppSidebar() {
 
   const selection = useSidebarSelection()
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
-  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   // Esc exits sticky selection mode (unless the confirm dialog owns Esc).
   useEffect(() => {
@@ -291,56 +290,70 @@ export function AppSidebar() {
     }
   }
 
-  async function handleDeleteWorkspace() {
+  function handleDeleteWorkspace() {
     if (!deleteWsTarget) return
     const ws = deleteWsTarget
-    try {
-      await deleteWorkspace.mutateAsync(ws.id)
-      setDeleteWsTarget(null)
-      // If the open workspace was deleted, leave the chat surface.
-      if (activeWorkspaceId === ws.id) {
-        navigate("/customization")
-      }
-      toast.success("Workspace deleted")
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete")
+    // Close the dialog and update the UI immediately; the delete runs in the
+    // background with an optimistic cache update (rolled back on failure).
+    setDeleteWsTarget(null)
+    if (activeWorkspaceId === ws.id) {
+      navigate("/customization")
     }
+    deleteWorkspace.mutate(ws.id, {
+      onSuccess: () => toast.success("Workspace deleted"),
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : "Failed to delete"),
+    })
   }
 
-  async function handleBulkDelete() {
-    setBulkDeleting(true)
-    try {
-      if (selection.kind === "workspace") {
-        const ids = [...selection.workspaceIds]
-        await Promise.all(ids.map((id) => workspacesApi.remove(id)))
-        qc.invalidateQueries({ queryKey: workspaceKeys.all })
-        // If the open workspace was among them, leave the chat surface.
-        if (activeWorkspaceId && ids.includes(activeWorkspaceId)) {
-          navigate("/customization")
-        }
-        toast.success(`${ids.length} workspace${ids.length > 1 ? "s" : ""} deleted`)
-      } else if (selection.kind === "thread") {
-        const threads = [...selection.threads.values()]
-        await Promise.all(threads.map((t) => threadsApi.remove(t.id)))
-        // Refresh every workspace whose conversations changed.
-        for (const wsId of new Set(threads.map((t) => t.workspace_id))) {
-          qc.invalidateQueries({ queryKey: threadKeys.byWorkspace(wsId) })
-        }
-        // If the open conversation was deleted, fall back to a new one.
-        const openDeleted = threads.find((t) => t.id === activeThreadId)
-        if (openDeleted) {
-          navigate(`/workspaces/${openDeleted.workspace_id}/chat`)
-        }
-        toast.success(
-          `${threads.length} conversation${threads.length > 1 ? "s" : ""} deleted`
-        )
+  function handleBulkDelete() {
+    // Close the dialog and update the UI immediately; the deletes run in the
+    // background with an optimistic cache update (rolled back on failure).
+    if (selection.kind === "workspace") {
+      const ids = [...selection.workspaceIds]
+      const previous = qc.getQueryData<Workspace[]>(workspaceKeys.all)
+      qc.setQueryData<Workspace[]>(workspaceKeys.all, (old) =>
+        (old ?? []).filter((ws) => !ids.includes(ws.id))
+      )
+      if (activeWorkspaceId && ids.includes(activeWorkspaceId)) {
+        navigate("/customization")
       }
       selection.clear()
       setBulkDeleteOpen(false)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete")
-    } finally {
-      setBulkDeleting(false)
+      Promise.all(ids.map((id) => workspacesApi.remove(id)))
+        .then(() => {
+          toast.success(
+            `${ids.length} workspace${ids.length > 1 ? "s" : ""} deleted`
+          )
+        })
+        .catch((err) => {
+          if (previous) qc.setQueryData(workspaceKeys.all, previous)
+          toast.error(err instanceof Error ? err.message : "Failed to delete")
+        })
+        .finally(() => qc.invalidateQueries({ queryKey: workspaceKeys.all }))
+    } else if (selection.kind === "thread") {
+      const threads = [...selection.threads.values()]
+      const openDeleted = threads.find((t) => t.id === activeThreadId)
+      if (openDeleted) {
+        navigate(`/workspaces/${openDeleted.workspace_id}/chat`)
+      }
+      selection.clear()
+      setBulkDeleteOpen(false)
+      Promise.all(threads.map((t) => threadsApi.remove(t.id)))
+        .then(() => {
+          toast.success(
+            `${threads.length} conversation${threads.length > 1 ? "s" : ""} deleted`
+          )
+        })
+        .catch((err) => {
+          toast.error(err instanceof Error ? err.message : "Failed to delete")
+        })
+        .finally(() => {
+          // Refresh every workspace whose conversations changed.
+          for (const wsId of new Set(threads.map((t) => t.workspace_id))) {
+            qc.invalidateQueries({ queryKey: threadKeys.byWorkspace(wsId) })
+          }
+        })
     }
   }
 
@@ -705,7 +718,6 @@ export function AppSidebar() {
         }
         confirmLabel="Delete"
         destructive
-        loading={deleteWorkspace.isPending}
         onConfirm={handleDeleteWorkspace}
       />
 
@@ -729,7 +741,6 @@ export function AppSidebar() {
         }
         confirmLabel="Delete"
         destructive
-        loading={bulkDeleting}
         onConfirm={handleBulkDelete}
       />
 
