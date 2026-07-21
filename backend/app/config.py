@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # than the (possibly heavy or offline) thread agent's model. An explicit
     # ``AppConfig.compaction_model`` override still wins over this.
     default_compaction_model: str = "openrouter:google/gemini-2.5-flash"
+    # Model used to auto-name a conversation from its first user message. Naming
+    # is a tiny, one-shot task fired in the background, so it runs on the smallest
+    # fast model rather than the thread agent's (possibly heavy or offline) model.
+    default_title_model: str = "openrouter:google/gemini-2.5-flash-lite"
     openrouter_api_key: str | None = None
     # Base URL for OpenRouter's REST API; "/models" is appended to list models.
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

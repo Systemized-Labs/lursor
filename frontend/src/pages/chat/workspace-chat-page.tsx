@@ -126,6 +126,17 @@ export function WorkspaceChatPage() {
     }
   }, [cParam, selectedThreadId, loadConversation, startNewConversation])
 
+  // When a run settles, refresh the thread list so a background-generated title
+  // (auto-naming a new conversation from its first message) replaces the
+  // truncated placeholder in the sidebar and header.
+  const wasStreaming = useRef(isStreaming)
+  useEffect(() => {
+    if (wasStreaming.current && !isStreaming && workspaceId) {
+      qc.invalidateQueries({ queryKey: threadKeys.byWorkspace(workspaceId) })
+    }
+    wasStreaming.current = isStreaming
+  }, [isStreaming, workspaceId, qc])
+
   // A prompt arriving from the New Agent home surface: pre-select its agent.
   useEffect(() => {
     const launch = location.state as NewAgentLaunch | null

@@ -62,6 +62,7 @@ from app.agents.goal_loop import (
     scan_plan_dir,
 )
 from app.agents.preview_service import preview_service
+from app.agents.titler import generate_title
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
 from app.db.models import (
@@ -86,6 +87,48 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/threads", tags=["chat"])
 
 settings = get_settings()
+
+# Strong references to in-flight auto-title tasks so the event loop doesn't
+# garbage-collect a fire-and-forget task before it finishes.
+_auto_title_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_auto_title(thread_id: str, user_text: str, placeholder: str) -> None:
+    """Fire-and-forget: name a thread from its first message on a fast model.
+
+    Runs in its own DB session (the request session closes with the streaming
+    response) so it can proceed concurrently with the agent run. It only
+    overwrites the title while it still equals ``placeholder`` — the truncated
+    first message we set inline — so a manual rename mid-run always wins, and a
+    second turn never re-triggers naming. All failures are swallowed: a missing
+    title is cosmetic and must never disrupt the chat.
+    """
+
+    async def _run() -> None:
+        try:
+            async with async_session_factory() as bg_session:
+                providers = (
+                    await bg_session.execute(select(CustomProvider))
+                ).scalars().all()
+                custom_providers = {p.id: p for p in providers}
+                title = await generate_title(
+                    user_text, settings.default_title_model, custom_providers
+                )
+                if not title:
+                    return
+                thread = await bg_session.get(Thread, thread_id)
+                if thread is None or thread.title != placeholder:
+                    return
+                thread.title = title
+                bg_session.add(thread)
+                await bg_session.commit()
+        except Exception as exc:  # noqa: BLE001 — titling is best-effort, never fatal
+            logger.warning("auto-title failed for thread %s: %s", thread_id, exc)
+
+    with contextlib.suppress(RuntimeError):  # no running loop (e.g. under sync tests)
+        task = asyncio.get_running_loop().create_task(_run())
+        _auto_title_tasks.add(task)
+        task.add_done_callback(_auto_title_tasks.discard)
 
 _KEEPALIVE_TIMEOUT = 25.0  # seconds between ": keepalive" comments on an idle stream
 # Cap on model request/tool-call rounds within a single agent turn. Overrides
@@ -844,8 +887,14 @@ async def chat(
                 )
             )
             if thread.title == "New conversation":
-                thread.title = (user_text[:60] or f"{len(attachments)} image(s)")
+                # Set the truncated first message inline so the sidebar shows
+                # something instantly, then upgrade it to an LLM-generated title
+                # in the background. Image-only first turns keep the placeholder.
+                placeholder = user_text[:60] or f"{len(attachments)} image(s)"
+                thread.title = placeholder
                 session.add(thread)
+                if user_text.strip():
+                    _schedule_auto_title(thread_id, user_text, placeholder)
             await session.commit()
 
     # List every image attached in this conversation so the agent can inspect any
