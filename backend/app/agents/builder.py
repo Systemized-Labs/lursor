@@ -64,6 +64,11 @@ DEFAULT_LANGUAGE_DIRECTIVE = "Always respond in English by default."
 # actually execute (read-only "ask" mode has no such tools).
 DEV_SERVER_DIRECTIVE = (
     "# Dev servers & long-running processes\n"
+    "- Before starting a dev server or watcher, run `list_shells` to see what is "
+    "already running in this workspace (background shells persist across turns, "
+    "so one you started earlier is still up). If a suitable server is already "
+    "running, reuse it — do NOT start a second one. Only start a fresh server "
+    "when none is running, or first stop the stale one with `kill_shell`.\n"
     "- Start dev servers, watchers, and any process that does not exit on its "
     "own (`npm run dev`, `vite`, `uvicorn`, etc.) with the `run_in_background` "
     "tool, never plain `execute` — `execute` blocks and its timeout kills the "
@@ -85,6 +90,32 @@ BROWSER_QA_DIRECTIVE = (
     "`get_network_errors` to catch runtime errors. Fix what's broken and re-check "
     "before telling the user it's done — don't assume the page renders correctly."
 )
+
+
+# One LocalBackend per workspace directory, reused across every chat run (and its
+# subagents). The backend owns the registry of background processes the agent
+# starts with `run_in_background` — dev servers, watchers — and those outlive the
+# run that started them (see agents/preview_service.py). A fresh backend per run
+# would start with an empty registry, so `list_shells` would show nothing and the
+# agent, blind to the server already running from an earlier turn, would spin up a
+# duplicate. Sharing one backend per workspace makes `list_shells`/`kill_shell`
+# see and manage those processes across runs. Keyed by resolved absolute path;
+# file operations are stateless per call, so the shared instance is safe.
+_workspace_backends: dict[str, LocalBackend] = {}
+
+
+def _workspace_backend(workspace_path: str | Path) -> LocalBackend:
+    """Return the shared :class:`LocalBackend` for ``workspace_path``.
+
+    Created on first use and cached, so background processes started in one chat
+    run stay visible (and killable) from every later run of the same workspace.
+    """
+    key = str(Path(workspace_path).resolve())
+    backend = _workspace_backends.get(key)
+    if backend is None:
+        backend = LocalBackend(root_dir=key)
+        _workspace_backends[key] = backend
+    return backend
 
 
 def _environment_instructions(
@@ -493,7 +524,7 @@ def build_deep_agent(
     built-ins as ordinary ``SubAgentConfig`` dicts and applies the same default
     deep-agent factory to every config.
     """
-    backend = LocalBackend(root_dir=str(workspace_path))
+    backend = _workspace_backend(workspace_path)
 
     # thinking is stored as an enum: "off" disables, otherwise pass the level string.
     thinking: bool | str = False if row.thinking.value == "off" else row.thinking.value
