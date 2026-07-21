@@ -101,6 +101,7 @@ import {
 } from "@/components/layout/use-sidebar-selection"
 import { cn } from "@/lib/utils"
 import { isMacElectron } from "@/lib/platform"
+import { useWorkspaceRecency } from "@/lib/workspace-recency"
 
 interface NavItem {
   to: string
@@ -344,7 +345,15 @@ export function AppSidebar() {
     }
   }
 
-  const workspaces = workspacesQuery.data ?? []
+  const recency = useWorkspaceRecency()
+  // Most recently used first; never-opened workspaces keep the backend's
+  // created_at order (Array.prototype.sort is stable) after the used ones.
+  const workspaces = useMemo(() => {
+    const list = workspacesQuery.data ?? []
+    return [...list].sort(
+      (a, b) => (recency[b.id] ?? 0) - (recency[a.id] ?? 0)
+    )
+  }, [workspacesQuery.data, recency])
   const orderedWorkspaceIds = workspaces.map((ws) => ws.id)
 
   return (
