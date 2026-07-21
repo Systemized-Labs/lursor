@@ -21,6 +21,7 @@ import {
 import { fileKind } from "@/components/files/file-icon"
 import { useGitDiff, gitKeys, type ChangedFile } from "@/api/git"
 import { useFileWatch } from "@/hooks/use-file-watch"
+import { useGitWatch } from "@/hooks/use-git-watch"
 import { parseDiff, type DiffLine, type DiffHunk } from "@/lib/parse-diff"
 import { highlightLine, langFromPath, type Token } from "@/lib/syntax-highlight"
 import { cn } from "@/lib/utils"
@@ -45,56 +46,47 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   const { data, isLoading, isError, error, refetch, isFetching } =
     useGitDiff(workspaceId)
 
-  // Auto-refresh: when the workspace's files change on disk (agent edits, saves,
-  // git operations), debounce-invalidate the diff so the panel stays live.
+  // Auto-refresh: debounce-invalidate the diff so the panel stays live without a
+  // manual refresh. Two sockets feed it — the files watcher (working-tree edits:
+  // agent saves, manual edits) and the git watcher (state changes the files
+  // watcher can't see because it ignores `.git/`: commits, staging, branch
+  // switches, merges/rebases/resets). Both funnel through one debounce so a burst
+  // of edits followed by a commit re-queries git at most once per window.
   const qc = useQueryClient()
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
-  useFileWatch(
-    workspaceId,
-    useCallback(() => {
-      if (!workspaceId) return
-      clearTimeout(debounceRef.current)
-      debounceRef.current = setTimeout(() => {
-        qc.invalidateQueries({ queryKey: gitKeys.diff(workspaceId) })
-      }, REFRESH_DEBOUNCE_MS)
-    }, [qc, workspaceId])
-  )
+  const scheduleRefresh = useCallback(() => {
+    if (!workspaceId) return
+    clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      qc.invalidateQueries({ queryKey: gitKeys.diff(workspaceId) })
+    }, REFRESH_DEBOUNCE_MS)
+  }, [qc, workspaceId])
+  useFileWatch(workspaceId, scheduleRefresh)
+  useGitWatch(workspaceId, scheduleRefresh)
   useEffect(() => () => clearTimeout(debounceRef.current), [])
 
   const files = data?.files
-  // Per-file collapsed state, keyed by path. Files start collapsed so a diff
-  // opens as a scannable file list; the set is an override kept across the
-  // panel's frequent auto-refetches, so a user's expand/collapse survives — only
-  // paths not yet seen get the collapsed-by-default applied.
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
-  const seenRef = useRef<Set<string>>(new Set())
-  useEffect(() => {
-    if (!files) return
-    setCollapsed((prev) => {
-      let next = prev
-      for (const f of files) {
-        if (seenRef.current.has(f.path)) continue
-        seenRef.current.add(f.path)
-        if (next === prev) next = new Set(prev)
-        next.add(f.path)
-      }
-      return next
-    })
-  }, [files])
+  // Per-file expand state, keyed by path. We track the paths the user has
+  // *expanded* (rather than collapsed) so every file starts collapsed by
+  // default — the panel opens as a scannable file list with no flash of fully
+  // expanded diffs on first paint. The set survives the panel's frequent
+  // auto-refetches, so a user's expansions persist while new files stay
+  // collapsed.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
 
   const toggleFile = useCallback((path: string) => {
-    setCollapsed((prev) => {
+    setExpanded((prev) => {
       const next = new Set(prev)
       if (next.has(path)) next.delete(path)
       else next.add(path)
       return next
     })
   }, [])
-  const expandAll = useCallback(() => setCollapsed(new Set()), [])
-  const collapseAll = useCallback(
-    () => setCollapsed(new Set((files ?? []).map((f) => f.path))),
+  const expandAll = useCallback(
+    () => setExpanded(new Set((files ?? []).map((f) => f.path))),
     [files]
   )
+  const collapseAll = useCallback(() => setExpanded(new Set()), [])
 
   // A workspace can hold several repos (e.g. a nested `swarmcore-ui/`); show the
   // lone repo's branch, or a repo count when there's more than one.
@@ -192,7 +184,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
             <FileDiff
               key={file.path}
               file={file}
-              open={!collapsed.has(file.path)}
+              open={expanded.has(file.path)}
               onToggle={toggleFile}
             />
           ))}

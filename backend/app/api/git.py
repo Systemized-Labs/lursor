@@ -18,16 +18,20 @@ counts and binary detection are parsed straight from each file's patch.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.websockets import WebSocketDisconnect
+from watchfiles import awatch
 
 from app.api.github import _run_git
 from app.db.models import Workspace
-from app.db.session import get_session
+from app.db.session import async_session_factory, get_session
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/git", tags=["git"])
 
@@ -403,3 +407,81 @@ async def checkout_branch(
             err.strip() or f"Failed to switch to '{branch}'",
         )
     return await _list_branches(repo)
+
+
+def _is_git_state_change(path: str) -> bool:
+    """True for a ``.git`` internal path whose change alters the working-tree diff
+    or branch header — a commit, staging, branch switch, merge/rebase/reset.
+
+    Deliberately ignores the high-churn internals (loose/packed objects, logs,
+    lock files) so a background fetch or gc can't spam refreshes. This is the
+    filter watchfiles' ``DefaultFilter`` normally applies in reverse: that one
+    drops all of ``.git`` (which is why plain file-watching never sees commits),
+    so we supply our own to surface just the state-changing writes.
+    """
+    parts = Path(path).parts
+    try:
+        i = parts.index(".git")
+    except ValueError:
+        return False
+    rel = parts[i + 1 :]  # path components inside the .git dir
+    if not rel:
+        return False
+    top, name = rel[0], rel[-1]
+    if top == "objects" or top == "logs" or name.endswith(".lock"):
+        return False
+    if top == "refs":  # a commit or branch create/delete moves a ref here
+        return True
+    return name in {"HEAD", "index", "packed-refs", "ORIG_HEAD", "MERGE_HEAD"}
+
+
+@router.websocket("/watch")
+async def watch_git(websocket: WebSocket, workspace_id: str) -> None:
+    """Notify the client when a repo's git state changes so the Changes panel can
+    re-fetch its diff live, without a manual refresh.
+
+    Working-tree *file* edits (agent saves, manual edits) already reach the panel
+    via the files-watch socket; this socket covers the ``.git``-internal
+    transitions that watcher deliberately ignores — commits, staging, branch
+    switches, merges/rebases/resets. Emits ``{"changed": true}`` pings; the client
+    responds by re-querying ``/git/diff``. Closes when the client disconnects.
+    """
+    async with async_session_factory() as session:
+        ws_row = await session.get(Workspace, workspace_id)
+    root = Path(ws_row.path).resolve() if ws_row and ws_row.path else None
+    if root is None or not root.is_dir():
+        # Reject the handshake (no accept) so the client backs off instead of
+        # hammering us with reconnects.
+        with contextlib.suppress(Exception):
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        return
+
+    try:
+        await websocket.accept()
+    except (WebSocketDisconnect, RuntimeError):
+        # Client dropped during the handshake (page nav / HMR reload). Bail.
+        return
+
+    stop = asyncio.Event()
+
+    async def pump() -> None:
+        async for changes in awatch(
+            root,
+            watch_filter=lambda _change, path: _is_git_state_change(path),
+            stop_event=stop,
+        ):
+            if changes:
+                with contextlib.suppress(Exception):
+                    await websocket.send_json({"changed": True})
+
+    pump_task = asyncio.create_task(pump())
+    try:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        stop.set()
+        pump_task.cancel()
