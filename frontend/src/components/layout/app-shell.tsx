@@ -7,6 +7,7 @@ import { MobileHeader } from "@/components/layout/mobile-header"
 import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
 import { DockRail } from "@/components/shell/dock-rail"
 import { MobileDockBar } from "@/components/shell/mobile-dock-bar"
+import { MobilePlanView } from "@/components/shell/mobile-plan-view"
 import { RightDock, DockPanelContent } from "@/components/shell/right-dock"
 import {
   ResizableHandle,
@@ -20,10 +21,12 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { usePreviewWatch } from "@/hooks/use-preview-watch"
 import { cn } from "@/lib/utils"
 import {
+  consumePendingFile,
   peekPendingFile,
   subscribeOpenFile,
   type OpenFileRequest,
 } from "@/lib/open-file"
+import { isPlanFile } from "@/lib/plan-doc"
 import {
   peekPendingPreview,
   subscribeOpenPreview,
@@ -70,8 +73,14 @@ export function AppShell() {
   // "chat" shows the routed content, a DockKind shows that panel full-screen.
   // Panels are mounted on first visit and kept alive (hidden) when switched
   // away, so a terminal session or editor buffer survives tab switches.
-  const [mobileView, setMobileView] = useState<"chat" | DockKind>("chat")
+  const [mobileView, setMobileView] = useState<"chat" | "plan" | DockKind>(
+    "chat"
+  )
   const [visitedKinds, setVisitedKinds] = useState<DockKind[]>([])
+  // The plan doc surfaced for this workspace's parked `/plan` turn, if any. The
+  // Files editor is desktop-only, so on mobile a plan opens in a read-only
+  // Markdown view instead (see the open-file effect below).
+  const [mobilePlan, setMobilePlan] = useState<{ path: string } | null>(null)
 
   const showMobileKind = useCallback((kind: DockKind) => {
     setVisitedKinds((prev) => (prev.includes(kind) ? prev : [...prev, kind]))
@@ -84,6 +93,7 @@ export function AppShell() {
     if (!workspaceId || !isMobile) {
       setMobileView("chat")
       setVisitedKinds([])
+      setMobilePlan(null)
     }
   }, [workspaceId, isMobile])
 
@@ -99,10 +109,18 @@ export function AppShell() {
     // Guard by request identity so re-renders don't spawn duplicate file tabs.
     if (handledPendingRef.current === pending) return
     handledPendingRef.current = pending
-    // The editor is desktop-only (Monaco isn't workable on a phone), so on
-    // mobile there's nowhere to reveal — drop the request. On desktop, open the
-    // side dock's file tab; the FileViewer itself consumes the pending request.
-    if (isMobile) return
+    // The Monaco editor is desktop-only, so on mobile the FileViewer never
+    // mounts to consume this request. Plan docs are the exception: route them to
+    // the read-only mobile plan view (consuming the request ourselves so it
+    // doesn't linger). Any other file has nowhere to go on a phone — leave it.
+    if (isMobile) {
+      if (isPlanFile(pending.name)) {
+        consumePendingFile(workspaceId)
+        setMobilePlan({ path: pending.path })
+        setMobileView("plan")
+      }
+      return
+    }
     if (!dock.tabs.some((t) => t.kind === "file")) dock.openTab("file")
     dock.setCollapsed(false)
   }, [openFileTick, workspaceId, dock, isMobile])
@@ -161,7 +179,11 @@ export function AppShell() {
           ? workspaceForTitle.data?.name ?? "Workspace"
           : "New chat"
     const mobileTitle =
-      mobileView === "chat" ? routeTitle : MOBILE_DOCK_TITLES[mobileView]
+      mobileView === "chat"
+        ? routeTitle
+        : mobileView === "plan"
+          ? "Plan"
+          : MOBILE_DOCK_TITLES[mobileView]
 
     return (
       <SidebarProvider>
@@ -195,12 +217,31 @@ export function AppShell() {
                       <DockPanelContent kind={kind} workspaceId={workspaceId} />
                     </div>
                   ))}
+                {workspaceId && (
+                  <div
+                    className={cn(
+                      "absolute inset-0 flex min-h-0 flex-col bg-background",
+                      mobileView !== "plan" && "hidden"
+                    )}
+                  >
+                    <MobilePlanView
+                      workspaceId={workspaceId}
+                      path={mobilePlan?.path}
+                    />
+                  </div>
+                )}
               </div>
               {workspaceId && (
                 <MobileDockBar
-                  activeKind={mobileView === "chat" ? null : mobileView}
+                  activeKind={
+                    mobileView === "chat" || mobileView === "plan"
+                      ? null
+                      : mobileView
+                  }
+                  planActive={mobileView === "plan"}
                   onSelectChat={() => setMobileView("chat")}
                   onSelectKind={showMobileKind}
+                  onSelectPlan={() => setMobileView("plan")}
                 />
               )}
             </div>

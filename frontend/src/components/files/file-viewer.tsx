@@ -19,6 +19,7 @@ import { toast } from "sonner"
 
 import { filesApi } from "@/api/files"
 import type { FileChange } from "@/api/files"
+import { isPlanFile } from "@/lib/plan-doc"
 import { useFileWatch } from "@/hooks/use-file-watch"
 import { useEditorSettings } from "@/hooks/use-editor-settings"
 import { AUTO_SAVE_DELAY_MS } from "@/lib/editor-settings"
@@ -74,18 +75,6 @@ function extOf(name: string): string {
 const isImageFile = (name: string) => IMAGE_EXTS.has(extOf(name))
 const isMarkdownFile = (name: string) => MARKDOWN_EXTS.has(extOf(name))
 const isProseFile = (name: string) => PROSE_EXTS.has(extOf(name))
-
-/**
- * A "plan" doc — the goal agent's `GOAL_PLAN.md` and its kin (`PLAN.md`,
- * `PROJECT_PLAN.md`, …). Matched on a whole "plan" token so `planner.md` and
- * `explanation.md` don't qualify. These open full-width (tree collapsed) since
- * they're meant to be read, not navigated away from.
- */
-function isPlanFile(name: string): boolean {
-  if (!isMarkdownFile(name)) return false
-  const base = name.slice(0, name.length - extOf(name).length - 1).toLowerCase()
-  return base.split(/[^a-z0-9]+/).includes("plan")
-}
 
 /** Persisted flag: is the file tree collapsed out of the viewer? */
 const TREE_HIDDEN_STORAGE_KEY = "lursor-file-tree-hidden"
