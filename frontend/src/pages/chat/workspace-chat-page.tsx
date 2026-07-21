@@ -36,7 +36,6 @@ import { parseSlashCommand } from "@/components/chat/commands/registry"
 import type { CommandAction } from "@/components/chat/commands/types"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import { requestOpenFile } from "@/lib/open-file"
-import { touchWorkspace } from "@/lib/workspace-recency"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
 import type { DefaultAgentsSettings } from "@/api/types"
@@ -88,11 +87,6 @@ export function WorkspaceChatPage() {
   const [gameOpen, setGameOpen] = useState(false)
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
   const { data: defaultAgents } = useDefaultAgents()
-
-  // Mark this workspace as most-recently-used so the sidebar can order by recency.
-  useEffect(() => {
-    if (workspaceId) touchWorkspace(workspaceId)
-  }, [workspaceId])
 
   const chat = useChatEngine({
     workspaceId,
