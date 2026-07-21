@@ -24,6 +24,9 @@ dist/
 # Electron packaging output
 release/
 
+# Frozen backend bundle produced by backend/scripts/build_bundle.sh
+backend/bundle/
+
 # Editor / OS
 .DS_Store
 .idea/

@@ -43,11 +43,25 @@ lursor/
   backend/     FastAPI + pydantic-deepagents + SQLite   (see backend/README.md)
   frontend/    Vite + React + Tailwind + shadcn/ui       (see frontend/README.md)
                also runs as an Electron desktop app     (see docs/ELECTRON.md)
-  docs/        Plans and design notes (docs/PLAN.md)
+  docs/        Plans and design notes (docs/PLAN.md, docs/INSTALL.md)
   scripts/     dev.sh — run backend + frontend together
+               install.sh — one-line desktop installer (curl | sh)
 ```
 
-## Quick start
+## Install (desktop app)
+
+The quickest way to run Lursor is the desktop app, which **bundles its own
+backend** — no Python, `uv`, `bun`, or manual server needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh
+```
+
+macOS (Apple Silicon/Intel) and Linux x86_64. After it installs, open Lursor and
+paste your OpenRouter key in **Settings**. See [docs/INSTALL.md](docs/INSTALL.md)
+for options and uninstall.
+
+## Quick start (from source)
 
 Two terminals (or use the dev script below).
 

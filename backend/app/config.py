@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Repo-root/backend directory, used to resolve default relative paths.
@@ -29,6 +30,18 @@ class Settings(BaseSettings):
     debug: bool = True
     # Origins allowed to call the API (the Vite dev server by default).
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    # --- Data root ---
+    # When set (env ``LURSOR_DATA_DIR``), every on-disk path that isn't explicitly
+    # overridden is rebased under this directory. The packaged desktop app sets
+    # this to a writable location (``~/.lursor``) because the app bundle itself is
+    # read-only — the DB in particular must not live inside the bundle. Left unset
+    # for source/dev runs, so existing behaviour (DB next to the backend, data
+    # under ``~/.lursor``) is preserved.
+    data_dir: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LURSOR_DATA_DIR", "data_dir"),
+    )
 
     # --- Database ---
     database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'lursor.db'}"
@@ -104,8 +117,35 @@ class Settings(BaseSettings):
     # Fallback source for the master_key when the env var is unset.
     laios_config_path: str = "~/.laios/config/laios.toml"
 
+    @model_validator(mode="after")
+    def _rebase_under_data_dir(self) -> Settings:
+        """Rebase writable paths under ``data_dir`` when it is set.
+
+        Only fields the caller did *not* set explicitly (via env / init) are
+        rebased, so an explicit ``DATABASE_URL``/``WORKSPACES_DIR``/etc. still
+        wins. This is how the packaged app points all writable state at a
+        location outside the read-only bundle without the backend caring whether
+        it runs frozen or from source.
+        """
+        if self.data_dir is None:
+            return self
+
+        root = self.data_dir.expanduser()
+        provided = self.model_fields_set
+        if "workspaces_dir" not in provided:
+            self.workspaces_dir = root / "workspaces"
+        if "skills_dir" not in provided:
+            self.skills_dir = root / "skills"
+        if "media_dir" not in provided:
+            self.media_dir = root / "media"
+        if "database_url" not in provided:
+            self.database_url = f"sqlite+aiosqlite:///{root / 'lursor.db'}"
+        return self
+
     def ensure_dirs(self) -> None:
         """Create on-disk directories the app relies on."""
+        if self.data_dir is not None:
+            self.data_dir.expanduser().mkdir(parents=True, exist_ok=True)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.skills_dir.mkdir(parents=True, exist_ok=True)

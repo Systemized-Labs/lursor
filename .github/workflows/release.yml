@@ -1,0 +1,72 @@
+name: release
+
+# Build the desktop app (renderer + frozen backend) for macOS (arm64 + x64) and
+# Linux (x64), and attach the artifacts to a GitHub Release. Triggered by pushing
+# a v* tag. Unsigned for now (see docs/PLAN-desktop-install.md) — the installer
+# strips the macOS quarantine attribute.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The frozen backend is arch-specific, so each arch is built on a
+          # matching runner rather than cross-built.
+          - os: macos-14 # Apple Silicon
+            arch: arm64
+            builder_flags: --mac
+          - os: macos-13 # Intel
+            arch: x64
+            builder_flags: --mac
+          - os: ubuntu-latest
+            arch: x64
+            builder_flags: --linux
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build frozen backend bundle
+        run: bash backend/scripts/build_bundle.sh backend/bundle
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: bun install
+
+      - name: Build renderer
+        working-directory: frontend
+        run: bun run build
+
+      - name: Package desktop app
+        working-directory: frontend
+        env:
+          # Publish to the GitHub Release that matches the tag.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder ${{ matrix.builder_flags }} --publish always
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lursor-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            frontend/release/*.dmg
+            frontend/release/*.zip
+            frontend/release/*.AppImage
+            frontend/release/*.deb
+          if-no-files-found: ignore

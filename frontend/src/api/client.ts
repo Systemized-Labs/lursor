@@ -1,4 +1,11 @@
 function resolveApiBase(): string {
+  // In the desktop app the backend runs on a port chosen at launch (possibly
+  // ephemeral), so the main process hands the resolved base to the renderer via
+  // the preload. This always wins when present.
+  const fromElectron =
+    typeof window !== "undefined" ? window.electron?.apiBase : undefined
+  if (fromElectron) return fromElectron
+
   const configured =
     (import.meta.env.VITE_API_BASE as string | undefined) ??
     "http://localhost:8791/api"

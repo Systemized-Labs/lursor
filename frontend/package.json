@@ -13,10 +13,11 @@
     "preview": "vite preview",
     "electron": "electron .",
     "electron:dev": "concurrently -k -n vite,electron -c cyan,magenta \"vite\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
-    "electron:build": "tsc -b && vite build && electron-builder",
-    "electron:build:mac": "tsc -b && vite build && electron-builder --mac",
+    "bundle:backend": "bash ../backend/scripts/build_bundle.sh ../backend/bundle",
+    "electron:build": "npm run bundle:backend && tsc -b && vite build && electron-builder",
+    "electron:build:mac": "npm run bundle:backend && tsc -b && vite build && electron-builder --mac",
     "electron:build:win": "tsc -b && vite build && electron-builder --win",
-    "electron:build:linux": "tsc -b && vite build && electron-builder --linux"
+    "electron:build:linux": "npm run bundle:backend && tsc -b && vite build && electron-builder --linux"
   },
   "dependencies": {
     "@ag-ui/client": "^0.0.57",
@@ -79,10 +80,20 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      "github"
+    ],
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "dist/**/*",
       "electron/**/*",
       "build/icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/bundle",
+        "to": "backend"
+      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
