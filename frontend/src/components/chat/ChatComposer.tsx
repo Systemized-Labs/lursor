@@ -350,6 +350,11 @@ export function ChatComposer({
             <div
               ref={highlightRef}
               aria-hidden
+              // Tagged so the mobile 16px font-size floor (index.css) applies to
+              // this overlay too. The floor targets the textarea to dodge iOS's
+              // focus zoom; the overlay paints the visible glyphs and must keep
+              // identical metrics, or the caret drifts ahead of the text.
+              data-composer-overlay
               className={cn(
                 "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-foreground",
                 FIELD_TYPO

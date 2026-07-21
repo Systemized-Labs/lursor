@@ -4041,7 +4041,11 @@
   @media (max-width: 767px) {
     input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
     textarea,
-    select {
+    select,
+    /* The chat composer paints its visible text in an overlay behind a
+       transparent textarea; it must inherit the same 16px floor or the caret
+       (from the 16px textarea) drifts ahead of the 14px overlay glyphs. */
+    [data-composer-overlay] {
       font-size: 16px !important;
     }
     .monaco-editor textarea {
