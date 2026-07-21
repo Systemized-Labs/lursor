@@ -1131,6 +1131,13 @@ async def chat(
             status.HTTP_409_CONFLICT, "A chat run is already active for this conversation"
         )
 
+    # Setup DB work is done and the detached driver uses its own background
+    # sessions — so release this request-scoped connection before returning the
+    # stream. FastAPI won't run the get_session cleanup until the SSE body is fully
+    # consumed (the whole run, potentially minutes), and the reads above leave an
+    # open transaction that would pin this pooled connection for that entire time.
+    # Left unclosed, ~15 concurrent runs exhaust the pool (QueuePool timeout).
+    await session.close()
     return subscribe_chat_sse(thread_id)
 
 
