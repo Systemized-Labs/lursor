@@ -11,6 +11,8 @@ import {
   useUsageTimeseries,
 } from "@/api/analytics"
 import { useWorkspaces } from "@/api/workspaces"
+import { useModels } from "@/api/models"
+import { formatModelName } from "@/lib/model-label"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -37,18 +39,6 @@ const RANGES = [
   { value: "90", label: "Last 90 days" },
   { value: "0", label: "All time" },
 ] as const
-
-/** Strip the routing prefix from a stored model string for display. */
-function formatModel(model: string): string {
-  if (!model) return "unknown"
-  if (model.startsWith("openrouter:")) return model.slice("openrouter:".length)
-  if (model.startsWith("custom:")) {
-    // custom:<provider_id>:<model_name> — show just the model name.
-    const parts = model.split(":")
-    return parts.length >= 3 ? parts.slice(2).join(":") : model
-  }
-  return model
-}
 
 /** Compact token counts: 1234 → "1.2K", 3.4e6 → "3.4M", 1.35e9 → "1.35B". */
 function formatTokens(n: number): string {
@@ -115,14 +105,19 @@ export function AnalyticsPage() {
   const byModelQuery = useUsageByModel(filters)
   const timeseriesQuery = useUsageTimeseries(filters)
   const yearQuery = useUsageTimeseries(yearFilters)
+  const { data: modelGroups } = useModels()
 
   const summary = summaryQuery.data
   const timeseries = timeseriesQuery.data ?? []
   const yearPoints = yearQuery.data ?? []
 
   const modelRows = useMemo(
-    () => (byModelQuery.data ?? []).map((m) => ({ ...m, name: formatModel(m.model) })),
-    [byModelQuery.data],
+    () =>
+      (byModelQuery.data ?? []).map((m) => ({
+        ...m,
+        name: formatModelName(m.model, modelGroups),
+      })),
+    [byModelQuery.data, modelGroups],
   )
 
   const totalTokens = summary?.total_tokens ?? 0

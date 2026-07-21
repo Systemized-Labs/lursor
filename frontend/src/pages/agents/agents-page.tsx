@@ -4,6 +4,8 @@ import { toast } from "sonner"
 
 import type { Agent } from "@/api/types"
 import { useAgents, useDeleteAgent } from "@/api/agents"
+import { useModels } from "@/api/models"
+import { formatModelName } from "@/lib/model-label"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -14,18 +16,6 @@ import { AgentFormDialog } from "./agent-form-dialog"
 
 const DESCRIPTION = "Configure the agents available in your harness."
 
-/**
- * Shorten a model identifier for display. Custom providers use a
- * `custom:<provider-uuid>:<model-name>` form that is far too long to render in a
- * badge, so we surface just the trailing model name and keep the full value in a
- * tooltip via `title`.
- */
-function formatModel(model: string | null): string {
-  if (!model) return "default model"
-  const parts = model.split(":")
-  return parts[parts.length - 1] || model
-}
-
 /** Two-character monogram derived from the agent name, for the card avatar. */
 function monogram(name: string): string {
   return name.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "A"
@@ -33,6 +23,7 @@ function monogram(name: string): string {
 
 export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: agents, isLoading, isError, error } = useAgents()
+  const { data: modelGroups } = useModels()
   const deleteAgent = useDeleteAgent()
 
   const [formOpen, setFormOpen] = useState(false)
@@ -145,7 +136,9 @@ export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
                   className="max-w-full font-normal"
                   title={agent.model ?? "default model"}
                 >
-                  <span className="truncate">{formatModel(agent.model)}</span>
+                  <span className="truncate">
+                    {formatModelName(agent.model, modelGroups)}
+                  </span>
                 </Badge>
                 <Badge variant="outline" className="font-normal">
                   thinking: {agent.thinking}

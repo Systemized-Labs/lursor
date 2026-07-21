@@ -17,22 +17,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
-
-// Cloud models are served through OpenRouter and carry this prefix (see backend
-// `default_model`). The backend now also stamps each catalogue entry with a
-// canonical `value` — the exact string to persist — which lets custom
-// (locally-hosted) models coexist. Fallback/legacy entries have no `value`, so
-// we synthesize the OpenRouter form from the bare id.
-const MODEL_PREFIX = "openrouter:"
-// Marks a locally-hosted model (see backend). Custom groups get their own
-// filter chip keyed by the provider's group label.
-const CUSTOM_PREFIX = "custom:"
-
-/** The string to persist / match on for an entry. */
-const entryValue = (m: ModelEntry) => m.value ?? `${MODEL_PREFIX}${m.id}`
-
-const isCustomGroup = (g: ModelGroup) =>
-  g.models.some((m) => m.value?.startsWith(CUSTOM_PREFIX))
+import { entryValue, formatModelLabel, isCustomGroup } from "@/lib/model-label"
 
 // Fallback static list used when the API is unavailable.
 const FALLBACK_MODEL_GROUPS: ModelGroup[] = [
@@ -210,15 +195,10 @@ export function ModelPicker({
   const { data: modelGroups, isError } = useModels()
   const groups: ModelGroup[] = isError || !modelGroups ? FALLBACK_MODEL_GROUPS : modelGroups
 
-  // Human label for a stored model string ("group — label", else the raw string).
+  // Human label for a stored model string ("group — label", else the bare
+  // model name — never the raw `custom:{uuid}:…` routing string).
   const labelFor = useCallback(
-    (v: string) => {
-      for (const group of groups) {
-        const match = group.models.find((m) => entryValue(m) === v)
-        if (match) return `${group.label} — ${match.label}`
-      }
-      return v
-    },
+    (v: string) => formatModelLabel(v, groups),
     [groups]
   )
 

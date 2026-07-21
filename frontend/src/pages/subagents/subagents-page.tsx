@@ -10,6 +10,8 @@ import {
   useUpdateSubagent,
   useUpdateSubagentDefaults,
 } from "@/api/subagents"
+import { useModels } from "@/api/models"
+import { formatModelName } from "@/lib/model-label"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -203,6 +205,7 @@ function UserSubagentCard({
   onEdit: () => void
   onDelete: () => void
 }) {
+  const { data: modelGroups } = useModels()
   return (
     <Card className={cn("flex flex-col", !subagent.enabled && "opacity-60")}>
       <CardHeader className="gap-3">
@@ -223,8 +226,12 @@ function UserSubagentCard({
       </CardHeader>
       <CardContent className="space-y-1.5">
         {subagent.model && (
-          <p className="truncate text-xs text-muted-foreground">
-            <span className="text-foreground/70">Model:</span> {subagent.model}
+          <p
+            className="truncate text-xs text-muted-foreground"
+            title={subagent.model}
+          >
+            <span className="text-foreground/70">Model:</span>{" "}
+            {formatModelName(subagent.model, modelGroups)}
           </p>
         )}
         <p className="line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground">
