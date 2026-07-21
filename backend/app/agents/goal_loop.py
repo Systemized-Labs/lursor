@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -132,13 +133,17 @@ def planning_instruction() -> str:
         "what this plan is about — a few words, lowercase, hyphen-separated, using "
         "only letters, numbers and hyphens (e.g. `PLAN-stripe-checkout.md` or "
         "`PLAN-dark-mode-toggle.md`). Structure the plan as an ordered checklist "
-        "of concrete steps plus any key decisions or assumptions. In your chat "
-        "reply, briefly summarise the plan and invite the user to request changes "
-        "— you'll refine it together until they're happy with it.\n"
+        "of concrete steps plus any key decisions or assumptions, and ALWAYS "
+        "include a `## Success Criteria` section spelling out, as a checklist, "
+        "what must be true for the plan to count as fully implemented — this is "
+        "what the agent will be judged against when the plan is later executed. "
+        "In your chat reply, briefly summarise the plan and invite the user to "
+        "request changes — you'll refine it together until they're happy with it.\n"
         "Do NOT start doing the work yet: this is a planning conversation. Beyond "
         f"reading/searching the codebase and writing your plan file in `{PLAN_DIR}/`"
-        ", make no changes. Nothing runs while you're planning; when the user is "
-        "ready to execute they'll ask you to carry the plan out in a normal message."
+        ", make no changes. Nothing runs while you're planning; the user refines "
+        "the plan by sending more messages, and presses \"Execute plan\" when "
+        "they're ready for you to carry it out."
     )
 
 
@@ -151,12 +156,55 @@ def refine_instruction(plan_doc: str) -> str:
         "## Plan mode — refining the plan with the user\n"
         f"The user is giving feedback on the plan you already wrote to "
         f"`{plan_doc}`. Read the current `{plan_doc}` with your file tools, apply "
-        "the requested changes, and save the updated plan. In your chat reply, "
-        "briefly say what you changed and invite further edits.\n"
+        "the requested changes, and save the updated plan. Keep the "
+        "`## Success Criteria` section accurate as the plan changes. In your chat "
+        "reply, briefly say what you changed and invite further edits.\n"
         "Do NOT start doing the work yet: this is still the planning conversation. "
-        "The user may keep refining (another `/plan` message); nothing runs until "
-        "they ask you to execute in a normal message."
+        "The user keeps refining by sending more messages; nothing runs until they "
+        "press \"Execute plan\"."
     )
+
+
+# Heading that marks the plan's success-criteria section. When a parked plan is
+# executed (``turn == "execute_plan"``), this section becomes the goal loop's
+# completion condition — see :func:`extract_success_criteria`.
+SUCCESS_CRITERIA_HEADING = "success criteria"
+
+
+def extract_success_criteria(doc_text: str) -> str:
+    """Return the body of the plan's ``## Success Criteria`` section, or ``""``.
+
+    Matches a Markdown heading (any level) whose text is "Success Criteria"
+    (case-insensitive) and returns everything up to the next heading of the same
+    or higher level. Callers fall back to the whole doc when this returns empty
+    (the section is optional in older/hand-written plans).
+    """
+    lines = doc_text.splitlines()
+    start: int | None = None
+    start_level = 0
+    for i, line in enumerate(lines):
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if m and m.group(2).strip().lower() == SUCCESS_CRITERIA_HEADING:
+            start = i + 1
+            start_level = len(m.group(1))
+            break
+    if start is None:
+        return ""
+    body: list[str] = []
+    for line in lines[start:]:
+        m = re.match(r"^(#{1,6})\s+", line)
+        if m and len(m.group(1)) <= start_level:
+            break
+        body.append(line)
+    return "\n".join(body).strip()
+
+
+def read_plan_doc(workspace_path: str | Path, plan_path: str) -> str:
+    """Read a workspace-relative plan doc's text, or ``""`` if it's unreadable."""
+    with contextlib.suppress(OSError):
+        return (Path(workspace_path) / plan_path).read_text(encoding="utf-8")
+    return ""
+
 
 # Seeds the first turn of the autonomous goal loop (``/goal`` — no plan step).
 AUTONOMOUS_KICKOFF = (
@@ -164,6 +212,17 @@ AUTONOMOUS_KICKOFF = (
     "then carry them out, surfacing concrete evidence (command output, exit "
     "codes, test results, file state) as you go so completion can be verified."
 )
+
+
+def plan_execute_kickoff(plan_path: str) -> str:
+    """Seed for executing an approved plan doc: read it, then implement it."""
+    return (
+        f"The user has approved the plan at `{plan_path}` and wants it fully "
+        "implemented. Read that file now, then break it into steps with the "
+        "write_todos tool and carry them out, surfacing concrete evidence "
+        "(command output, exit codes, test results, file state) as you go so "
+        "completion can be verified against the plan's Success Criteria."
+    )
 
 # Mid-run steering: messages the user sends while the autonomous loop is running.
 #

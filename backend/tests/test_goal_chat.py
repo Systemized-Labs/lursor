@@ -182,13 +182,20 @@ async def test_interjection_is_consumed_during_execution(
     assert drain_interjections(tid) == []
 
 
-async def test_plan_turn_plans_then_executes_via_chat(
-    client: AsyncClient, monkeypatch
+async def test_plan_parks_then_refines_then_execute_plan_runs(
+    client: AsyncClient, monkeypatch, tmp_path
 ):
     """`/plan` is a per-turn intent (no sticky mode): a plan turn drafts a plan doc
-    and parks the thread awaiting review. A following plain chat turn executes it as
-    an ordinary full-tool turn and clears the park back to idle."""
+    and parks the thread awaiting review. While parked, a plain chat turn *refines*
+    the plan (it does NOT execute) and the thread stays parked. An `execute_plan`
+    turn then carries the approved plan out as a goal, seeded from the plan doc's
+    Success Criteria, and runs to completion."""
+    import pathlib
+
     monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
+    )
 
     agent = (await client.post("/agents", json={"name": "Goalie2"})).json()
     ws = (await client.post("/workspaces", json={"name": "GoalWS2"})).json()
@@ -217,25 +224,44 @@ async def test_plan_turn_plans_then_executes_via_chat(
     _assert_valid_lifecycle(
         await _drain_chat(client, tid, _input("m1", "refactor it", "plan"))
     )
-    assert (await client.get(f"/threads/{tid}")).json()["status"] == "awaiting_approval"
+    parked = (await client.get(f"/threads/{tid}")).json()
+    assert parked["status"] == "awaiting_approval"
+    plan_path = parked["plan_path"]
+    assert plan_path == ".agents/plan/PLAN-refactor-it.md"
 
-    # Phase 2 — a plain chat turn executes and clears the park.
-    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m2", "go ahead")))
+    # Phase 2 — a plain chat turn REFINES the plan; it stays parked (not idle).
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m2", "tweak it")))
+    refined = (await client.get(f"/threads/{tid}")).json()
+    assert refined["status"] == "awaiting_approval"
+    assert refined["plan_path"] == plan_path
+
+    # Write a plan doc with a Success Criteria section so execute_plan has something
+    # concrete to seed the goal loop with (the offline TestModel writes no file).
+    doc = pathlib.Path(ws["path"]) / plan_path
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "# Plan\n\n1. Do the thing.\n\n## Success Criteria\n\n- The thing is done.\n",
+        encoding="utf-8",
+    )
+
+    # Phase 3 — "Execute plan" carries the approved plan out as a goal. The turn's
+    # body is ignored; the goal is derived from the plan doc's Success Criteria.
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, _input("m3", "Execute plan", "execute_plan"))
+    )
     executed = (await client.get(f"/threads/{tid}")).json()
     assert executed["mode"] == "chat"
-    assert executed["status"] == "idle"
+    assert executed["status"] == "completed"
+    assert executed["goal"] == f"Fully implement the plan at {plan_path}."
+    assert "The thing is done." in executed["success_criteria"]
 
 
-async def test_plan_turn_refines_then_executes_on_chat(
+async def test_plain_message_refines_a_parked_plan_and_slash_plan_starts_fresh(
     client: AsyncClient, monkeypatch
 ):
-    """Repeated `/plan` turns refine the plan doc and never execute; a plain chat
-    turn is what executes.
-
-    First /plan → a fresh plan (PLANNING_INSTRUCTION), parked awaiting review. A
-    second /plan while the thread is parked is a refinement turn (REFINE_INSTRUCTION)
-    that stays in awaiting_approval — nothing executes. A plain chat turn then runs
-    normally (no planning instruction) and clears the park.
+    """While a plan is parked, a plain chat message refines the existing doc
+    (REFINE_INSTRUCTION), never executing; a fresh `/plan` starts a NEW plan
+    (PLANNING_INSTRUCTION). Both stay in awaiting_approval.
     """
     monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
 
@@ -286,10 +312,10 @@ async def test_plan_turn_refines_then_executes_on_chat(
     # The fresh instruction directs the agent to name its own file under .agents/plan/.
     assert ".agents/plan/" in captured[-1]
 
-    # Second /plan while parked → refinement (REFINE_INSTRUCTION), still parked
+    # A plain chat turn while parked → refinement (REFINE_INSTRUCTION), still parked
     # awaiting review — no execution. Same doc is reused.
     _assert_valid_lifecycle(
-        await _drain_chat(client, tid, _input("m2", "also add tests", "plan"))
+        await _drain_chat(client, tid, _input("m2", "also add tests"))
     )
     refined = (await client.get(f"/threads/{tid}")).json()
     assert refined["status"] == "awaiting_approval"
@@ -297,12 +323,15 @@ async def test_plan_turn_refines_then_executes_on_chat(
     assert "refining the plan with the user" in captured[-1]
     assert refined["plan_path"] in captured[-1]
 
-    # A plain chat turn executes (no planning instruction) and clears the park.
-    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m3", "go ahead")))
-    executed = (await client.get(f"/threads/{tid}")).json()
-    assert executed["mode"] == "chat"
-    assert executed["status"] == "idle"
-    assert captured[-1] is None or "plan" not in (captured[-1] or "").lower()
+    # A fresh /plan while parked → a NEW plan (PLANNING_INSTRUCTION again), not a
+    # refinement. Still parked, nothing executes.
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, _input("m3", "start over", "plan"))
+    )
+    replanned = (await client.get(f"/threads/{tid}")).json()
+    assert replanned["status"] == "awaiting_approval"
+    assert "do NOT execute yet" in captured[-1]
+    assert "refining the plan with the user" not in captured[-1]
 
 
 def test_detect_written_plan_picks_the_agent_named_doc(tmp_path):

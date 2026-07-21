@@ -507,7 +507,9 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
       text: string,
       attachments: PendingAttachment[] = [],
       turnIntent: TurnIntent = "chat",
-      kind: MessageKind = turnIntent
+      // `execute_plan` isn't a persisted message kind (it has no body); it kicks
+      // off a goal, so badge any stray message as "goal".
+      kind: MessageKind = turnIntent === "execute_plan" ? "goal" : turnIntent
     ) => {
       const trimmed = text.trim()
       if (!trimmed && attachments.length === 0) return

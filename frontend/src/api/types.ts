@@ -270,8 +270,10 @@ export type ThreadMode = "chat" | "plan" | "goal"
 
 /** Per-turn intent sent with a message. `chat` is full tools (default); `ask`
  *  is a read-only turn; `goal` kicks off a one-off autonomous run; `plan`
- *  proposes a plan doc without executing. All are per-turn — none are sticky. */
-export type TurnIntent = "chat" | "ask" | "goal" | "plan"
+ *  proposes a plan doc without executing; `execute_plan` carries an approved plan
+ *  doc out as a goal (no message body). A plain `chat` turn while a plan is parked
+ *  refines the doc rather than implementing it. All are per-turn — none are sticky. */
+export type TurnIntent = "chat" | "ask" | "goal" | "plan" | "execute_plan"
 
 /** Lifecycle of a plan/goal run (mirrors backend `ThreadStatus`; `goal_status`
  *  on the wire). */

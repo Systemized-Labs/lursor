@@ -279,8 +279,9 @@ export function WorkspaceChatPage() {
           return
       }
     }
-    // A plain message always executes as a normal chat turn. To refine a parked
-    // plan instead, the user sends `/plan …` again.
+    // A plain message sends a normal `chat` turn. When a plan is parked the
+    // backend treats that turn as a refinement of the plan doc (not an
+    // implementation); the user presses "Execute plan" to carry it out.
     await chat.send(text, atts, "chat")
   }
 
@@ -312,6 +313,23 @@ export function WorkspaceChatPage() {
 
   const runView = goalStatus
   const goalExecuting = runView?.status === "running"
+
+  // A `/plan` turn parks the thread in `awaiting_approval` with a plan doc. While
+  // parked, plain messages refine the doc and an "Execute plan" button carries it
+  // out as a goal. Two sources of the parked state (live event; persisted thread),
+  // matching the plan-doc auto-open effect below.
+  const isParked =
+    runView?.status === "awaiting_approval" ||
+    (currentThread?.status === "awaiting_approval" && !!currentThread?.plan_path)
+  const planPath = runView?.planPath || currentThread?.plan_path || undefined
+
+  // Carry the approved plan out as a goal. The visible "Execute plan" turn reads
+  // cleanly in the transcript; the backend ignores its text and seeds the goal
+  // loop from the plan doc's Success Criteria instead.
+  async function handleExecutePlan() {
+    void stick.scrollToBottom()
+    await chat.send("Execute plan", [], "execute_plan")
+  }
 
   // Open the thread's plan doc in the file panel when a `/plan` turn parks it in
   // review. Two sources of "parked": the live goal-status event (fresh, carries the
@@ -497,24 +515,50 @@ export function WorkspaceChatPage() {
             />
           </GoalRunPanel>
         ) : (
-          <ChatComposer
-            input={draft}
-            onInputChange={setDraft}
-            onKeyDown={handleKeyDown}
-            onSend={() => void handleSend()}
-            onStop={chat.stop}
-            isSending={isStreaming}
-            disabled={noAgents}
-            placeholder="Type a message, or / for commands…"
-            attachments={attachments}
-            onAttachmentsChange={setAttachments}
-            mentionSources={mentionSources}
-            queuedMessages={queue}
-            queuePaused={queuePaused}
-            onRemoveQueued={chat.removeQueued}
-            onEditQueued={chat.editQueued}
-            onResumeQueue={chat.resumeQueue}
-          />
+          <>
+            {isParked && !isStreaming && (
+              <div className="mx-auto mb-1 flex w-full max-w-3xl items-center gap-3 rounded-lg border border-border bg-card px-4 py-2.5 sm:px-6">
+                <NotePencil className="h-4 w-4 shrink-0 text-primary" />
+                <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                  Plan ready for review
+                  {planPath ? (
+                    <span className="text-foreground"> · {baseName(planPath)}</span>
+                  ) : null}
+                  . Send a message to refine it, or execute it as a goal.
+                </p>
+                <Button
+                  size="sm"
+                  className="h-7 shrink-0"
+                  onClick={() => void handleExecutePlan()}
+                  disabled={noAgents}
+                >
+                  Execute plan
+                </Button>
+              </div>
+            )}
+            <ChatComposer
+              input={draft}
+              onInputChange={setDraft}
+              onKeyDown={handleKeyDown}
+              onSend={() => void handleSend()}
+              onStop={chat.stop}
+              isSending={isStreaming}
+              disabled={noAgents}
+              placeholder={
+                isParked
+                  ? "Refine the plan, or press Execute plan to run it…"
+                  : "Type a message, or / for commands…"
+              }
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              mentionSources={mentionSources}
+              queuedMessages={queue}
+              queuePaused={queuePaused}
+              onRemoveQueued={chat.removeQueued}
+              onEditQueued={chat.editQueued}
+              onResumeQueue={chat.resumeQueue}
+            />
+          </>
         )}
       </div>
     </ChatStoreProvider>

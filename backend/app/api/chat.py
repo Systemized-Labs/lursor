@@ -51,10 +51,13 @@ from app.agents.goal_loop import (
     detect_written_plan,
     drive_goal_loop,
     encode_goal_status_event,
+    extract_success_criteria,
     messages_to_history,
     plan_doc_path,
+    plan_execute_kickoff,
     planning_instruction,
     queue_interjection,
+    read_plan_doc,
     refine_instruction,
     scan_plan_dir,
 )
@@ -787,8 +790,11 @@ async def chat(
     attachments: list[dict] = []
     # Per-turn intent rides on the AG-UI request as a forwarded prop, set by the
     # frontend slash-command dispatch: "chat" (full tools, the default), "ask"
-    # (read-only agent), "goal" (one-off autonomous run) or "plan" (propose a plan
-    # doc without executing). All are per-turn — no sticky thread mode is involved.
+    # (read-only agent), "goal" (one-off autonomous run), "plan" (propose a plan
+    # doc without executing) or "execute_plan" (carry an approved plan doc out as a
+    # goal). All are per-turn — no sticky thread mode is involved. A plain "chat"
+    # turn while a plan is parked (`awaiting_approval`) is treated as a plan
+    # *refinement* (see the driver dispatch below), not an implementation.
     turn = "chat"
     # Skills the user @-referenced in the composer this turn (slugs); their full
     # bodies are force-loaded into the turn below. Client-supplied, so validated
@@ -815,12 +821,16 @@ async def chat(
                 )
         if user_text or attachments:
             # Tag the turn for the history badge: /ask, /goal and /plan all ride on
-            # the per-turn `turn` flag (plan is no longer a sticky thread mode).
+            # the per-turn `turn` flag (plan is no longer a sticky thread mode). A
+            # plain message while a plan is parked is a plan refinement, so badge it
+            # "plan" too so the transcript reads as one planning conversation.
             if turn == "ask":
                 msg_kind = "ask"
-            elif turn == "goal":
+            elif turn == "goal" or turn == "execute_plan":
                 msg_kind = "goal"
-            elif turn == "plan":
+            elif turn == "plan" or (
+                turn == "chat" and thread.status == ThreadStatus.awaiting_approval
+            ):
                 msg_kind = "plan"
             else:
                 msg_kind = "chat"
@@ -875,25 +885,27 @@ async def chat(
             )
             _strip_inline_images(adapter.run_input, note.strip())
 
-    # /plan and /goal are both one-off per-turn runs, not sticky thread modes: the
-    # objective is this message. A /plan turn writes/refines a plan doc and parks in
-    # `awaiting_approval`; the user then chats normally to carry the plan out.
-    is_plan = turn == "plan"
-    # /goal is a one-off per-turn run (turn == "goal"), not a sticky thread mode:
-    # the objective is this message, and the thread stays a plain chat thread.
+    # `/plan`, `/goal` and "Execute plan" are all one-off per-turn runs, not sticky
+    # thread modes. A `/plan` turn drafts a NEW plan doc and parks the thread in
+    # `awaiting_approval`. While parked, a plain message *refines* that doc (it does
+    # NOT implement it); the user presses "Execute plan" (turn == "execute_plan")
+    # to carry the approved plan out as a goal.
+    parked = thread.status == ThreadStatus.awaiting_approval
     run_goal = turn == "goal"
+    is_execute_plan = turn == "execute_plan"
+    # A plain chat turn on a parked plan is a refinement of the existing doc. `/ask`
+    # is read-only and `/plan` always starts fresh, so neither refines.
+    is_refine = parked and turn == "chat"
+    # `/plan` (fresh draft) or a plain-message refinement both run the plan driver.
+    run_plan = turn == "plan" or is_refine
     condition = user_text.strip() or (thread.success_criteria or thread.goal).strip()
     todos_state: dict = {"json": None}
 
     async def chat_driver() -> None:
-        # Plain chat (or /ask): one turn, natural AG-UI lifecycle intact.
-        # An executing chat turn on a thread parked in `awaiting_approval` (from a
-        # prior /plan) means the user is carrying the plan out and moving on, so
-        # clear the parked state — a later /plan then starts a fresh plan rather
-        # than refining the old one, and the plan doc stops auto-reopening. /ask is
-        # read-only, so it leaves any parked plan untouched.
-        if turn == "chat" and thread.status == ThreadStatus.awaiting_approval:
-            await _set_thread_state(thread_id, status=ThreadStatus.idle)
+        # Plain chat (or /ask): one turn, natural AG-UI lifecycle intact. A plain
+        # turn on a *parked* plan is handled by the plan driver (refinement), so
+        # this path only runs for non-parked chat/`ask` turns and never needs to
+        # touch a parked plan's state.
         # ``_stream_turn`` persists the turn (including any partial on stop/error)
         # from its own ``finally``, so a stop just propagates the CancelledError.
         await _stream_turn(
@@ -906,15 +918,13 @@ async def chat(
         )
         chat_run_manager.finish(thread_id, "finished")
 
-    # A /plan turn on a thread already parked in `awaiting_approval` is a
-    # *refinement*: the user is giving feedback on the plan already written, so we
-    # reuse that thread's doc and frame the turn as revising the existing draft. A
-    # fresh /plan (thread not parked) lets the agent research and write a NEW plan
-    # doc, naming it itself (resolved after the turn — see `plan_driver`). The
-    # request adapter
-    # already carries the full frontend transcript and any image attachments, so the
-    # planning turn has full conversational context without re-seeding from the DB.
-    is_refine = is_plan and thread.status == ThreadStatus.awaiting_approval
+    # A plain message on a thread parked in `awaiting_approval` is a *refinement*:
+    # the user is giving feedback on the plan already written, so we reuse that
+    # thread's doc and frame the turn as revising the existing draft. A `/plan` turn
+    # always starts a NEW plan doc, naming it itself (resolved after the turn — see
+    # `plan_driver`). The request adapter already carries the full frontend
+    # transcript and any image attachments, so the planning turn has full
+    # conversational context without re-seeding from the DB.
     plan_instruction = (
         refine_instruction(thread.plan_path or plan_doc_path(thread.title))
         if is_refine
@@ -995,11 +1005,38 @@ async def chat(
         _publish_lifecycle_finish(thread_id, run_id)
         chat_run_manager.finish(thread_id, "finished")
 
-    if run_goal:
-        # /goal: run the autonomous loop straight away for this one submission —
-        # no approval gate, no sticky mode. Load context in request scope (the
-        # detached driver must not touch the request-scoped session after the
+    if run_goal or is_execute_plan:
+        # Autonomous goal loop, run straight away for this one submission — no
+        # sticky mode. `/goal` takes its objective from this message; "Execute plan"
+        # derives it from the approved plan doc. Both load context in request scope
+        # (the detached driver must not touch the request-scoped session after the
         # response starts).
+        if is_execute_plan:
+            plan_path = thread.plan_path
+            if not plan_path:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "No plan to execute for this conversation"
+                )
+            doc_text = read_plan_doc(workspace.path, plan_path)
+            # The plan's `## Success Criteria` section is what "done" means; fall
+            # back to the whole doc when a plan omits that section.
+            goal_condition = extract_success_criteria(doc_text) or doc_text.strip()
+            if not goal_condition:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "The plan doc is empty or unreadable"
+                )
+            # Persist the derived goal + clear the park so the run (and any reconnect)
+            # shows the objective and no longer reads as awaiting approval.
+            thread.goal = f"Fully implement the plan at {plan_path}."
+            thread.success_criteria = goal_condition
+            thread.status = ThreadStatus.running
+            session.add(thread)
+            await session.commit()
+            goal_kickoff = plan_execute_kickoff(plan_path)
+        else:
+            goal_condition = condition
+            goal_kickoff = AUTONOMOUS_KICKOFF
+
         rows = (
             await session.execute(
                 select(Message)
@@ -1021,16 +1058,16 @@ async def chat(
                 deps,
                 accept=accept,
                 evaluator=evaluator,
-                condition=condition,
+                condition=goal_condition,
                 max_turns=max_iter,
                 media_instructions=media_instructions,
                 initial_history=initial_history,
                 workspace_id=workspace.id,
-                kickoff=AUTONOMOUS_KICKOFF,
+                kickoff=goal_kickoff,
             )
 
         driver = goal_driver
-    elif is_plan:
+    elif run_plan:
         driver = plan_driver
     else:
         driver = chat_driver

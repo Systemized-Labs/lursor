@@ -15,9 +15,35 @@ from app.agents.goal_loop import (
     _enqueue_interjections,
     drain_interjections,
     drive_goal_loop,
+    extract_success_criteria,
     queue_interjection,
 )
 from app.db.models import ThreadStatus
+
+
+def test_extract_success_criteria_pulls_the_section_body():
+    """The `## Success Criteria` section body is returned, up to the next heading."""
+    doc = (
+        "# Plan\n\n"
+        "1. Step one.\n"
+        "2. Step two.\n\n"
+        "## Success Criteria\n\n"
+        "- Tests pass.\n"
+        "- Lint is clean.\n\n"
+        "## Notes\n\n"
+        "Ignore this trailing section.\n"
+    )
+    out = extract_success_criteria(doc)
+    assert "- Tests pass." in out
+    assert "- Lint is clean." in out
+    assert "Ignore this trailing section." not in out
+    assert "Step one" not in out
+
+
+def test_extract_success_criteria_is_case_insensitive_and_optional():
+    """Heading match ignores case; a doc without the section returns ``""``."""
+    assert "done" in extract_success_criteria("### success criteria\n\ndone\n")
+    assert extract_success_criteria("# Plan\n\nNo criteria here.\n") == ""
 
 
 def _scripted_evaluator(evaluations: list[GoalEvaluation]):
