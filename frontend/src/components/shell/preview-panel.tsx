@@ -16,11 +16,63 @@ import {
 /** Common local dev-server ports, offered as one-tap shortcuts in the empty state. */
 const COMMON_PORTS = [3000, 5173, 8000, 8080] as const
 
-/** True when two addresses resolve to the same normalized URL (ignores trailing `/`). */
+/** Loopback hosts a dev server reports itself on — none of which resolve to the
+ *  machine running it when the UI is opened from another device. */
+const LOOPBACK_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "0.0.0.0",
+  "::1",
+  "[::1]",
+])
+
+/**
+ * The browser's hostname, but only when it's a real network host worth
+ * preferring over a loopback address — i.e. the UI is being viewed from another
+ * device (a phone hitting the Mac's LAN IP). Returns `null` on the Electron /
+ * `file:` desktop shell or when already on localhost, so those keep loopback
+ * URLs untouched.
+ */
+function originHost(): string | null {
+  if (typeof window === "undefined") return null
+  const host = window.location.hostname
+  if (!host || LOOPBACK_HOSTS.has(host)) return null
+  return host
+}
+
+/**
+ * Rewrite a loopback dev-server URL's host to the browser's origin host, so a
+ * preview opened from another device (a phone on the LAN) hits the machine
+ * actually running the server instead of the phone's own `localhost`. Scheme,
+ * port, and path are preserved; non-loopback hosts and unparseable input pass
+ * through unchanged. A no-op on the desktop shell (see {@link originHost}).
+ */
+function toBrowserHost(raw: string): string {
+  const host = originHost()
+  if (!host) return raw
+  try {
+    const u = new URL(raw)
+    if (LOOPBACK_HOSTS.has(u.hostname)) {
+      u.hostname = host
+      return u.toString()
+    }
+    return raw
+  } catch {
+    return raw
+  }
+}
+
+/**
+ * True when two addresses point at the same server. Compared after rewriting
+ * loopback hosts to the origin host, so a detected `http://localhost:3000` and
+ * the `http://<lan-ip>:3000` actually loaded in the iframe count as one — which
+ * keeps the "already loaded" dedup and the starting→ready auto-reload working.
+ */
 function sameUrl(a: string, b: string): boolean {
   const na = normalizeUrl(a)
   const nb = normalizeUrl(b)
-  return na !== null && na === nb
+  if (na === null || nb === null) return false
+  return toBrowserHost(na) === toBrowserHost(nb)
 }
 
 const STORAGE_PREFIX = "lursor:preview:"
@@ -82,8 +134,12 @@ interface PreviewPanelProps {
 export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
   // Dev servers the backend detected for this workspace (stream-derived).
   const detected = usePreviewServersFor(workspaceId)
-  // The committed URL currently loaded in the iframe.
-  const [url, setUrl] = useState<string>(() => readSavedUrl(workspaceId))
+  // The committed URL currently loaded in the iframe. A URL saved on the desktop
+  // shell (loopback) is rewritten to this browser's host on restore, so opening
+  // the same workspace from a phone loads the right machine.
+  const [url, setUrl] = useState<string>(() =>
+    toBrowserHost(readSavedUrl(workspaceId))
+  )
   // The editable address-bar value (may differ from `url` while typing).
   const [draft, setDraft] = useState<string>(url)
   // Bumping this key forces the iframe to remount, which reloads the page even
@@ -96,7 +152,7 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
   useEffect(() => {
     if (wsRef.current === workspaceId) return
     wsRef.current = workspaceId
-    const saved = readSavedUrl(workspaceId)
+    const saved = toBrowserHost(readSavedUrl(workspaceId))
     setUrl(saved)
     setDraft(saved)
   }, [workspaceId])
@@ -105,9 +161,12 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
     (raw: string) => {
       const normalized = normalizeUrl(raw)
       if (!normalized) return
-      setUrl(normalized)
-      setDraft(normalized)
-      writeSavedUrl(workspaceId, normalized)
+      // Prefer the machine actually running the server over a loopback address,
+      // so a preview opened from a phone on the LAN loads correctly.
+      const target = toBrowserHost(normalized)
+      setUrl(target)
+      setDraft(target)
+      writeSavedUrl(workspaceId, target)
       setLoading(true)
       setReloadKey((k) => k + 1)
     },
@@ -195,7 +254,7 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
             autoCorrect="off"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="localhost:3000"
+            placeholder="Search or enter URL"
             aria-label="Preview URL"
             className="h-7 w-full rounded-md border border-transparent bg-muted/60 px-2.5 text-xs text-foreground transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-ring/40 focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-ring/15"
           />
