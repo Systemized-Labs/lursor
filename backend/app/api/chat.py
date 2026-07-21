@@ -447,7 +447,6 @@ async def _stream_turn(
     *,
     message_history: list[ModelMessage] | None,
     instructions: str | None,
-    accumulated: list[str],
     todos_state: dict,
     strip_lifecycle: bool = False,
     kind: str = "chat",
@@ -459,16 +458,49 @@ async def _stream_turn(
     so a goal loop can feed it into the next turn. ``todos_state`` carries the
     last-published todo JSON across a run's turns (``{"json": str | None}``).
     ``kind`` (chat | plan | goal) tags the usage row recorded on completion.
+
+    The assistant turn is persisted from a ``finally`` so it survives *however*
+    the stream ends — clean finish, stop/abort, or a model/tool error. On a clean
+    finish we save the run's final output; otherwise we save whatever text +
+    tool calls streamed before the interruption, so a stopped turn keeps its
+    tool blocks (usage is only recorded when the run actually completed).
     """
     captured: dict[str, object] = {}
-    # Per-turn tool calls, keyed by id (insertion-ordered). Filled as events flow
-    # through ``_tee_events``; persisted with the turn once the stream drains.
+    # Per-turn buffers, filled as events flow through ``_tee_events``. ``text``
+    # backs the partial persisted on abort/error; ``tool_calls`` (keyed by id,
+    # insertion-ordered) is persisted with the turn regardless of outcome. Both
+    # are turn-local so a multi-turn goal run persists each turn separately
+    # instead of concatenating every prior turn on a mid-run stop.
+    text: list[str] = []
     tool_calls: dict[str, dict] = {}
+    persisted = False
 
     async def on_complete(result) -> None:
         # Only capture here — the tool-call accumulator isn't guaranteed complete
         # until the encode loop below has drained, so persistence happens after it.
         captured["result"] = result
+
+    async def persist_turn() -> None:
+        nonlocal persisted
+        if persisted:
+            return
+        persisted = True
+        result = captured.get("result")
+        if result is not None:
+            output = getattr(result, "output", None)
+            content = output if isinstance(output, str) else str(output) if output else ""
+        else:
+            # Stopped/errored mid-run: on_complete never fired, so fall back to the
+            # text streamed so far.
+            content = "".join(text)
+        await _persist_message(
+            thread_id, "assistant", content, tool_calls=list(tool_calls.values())
+        )
+        if result is not None:
+            # ``AgentRunResult.usage`` is a property (not a method) that returns the
+            # run's ``RunUsage``; ``_persist_usage`` guards its own failures. Usage is
+            # only known on a completed run, so skip it on abort/error.
+            await _persist_usage(thread_id, kind, getattr(result, "usage", None))
 
     stream = turn_adapter.run_stream(
         message_history=message_history,
@@ -478,30 +510,26 @@ async def _stream_turn(
         usage_limits=UsageLimits(request_limit=_MAX_TURN_REQUESTS),
         capabilities=capabilities,
     )
-    async for encoded in turn_adapter.encode_stream(
-        _tee_events(stream, accumulated, tool_calls, strip_lifecycle=strip_lifecycle)
-    ):
-        chat_run_manager.publish(thread_id, encoded)
-        # A todo tool call mutated deps.todos in place — surface the new list to
-        # subscribers as a CUSTOM event when it actually changed.
-        snapshot = _todos_snapshot(deps)
-        snapshot_json = json.dumps(snapshot, sort_keys=True)
-        if snapshot_json != todos_state["json"] and (
-            snapshot or todos_state["json"] is not None
+    try:
+        async for encoded in turn_adapter.encode_stream(
+            _tee_events(stream, text, tool_calls, strip_lifecycle=strip_lifecycle)
         ):
-            todos_state["json"] = snapshot_json
-            chat_run_manager.publish(thread_id, _encode_todos_event(snapshot))
+            chat_run_manager.publish(thread_id, encoded)
+            # A todo tool call mutated deps.todos in place — surface the new list to
+            # subscribers as a CUSTOM event when it actually changed.
+            snapshot = _todos_snapshot(deps)
+            snapshot_json = json.dumps(snapshot, sort_keys=True)
+            if snapshot_json != todos_state["json"] and (
+                snapshot or todos_state["json"] is not None
+            ):
+                todos_state["json"] = snapshot_json
+                chat_run_manager.publish(thread_id, _encode_todos_event(snapshot))
+    finally:
+        # Always persist the turn, whether the loop drained normally or unwound on
+        # a CancelledError (stop) / exception (model or tool error).
+        await persist_turn()
 
     result = captured.get("result")
-    if result is not None:
-        output = getattr(result, "output", None)
-        content = output if isinstance(output, str) else str(output) if output else ""
-        await _persist_message(
-            thread_id, "assistant", content, tool_calls=list(tool_calls.values())
-        )
-        # ``AgentRunResult.usage`` is a property (not a method) that returns the
-        # run's ``RunUsage``; ``_persist_usage`` guards its own failures.
-        await _persist_usage(thread_id, kind, getattr(result, "usage", None))
     return result.all_messages() if result is not None else (message_history or [])
 
 
@@ -622,7 +650,6 @@ async def _run_goal_execution(
     against the goal, continue — until met / impossible / capped. The whole run is
     wrapped in a single RUN_STARTED…RUN_FINISHED.
     """
-    accumulated: list[str] = []
     todos_state: dict = {"json": None}
     run_id = uuid.uuid4().hex
     publish_status = _goal_status_publisher(thread_id, condition, max_turns)
@@ -649,7 +676,6 @@ async def _run_goal_execution(
                 deps,
                 message_history=history,
                 instructions=media_instructions,
-                accumulated=accumulated,
                 todos_state=todos_state,
                 strip_lifecycle=True,
                 kind="goal",
@@ -690,7 +716,8 @@ async def _run_goal_execution(
         )
         publish_status(outcome.status, outcome.turns, outcome.last_reason)
     except asyncio.CancelledError:
-        await _persist_message(thread_id, "assistant", "".join(accumulated))
+        # Each turn was persisted by ``_stream_turn``'s finally, including the
+        # partial of any turn interrupted mid-stream.
         await _set_thread_state(thread_id, status=ThreadStatus.stopped)
         publish_status(ThreadStatus.stopped, 0)
         raise
@@ -856,7 +883,6 @@ async def chat(
     # the objective is this message, and the thread stays a plain chat thread.
     run_goal = turn == "goal"
     condition = user_text.strip() or (thread.success_criteria or thread.goal).strip()
-    accumulated: list[str] = []
     todos_state: dict = {"json": None}
 
     async def chat_driver() -> None:
@@ -868,22 +894,17 @@ async def chat(
         # read-only, so it leaves any parked plan untouched.
         if turn == "chat" and thread.status == ThreadStatus.awaiting_approval:
             await _set_thread_state(thread_id, status=ThreadStatus.idle)
-        try:
-            await _stream_turn(
-                thread_id,
-                adapter,
-                deps,
-                message_history=None,
-                instructions=media_instructions,
-                accumulated=accumulated,
-                todos_state=todos_state,
-            )
-        except asyncio.CancelledError:
-            # Stopped mid-run: on_complete never fired, so keep the partial answer.
-            await _persist_message(thread_id, "assistant", "".join(accumulated))
-            raise
-        else:
-            chat_run_manager.finish(thread_id, "finished")
+        # ``_stream_turn`` persists the turn (including any partial on stop/error)
+        # from its own ``finally``, so a stop just propagates the CancelledError.
+        await _stream_turn(
+            thread_id,
+            adapter,
+            deps,
+            message_history=None,
+            instructions=media_instructions,
+            todos_state=todos_state,
+        )
+        chat_run_manager.finish(thread_id, "finished")
 
     # A /plan turn on a thread already parked in `awaiting_approval` is a
     # *refinement*: the user is giving feedback on the plan already written, so we
@@ -930,7 +951,6 @@ async def chat(
                 deps,
                 message_history=None,
                 instructions=_join_instructions(media_instructions, plan_instruction),
-                accumulated=accumulated,
                 todos_state=todos_state,
                 strip_lifecycle=True,
                 kind="plan",
@@ -951,9 +971,9 @@ async def chat(
             )
             publish_status(ThreadStatus.awaiting_approval, 0, plan_path=plan_doc)
         except asyncio.CancelledError:
-            await _persist_message(thread_id, "assistant", "".join(accumulated))
-            # Stopped mid-turn: the agent may still have written (part of) a plan, so
-            # resolve and pin whatever doc it left rather than losing the pointer.
+            # The turn itself was persisted by ``_stream_turn``'s finally. Stopped
+            # mid-turn the agent may still have written (part of) a plan, so resolve
+            # and pin whatever doc it left rather than losing the pointer.
             stopped_doc = (
                 known_path
                 or detect_written_plan(workspace.path, before)
