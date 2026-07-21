@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   ArrowSquareOut,
   Globe,
   ArrowClockwise,
+  DeviceMobile,
+  Monitor,
   X,
 } from "@phosphor-icons/react"
 
@@ -113,6 +115,72 @@ function normalizeUrl(raw: string): string | null {
   }
 }
 
+/** The device the preview is framed as. `desktop` fills the pane; the mobile
+ *  modes wrap the iframe in a scaled-to-fit {@link PhoneFrame}. */
+type Viewport = "desktop" | "mobile-portrait" | "mobile-landscape"
+/** An optional notch/camera overlay drawn over the mobile screen. */
+type DeviceOverlay = "none" | "ios" | "android"
+
+/** Bezel thickness (px) around the phone screen. */
+const PHONE_BEZEL = 14
+/** Extra px reserved around the chassis for the outline ring and side buttons. */
+const PHONE_OUTSET = 8
+
+/** Device viewport sizes (CSS px) for the mobile preview frames — an
+ *  iPhone-class logical viewport, with landscape being the same numbers swapped. */
+const VIEWPORT_DIMS: Record<
+  Exclude<Viewport, "desktop">,
+  { width: number; height: number }
+> = {
+  "mobile-portrait": { width: 390, height: 844 },
+  "mobile-landscape": { width: 844, height: 390 },
+}
+
+const VIEWPORT_OPTIONS: Array<{ mode: Viewport; label: string; icon: ReactNode }> = [
+  { mode: "desktop", label: "Desktop", icon: <Monitor className="h-3.5 w-3.5" /> },
+  {
+    mode: "mobile-portrait",
+    label: "Mobile portrait",
+    icon: <DeviceMobile className="h-3.5 w-3.5" />,
+  },
+  {
+    mode: "mobile-landscape",
+    label: "Mobile landscape",
+    icon: <DeviceMobile className="h-3.5 w-3.5 rotate-90" />,
+  },
+]
+
+const OVERLAY_OPTIONS: Array<{ mode: DeviceOverlay; label: string }> = [
+  { mode: "none", label: "Off" },
+  { mode: "ios", label: "iOS" },
+  { mode: "android", label: "Android" },
+]
+
+const VIEWPORT_STORAGE_KEY = "lursor:preview:viewport"
+const OVERLAY_STORAGE_KEY = "lursor:preview:overlay"
+
+/** Read a persisted display preference, falling back when absent or invalid. */
+function readPref<T extends string>(
+  key: string,
+  fallback: T,
+  allowed: readonly T[]
+): T {
+  try {
+    const v = localStorage.getItem(key)
+    return v && (allowed as readonly string[]).includes(v) ? (v as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writePref(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // Best-effort: ignore quota / disabled-storage errors.
+  }
+}
+
 interface PreviewPanelProps {
   /** Keys the persisted URL, so each workspace remembers its own preview target. */
   workspaceId?: string
@@ -146,6 +214,27 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
   // when the URL is unchanged (iframes give us no reliable programmatic reload).
   const [reloadKey, setReloadKey] = useState(0)
   const [loading, setLoading] = useState(false)
+  // Device framing — a global display preference, not per-workspace.
+  const [viewport, setViewport] = useState<Viewport>(() =>
+    readPref(VIEWPORT_STORAGE_KEY, "desktop", [
+      "desktop",
+      "mobile-portrait",
+      "mobile-landscape",
+    ])
+  )
+  const [overlay, setOverlay] = useState<DeviceOverlay>(() =>
+    readPref(OVERLAY_STORAGE_KEY, "none", ["none", "ios", "android"])
+  )
+
+  const changeViewport = useCallback((mode: Viewport) => {
+    setViewport(mode)
+    writePref(VIEWPORT_STORAGE_KEY, mode)
+  }, [])
+
+  const changeOverlay = useCallback((mode: DeviceOverlay) => {
+    setOverlay(mode)
+    writePref(OVERLAY_STORAGE_KEY, mode)
+  }, [])
 
   // Reload the saved target when the active workspace changes.
   const wsRef = useRef(workspaceId)
@@ -224,6 +313,22 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
   // Detected servers not already loaded — offered as one-tap chips.
   const otherServers = detected.filter((s) => !sameUrl(url, s.url))
 
+  const isMobile = viewport !== "desktop"
+  const dims = isMobile ? VIEWPORT_DIMS[viewport] : null
+  const landscape = viewport === "mobile-landscape"
+
+  // The framed page — slotted full-bleed (desktop) or into a phone chassis
+  // (mobile). Same element in both, so switching device reloads once.
+  const stackEl = (
+    <iframe
+      key={reloadKey}
+      src={url}
+      title="Preview"
+      onLoad={() => setLoading(false)}
+      className="absolute inset-0 h-full w-full border-0 bg-white"
+    />
+  )
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {/* Address bar */}
@@ -259,6 +364,53 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
             className="h-7 w-full rounded-md border border-transparent bg-muted/60 px-2.5 text-xs text-foreground transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-ring/40 focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-ring/15"
           />
         </form>
+
+        {isMobile && (
+          <div className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5 shrink-0">
+            {OVERLAY_OPTIONS.map((opt) => (
+              <button
+                key={opt.mode}
+                type="button"
+                onClick={() => changeOverlay(opt.mode)}
+                aria-pressed={overlay === opt.mode}
+                title={
+                  opt.mode === "none"
+                    ? "No notch overlay"
+                    : `Overlay ${opt.label} notch`
+                }
+                className={cn(
+                  "flex h-6 items-center justify-center rounded px-1.5 text-[11px] font-medium transition-colors",
+                  overlay === opt.mode
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5 shrink-0">
+          {VIEWPORT_OPTIONS.map((opt) => (
+            <button
+              key={opt.mode}
+              type="button"
+              onClick={() => changeViewport(opt.mode)}
+              aria-pressed={viewport === opt.mode}
+              aria-label={opt.label}
+              title={opt.label}
+              className={cn(
+                "flex h-6 w-6 items-center justify-center rounded transition-colors",
+                viewport === opt.mode
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {opt.icon}
+            </button>
+          ))}
+        </div>
 
         <a
           href={hasUrl ? url : undefined}
@@ -306,18 +458,202 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
 
       {/* Body */}
       {hasUrl ? (
-        <div className="relative flex-1 min-h-0 bg-background">
-          <iframe
-            key={reloadKey}
-            src={url}
-            title="Preview"
-            onLoad={() => setLoading(false)}
-            className="absolute inset-0 h-full w-full border-0 bg-white"
-          />
-        </div>
+        dims ? (
+          <MobileStage dims={dims} landscape={landscape} overlay={overlay}>
+            {stackEl}
+          </MobileStage>
+        ) : (
+          <div className="relative flex-1 min-h-0 bg-background">{stackEl}</div>
+        )
       ) : (
         <PreviewEmptyState servers={detected} onPick={navigate} />
       )}
+    </div>
+  )
+}
+
+/**
+ * Centers a {@link PhoneFrame} on a dotted "stage", scaling it down (never past
+ * 1:1) to fit the measured stage. The scaled footprint is reserved on an outer
+ * wrapper so layout accounts for the transformed size.
+ */
+function MobileStage({
+  dims,
+  landscape,
+  overlay,
+  children,
+}: {
+  dims: { width: number; height: number }
+  landscape: boolean
+  overlay: DeviceOverlay
+  children: ReactNode
+}) {
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [stageSize, setStageSize] = useState<{ w: number; h: number } | null>(null)
+
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect
+      if (r) setStageSize({ w: r.width, h: r.height })
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const frameW = dims.width + PHONE_BEZEL * 2 + PHONE_OUTSET * 2
+  const frameH = dims.height + PHONE_BEZEL * 2 + PHONE_OUTSET * 2
+  const scale = stageSize
+    ? Math.min(1, stageSize.w / frameW, stageSize.h / frameH)
+    : 1
+
+  return (
+    <div
+      ref={stageRef}
+      className="flex-1 min-h-0 overflow-hidden bg-muted/30 flex items-center justify-center p-6"
+      style={{
+        backgroundImage:
+          "radial-gradient(rgba(127,127,127,0.22) 1px, transparent 1px)",
+        backgroundSize: "14px 14px",
+      }}
+    >
+      <div
+        className="flex shrink-0 items-center justify-center"
+        style={{ width: frameW * scale, height: frameH * scale }}
+      >
+        <div style={{ transform: `scale(${scale})`, transformOrigin: "center" }}>
+          <PhoneFrame
+            width={dims.width}
+            height={dims.height}
+            landscape={landscape}
+            overlay={overlay}
+          >
+            {children}
+          </PhoneFrame>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A dark phone chassis around the preview screen: a beveled body with a light
+ * outer ring, protruding side buttons, and an optional notch overlay. Colors are
+ * hardcoded hex on purpose — physical hardware is dark in both themes.
+ */
+function PhoneFrame({
+  width,
+  height,
+  landscape,
+  overlay,
+  children,
+}: {
+  width: number
+  height: number
+  landscape: boolean
+  overlay: DeviceOverlay
+  children: ReactNode
+}) {
+  return (
+    <div className="relative shrink-0">
+      {/* Side buttons (protrude slightly from the chassis). */}
+      {sideButtons(landscape).map((b) => (
+        <div
+          key={b.key}
+          className="absolute z-20 bg-[#1c1c1e] rounded-[3px]"
+          style={b.style}
+        />
+      ))}
+
+      {/* Chassis. A light outer ring + soft glow give the dark phone a crisp edge. */}
+      <div
+        className="relative rounded-[3rem] bg-[#3a3a3c] ring-1 ring-white/20"
+        style={{
+          padding: PHONE_BEZEL,
+          boxShadow:
+            "0 0 0 1px rgba(0,0,0,0.5), 0 24px 60px -12px rgba(0,0,0,0.7), 0 0 36px -6px rgba(255,255,255,0.06)",
+        }}
+      >
+        {/* Screen. */}
+        <div
+          className="relative overflow-hidden rounded-[2.1rem] bg-white"
+          style={{ width, height }}
+        >
+          {children}
+          <DeviceIsland overlay={overlay} landscape={landscape} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Power/volume/silent nubs on the long edges; positions swap by orientation. */
+function sideButtons(
+  landscape: boolean
+): Array<{ key: string; style: React.CSSProperties }> {
+  if (!landscape) {
+    return [
+      { key: "silent", style: { left: -3, top: "15%", width: 4, height: 26 } },
+      { key: "vol-up", style: { left: -3, top: "24%", width: 4, height: 50 } },
+      { key: "vol-dn", style: { left: -3, top: "36%", width: 4, height: 50 } },
+      { key: "power", style: { right: -3, top: "28%", width: 4, height: 70 } },
+    ]
+  }
+  return [
+    { key: "silent", style: { top: -3, left: "15%", height: 4, width: 26 } },
+    { key: "vol-up", style: { top: -3, left: "24%", height: 4, width: 50 } },
+    { key: "vol-dn", style: { top: -3, left: "36%", height: 4, width: 50 } },
+    { key: "power", style: { bottom: -3, right: "28%", height: 4, width: 70 } },
+  ]
+}
+
+/**
+ * The notch overlay: an iOS Dynamic Island pill, or an Android hole-punch camera
+ * plus a faint status-bar band. `pointer-events-none` keeps the app underneath
+ * interactive.
+ */
+function DeviceIsland({
+  overlay,
+  landscape,
+}: {
+  overlay: DeviceOverlay
+  landscape: boolean
+}) {
+  if (overlay === "none") return null
+
+  if (overlay === "ios") {
+    return (
+      <div
+        className="absolute z-10 bg-[#050506] rounded-full pointer-events-none shadow-sm"
+        style={
+          landscape
+            ? { left: 12, top: "50%", transform: "translateY(-50%)", width: 34, height: 122 }
+            : { top: 12, left: "50%", transform: "translateX(-50%)", width: 122, height: 34 }
+        }
+        aria-hidden
+      />
+    )
+  }
+
+  return (
+    <div className="pointer-events-none" aria-hidden>
+      <div
+        className="absolute z-[9] bg-black/15"
+        style={
+          landscape
+            ? { left: 0, top: 0, bottom: 0, width: 28 }
+            : { top: 0, left: 0, right: 0, height: 28 }
+        }
+      />
+      <div
+        className="absolute z-10 bg-[#050506] rounded-full ring-2 ring-white/10"
+        style={
+          landscape
+            ? { left: 8, top: "50%", transform: "translateY(-50%)", width: 14, height: 14 }
+            : { top: 8, left: "50%", transform: "translateX(-50%)", width: 14, height: 14 }
+        }
+      />
     </div>
   )
 }
