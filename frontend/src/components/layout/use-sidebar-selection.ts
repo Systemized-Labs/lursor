@@ -58,7 +58,11 @@ export function useSidebarSelection(): SidebarSelection {
         const b = orderedIds.indexOf(id)
         if (a !== -1 && b !== -1) {
           const [lo, hi] = a < b ? [a, b] : [b, a]
-          setWorkspaceIds(new Set(orderedIds.slice(lo, hi + 1)))
+          setWorkspaceIds((prev) => {
+            const next = new Set(prev)
+            for (const wid of orderedIds.slice(lo, hi + 1)) next.add(wid)
+            return next
+          })
           return
         }
       }
@@ -103,6 +107,15 @@ export function useSidebarSelection(): SidebarSelection {
         }
       }
 
+      // Range requested but the anchor isn't in this list (e.g. it's in another
+      // workspace) — extend the selection with the clicked item rather than
+      // discarding everything already selected.
+      if (mods.range && threads.size > 0) {
+        setThreads((prev) => new Map(prev).set(thread.id, thread))
+        setThreadAnchor(thread.id)
+        return
+      }
+
       if (mods.toggle) {
         setThreads((prev) => {
           const next = new Map(prev)
@@ -117,7 +130,7 @@ export function useSidebarSelection(): SidebarSelection {
       setThreads(new Map([[thread.id, thread]]))
       setThreadAnchor(thread.id)
     },
-    [threadAnchor]
+    [threadAnchor, threads]
   )
 
   const isWorkspaceSelected = useCallback(

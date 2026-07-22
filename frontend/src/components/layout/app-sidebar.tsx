@@ -337,6 +337,17 @@ export function AppSidebar() {
       if (openDeleted) {
         navigate(`/workspaces/${openDeleted.workspace_id}/chat`)
       }
+      const ids = new Set(threads.map((t) => t.id))
+      const affected = [...new Set(threads.map((t) => t.workspace_id))]
+      const previous = affected.map((wsId) => ({
+        wsId,
+        data: qc.getQueryData<Thread[]>(threadKeys.byWorkspace(wsId)),
+      }))
+      for (const wsId of affected) {
+        qc.setQueryData<Thread[]>(threadKeys.byWorkspace(wsId), (old) =>
+          (old ?? []).filter((t) => !ids.has(t.id))
+        )
+      }
       selection.clear()
       setBulkDeleteOpen(false)
       Promise.all(threads.map((t) => threadsApi.remove(t.id)))
@@ -346,6 +357,9 @@ export function AppSidebar() {
           )
         })
         .catch((err) => {
+          for (const { wsId, data } of previous) {
+            if (data) qc.setQueryData(threadKeys.byWorkspace(wsId), data)
+          }
           toast.error(err instanceof Error ? err.message : "Failed to delete")
         })
         .finally(() => {
@@ -813,7 +827,7 @@ function WorkspaceRow({
     } else if (e.shiftKey) {
       e.preventDefault()
       onSelect({ toggle: false, range: true })
-    } else if (selection.kind === "workspace") {
+    } else if (selection.count > 0) {
       e.preventDefault()
       onSelect({ toggle: true, range: false })
     } else {
@@ -969,7 +983,9 @@ function WorkspaceThreads({
             }
             isSelected={selection.isThreadSelected(thread.id)}
             selection={selection}
-            onSelect={(mods) => selection.selectThread(thread, mods, threads)}
+            onSelect={(mods) =>
+              selection.selectThread(thread, mods, visibleThreads)
+            }
             onNavigate={onNavigate}
             onRename={onRename}
             onDelete={onDelete}
