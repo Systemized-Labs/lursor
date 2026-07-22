@@ -654,12 +654,19 @@ def build_deep_agent(
 
     # Browser QA: give executing agents a headless browser to see and test the app
     # they build (see ``browser_qa.py``). A fresh capability per build keeps its
-    # single page/telemetry from colliding across concurrent runs. Gated to
-    # non-read-only agents (it can drive/execute JS), to callers that pass a
-    # ``workspace_id`` (needed to resolve the dev-server URL — top-level runs, not
-    # subagents), and to the app-wide toggle. Chromium installs itself on first use.
+    # single page/telemetry from colliding across concurrent runs. Gated to the
+    # per-agent ``browser_qa`` flag, to non-read-only agents (it can drive/execute
+    # JS), to callers that pass a ``workspace_id`` (needed to resolve the dev-server
+    # URL — top-level runs, not subagents), and to the app-wide toggle. Chromium
+    # installs itself on first use.
+    # ``build_deep_agent`` also renders Subagent rows, which have no ``browser_qa``
+    # field (and never get browser QA — they pass no workspace_id); default on so
+    # top-level agents predating the flag keep their tools.
     browser_qa_on = (
-        not read_only and workspace_id is not None and settings.browser_qa_enabled
+        getattr(row, "browser_qa", True)
+        and not read_only
+        and workspace_id is not None
+        and settings.browser_qa_enabled
     )
     if browser_qa_on:
         capabilities.append(

@@ -59,6 +59,7 @@ type BooleanFieldKey =
   | "include_memory"
   | "include_plan"
   | "web_search"
+  | "browser_qa"
 
 const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
   { key: "include_todo", label: "Include todo" },
@@ -67,6 +68,7 @@ const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
   { key: "include_memory", label: "Include memory" },
   { key: "include_plan", label: "Include plan" },
   { key: "web_search", label: "Web search" },
+  { key: "browser_qa", label: "Browser QA" },
 ]
 
 interface FormState {
@@ -80,6 +82,7 @@ interface FormState {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  browser_qa: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   extraConfigText: string
@@ -98,6 +101,9 @@ function emptyState(): FormState {
     include_memory: false,
     include_plan: false,
     web_search: false,
+    // On by default — matches the backend default and prior behaviour where every
+    // executing agent got browser tools.
+    browser_qa: true,
     thinking: "off",
     tool_choice: "auto",
     extraConfigText: "{}",
@@ -117,6 +123,7 @@ function fromAgent(agent: Agent): FormState {
     include_memory: agent.include_memory,
     include_plan: agent.include_plan,
     web_search: agent.web_search,
+    browser_qa: agent.browser_qa,
     thinking: agent.thinking,
     tool_choice: agent.tool_choice ?? "auto",
     extraConfigText: JSON.stringify(agent.extra_config ?? {}, null, 2),
@@ -207,6 +214,7 @@ export function AgentFormDialog({
       include_memory: form.include_memory,
       include_plan: form.include_plan,
       web_search: form.web_search,
+      browser_qa: form.browser_qa,
       thinking: form.thinking,
       // Skills are scope-discovered; when enabled the agent sees every global
       // skill (plus its workspace's own at run time), so surface the global set.
@@ -306,6 +314,7 @@ export function AgentFormDialog({
       include_memory: form.include_memory,
       include_plan: form.include_plan,
       web_search: form.web_search,
+      browser_qa: form.browser_qa,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
       extra_config: extraConfig,

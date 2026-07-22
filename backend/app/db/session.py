@@ -111,6 +111,12 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE agents ADD COLUMN tool_choice VARCHAR DEFAULT 'auto'")
         )
+    # Per-agent browser-QA toggle. Defaults to 1 so existing agents keep receiving
+    # browser tools exactly as before (still gated by settings.browser_qa_enabled).
+    if "browser_qa" not in agent_cols:
+        await conn.execute(
+            text("ALTER TABLE agents ADD COLUMN browser_qa BOOLEAN DEFAULT 1")
+        )
 
     app_config_cols = await columns("app_config")
     if "deep_defaults" not in app_config_cols:

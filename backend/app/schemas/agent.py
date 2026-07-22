@@ -30,6 +30,7 @@ class AgentCreate(BaseModel):
     include_memory: bool = False
     include_plan: bool = False
     web_search: bool = False
+    browser_qa: bool = True
     thinking: ThinkingLevel = ThinkingLevel.off
     tool_choice: ToolChoice = ToolChoice.auto
     extra_config: dict[str, Any] = {}
@@ -47,6 +48,7 @@ class AgentUpdate(BaseModel):
     include_memory: bool | None = None
     include_plan: bool | None = None
     web_search: bool | None = None
+    browser_qa: bool | None = None
     thinking: ThinkingLevel | None = None
     tool_choice: ToolChoice | None = None
     extra_config: dict[str, Any] | None = None
@@ -79,6 +81,7 @@ class AgentRead(BaseModel):
     include_memory: bool
     include_plan: bool
     web_search: bool
+    browser_qa: bool
     thinking: ThinkingLevel
     tool_choice: ToolChoice
     extra_config: dict[str, Any]
@@ -100,6 +103,7 @@ class AgentRead(BaseModel):
             include_memory=agent.include_memory,
             include_plan=agent.include_plan,
             web_search=agent.web_search,
+            browser_qa=agent.browser_qa,
             thinking=agent.thinking,
             tool_choice=agent.tool_choice,
             extra_config=agent.extra_config,

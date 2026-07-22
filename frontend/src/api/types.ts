@@ -14,6 +14,7 @@ export interface Agent {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  browser_qa: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   extra_config: Record<string, unknown>
@@ -33,6 +34,7 @@ export interface AgentInput {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  browser_qa: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   extra_config: Record<string, unknown>
@@ -174,6 +176,7 @@ export interface AgentPromptContext {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  browser_qa: boolean
   thinking: ThinkingLevel
   skill_names: string[]
   tool_names: string[]

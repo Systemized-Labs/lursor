@@ -233,6 +233,11 @@ class Agent(TimestampMixin, table=True):
     include_memory: bool = False
     include_plan: bool = False
     web_search: bool = False
+    # Give this agent a headless browser to see and test the app it builds (see
+    # ``browser_qa.py``). On by default to match prior behaviour; still gated at
+    # run time by the app-wide ``settings.browser_qa_enabled`` master switch and to
+    # non-read-only, workspace-scoped runs.
+    browser_qa: bool = True
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     # Force or forbid tool calls (see ToolChoice); "auto" leaves it to the model.
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)

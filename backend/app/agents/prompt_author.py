@@ -33,6 +33,7 @@ class AgentPromptContext(BaseModel):
     include_memory: bool = False
     include_plan: bool = False
     web_search: bool = False
+    browser_qa: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     skill_names: list[str] = []
     tool_names: list[str] = []
@@ -88,6 +89,11 @@ def _capability_lines(ctx: AgentPromptContext) -> str:
         caps.append(f"skills ({skills})")
     if ctx.web_search:
         caps.append("web search (cite sources; verify current facts before answering)")
+    if ctx.browser_qa:
+        caps.append(
+            "browser QA (open the app in a headless browser to view and test it, "
+            "read console/network errors, and verify the UI you build)"
+        )
     if ctx.tool_names:
         caps.append("tools: " + ", ".join(ctx.tool_names))
 
