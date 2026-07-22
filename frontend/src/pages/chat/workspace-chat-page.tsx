@@ -521,23 +521,25 @@ export function WorkspaceChatPage() {
         ) : (
           <>
             {isParked && !isStreaming && (
-              <div className="mx-auto mb-1 flex w-full max-w-3xl items-center gap-3 rounded-lg border border-border bg-card px-4 py-2.5 sm:px-6">
-                <NotePencil className="h-4 w-4 shrink-0 text-primary" />
-                <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-                  Plan ready for review
-                  {planPath ? (
-                    <span className="text-foreground"> · {baseName(planPath)}</span>
-                  ) : null}
-                  . Send a message to refine it, or execute it as a goal.
-                </p>
-                <Button
-                  size="sm"
-                  className="h-7 shrink-0"
-                  onClick={() => void handleExecutePlan()}
-                  disabled={noAgents}
-                >
-                  Execute plan
-                </Button>
+              <div className="mb-1 px-4">
+                <div className="mx-auto flex w-full max-w-3xl items-center gap-3 rounded-lg border border-border bg-card px-4 py-2.5 sm:px-6">
+                  <NotePencil className="h-4 w-4 shrink-0 text-primary" />
+                  <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                    Plan ready for review
+                    {planPath ? (
+                      <span className="text-foreground"> · {baseName(planPath)}</span>
+                    ) : null}
+                    . Send a message to refine it, or execute it as a goal.
+                  </p>
+                  <Button
+                    size="sm"
+                    className="h-7 shrink-0"
+                    onClick={() => void handleExecutePlan()}
+                    disabled={noAgents}
+                  >
+                    Execute plan
+                  </Button>
+                </div>
               </div>
             )}
             <ChatComposer
