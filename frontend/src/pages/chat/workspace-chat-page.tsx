@@ -28,9 +28,7 @@ import {
 } from "@/components/ui/select"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatTimeline } from "@/components/chat/ChatTimeline"
-import { RunningProcessesBar } from "@/components/chat/running-processes-bar"
-import { ChatLiveActivity } from "@/components/chat/ChatLiveActivity"
-import { ChatTodoList } from "@/components/chat/ChatTodoList"
+import { ChatRunDeck } from "@/components/chat/ChatRunDeck"
 import { GoalRunPanel } from "@/components/chat/GoalPanel"
 import { parseSlashCommand } from "@/components/chat/commands/registry"
 import type { CommandAction } from "@/components/chat/commands/types"
@@ -482,24 +480,19 @@ export function WorkspaceChatPage() {
           }
         />
 
-        {/* Tasks live in the run deck while a goal executes; otherwise their own card. */}
-        {todos.length > 0 && !goalExecuting && (
-          <div className="mx-auto w-full max-w-3xl px-4 pb-1 sm:px-6">
-            <ChatTodoList todos={todos} />
-          </div>
-        )}
-
         {error ? (
           <p className="px-4 pb-1 text-sm text-destructive">{error}</p>
         ) : null}
 
-        {/* Live agent activity for the running turn: the latest tool call in a
-            single-slot ticker above the "working" dots, cleared once it settles. */}
-        <ChatLiveActivity />
-
-        {/* Running background processes (dev servers, watchers) — click one to
-            open its read-only output on the right. */}
-        <RunningProcessesBar workspaceId={workspaceId} />
+        {/* Unified run deck: task list, live tool activity, and running
+            terminals in one bounded, collapsible strip above the composer, so
+            streaming chat always keeps priority. Tasks live in the goal panel
+            while a goal executes. */}
+        <ChatRunDeck
+          workspaceId={workspaceId}
+          todos={todos}
+          goalExecuting={goalExecuting}
+        />
 
         {goalExecuting ? (
           <GoalRunPanel

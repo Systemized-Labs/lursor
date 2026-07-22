@@ -64,15 +64,6 @@ function StatusDot({ proc }: { proc: BackgroundProcess }) {
  */
 export function RunningProcessesBar({ workspaceId }: Props) {
   const processes = useWorkspaceProcesses(workspaceId)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-
-  // Re-render once a second so the elapsed times tick.
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (processes.length === 0) return
-    const t = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(t)
-  }, [processes.length])
 
   if (!workspaceId || processes.length === 0) return null
 
@@ -87,55 +78,82 @@ export function RunningProcessesBar({ workspaceId }: Props) {
             {count} Terminal{count === 1 ? "" : "s"} Running
           </span>
         </div>
-        <div className="flex flex-col">
-          {processes.map((proc) => {
-            const elapsed = formatElapsed(now / 1000 - proc.startedAt)
-            const ready = Boolean(proc.url) && proc.ready
-            const expanded = expandedId === proc.id
-            return (
-              <div
-                key={proc.id}
-                className="border-t border-border/40 first:border-t-0"
-              >
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpandedId((id) => (id === proc.id ? null : proc.id))
-                  }
-                  title={proc.command}
-                  className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-accent/60"
-                >
-                  {expanded ? (
-                    <CaretDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <CaretRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  )}
-                  <Terminal
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0",
-                      ready ? "text-emerald-500" : "text-muted-foreground"
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-                    {labelFor(proc)}
-                  </span>
-                  {proc.port != null && (
-                    <span className="flex items-center gap-1 shrink-0 text-[11px] text-muted-foreground">
-                      <StatusDot proc={proc} />:{proc.port}
-                    </span>
-                  )}
-                  <span className="w-14 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
-                    {elapsed}
-                  </span>
-                </button>
-                {expanded && (
-                  <ProcessOutput workspaceId={workspaceId} proc={proc} />
-                )}
-              </div>
-            )
-          })}
-        </div>
+        <ProcessRows workspaceId={workspaceId} processes={processes} />
       </div>
+    </div>
+  )
+}
+
+/**
+ * The bare, expandable list of background-process rows, without any card chrome.
+ * Owns the per-row expand state and the once-a-second elapsed-time tick. Reused
+ * standalone by {@link RunningProcessesBar} and embedded in the run deck.
+ */
+export function ProcessRows({
+  workspaceId,
+  processes,
+}: {
+  workspaceId: string
+  processes: BackgroundProcess[]
+}) {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  // Re-render once a second so the elapsed times tick.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (processes.length === 0) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [processes.length])
+
+  return (
+    <div className="flex flex-col">
+      {processes.map((proc) => {
+        const elapsed = formatElapsed(now / 1000 - proc.startedAt)
+        const ready = Boolean(proc.url) && proc.ready
+        const expanded = expandedId === proc.id
+        return (
+          <div
+            key={proc.id}
+            className="border-t border-border/40 first:border-t-0"
+          >
+            <button
+              type="button"
+              onClick={() =>
+                setExpandedId((id) => (id === proc.id ? null : proc.id))
+              }
+              title={proc.command}
+              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-accent/60"
+            >
+              {expanded ? (
+                <CaretDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+              ) : (
+                <CaretRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+              )}
+              <Terminal
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0",
+                  ready ? "text-emerald-500" : "text-muted-foreground"
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+                {labelFor(proc)}
+              </span>
+              {proc.port != null && (
+                <span className="flex items-center gap-1 shrink-0 text-[11px] text-muted-foreground">
+                  <StatusDot proc={proc} />:{proc.port}
+                </span>
+              )}
+              <span className="w-14 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
+                {elapsed}
+              </span>
+            </button>
+            {expanded && (
+              <ProcessOutput workspaceId={workspaceId} proc={proc} />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

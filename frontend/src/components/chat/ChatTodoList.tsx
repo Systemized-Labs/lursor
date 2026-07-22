@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils"
 import type { AgentTodo, TodoStatus } from "@/agui/types"
 
 /** Per-status icon for a todo row. In-progress spins to read as "working now". */
-function TodoStatusIcon({ status }: { status: TodoStatus }) {
+export function TodoStatusIcon({ status }: { status: TodoStatus }) {
   switch (status) {
     case "completed":
       return <CheckCircle weight="fill" className="h-4 w-4 shrink-0 text-primary" />
@@ -75,30 +75,39 @@ export function ChatTodoList({ todos }: { todos: AgentTodo[] }) {
       </button>
 
       {open && (
-        <ul className="space-y-1.5 border-t border-border/60 px-3 py-2.5">
-          {todos.map((todo) => (
-            <li key={todo.id} className="flex items-start gap-2">
-              <span className="mt-0.5">
-                <TodoStatusIcon status={todo.status} />
-              </span>
-              <span
-                className={cn(
-                  "text-xs leading-5",
-                  todo.status === "completed"
-                    ? "text-muted-foreground line-through"
-                    : todo.status === "in_progress"
-                      ? "font-medium text-foreground"
-                      : "text-foreground"
-                )}
-              >
-                {todo.status === "in_progress"
-                  ? todo.activeForm || todo.content
-                  : todo.content}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <div className="border-t border-border/60 px-3 py-2.5">
+          <TodoRows todos={todos} />
+        </div>
       )}
     </div>
+  )
+}
+
+/** The bare list of todo rows, without any card chrome. Reused by the run deck. */
+export function TodoRows({ todos }: { todos: AgentTodo[] }) {
+  return (
+    <ul className="space-y-1.5">
+      {todos.map((todo) => (
+        <li key={todo.id} className="flex items-start gap-2">
+          <span className="mt-0.5">
+            <TodoStatusIcon status={todo.status} />
+          </span>
+          <span
+            className={cn(
+              "text-xs leading-5",
+              todo.status === "completed"
+                ? "text-muted-foreground line-through"
+                : todo.status === "in_progress"
+                  ? "font-medium text-foreground"
+                  : "text-foreground"
+            )}
+          >
+            {todo.status === "in_progress"
+              ? todo.activeForm || todo.content
+              : todo.content}
+          </span>
+        </li>
+      ))}
+    </ul>
   )
 }
