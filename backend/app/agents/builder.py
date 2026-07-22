@@ -32,6 +32,7 @@ from pydantic_deep.prompts import BASE_PROMPT
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.agents.browser_qa import BrowserQACapability
+from app.agents.deduping_backend import DedupingLocalBackend
 from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
@@ -92,7 +93,7 @@ BROWSER_QA_DIRECTIVE = (
 )
 
 
-# One LocalBackend per workspace directory, reused across every chat run (and its
+# One backend per workspace directory, reused across every chat run (and its
 # subagents). The backend owns the registry of background processes the agent
 # starts with `run_in_background` — dev servers, watchers — and those outlive the
 # run that started them (see agents/preview_service.py). A fresh backend per run
@@ -101,11 +102,17 @@ BROWSER_QA_DIRECTIVE = (
 # duplicate. Sharing one backend per workspace makes `list_shells`/`kill_shell`
 # see and manage those processes across runs. Keyed by resolved absolute path;
 # file operations are stateless per call, so the shared instance is safe.
+#
+# The backend is a DedupingLocalBackend, which additionally enforces reuse in
+# code: an identical command already running is returned as-is rather than
+# spawned twice. The advisory prompt guard (DEV_SERVER_DIRECTIVE) is unreliable
+# across turns/compaction/subagents, so this is the real guard against the
+# duplicate dev servers that produced multiple identical "terminals running".
 _workspace_backends: dict[str, LocalBackend] = {}
 
 
 def _workspace_backend(workspace_path: str | Path) -> LocalBackend:
-    """Return the shared :class:`LocalBackend` for ``workspace_path``.
+    """Return the shared :class:`DedupingLocalBackend` for ``workspace_path``.
 
     Created on first use and cached, so background processes started in one chat
     run stay visible (and killable) from every later run of the same workspace.
@@ -113,7 +120,7 @@ def _workspace_backend(workspace_path: str | Path) -> LocalBackend:
     key = str(Path(workspace_path).resolve())
     backend = _workspace_backends.get(key)
     if backend is None:
-        backend = LocalBackend(root_dir=key)
+        backend = DedupingLocalBackend(root_dir=key)
         _workspace_backends[key] = backend
     return backend
 
