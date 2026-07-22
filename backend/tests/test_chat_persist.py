@@ -16,7 +16,46 @@ from ag_ui.core import (
     ToolCallStartEvent,
 )
 
-from app.api.chat import _persist_message, _tee_events
+from app.api.chat import _persist_message, _tee_events, _turn_content
+
+
+class _Result:
+    """Stand-in for pydantic-ai's ``AgentRunResult`` (only ``.output`` is read)."""
+
+    def __init__(self, output):
+        self.output = output
+
+
+def test_turn_content_prefers_streamed_transcript_over_output():
+    """The full streamed transcript wins over ``result.output``.
+
+    ``result.output`` is only the final response's text, so prose streamed before
+    a tool call would be lost if we saved it instead. Saving the transcript keeps a
+    reloaded turn matching what streamed live — the regression behind messages that
+    only persisted their final line (or nothing) on local reasoning models.
+    """
+    # Streamed: prose before a tool call + the final answer. Output: final only.
+    assert (
+        _turn_content("thinking out loud... done", _Result("done"))
+        == "thinking out loud... done"
+    )
+
+
+def test_turn_content_falls_back_to_output_when_nothing_streamed():
+    """No text streamed (e.g. a non-text/deferred output) → use ``result.output``."""
+    assert _turn_content("", _Result("final answer")) == "final answer"
+    # Non-str output object is stringified rather than dropped.
+    assert _turn_content("", _Result({"deferred": True})) == "{'deferred': True}"
+    # Empty/None output with no stream → empty (persist then no-ops).
+    assert _turn_content("", _Result("")) == ""
+    assert _turn_content("", _Result(None)) == ""
+
+
+def test_turn_content_abort_before_any_text_is_empty():
+    """Aborted before text and before completion (``result`` is ``None``) → empty."""
+    assert _turn_content("", None) == ""
+    # But a partial streamed before the abort is preserved.
+    assert _turn_content("half a sen", None) == "half a sen"
 
 
 async def _collect(events, *, strip_lifecycle=False):

@@ -486,6 +486,26 @@ async def _tee_events(
         yield event
 
 
+def _turn_content(streamed: str, result) -> str:
+    """Pick the text to persist for an assistant turn.
+
+    Prefer the streamed transcript — the concatenation of every text delta the
+    user actually saw across *all* model rounds. ``result.output`` is only the
+    final response's text, so any prose streamed before a tool call (and any turn
+    whose final output is empty, e.g. a local reasoning model that answered then
+    called a tool) would be dropped if we saved ``result.output`` instead. Fall
+    back to ``result.output`` only when nothing streamed as text — e.g. a
+    non-text/deferred-tool output object, or an abort before any text arrived
+    (``result`` is ``None`` there, so the fallback is an empty string).
+    """
+    if streamed:
+        return streamed
+    if result is None:
+        return ""
+    output = getattr(result, "output", None)
+    return output if isinstance(output, str) else str(output) if output else ""
+
+
 async def _stream_turn(
     thread_id: str,
     turn_adapter: AGUIAdapter,
@@ -506,17 +526,18 @@ async def _stream_turn(
     ``kind`` (chat | plan | goal) tags the usage row recorded on completion.
 
     The assistant turn is persisted from a ``finally`` so it survives *however*
-    the stream ends — clean finish, stop/abort, or a model/tool error. On a clean
-    finish we save the run's final output; otherwise we save whatever text +
-    tool calls streamed before the interruption, so a stopped turn keeps its
-    tool blocks (usage is only recorded when the run actually completed).
+    the stream ends — clean finish, stop/abort, or a model/tool error. We save the
+    streamed transcript (the text the user actually saw, across every model round)
+    plus the turn's tool calls, so a reloaded thread matches what streamed live and
+    a stopped turn keeps its tool blocks (usage is only recorded when the run
+    actually completed). See ``persist_turn`` for why this beats ``result.output``.
     """
     captured: dict[str, object] = {}
-    # Per-turn buffers, filled as events flow through ``_tee_events``. ``text``
-    # backs the partial persisted on abort/error; ``tool_calls`` (keyed by id,
-    # insertion-ordered) is persisted with the turn regardless of outcome. Both
-    # are turn-local so a multi-turn goal run persists each turn separately
-    # instead of concatenating every prior turn on a mid-run stop.
+    # Per-turn buffers, filled as events flow through ``_tee_events``. ``text`` is
+    # the streamed transcript (every text delta, all rounds) persisted as the turn's
+    # content; ``tool_calls`` (keyed by id, insertion-ordered) is persisted with the
+    # turn regardless of outcome. Both are turn-local so a multi-turn goal run
+    # persists each turn separately instead of concatenating every prior turn.
     text: list[str] = []
     tool_calls: dict[str, dict] = {}
     persisted = False
@@ -532,13 +553,7 @@ async def _stream_turn(
             return
         persisted = True
         result = captured.get("result")
-        if result is not None:
-            output = getattr(result, "output", None)
-            content = output if isinstance(output, str) else str(output) if output else ""
-        else:
-            # Stopped/errored mid-run: on_complete never fired, so fall back to the
-            # text streamed so far.
-            content = "".join(text)
+        content = _turn_content("".join(text), result)
         await _persist_message(
             thread_id, "assistant", content, tool_calls=list(tool_calls.values())
         )
