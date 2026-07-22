@@ -16,6 +16,21 @@ import { MINIGAMES, loadSelectedGame, saveSelectedGame, type MinigameId } from "
 import { cn } from "@/lib/utils"
 import type { AgentTodo, TodoStatus } from "@/agui/types"
 
+/**
+ * Goals often arrive as a raw markdown task line (e.g. "- [ ] File `x.txt`
+ * exists"). Strip the leading list/checkbox marker and inline-code backticks so
+ * the header reads as plain prose in its single truncated line.
+ */
+function cleanObjective(text: string): string {
+  return text
+    .trim()
+    .replace(/^[-*+]\s+\[[ xX]?\]\s+/, "") // "- [ ] ", "* [x] "
+    .replace(/^[-*+]\s+/, "") // "- ", "* "
+    .replace(/^\d+[.)]\s+/, "") // "1. ", "2) "
+    .replace(/`([^`]+)`/g, "$1") // inline `code` -> code
+    .trim()
+}
+
 /** Per-status icon for a todo row inside the run panel. */
 function TodoIcon({ status }: { status: TodoStatus }) {
   switch (status) {
@@ -81,8 +96,11 @@ export function GoalRunPanel({
         {/* Status header: objective, a live pulse, the turn counter, and stop. */}
         <div className="flex items-center gap-2.5 px-3.5 py-3">
           <Target className="h-4 w-4 shrink-0 text-primary" />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-            {objective || "Goal"}
+          <span
+            title={cleanObjective(objective) || "Goal"}
+            className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
+          >
+            {cleanObjective(objective) || "Goal"}
           </span>
           <span className="flex shrink-0 items-center gap-1.5">
             <span className="relative flex h-2 w-2">
