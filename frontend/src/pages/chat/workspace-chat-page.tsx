@@ -360,7 +360,20 @@ export function WorkspaceChatPage() {
   // loop from the plan doc's Success Criteria instead.
   async function handleExecutePlan() {
     void stick.scrollToBottom()
-    await chat.send("Execute plan", [], "execute_plan")
+    // Executing a plan runs it as a goal, so switch to the `/goal` default agent
+    // (if one is set) — same reassign-then-send flow as the slash commands. Await
+    // the switch so the reassign PATCH lands before the backend reads the thread's
+    // agent for the run. With no `/goal` default, keep the current (plan) agent.
+    let effectiveAgentId = selectedAgentId
+    const target = defaultAgentFor("goal")
+    if (target && target !== selectedAgentId) {
+      await handleAgentChange(target)
+      effectiveAgentId = target
+    }
+    await chat.send("Execute plan", [], "execute_plan", undefined, {
+      id: effectiveAgentId,
+      name: agentNameById.get(effectiveAgentId),
+    })
   }
 
   // Open the thread's plan doc in the file panel when a `/plan` turn parks it in

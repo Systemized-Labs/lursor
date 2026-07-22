@@ -601,59 +601,32 @@ async def _stream_turn(
     return result.all_messages() if result is not None else (message_history or [])
 
 
-async def _resolve_goal_agent_model(
-    session: AsyncSession, app_config: AppConfig | None
-) -> str | None:
-    """The model of the agent configured as the ``/goal`` default, if any.
-
-    Plan execution runs autonomously like ``/goal``, so it should honor the
-    user's chosen ``/goal`` agent's model — letting a heavier execution model run
-    the plan than the one that drafted it. Returns the ``/goal`` agent's effective
-    model (its own, or ``settings.default_model`` when it stores none) so a
-    configured goal agent always wins. Returns ``None`` when no ``/goal`` default is
-    set or its agent is missing, so the caller keeps the thread agent's own model.
-    """
-    default_agents = (app_config.default_agents if app_config else None) or {}
-    goal_agent_id = (default_agents.get("goal") or "").strip()
-    if not goal_agent_id:
-        return None
-    goal_agent = await session.get(Agent, goal_agent_id)
-    if goal_agent is None:
-        return None
-    return goal_agent.model or settings.default_model
-
-
 async def _build_agent_and_context(
     session: AsyncSession,
     agent_row: Agent,
     workspace: Workspace,
     read_only: bool = False,
-    execute_plan: bool = False,
 ):
     """Build the deep agent + deps for a thread and load the app-wide context.
 
     Shared by the chat/planning endpoint and the goal-execution start so both
     resolve providers, subagents, and deep-defaults identically. ``read_only``
-    gates the agent to "ask" mode (no file writes / shell). ``execute_plan``
-    swaps in the ``/goal`` default agent's model (if the user configured one) so
-    approved plans run under the chosen execution model — model only; the thread
-    agent's tools and instructions are unchanged.
+    gates the agent to "ask" mode (no file writes / shell). The run always uses the
+    thread's own agent (``agent_row``); "Execute plan" switches to the ``/goal``
+    default agent by reassigning the thread before the run (frontend), so no
+    per-turn model override is needed here.
     """
     providers = (await session.execute(select(CustomProvider))).scalars().all()
     custom_providers = {p.id: p for p in providers}
     subagents = list((await session.execute(select(Subagent))).scalars().all())
     app_config = (await session.execute(select(AppConfig))).scalars().first()
     deep_defaults = app_config.deep_defaults if app_config else None
-    model_override = (
-        await _resolve_goal_agent_model(session, app_config) if execute_plan else None
-    )
     agent, deps = build_deep_agent(
         agent_row,
         workspace.path,
         custom_providers,
         subagents,
         deep_defaults,
-        model_override=model_override,
         workspace_name=workspace.name,
         workspace_description=workspace.description or None,
         workspace_id=workspace.id,
@@ -966,12 +939,8 @@ async def chat(
 
     # A "/ask" turn on a chat thread builds a read-only agent (no write/edit/shell).
     read_only = thread.mode == ThreadMode.chat and turn == "ask"
-    # "Execute plan" runs the approved plan autonomously; honor the `/goal` default
-    # agent's model (if the user set one) so execution can use a heavier model than
-    # the planning agent — see `_resolve_goal_agent_model`.
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace, read_only=read_only,
-        execute_plan=(turn == "execute_plan"),
+        session, agent_row, workspace, read_only=read_only
     )
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.
