@@ -39,6 +39,8 @@ function toChatMessages(messages: ThreadMessage[], threadId: string): ChatMessag
     role: m.role,
     content: m.content,
     kind: m.kind,
+    agentId: m.agent_id ?? undefined,
+    agentName: m.agent_name || undefined,
     toolCalls: Array.isArray(m.tool_calls)
       ? m.tool_calls.map((tc) => ({
           id: tc.id,
@@ -111,6 +113,9 @@ export interface UseChatEngineOptions {
   workspaceId: string | undefined
   /** Agent the next message (and any lazily-created thread) will use. */
   agentId: string | undefined
+  /** Display name of {@link agentId}, stamped on the optimistic user bubble so
+   *  the agent chip shows instantly (reload replaces it with the persisted snapshot). */
+  agentName?: string
   /** Thread ids with a live run; gates reconnect-on-open. */
   activeRuns?: Set<string>
   /** Reconnect to a still-running run when opening a conversation. */
@@ -126,7 +131,11 @@ export interface ChatEngine {
     text: string,
     attachments?: PendingAttachment[],
     turnIntent?: TurnIntent,
-    kind?: MessageKind
+    kind?: MessageKind,
+    /** Per-turn agent override. When a slash command switches the agent, the
+     *  reassign PATCH lands async, so pass the resolved target here so this turn's
+     *  optimistic bubble (and any lazily-created thread) uses it, not stale state. */
+    agent?: { id: string; name?: string }
   ) => Promise<void>
   interject: (text: string) => Promise<void>
   stop: () => void
@@ -361,8 +370,19 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
   // Streams a single message end to end. Reads no composer state, so it serves
   // both a live submit and a message drained off the queue.
   const performSend = useCallback(
-    async ({ text: trimmed, attachments, turnIntent, kind }: QueuedMessage) => {
-      const { workspaceId, agentId } = optionsRef.current
+    async ({
+      text: trimmed,
+      attachments,
+      turnIntent,
+      kind,
+      agentId: turnAgentId,
+      agentName: turnAgentName,
+    }: QueuedMessage) => {
+      const { workspaceId } = optionsRef.current
+      // The turn's agent: an explicit per-turn override (a slash switch resolved
+      // synchronously by the caller) wins over the engine's current selection.
+      const agentId = turnAgentId ?? optionsRef.current.agentId
+      const agentName = turnAgentName ?? optionsRef.current.agentName
       if (!workspaceId || !agentId) {
         store.getState().setError("Pick an agent before sending a message.")
         return
@@ -412,6 +432,8 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
         content: outgoing,
         toolCalls: [],
         kind,
+        agentId,
+        agentName,
         attachments: attachments.map((a) => ({
           url: a.dataUrl,
           mimeType: a.mimeType,
@@ -509,7 +531,8 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
       turnIntent: TurnIntent = "chat",
       // `execute_plan` isn't a persisted message kind (it has no body); it kicks
       // off a goal, so badge any stray message as "goal".
-      kind: MessageKind = turnIntent === "execute_plan" ? "goal" : turnIntent
+      kind: MessageKind = turnIntent === "execute_plan" ? "goal" : turnIntent,
+      agent?: { id: string; name?: string }
     ) => {
       const trimmed = text.trim()
       if (!trimmed && attachments.length === 0) return
@@ -519,6 +542,8 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
         attachments,
         turnIntent,
         kind,
+        agentId: agent?.id,
+        agentName: agent?.name,
       }
       // Append while a run streams, or while a pending queue exists, so new
       // messages join the batch in order rather than jumping ahead.
@@ -547,6 +572,8 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
         content: outgoing,
         toolCalls: [],
         kind: "goal",
+        agentId: optionsRef.current.agentId,
+        agentName: optionsRef.current.agentName,
       })
       try {
         await threadsApi.interjectGoal(threadId, outgoing)

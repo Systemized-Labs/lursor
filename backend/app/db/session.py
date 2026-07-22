@@ -59,6 +59,14 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE messages ADD COLUMN compacted BOOLEAN DEFAULT 0")
         )
+    # Per-message agent provenance (which agent ran the turn). Existing rows stay
+    # NULL/"" and render no agent chip.
+    if "agent_id" not in message_cols:
+        await conn.execute(text("ALTER TABLE messages ADD COLUMN agent_id VARCHAR"))
+    if "agent_name" not in message_cols:
+        await conn.execute(
+            text("ALTER TABLE messages ADD COLUMN agent_name VARCHAR DEFAULT ''")
+        )
 
     skill_cols = await columns("skills")
     if "slug" not in skill_cols:

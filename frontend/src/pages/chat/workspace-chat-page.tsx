@@ -19,13 +19,6 @@ import { useWorkspace } from "@/api/workspaces"
 import { useChatEngine } from "@/agui/useChatEngine"
 import { ChatStoreProvider } from "@/agui/chatStore"
 import { Button } from "@/components/ui/button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatTimeline } from "@/components/chat/ChatTimeline"
 import { ChatRunDeck } from "@/components/chat/ChatRunDeck"
@@ -78,6 +71,10 @@ export function WorkspaceChatPage() {
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
+  const agentNameById = useMemo(
+    () => new Map(agents.map((a) => [a.id, a.name])),
+    [agents]
+  )
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
@@ -86,9 +83,22 @@ export function WorkspaceChatPage() {
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
   const { data: defaultAgents } = useDefaultAgents()
 
+  // If the draft opens with a slash command bound to a different default agent,
+  // preview the agent this send will switch to — makes the command↔agent coupling
+  // visible in the composer before sending.
+  const pendingAgentName = useMemo(() => {
+    const parsed = parseSlashCommand(draft)
+    const key = parsed?.command.agentKey
+    if (!key) return null
+    const target = defaultAgents?.[key]
+    if (!target || target === selectedAgentId || !agentNameById.has(target)) return null
+    return agentNameById.get(target) ?? null
+  }, [draft, defaultAgents, selectedAgentId, agentNameById])
+
   const chat = useChatEngine({
     workspaceId,
     agentId: selectedAgentId || undefined,
+    agentName: agentNameById.get(selectedAgentId),
     activeRuns,
     reconnect: true,
     onThreadCreated: (thread) => {
@@ -275,13 +285,23 @@ export function WorkspaceChatPage() {
         setDraft(text)
         return
       }
+      let effectiveAgentId = selectedAgentId
       if (command.agentKey) {
         const target = defaultAgentFor(command.agentKey)
-        if (target && target !== selectedAgentId) void handleAgentChange(target)
+        if (target && target !== selectedAgentId) {
+          // Await the switch: the backend runs an existing thread under its stored
+          // `agent_id`, so the reassign PATCH must land before the send POST fires
+          // — otherwise this turn runs with the previous agent.
+          await handleAgentChange(target)
+          effectiveAgentId = target
+        }
       }
       switch (command.kind) {
         case "turn-intent":
-          await chat.send(args, atts, command.turnIntent ?? "chat")
+          await chat.send(args, atts, command.turnIntent ?? "chat", undefined, {
+            id: effectiveAgentId,
+            name: agentNameById.get(effectiveAgentId),
+          })
           return
         case "action":
           if (command.action) await runCommandAction(command.action)
@@ -291,7 +311,10 @@ export function WorkspaceChatPage() {
     // A plain message sends a normal `chat` turn. When a plan is parked the
     // backend treats that turn as a refinement of the plan doc (not an
     // implementation); the user presses "Execute plan" to carry it out.
-    await chat.send(text, atts, "chat")
+    await chat.send(text, atts, "chat", undefined, {
+      id: selectedAgentId,
+      name: agentNameById.get(selectedAgentId),
+    })
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -420,29 +443,6 @@ export function WorkspaceChatPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-0.5">
-            {noAgents ? (
-              <span className="text-xs text-muted-foreground">No agents</span>
-            ) : (
-              <Select
-                value={selectedAgentId}
-                onValueChange={(v) => void handleAgentChange(v)}
-              >
-                <SelectTrigger
-                  aria-label="Agent"
-                  className="h-7 gap-1.5 rounded-md border-0 bg-transparent px-2 text-xs font-medium text-muted-foreground shadow-none hover:bg-accent hover:text-foreground focus:ring-0 data-[state=open]:bg-accent data-[state=open]:text-foreground"
-                >
-                  <SelectValue placeholder="Select agent" />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  {agents.map((agent) => (
-                    <SelectItem key={agent.id} value={agent.id}>
-                      {agent.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-
             <Button
               variant="ghost"
               size="icon"
@@ -561,6 +561,10 @@ export function WorkspaceChatPage() {
               onRemoveQueued={chat.removeQueued}
               onEditQueued={chat.editQueued}
               onResumeQueue={chat.resumeQueue}
+              agents={noAgents ? undefined : agents}
+              selectedAgentId={selectedAgentId}
+              onAgentChange={(v) => void handleAgentChange(v)}
+              pendingAgentName={pendingAgentName}
             />
           </>
         )}

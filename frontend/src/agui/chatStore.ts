@@ -24,6 +24,11 @@ export interface QueuedMessage {
   turnIntent: TurnIntent
   /** Display kind for the history badge (chat/ask/plan/goal). */
   kind: MessageKind
+  /** Agent this turn runs with, captured at submit so a slash-command switch or a
+   *  later picker change can't retarget an already-queued message. Falls back to
+   *  the engine's current agent when absent. */
+  agentId?: string
+  agentName?: string
 }
 
 /**

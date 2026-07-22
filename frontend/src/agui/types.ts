@@ -55,6 +55,10 @@ export interface ChatMessage {
   streaming?: boolean
   /** How a user turn was sent (chat/ask/plan/goal), for a history badge. */
   kind?: MessageKind
+  /** The agent that ran this turn, shown as a chip on the bubble. Stamped
+   *  optimistically on send and from the persisted snapshot on reload. */
+  agentId?: string
+  agentName?: string
 }
 
 /** Goal lifecycle mirrored from the backend `goal_status` CUSTOM event. */

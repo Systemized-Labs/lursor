@@ -478,6 +478,13 @@ class Message(TimestampMixin, table=True):
     # (read-only) | "plan" (a plan-mode turn) | "goal" (a one-off goal run).
     # Assistant/tool rows keep the default and render no badge.
     kind: str = Field(default="chat")
+    # The agent that ran this turn, snapshotted at write time so the transcript
+    # shows which agent handled it even after the thread's agent is switched — and
+    # survives an agent rename/delete. ``agent_id`` is the row id (null for legacy
+    # rows and system messages); ``agent_name`` is the display-name snapshot the UI
+    # renders on the bubble.
+    agent_id: str | None = None
+    agent_name: str = Field(default="")
     # Assistant tool calls made during this turn, insertion-ordered:
     # ``[{id, name, arguments, result}]``. Persisted so a reloaded thread shows the
     # same tool blocks that streamed in live (see api/chat.py ``_collect_tool_call``).

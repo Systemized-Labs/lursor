@@ -14,6 +14,12 @@ import { Clock, Paperclip, PaperPlaneTilt, Play, Square, X } from "@phosphor-ico
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select"
 import { MentionMenu } from "@/components/chat/mentions/MentionMenu"
 import { useMentions } from "@/components/chat/mentions/use-mentions"
 import { mentionRanges } from "@/components/chat/mentions/types"
@@ -111,6 +117,18 @@ export interface ChatComposerProps {
   /** Render without the standalone card chrome (border/fill/outer padding) so
    *  the composer blends into a surrounding panel (e.g. the goal control deck). */
   embedded?: boolean
+  /** Agents available to run the next turn. When provided (with
+   *  {@link onAgentChange}), the composer shows an agent picker in its toolbar —
+   *  the per-send agent choice lives next to where you type. Omit to hide it. */
+  agents?: { id: string; name: string }[]
+  /** Currently selected agent id (drives the picker's value). */
+  selectedAgentId?: string
+  /** Change the selected agent (persists to the open thread upstream). */
+  onAgentChange?: (id: string) => void
+  /** When the current draft's slash command would switch the agent on send, the
+   *  target agent's name — shown as a "→ Name" preview so the coupling between a
+   *  command and its agent is visible before sending. */
+  pendingAgentName?: string | null
 }
 
 /** Message composer: a growing textarea inside a rounded card, with send/stop,
@@ -134,8 +152,16 @@ export function ChatComposer({
   onEditQueued,
   onResumeQueue,
   embedded = false,
+  agents,
+  selectedAgentId,
+  onAgentChange,
+  pendingAgentName,
 }: ChatComposerProps) {
   const canAttach = !!onAttachmentsChange && !disabled
+  // The agent picker lives in the toolbar only on the standalone composer; the
+  // embedded goal-interject composer runs the goal's own agent, so hide it there.
+  const showAgentPicker = !embedded && !!agents && !!onAgentChange
+  const selectedAgentName = agents?.find((a) => a.id === selectedAgentId)?.name
   const hasContent = !!input.trim() || attachments.length > 0
   // Submitting now would queue rather than send: a run is streaming, or a
   // pending queue already exists that this message should join.
@@ -397,7 +423,8 @@ export function ChatComposer({
               )}
             />
           </div>
-          {/* Toolbar: attach on the left, send/stop on the right. */}
+          {/* Toolbar: attach on the left, then the agent picker (grows into the
+              freed space), send/stop on the right. */}
           <div className="mt-1 flex items-center gap-1">
             {canAttach && (
               <>
@@ -424,6 +451,39 @@ export function ChatComposer({
                   <Paperclip className="h-4 w-4" />
                 </Button>
               </>
+            )}
+            {showAgentPicker && (
+              <Select
+                value={selectedAgentId}
+                onValueChange={(v) => onAgentChange?.(v)}
+                disabled={disabled}
+              >
+                <SelectTrigger
+                  aria-label="Agent"
+                  title={
+                    pendingAgentName
+                      ? `This command will switch to ${pendingAgentName}`
+                      : undefined
+                  }
+                  className={cn(
+                    "h-7 w-auto max-w-[12rem] shrink-0 justify-start gap-1.5 rounded-md border-0 bg-transparent px-2 text-xs font-medium shadow-none hover:bg-accent hover:text-foreground focus:ring-0 data-[state=open]:bg-accent data-[state=open]:text-foreground",
+                    // While a slash command is queued to switch the agent, preview the
+                    // target in the picker itself and colour it so the change is obvious.
+                    pendingAgentName ? "text-primary" : "text-muted-foreground"
+                  )}
+                >
+                  <span className="truncate">
+                    {pendingAgentName ?? selectedAgentName ?? "Agent"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {agents!.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
             <div className="ml-auto flex flex-shrink-0 items-center gap-1.5">
               {isSending ? (

@@ -259,6 +259,9 @@ export interface ThreadMessage {
   role: MessageRole
   content: string
   kind?: MessageKind
+  /** The agent that ran this turn (snapshot; empty for legacy/system rows). */
+  agent_id?: string | null
+  agent_name?: string
   // Backend persists this as an opaque JSON object (default `{}`); it is only
   // an array once real tool-call payloads are stored. Callers must narrow.
   tool_calls: ThreadMessageToolCall[] | Record<string, unknown> | null

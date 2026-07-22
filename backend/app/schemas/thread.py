@@ -67,6 +67,9 @@ class MessageRead(BaseModel):
     role: str
     content: str
     kind: str = "chat"
+    # The agent that ran this turn (snapshot; see db.models.Message).
+    agent_id: str | None = None
+    agent_name: str = ""
     tool_calls: list[dict[str, Any]] = []
     attachments: list[MessageAttachment] = []
     created_at: UTCDatetime

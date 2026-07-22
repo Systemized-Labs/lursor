@@ -1,4 +1,4 @@
-import { NotePencil, Question, Target, type Icon } from "@phosphor-icons/react"
+import { NotePencil, Question, Robot, Target, type Icon } from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
@@ -19,9 +19,24 @@ function MessageKindBadge({ kind }: { kind?: MessageKind }) {
   if (!meta) return null
   const { label, Icon } = meta
   return (
-    <span className="mb-1.5 inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+    <span className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
       <Icon className="h-3 w-3" />
       {label}
+    </span>
+  )
+}
+
+/** The agent that ran this turn — provenance so it's clear which agent a slash
+ *  command (or picker choice) actually used. Absent on legacy rows. */
+function AgentBadge({ name }: { name?: string }) {
+  if (!name) return null
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+      title={`Sent with ${name}`}
+    >
+      <Robot className="h-3 w-3" />
+      {name}
     </span>
   )
 }
@@ -33,7 +48,12 @@ export function UserBubble({ message }: { message: ChatMessage }) {
   return (
     <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
       <div className="rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-[0.9375rem] leading-relaxed text-foreground">
-        <MessageKindBadge kind={message.kind} />
+        {(message.kind && message.kind !== "chat") || message.agentName ? (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+            <MessageKindBadge kind={message.kind} />
+            <AgentBadge name={message.agentName} />
+          </div>
+        ) : null}
         {hasAttachments && (
           <div
             className={cn("flex flex-wrap gap-2", message.content !== "" && "mb-2")}
