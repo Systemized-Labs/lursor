@@ -10,10 +10,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 FRONTEND_CMD="dev"
-FRONTEND_LABEL="frontend on :5173"
+FRONTEND_LABEL="frontend on :8888"
 if [[ "${1:-}" == "--electron" ]]; then
   FRONTEND_CMD="electron:dev"
-  FRONTEND_LABEL="frontend (Electron) — Vite on :5173"
+  FRONTEND_LABEL="frontend (Electron) — Vite on :8888"
 fi
 
 cleanup() {

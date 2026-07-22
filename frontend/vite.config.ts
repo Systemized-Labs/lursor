@@ -10,7 +10,12 @@ export default defineConfig({
   base: "./",
   // Expose the dev server on the LAN (0.0.0.0) so it's reachable from other
   // devices on the network, not just localhost.
-  server: { host: true },
+  //
+  // Port 8888 is deliberately off the common web dev-server ports (3000, 5173,
+  // 8000, 8080) that Lursor workspaces spin up, so a workspace's dev server
+  // can't shadow the Lursor UI. strictPort keeps the UI on a known, memorable
+  // port instead of silently bumping to the next free one.
+  server: { host: true, port: 8888, strictPort: true },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

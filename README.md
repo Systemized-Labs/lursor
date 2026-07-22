@@ -81,7 +81,7 @@ cp .env.example .env      # VITE_API_BASE defaults to http://localhost:8791/api
 bun run dev
 ```
 
-Then open the Vite URL (default `http://localhost:5173`).
+Then open the Vite URL (default `http://localhost:8888`).
 
 ### One command
 

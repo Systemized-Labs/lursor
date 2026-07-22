@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     app_name: str = "Lursor"
     debug: bool = True
     # Origins allowed to call the API (the Vite dev server by default).
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins: list[str] = ["http://localhost:8888", "http://127.0.0.1:8888"]
 
     # --- Data root ---
     # When set (env ``LURSOR_DATA_DIR``), every on-disk path that isn't explicitly

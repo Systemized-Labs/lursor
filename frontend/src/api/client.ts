@@ -11,7 +11,7 @@ function resolveApiBase(): string {
     "http://localhost:8791/api"
 
   // When the app is opened from another device over the LAN (e.g. a phone at
-  // http://192.168.x.x:5173), a hardcoded `localhost` would resolve to that
+  // http://192.168.x.x:8888), a hardcoded `localhost` would resolve to that
   // device instead of the machine running the API. Talk to the API on whichever
   // host served the page, port 8791. Localhost and Electron (file://) fall
   // through to the configured value unchanged.

@@ -15,7 +15,7 @@ const { spawn } = require("node:child_process")
 const { app, BrowserWindow, nativeImage, shell, ipcMain } = require("electron")
 
 const isDev = !app.isPackaged
-const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173"
+const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:8888"
 const PREFERRED_PORT = 8791
 // First boot imports a large dependency tree and runs DB init/seed, so give the
 // backend generous headroom before declaring it unhealthy.
