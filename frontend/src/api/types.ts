@@ -472,23 +472,20 @@ export interface WebSearchSettingsInput {
 }
 
 /**
- * Default agent per slash command. Each value is an agent id ("" when the
- * command has no default agent). Using a command in the composer switches to
- * (and, for an open thread, reassigns) that command's agent.
+ * Default agent per slash command — a command name mapped to an agent id. A key
+ * is absent when the command has no default agent. `/plan` reassigns the open
+ * thread to its agent (sticky); `/ask` and `/goal` run one-off under their agent;
+ * `chat` seeds a new conversation. The backend stores this as an open map, so the
+ * known keys below are the current registry commands, not a closed set.
  */
 export interface DefaultAgentsSettings {
-  chat: string
-  ask: string
-  plan: string
-  goal: string
-}
-
-export interface DefaultAgentsInput {
   chat?: string
   ask?: string
   plan?: string
   goal?: string
 }
+
+export type DefaultAgentsInput = DefaultAgentsSettings
 
 // --- laios control plane --------------------------------------------------------
 

@@ -14,7 +14,7 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Body, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -23,16 +23,12 @@ from app.config import get_settings
 from app.db.models import AppConfig
 from app.db.session import async_session_factory, get_session
 from app.schemas.settings import (
-    DefaultAgentsRead,
-    DefaultAgentsUpdate,
     OpenRouterSettingsRead,
     OpenRouterSettingsUpdate,
     OpenRouterTestResult,
     WebSearchSettingsRead,
     WebSearchSettingsUpdate,
 )
-
-_COMMAND_NAMES = ("chat", "ask", "plan", "goal")
 
 logger = logging.getLogger(__name__)
 
@@ -207,44 +203,40 @@ async def set_web_search(
 
 
 # --- Default agent per command ------------------------------------------------
-# Maps a slash command ("chat" | "ask" | "plan" | "goal") to the agent selected
-# when that command is used. This is a UI convenience: the frontend reads it to
-# pick/switch the agent, and the agent brings its own model/tools. Nothing is
-# resolved at run time here — the selected agent id rides on the thread as usual.
+# Maps a slash command name to the agent that command runs under. Kept as an open
+# map (command name -> agent id) rather than a fixed schema, so adding a command
+# needs no backend change — the frontend registry is the source of truth for
+# which commands exist. `/plan` reassigns the thread to its agent; `/ask`/`/goal`
+# run one-off under their agent (a per-turn override, see chat.py); `chat` seeds a
+# new conversation. Values are agent ids; a blank value clears a command's default.
 
 
-@router.get("/default-agents", response_model=DefaultAgentsRead)
-async def get_default_agents(session: AsyncSession = Depends(get_session)):
+@router.get("/default-agents", response_model=dict[str, str])
+async def get_default_agents(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
     cfg = await _get_config(session)
     stored = (cfg.default_agents if cfg else None) or {}
-    return DefaultAgentsRead(
-        chat=stored.get("chat") or "",
-        ask=stored.get("ask") or "",
-        plan=stored.get("plan") or "",
-        goal=stored.get("goal") or "",
-    )
+    return {k: v for k, v in stored.items() if isinstance(v, str) and v}
 
 
-@router.put("/default-agents", response_model=DefaultAgentsRead)
+@router.put("/default-agents", response_model=dict[str, str])
 async def set_default_agents(
-    payload: DefaultAgentsUpdate, session: AsyncSession = Depends(get_session)
-):
+    payload: dict[str, str] = Body(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
     cfg = await _get_config(session)
     if cfg is None:
         cfg = AppConfig()
 
-    # JSON columns don't track in-place mutation; rebuild and reassign. Only
-    # touch commands the caller actually sent so each can be saved independently;
-    # a blank value drops the key (no default agent for that command).
+    # JSON columns don't track in-place mutation; rebuild and reassign. Only the
+    # commands present in the payload are touched, so each can be saved
+    # independently; a blank value drops the key (no default agent for it).
     updated = dict(cfg.default_agents or {})
-    fields = payload.model_fields_set
-    for command in _COMMAND_NAMES:
-        if command in fields:
-            value = (getattr(payload, command) or "").strip()
-            if value:
-                updated[command] = value
-            else:
-                updated.pop(command, None)
+    for command, value in payload.items():
+        cleaned = (value or "").strip()
+        if cleaned:
+            updated[command] = cleaned
+        else:
+            updated.pop(command, None)
     cfg.default_agents = updated
 
     session.add(cfg)

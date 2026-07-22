@@ -58,25 +58,6 @@ class WebSearchSettingsUpdate(BaseModel):
     exa_api_key: str | None = None
 
 
-# A slash command that can carry a default agent. ``chat`` is the plain,
-# no-command turn. Grows as new commands are added (see the frontend registry).
-CommandName = Literal["chat", "ask", "plan", "goal"]
-
-
-class DefaultAgentsRead(BaseModel):
-    """Per-command default agent id ("" when a command has no default agent)."""
-
-    chat: str = ""
-    ask: str = ""
-    plan: str = ""
-    goal: str = ""
-
-
-class DefaultAgentsUpdate(BaseModel):
-    # Only fields present in the request body are applied (tracked via
-    # ``model_fields_set``), so each command can be set independently. A
-    # present-but-blank value clears that command's default agent.
-    chat: str | None = None
-    ask: str | None = None
-    plan: str | None = None
-    goal: str | None = None
+# Per-command default agent is an open ``dict[str, str]`` map (command name ->
+# agent id), handled directly in ``api/settings.py`` — no fixed schema, so a new
+# slash command needs no backend change (the frontend registry defines commands).

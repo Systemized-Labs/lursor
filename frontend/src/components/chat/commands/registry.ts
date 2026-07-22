@@ -23,6 +23,7 @@ export const COMMANDS: SlashCommand[] = [
     kind: "turn-intent",
     turnIntent: "ask",
     agentKey: "ask",
+    agentScope: "turn",
   },
   {
     name: "plan",
@@ -32,6 +33,9 @@ export const COMMANDS: SlashCommand[] = [
     kind: "turn-intent",
     turnIntent: "plan",
     agentKey: "plan",
+    // Plan mode is sticky: refinement turns (plain chat while parked) must reuse
+    // the plan agent, so the switch is persisted to the thread.
+    agentScope: "thread",
   },
   {
     name: "goal",
@@ -41,6 +45,7 @@ export const COMMANDS: SlashCommand[] = [
     kind: "turn-intent",
     turnIntent: "goal",
     agentKey: "goal",
+    agentScope: "turn",
   },
   {
     name: "compact",

@@ -459,6 +459,11 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
           {
             forwardedProps: {
               turn: turnIntent,
+              // The agent to run this turn under. The backend honors it as a
+              // per-turn override when it differs from the thread's own agent
+              // (a one-off `/ask` or `/goal`), without persisting it; for a
+              // normal turn it equals the thread's agent, so it's a no-op.
+              agent_id: agentId,
               ...(referencedSkills.length ? { skills: referencedSkills } : {}),
             },
           },

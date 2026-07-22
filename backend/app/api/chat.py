@@ -873,6 +873,22 @@ async def chat(
         forwarded = body.get("forwardedProps") or {}
         if isinstance(forwarded, dict):
             turn = forwarded.get("turn") or "chat"
+            # A one-off slash command (/ask, /goal, "Execute plan") can run this
+            # turn under a different agent WITHOUT persisting it to the thread: the
+            # frontend forwards that agent's id here. Honor it as a per-turn
+            # override (used for the message stamp, read-only gating, model, and
+            # the run itself). Sticky commands (/plan) reassign thread.agent_id up
+            # front instead, so their id matches and this is a no-op. Never
+            # persisted — the thread keeps its own agent.
+            turn_agent_id = forwarded.get("agent_id")
+            if (
+                isinstance(turn_agent_id, str)
+                and turn_agent_id
+                and turn_agent_id != thread.agent_id
+            ):
+                override = await session.get(Agent, turn_agent_id)
+                if override is not None:
+                    agent_row = override
             raw_skills = forwarded.get("skills")
             if isinstance(raw_skills, list):
                 referenced_skill_slugs = [s for s in raw_skills if isinstance(s, str) and s]

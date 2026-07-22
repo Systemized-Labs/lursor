@@ -31,16 +31,18 @@ const COMMAND_ROWS: {
   hint: string
   Icon: typeof Question
 }[] = [
-  { key: "chat", label: "Chat", hint: "A plain message — full tools", Icon: ChatText },
+  { key: "chat", label: "Chat", hint: "Agent new conversations start with", Icon: ChatText },
   { key: "ask", label: "/ask", hint: "Read-only — answer without editing", Icon: Question },
   { key: "plan", label: "/plan", hint: "Propose a plan, then approve to run", Icon: NotePencil },
   { key: "goal", label: "/goal", hint: "Work autonomously until the goal is met", Icon: Target },
 ]
 
 /**
- * Default agent per slash command. Using a command in the composer switches to
- * (and reassigns an open thread to) that command's agent, so each can run under
- * a dedicated agent — the agent brings its own model, tools, and instructions.
+ * Default agent per slash command, so each can run under a dedicated agent — the
+ * agent brings its own model, tools, and instructions. `/plan` is sticky and
+ * switches the open conversation to its agent; `/ask` and `/goal` run one-off
+ * under their agent without changing the conversation's agent; `Chat` is only the
+ * agent a brand-new conversation starts with.
  */
 export function DefaultAgentsSection() {
   const { data, isLoading } = useDefaultAgents()
@@ -66,9 +68,11 @@ export function DefaultAgentsSection() {
       <CardHeader>
         <CardTitle>Default agent per command</CardTitle>
         <CardDescription>
-          The agent used when you run each slash command. Using a command selects
-          its agent and reassigns the open conversation to it. Leave a command on
-          &quot;No default&quot; to keep the current agent.
+          The agent each command runs under. <code>/plan</code> switches the open
+          conversation to its agent (planning is sticky); <code>/ask</code> and{" "}
+          <code>/goal</code> run one-off under their agent without changing the
+          conversation. <code>Chat</code> is the agent new conversations start
+          with. Leave a row on &quot;No default&quot; to keep the current agent.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

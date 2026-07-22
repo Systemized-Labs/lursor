@@ -15,6 +15,15 @@ export type CommandKind =
 /** A named local action a command can trigger (kind === "action"). */
 export type CommandAction = "new-conversation" | "compact"
 
+/**
+ * How a command's default agent relates to the thread:
+ * - `"turn"` — a one-off per-turn override (`/ask`, `/goal`). The agent runs this
+ *   turn only; the thread's own `agent_id` is left untouched.
+ * - `"thread"` — a sticky switch (`/plan`). The reassignment is persisted to the
+ *   thread so later turns (e.g. plan refinements) reuse the same agent.
+ */
+export type AgentScope = "turn" | "thread"
+
 /** The active `/…` command token under the caret. */
 export interface ActiveSlash {
   /** Index of the `/` in the text. */
@@ -68,9 +77,11 @@ export interface SlashCommand {
   Icon: Icon
   kind: CommandKind
   /** Per-command default agent, keyed into {@link DefaultAgentsSettings}. When
-   *  set, using the command switches to (and reassigns the thread to) that
-   *  agent. */
+   *  set, using the command runs the turn under that agent. */
   agentKey?: keyof DefaultAgentsSettings
+  /** How `agentKey` relates to the thread (default `"turn"`). See
+   *  {@link AgentScope}. */
+  agentScope?: AgentScope
   /** kind === "turn-intent": the per-turn intent to send. */
   turnIntent?: TurnIntent
   /** kind === "action": the local action to run. */

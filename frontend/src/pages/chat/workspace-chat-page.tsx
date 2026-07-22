@@ -24,7 +24,7 @@ import { ChatTimeline } from "@/components/chat/ChatTimeline"
 import { ChatRunDeck } from "@/components/chat/ChatRunDeck"
 import { GoalRunPanel } from "@/components/chat/GoalPanel"
 import { parseSlashCommand } from "@/components/chat/commands/registry"
-import type { CommandAction } from "@/components/chat/commands/types"
+import type { AgentScope, CommandAction } from "@/components/chat/commands/types"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
@@ -180,7 +180,12 @@ export function WorkspaceChatPage() {
     void chat.send(text, atts)
   }, [location.state, cParam, agents, selectedAgentId, chat])
 
-  async function handleAgentChange(agentId: string) {
+  // Switch the active agent and persist it to the open thread. Returns whether
+  // the change stuck: on a failed PATCH we revert the local selection (so the
+  // picker never diverges from the backend) and report `false` so callers can
+  // abort a send rather than run it under the wrong agent.
+  async function handleAgentChange(agentId: string): Promise<boolean> {
+    const prev = selectedAgentId
     setSelectedAgentId(agentId)
     if (selectedThreadId) {
       try {
@@ -189,14 +194,35 @@ export function WorkspaceChatPage() {
           input: { agent_id: agentId },
         })
       } catch (err) {
+        setSelectedAgentId(prev)
         toast.error(err instanceof Error ? err.message : "Failed to switch agent")
+        return false
       }
     }
+    return true
   }
 
   function defaultAgentFor(key: keyof DefaultAgentsSettings): string | undefined {
     const id = defaultAgents?.[key]
     return id && agents.some((a) => a.id === id) ? id : undefined
+  }
+
+  // Resolve the agent a command runs under. A sticky (`"thread"`) command
+  // persists the switch to the open thread so later turns reuse it; a one-off
+  // (`"turn"`) command leaves the thread's agent untouched and just overrides
+  // this turn (the id rides on the wire for the backend to honor once). Returns
+  // the `{ id, name }` to send the turn as, or `null` if a required persist
+  // failed (caller should abort the send).
+  async function agentForCommand(
+    key: keyof DefaultAgentsSettings,
+    scope: AgentScope
+  ): Promise<{ id: string; name?: string } | null> {
+    const target = defaultAgentFor(key)
+    const runId = target ?? selectedAgentId
+    if (scope === "thread" && target && target !== selectedAgentId) {
+      if (!(await handleAgentChange(target))) return null
+    }
+    return { id: runId, name: agentNameById.get(runId) }
   }
 
   function handleNewConversation() {
@@ -285,23 +311,28 @@ export function WorkspaceChatPage() {
         setDraft(text)
         return
       }
-      let effectiveAgentId = selectedAgentId
+      let turnAgent = {
+        id: selectedAgentId,
+        name: agentNameById.get(selectedAgentId),
+      }
       if (command.agentKey) {
-        const target = defaultAgentFor(command.agentKey)
-        if (target && target !== selectedAgentId) {
-          // Await the switch: the backend runs an existing thread under its stored
-          // `agent_id`, so the reassign PATCH must land before the send POST fires
-          // — otherwise this turn runs with the previous agent.
-          await handleAgentChange(target)
-          effectiveAgentId = target
+        // A sticky command (`/plan`) persists its agent to the thread here; a
+        // one-off command (`/ask`, `/goal`) just picks the agent to run this turn
+        // under — the id rides on the send for the backend to honor once, without
+        // reassigning the thread. Abort if a required persist failed.
+        const resolved = await agentForCommand(
+          command.agentKey,
+          command.agentScope ?? "turn"
+        )
+        if (!resolved) {
+          setDraft(text)
+          return
         }
+        turnAgent = resolved
       }
       switch (command.kind) {
         case "turn-intent":
-          await chat.send(args, atts, command.turnIntent ?? "chat", undefined, {
-            id: effectiveAgentId,
-            name: agentNameById.get(effectiveAgentId),
-          })
+          await chat.send(args, atts, command.turnIntent ?? "chat", undefined, turnAgent)
           return
         case "action":
           if (command.action) await runCommandAction(command.action)
@@ -360,20 +391,13 @@ export function WorkspaceChatPage() {
   // loop from the plan doc's Success Criteria instead.
   async function handleExecutePlan() {
     void stick.scrollToBottom()
-    // Executing a plan runs it as a goal, so switch to the `/goal` default agent
-    // (if one is set) — same reassign-then-send flow as the slash commands. Await
-    // the switch so the reassign PATCH lands before the backend reads the thread's
-    // agent for the run. With no `/goal` default, keep the current (plan) agent.
-    let effectiveAgentId = selectedAgentId
-    const target = defaultAgentFor("goal")
-    if (target && target !== selectedAgentId) {
-      await handleAgentChange(target)
-      effectiveAgentId = target
-    }
-    await chat.send("Execute plan", [], "execute_plan", undefined, {
-      id: effectiveAgentId,
-      name: agentNameById.get(effectiveAgentId),
-    })
+    // Executing a plan runs it as a one-off goal, so run under the `/goal` default
+    // agent (if one is set) for this turn only — a per-turn override that leaves
+    // the parked thread's own agent untouched. With no `/goal` default, keep the
+    // current (plan) agent.
+    const resolved = await agentForCommand("goal", "turn")
+    if (!resolved) return
+    await chat.send("Execute plan", [], "execute_plan", undefined, resolved)
   }
 
   // Open the thread's plan doc in the file panel when a `/plan` turn parks it in
