@@ -82,7 +82,6 @@ export function WorkspaceChatPage() {
   const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
-  const [gameOpen, setGameOpen] = useState(false)
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
   const { data: defaultAgents } = useDefaultAgents()
 
@@ -625,12 +624,11 @@ export function WorkspaceChatPage() {
         {goalExecuting ? (
           <GoalRunPanel
             objective={runView?.condition ?? ""}
+            planName={planPath ? baseName(planPath) : undefined}
             iteration={runView?.iteration ?? 0}
             maxIterations={runView?.maxIterations ?? 0}
             reason={runView?.reason ?? ""}
             todos={todos}
-            gameOpen={gameOpen}
-            onToggleGame={() => setGameOpen((o) => !o)}
             onStop={chat.stop}
           >
             <ChatComposer

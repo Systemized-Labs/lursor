@@ -76,8 +76,8 @@ export function ChatRunDeck({
   // lightweight, no heavy card — same as the old bare-dots activity state.
   if (!showTasks && !hasTools && !hasProcesses) {
     return (
-      <div className="mx-auto w-full max-w-3xl px-4 pb-2 sm:px-6">
-        <div className="px-1.5">
+      <div className="px-4 pb-2 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl px-1.5">
           <StreamingDots />
         </div>
       </div>
@@ -96,8 +96,8 @@ export function ChatRunDeck({
           : "Working…"
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-2 sm:px-6">
-      <div className="overflow-hidden rounded-xl border border-border/60 bg-muted/30">
+    <div className="px-4 pb-2 sm:px-6">
+      <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-xl border border-border/60 bg-muted/30">
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}

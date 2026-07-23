@@ -274,7 +274,7 @@ export function ChatComposer({
   }
 
   return (
-    <div className={cn(!embedded && "px-4 pb-4 pt-2 flex-shrink-0")}>
+    <div className={cn(!embedded && "px-4 pb-4 pt-2 flex-shrink-0 sm:px-6")}>
       <div className={cn("relative w-full", !embedded && "mx-auto max-w-3xl")}>
         <SlashMenu
           open={slash.open}
@@ -305,7 +305,7 @@ export function ChatComposer({
             // One flat fill for the whole input (matches the app's other inputs
             // and the toolbar controls) — no focus-driven colour shift.
             embedded
-              ? "px-3.5 py-3"
+              ? "px-3.5 py-2.5"
               : cn(
                   "rounded-2xl border border-border/60 bg-muted/60 px-2.5 py-2",
                   "transition-[border-color,box-shadow] duration-200",
