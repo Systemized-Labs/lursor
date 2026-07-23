@@ -21,29 +21,47 @@ still spawn normally, so restarting with new flags works as before.
 from __future__ import annotations
 
 import re
+import threading
 
 from pydantic_ai_backends import BackgroundHandle, LocalBackend
 
+# Pure file-descriptor redirections with no filename target (``2>&1``, ``1>&2``,
+# ``>&1`` …). Stripping these before comparison means the model launching
+# ``npm run dev`` and ``npm run dev 2>&1`` dedupes to one server rather than two.
+_FD_REDIRECT = re.compile(r"\s*\d*>&\d+")
+
 
 def _normalize(command: str) -> str:
-    """Collapse whitespace so trivially-different spellings compare equal."""
-    return re.sub(r"\s+", " ", command).strip()
+    """Collapse whitespace and drop bare fd redirections so trivially-different
+    spellings of the same command compare equal."""
+    return re.sub(r"\s+", " ", _FD_REDIRECT.sub("", command)).strip()
 
 
 class DedupingLocalBackend(LocalBackend):
     """``LocalBackend`` that reuses a running background process for an identical
     command rather than starting a duplicate."""
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        # execute_background runs in worker threads (the async adapter dispatches
+        # it via asyncio.to_thread), and pydantic-ai runs the tool calls from one
+        # assistant turn concurrently. Without a lock, several run_in_background
+        # calls all read self._bg before any inserts, all miss the dedup check,
+        # and all spawn — which is how three identical dev servers appeared at
+        # once. Serialize the whole check-and-spawn so it is atomic.
+        self._dedup_lock = threading.Lock()
+
     def execute_background(self, command: str) -> BackgroundHandle:
         target = _normalize(command)
-        for proc in self._bg.values():
-            if _normalize(proc.command) != target:
-                continue
-            # poll() is None while the process is still alive.
-            if proc.popen.poll() is None:
-                return BackgroundHandle(
-                    shell_id=proc.shell_id,
-                    pid=proc.popen.pid,
-                    command=proc.command,
-                )
-        return super().execute_background(command)
+        with self._dedup_lock:
+            for proc in self._bg.values():
+                if _normalize(proc.command) != target:
+                    continue
+                # poll() is None while the process is still alive.
+                if proc.popen.poll() is None:
+                    return BackgroundHandle(
+                        shell_id=proc.shell_id,
+                        pid=proc.popen.pid,
+                        command=proc.command,
+                    )
+            return super().execute_background(command)
