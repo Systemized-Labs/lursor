@@ -282,6 +282,37 @@ def _readonly_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDef
     return [t for t in tool_defs if t.name in _READONLY_TOOL_ALLOWLIST]
 
 
+# Tools a plan-mode turn keeps. Plan mode must produce a plan *doc* and nothing
+# else — no building — so, like read-only, this is enforced at the tool layer, not
+# just by the planning prompt (weaker models ignore "do not build yet" and start
+# editing/running). It's the read-only surface plus ``write_file`` (to write the
+# plan doc) and MINUS the todo-board tools: an execution todo list during planning
+# reads as "already building" and isn't the plan artifact. ``edit_file`` stays out
+# — a refinement rewrites the whole doc via ``write_file`` — so source files can't
+# be edited and shell/``execute``/``task`` can't run.
+_PLAN_TOOL_ALLOWLIST = (
+    _READONLY_TOOL_ALLOWLIST
+    - {
+        "write_todos",
+        "add_todo",
+        "remove_todo",
+        "update_todo_status",
+        "update_todo_statuses",
+    }
+) | {"write_file"}
+
+
+def _plan_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+    """A ``ToolsPrepareFunc`` that keeps only plan-safe tools each step.
+
+    Enforces plan mode at the tool layer: the agent can research the workspace and
+    write its plan doc (``write_file``), but every build/execute path — source
+    edits, shell/``execute``, subagent delegation (``task``), the todo board — is
+    removed before the model sees it, so a plan turn cannot start implementing.
+    """
+    return [t for t in tool_defs if t.name in _PLAN_TOOL_ALLOWLIST]
+
+
 @dataclass
 class ForceToolChoice(AbstractCapability[Any]):
     """Constrain the model's ``tool_choice`` for an agent.
@@ -473,6 +504,7 @@ def build_deep_agent(
     subagents: list[SubagentRow] | None = None,
     deep_defaults: dict | None = None,
     read_only: bool = False,
+    plan_mode: bool = False,
     model_override: str | None = None,
     web_search_provider: str | None = None,
     tavily_api_key: str | None = None,
@@ -634,6 +666,11 @@ def build_deep_agent(
     capabilities = list(extra_config.pop("capabilities", []) or [])
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
+    elif plan_mode:
+        # Plan mode is a produce-a-doc turn, not execution: strip every build path
+        # at the tool layer so the model can't ignore the planning prompt and start
+        # implementing (see ``_plan_tool_filter``).
+        capabilities.append(PrepareTools(_plan_tool_filter))
 
     # Forced tool choice: an agent can require the model to call a tool (on the
     # opening step) or forbid tool calls entirely. "auto" is the model default,
@@ -672,6 +709,7 @@ def build_deep_agent(
     browser_qa_on = (
         getattr(row, "browser_qa", True)
         and not read_only
+        and not plan_mode
         and workspace_id is not None
         and settings.browser_qa_enabled
     )
@@ -713,7 +751,7 @@ def build_deep_agent(
     instructions = (
         f"{base_instructions}\n\n{environment}\n\n{DEFAULT_LANGUAGE_DIRECTIVE}"
     )
-    if not read_only:
+    if not read_only and not plan_mode:
         instructions = f"{instructions}\n\n{DEV_SERVER_DIRECTIVE}"
     if browser_qa_on:
         instructions = f"{instructions}\n\n{BROWSER_QA_DIRECTIVE}"

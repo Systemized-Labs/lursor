@@ -1,5 +1,5 @@
 import { memo, useState } from "react"
-import { ArrowsInLineVertical, Check, Copy } from "@phosphor-icons/react"
+import { ArrowsInLineVertical, Check, Copy, Target } from "@phosphor-icons/react"
 import { useStore } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 
@@ -62,6 +62,38 @@ const AssistantSegment = memo(function AssistantSegment({
 }) {
   const seg = useChatMessage(id)
   if (!hasBody(seg) || !seg) return null
+
+  // A UI-only seam (e.g. the plan → execute handoff, where the planning transcript
+  // is cleared before the goal loop runs) — render it as a labelled rule, not a
+  // reply, so the boundary between planning and execution is obvious.
+  if (seg.kind === "divider") {
+    return (
+      <div className={first ? "flex items-center gap-3" : "mt-4 flex items-center gap-3"}>
+        <div className="h-px flex-1 bg-border/60" />
+        <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+          {seg.content}
+        </span>
+        <div className="h-px flex-1 bg-border/60" />
+      </div>
+    )
+  }
+
+  // The goal brief surfaces what the agent is set to do when a plan is executed
+  // (its success criteria) — a distinct card so the user sees the objective
+  // without reading the hidden kickoff.
+  if (seg.kind === "goal_brief") {
+    return (
+      <div className={first ? undefined : "mt-3"}>
+        <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
+          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-primary">
+            <Target className="h-3.5 w-3.5" />
+            Success criteria
+          </div>
+          <StreamingText text={seg.content} streaming={false} />
+        </div>
+      </div>
+    )
+  }
 
   // A `/compact` digest stands in for the messages it condensed — render it as a
   // distinct, bordered card rather than a normal reply so the seam is obvious.

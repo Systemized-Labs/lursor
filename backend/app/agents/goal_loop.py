@@ -206,6 +206,19 @@ def read_plan_doc(workspace_path: str | Path, plan_path: str) -> str:
     return ""
 
 
+def extract_plan_title(doc_text: str) -> str:
+    """Return the plan's first Markdown H1 (``# Title``) text, or ``""``.
+
+    Used as the human-readable objective for the goal header and the execute
+    divider, so they read as e.g. "Stripe checkout" rather than the file path.
+    """
+    for line in doc_text.splitlines():
+        m = re.match(r"^#\s+(.*\S)\s*$", line)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 # Seeds the first turn of the autonomous goal loop (``/goal`` — no plan step).
 AUTONOMOUS_KICKOFF = (
     "Work toward the goal now. Break it into steps with the write_todos tool, "
@@ -214,14 +227,30 @@ AUTONOMOUS_KICKOFF = (
 )
 
 
-def plan_execute_kickoff(plan_path: str) -> str:
-    """Seed for executing an approved plan doc: read it, then implement it."""
+def plan_execute_kickoff(plan_path: str, plan_body: str = "") -> str:
+    """Seed for executing an approved plan doc: implement it in full.
+
+    When ``plan_body`` is given the plan is reproduced inline, so the model has
+    the objective, steps and Success Criteria in context from turn one instead of
+    having to reconstruct them from a single ``read_file`` — it may still re-read
+    ``plan_path`` for the latest version. Falls back to a read-the-file
+    instruction when the body is unavailable.
+    """
+    if plan_body.strip():
+        lead = (
+            f"Re-read `{plan_path}` if you need the latest version, but the "
+            "approved plan is reproduced in full below — implement all of it."
+        )
+        inlined = f"\n\n--- PLAN ({plan_path}) ---\n{plan_body.strip()}\n--- END PLAN ---\n"
+    else:
+        lead = f"Read the plan at `{plan_path}` now."
+        inlined = ""
     return (
         f"The user has approved the plan at `{plan_path}` and wants it fully "
-        "implemented. Read that file now, then break it into steps with the "
-        "write_todos tool and carry them out, surfacing concrete evidence "
-        "(command output, exit codes, test results, file state) as you go so "
-        "completion can be verified against the plan's Success Criteria."
+        f"implemented. {lead} Break it into steps with the write_todos tool and "
+        "carry them out, surfacing concrete evidence (command output, exit codes, "
+        "test results, file state) as you go so completion can be verified against "
+        f"the plan's Success Criteria.{inlined}"
     )
 
 # Mid-run steering: messages the user sends while the autonomous loop is running.

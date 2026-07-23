@@ -460,6 +460,76 @@ async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient, 
     assert not (tools & forbidden), f"read-only agent exposed write paths: {tools & forbidden}"
 
 
+async def test_build_deep_agent_plan_mode_allowlists_tools(client: AsyncClient, tmp_path):
+    """Plan mode exposes reads + write_file, but no build/execute paths.
+
+    Enforced at the tool layer (not just the planning prompt) so a weaker model
+    can't ignore "do not build yet" and start editing/running: source edits,
+    shell/execute, subagent delegation, and the todo board are all removed, while
+    write_file stays so the agent can write its plan doc.
+    """
+    from app.agents.builder import (
+        _PLAN_TOOL_ALLOWLIST,
+        _plan_tool_filter,
+        build_deep_agent,
+    )
+    from app.db.models import Agent as AgentRow
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
+    row.include_subagents = True  # ensure the `task` delegation tool is present
+
+    # The pure filter keeps write_file (for the plan doc) but drops edit/exec/todos.
+    class _Def:
+        def __init__(self, name):
+            self.name = name
+
+    kept = {
+        d.name
+        for d in _plan_tool_filter(
+            None,
+            [
+                _Def(n)
+                for n in [
+                    "read_file",
+                    "write_file",
+                    "edit_file",
+                    "execute",
+                    "task",
+                    "write_todos",
+                ]
+            ],
+        )
+    }
+    assert kept == {"read_file", "write_file"}
+
+    seen: dict[str, list[str]] = {}
+
+    def _capture(_messages, info: AgentInfo):
+        seen["tools"] = [t.name for t in info.function_tools]
+        return ModelResponse(parts=[TextPart("ok")])
+
+    agent, deps = build_deep_agent(row, str(tmp_path), plan_mode=True)
+    with agent.override(model=FunctionModel(_capture)):
+        await agent.run("hi", deps=deps)
+
+    tools = set(seen["tools"])
+    assert tools <= _PLAN_TOOL_ALLOWLIST, f"leaked: {tools - _PLAN_TOOL_ALLOWLIST}"
+    assert "write_file" in tools, "plan mode must keep write_file for the plan doc"
+    forbidden = {
+        "task",
+        "edit_file",
+        "hashline_edit",
+        "execute",
+        "run_in_background",
+        "run_skill_script",
+        "write_todos",
+        "add_todo",
+    }
+    assert not (tools & forbidden), f"plan agent exposed build paths: {tools & forbidden}"
+
+
 async def test_prompt_template_crud_and_builtin_protection(client: AsyncClient):
     """User templates are full CRUD; built-ins are read-only (403 on edit/delete)."""
     # Create a user template.

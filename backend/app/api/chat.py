@@ -51,6 +51,7 @@ from app.agents.goal_loop import (
     detect_written_plan,
     drive_goal_loop,
     encode_goal_status_event,
+    extract_plan_title,
     extract_success_criteria,
     messages_to_history,
     plan_doc_path,
@@ -606,6 +607,7 @@ async def _build_agent_and_context(
     agent_row: Agent,
     workspace: Workspace,
     read_only: bool = False,
+    plan_mode: bool = False,
 ):
     """Build the deep agent + deps for a thread and load the app-wide context.
 
@@ -631,6 +633,7 @@ async def _build_agent_and_context(
         workspace_description=workspace.description or None,
         workspace_id=workspace.id,
         read_only=read_only,
+        plan_mode=plan_mode,
         web_search_provider=app_config.web_search_provider if app_config else None,
         # A UI-saved key (on AppConfig) wins over the environment fallback.
         tavily_api_key=(app_config.tavily_api_key if app_config else None)
@@ -955,8 +958,15 @@ async def chat(
 
     # A "/ask" turn on a chat thread builds a read-only agent (no write/edit/shell).
     read_only = thread.mode == ThreadMode.chat and turn == "ask"
+    # A plan turn (fresh `/plan`, or a plain message refining a parked plan) builds a
+    # plan-mode agent: it can research and write the plan doc but no build/execute
+    # tools, so it can't ignore the planning prompt and start implementing. Kept in
+    # sync with ``run_plan`` below (recomputed there once ``parked`` is available).
+    plan_mode = turn == "plan" or (
+        thread.status == ThreadStatus.awaiting_approval and turn == "chat"
+    )
     agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace, read_only=read_only
+        session, agent_row, workspace, read_only=read_only, plan_mode=plan_mode
     )
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.
@@ -1118,14 +1128,65 @@ async def chat(
                 raise HTTPException(
                     status.HTTP_409_CONFLICT, "The plan doc is empty or unreadable"
                 )
+            # Execute is a context boundary: the plan doc is the *compiled* context,
+            # so the planning back-and-forth that produced it is redundant (and
+            # drift-prone) to replay into the execution loop. Mark the visible
+            # planning rows compacted — kept in the DB for scrollback, hidden from the
+            # UI and from model context, exactly like ``/compact`` — and drop a
+            # divider marking the handoff. The goal loop then starts clean, seeded
+            # only by the plan-execute kickoff (which points the agent at the doc) and
+            # the doc's Success Criteria as the completion condition. Scoped to
+            # ``execute_plan``; a bare ``/goal`` never enters this branch and keeps
+            # its full transcript (its objective *is* the conversation).
+            planning_rows = (
+                await session.execute(
+                    select(Message).where(
+                        Message.thread_id == thread_id,
+                        Message.compacted == False,  # noqa: E712
+                    )
+                )
+            ).scalars().all()
+            for row in planning_rows:
+                row.compacted = True
+                session.add(row)
+            # A human objective for the divider + goal header (the plan's H1),
+            # falling back to the path when the plan has no title.
+            plan_title = extract_plan_title(doc_text) or plan_path
+            # The handoff seam...
+            session.add(
+                Message(
+                    thread_id=thread_id,
+                    role="assistant",
+                    content=f"Executing plan — {plan_title}",
+                    kind="divider",
+                )
+            )
+            # ...and a brief surfacing what "done" means (the Success Criteria) so
+            # the user can see what the agent is set to do without reading the seed.
+            # Both are UI-only (excluded from model context below); the model gets
+            # the full plan inline via the kickoff.
+            session.add(
+                Message(
+                    thread_id=thread_id,
+                    role="assistant",
+                    content=goal_condition,
+                    kind="goal_brief",
+                )
+            )
             # Persist the derived goal + clear the park so the run (and any reconnect)
-            # shows the objective and no longer reads as awaiting approval.
-            thread.goal = f"Fully implement the plan at {plan_path}."
+            # shows the objective and no longer reads as awaiting approval. The goal
+            # header reads ``thread.goal``, so use the plan title (not the path).
+            thread.goal = (
+                extract_plan_title(doc_text)
+                or f"Fully implement the plan at {plan_path}."
+            )
             thread.success_criteria = goal_condition
             thread.status = ThreadStatus.running
             session.add(thread)
             await session.commit()
-            goal_kickoff = plan_execute_kickoff(plan_path)
+            # Reproduce the plan inline in the seed so the model has the full plan
+            # (objective, steps, Success Criteria) from turn one.
+            goal_kickoff = plan_execute_kickoff(plan_path, doc_text)
         else:
             goal_condition = condition
             goal_kickoff = AUTONOMOUS_KICKOFF
@@ -1133,7 +1194,16 @@ async def chat(
         rows = (
             await session.execute(
                 select(Message)
-                .where(Message.thread_id == thread_id, Message.compacted == False)  # noqa: E712
+                .where(
+                    Message.thread_id == thread_id,
+                    Message.compacted == False,  # noqa: E712
+                    # Dividers and goal briefs are UI-only surfaces for the plan →
+                    # execute handoff, never part of the context the model sees (it
+                    # gets the plan inline via the kickoff). Excluding them also keeps
+                    # ``execute_plan`` history genuinely empty (planning rows are
+                    # compacted just above), so the loop starts from the kickoff alone.
+                    Message.kind.not_in(["divider", "goal_brief"]),
+                )
                 .order_by(Message.created_at)
             )
         ).scalars().all()

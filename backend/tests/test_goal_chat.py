@@ -252,8 +252,128 @@ async def test_plan_parks_then_refines_then_execute_plan_runs(
     executed = (await client.get(f"/threads/{tid}")).json()
     assert executed["mode"] == "chat"
     assert executed["status"] == "completed"
-    assert executed["goal"] == f"Fully implement the plan at {plan_path}."
+    # The objective shown in the goal header is the plan's H1 title, not the path.
+    assert executed["goal"] == "Plan"
     assert "The thing is done." in executed["success_criteria"]
+
+
+async def test_execute_plan_clears_planning_context_and_leaves_a_divider(
+    client: AsyncClient, monkeypatch, tmp_path
+):
+    """Executing a plan is a context boundary: the planning transcript is dropped
+    (marked compacted, hidden from the UI and from the model) and replaced by a
+    ``kind="divider"`` seam, so the goal loop starts seeded only by the plan doc.
+    A bare ``/goal`` never enters this branch and keeps its transcript."""
+    import pathlib
+
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
+    )
+
+    # Capture the history the execution loop is seeded with — it must be empty once
+    # the planning rows are compacted and the divider is excluded from context.
+    seen: dict = {}
+    real_run = __import__("app.api.chat", fromlist=["_run_goal_execution"])._run_goal_execution
+
+    async def spy_run(*args, **kwargs):
+        seen["initial_history"] = kwargs.get("initial_history")
+        return await real_run(*args, **kwargs)
+
+    monkeypatch.setattr("app.api.chat._run_goal_execution", spy_run)
+
+    agent = (await client.post("/agents", json={"name": "Goalie3"})).json()
+    ws = (await client.post("/workspaces", json={"name": "GoalWS3"})).json()
+    thread = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()
+    tid = thread["id"]
+
+    def _input(mid: str, content: str, turn: str | None = None) -> str:
+        return RunAgentInput(
+            thread_id=tid,
+            run_id=mid,
+            state=None,
+            messages=[UserMessage(id=mid, role="user", content=content)],
+            tools=[],
+            context=[],
+            forwarded_props={"turn": turn} if turn else None,
+        ).model_dump_json(by_alias=True)
+
+    # Plan, then refine — building up a planning transcript.
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, _input("m1", "refactor it", "plan"))
+    )
+    plan_path = (await client.get(f"/threads/{tid}")).json()["plan_path"]
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m2", "tweak it")))
+
+    doc = pathlib.Path(ws["path"]) / plan_path
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "# Plan\n\n1. Do the thing.\n\n## Success Criteria\n\n- The thing is done.\n",
+        encoding="utf-8",
+    )
+
+    # Before executing, the planning turns are visible.
+    before = (await client.get(f"/threads/{tid}/messages")).json()
+    assert any(m["content"] == "refactor it" for m in before)
+
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, _input("m3", "Execute plan", "execute_plan"))
+    )
+
+    # The execution loop was seeded with no prior transcript.
+    assert seen["initial_history"] == []
+
+    # Planning rows (and the bodyless "Execute plan" turn) are gone from the visible
+    # transcript; a divider marks the handoff and points at the plan doc.
+    after = (await client.get(f"/threads/{tid}/messages")).json()
+    assert not any(m["content"] in {"refactor it", "tweak it"} for m in after)
+    dividers = [m for m in after if m["kind"] == "divider"]
+    assert len(dividers) == 1
+    # The divider carries the plan's H1 title as the objective (not the path).
+    assert dividers[0]["content"] == "Executing plan — Plan"
+    # A goal brief surfaces the success criteria; both are UI-only (excluded from
+    # the model context asserted above via ``initial_history == []``).
+    briefs = [m for m in after if m["kind"] == "goal_brief"]
+    assert len(briefs) == 1
+    assert "thing is done" in briefs[0]["content"]
+
+
+async def test_goal_command_keeps_its_transcript(client: AsyncClient, monkeypatch):
+    """Regression: a bare ``/goal`` is NOT a plan handoff, so it must not compact
+    the thread — its objective *is* the conversation."""
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
+    )
+
+    agent = (await client.post("/agents", json={"name": "Goalie4"})).json()
+    ws = (await client.post("/workspaces", json={"name": "GoalWS4"})).json()
+    thread = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()
+    tid = thread["id"]
+
+    body = RunAgentInput(
+        thread_id=tid,
+        run_id="g1",
+        state=None,
+        messages=[UserMessage(id="g1", role="user", content="make it work")],
+        tools=[],
+        context=[],
+        forwarded_props={"turn": "goal"},
+    ).model_dump_json(by_alias=True)
+    _assert_valid_lifecycle(await _drain_chat(client, tid, body))
+
+    msgs = (await client.get(f"/threads/{tid}/messages")).json()
+    # The goal objective turn survives (nothing was compacted) and no divider was added.
+    assert any(m["content"] == "make it work" for m in msgs)
+    assert not any(m["kind"] == "divider" for m in msgs)
 
 
 async def test_plain_message_refines_a_parked_plan_and_slash_plan_starts_fresh(

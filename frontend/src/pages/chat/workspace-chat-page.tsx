@@ -1,4 +1,5 @@
 import { Robot, NotePencil } from "@phosphor-icons/react"
+import { randomUUID } from "@ag-ui/client"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useParams, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
@@ -28,7 +29,9 @@ import type { AgentScope, CommandAction } from "@/components/chat/commands/types
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
-import type { PendingAttachment } from "@/agui/types"
+import type { ChatMessage, PendingAttachment } from "@/agui/types"
+import { filesApi } from "@/api/files"
+import { planSuccessCriteria, planTitle } from "@/lib/plan-doc"
 import type { DefaultAgentsSettings } from "@/api/types"
 
 /** Fallback plan-doc path for legacy threads that predate per-thread plan paths.
@@ -447,6 +450,44 @@ export function WorkspaceChatPage() {
     // current (plan) agent.
     const resolved = await agentForCommand("goal", "turn")
     if (!resolved) return
+    // Execute is a context boundary: the backend clears the planning transcript
+    // (marks it compacted) and seeds the goal loop from the plan doc alone. Mirror
+    // that in the client *now* — replace the transcript with a divider and a goal
+    // brief (objective + success criteria) — so the seam and what the agent is set
+    // to do are visible during the run, not just after a reload. The streamed
+    // execution turns append below; a later reload swaps in the server's own rows
+    // (identical text), so this stays consistent across refresh.
+    const planPath = runView?.planPath || currentThread?.plan_path || LEGACY_PLAN_DOC
+    let title = ""
+    let criteria = ""
+    if (workspaceId) {
+      try {
+        const doc = await filesApi.read(workspaceId, planPath)
+        title = planTitle(doc.content)
+        criteria = planSuccessCriteria(doc.content) || doc.content.trim()
+      } catch {
+        // Plan doc unreadable — fall back to a path-only divider, no brief.
+      }
+    }
+    const seed: ChatMessage[] = [
+      {
+        id: randomUUID(),
+        role: "assistant",
+        kind: "divider",
+        content: `Executing plan — ${title || planPath}`,
+        toolCalls: [],
+      },
+    ]
+    if (criteria) {
+      seed.push({
+        id: randomUUID(),
+        role: "assistant",
+        kind: "goal_brief",
+        content: criteria,
+        toolCalls: [],
+      })
+    }
+    chat.store.getState().resetMessages(seed)
     await chat.send("Execute plan", [], "execute_plan", undefined, resolved)
   }
 
