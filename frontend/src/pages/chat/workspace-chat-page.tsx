@@ -96,31 +96,6 @@ export function WorkspaceChatPage() {
     [draft]
   )
 
-  // Drop a stale override whenever the queued command changes (including when it
-  // clears on send) so a manual override applies to exactly one turn.
-  const prevPendingKey = useRef(pendingKey)
-  useEffect(() => {
-    if (prevPendingKey.current !== pendingKey) {
-      prevPendingKey.current = pendingKey
-      setAgentOverride(null)
-    }
-  }, [pendingKey])
-
-  // The agent this send will actually switch to: the manual override if set,
-  // otherwise the queued command's default. Drives the composer picker's value
-  // and its "→ Name" preview so the command↔agent coupling stays visible (and
-  // any override is reflected) before sending.
-  const pendingAgentId = useMemo(() => {
-    if (!pendingKey) return null
-    const target = agentOverride ?? defaultAgents?.[pendingKey]
-    return target && agentNameById.has(target) ? target : null
-  }, [pendingKey, agentOverride, defaultAgents, agentNameById])
-
-  const pendingAgentName = useMemo(() => {
-    if (!pendingAgentId || pendingAgentId === selectedAgentId) return null
-    return agentNameById.get(pendingAgentId) ?? null
-  }, [pendingAgentId, selectedAgentId, agentNameById])
-
   const chat = useChatEngine({
     workspaceId,
     agentId: selectedAgentId || undefined,
@@ -252,13 +227,14 @@ export function WorkspaceChatPage() {
     return { id: runId, name: agentNameById.get(runId) }
   }
 
-  // The composer's agent picker. While a slash command is queued, picking an
-  // agent other than that command's default overrides it for this one turn
-  // (never persisted); picking the default clears the override. With no command
-  // queued it's a normal agent switch that persists to the open thread.
+  // The composer's agent picker. While a slash command is queued — or a plan is
+  // parked for review (an implicit `/goal`) — picking an agent other than that
+  // command's default overrides it for this one turn (never persisted); picking
+  // the default clears the override. Otherwise it's a normal agent switch that
+  // persists to the open thread.
   function handlePickerAgentChange(agentId: string) {
-    if (pendingKey) {
-      const commandDefault = defaultAgentFor(pendingKey)
+    if (effectivePendingKey) {
+      const commandDefault = defaultAgentFor(effectivePendingKey)
       setAgentOverride(agentId === commandDefault ? null : agentId)
       return
     }
@@ -425,6 +401,40 @@ export function WorkspaceChatPage() {
     runView?.status === "awaiting_approval" ||
     (currentThread?.status === "awaiting_approval" && !!currentThread?.plan_path)
   const planPath = runView?.planPath || currentThread?.plan_path || undefined
+
+  // The command whose default agent this send/execute would run under: a queued
+  // slash command if one is in the draft, otherwise `/goal` while a plan is parked
+  // for review (the "Execute plan" button runs the plan as a one-off goal). Treating
+  // parked as an implicit `/goal` lets the composer's agent picker override the
+  // execute agent per-turn — a turn-only choice that never touches the parked
+  // thread's own agent — instead of persisting a normal agent switch.
+  const effectivePendingKey: keyof DefaultAgentsSettings | null =
+    pendingKey ?? (isParked ? "goal" : null)
+
+  // Drop a stale override whenever the effective command changes (a queued command
+  // clearing on send, or leaving plan review) so an override applies to one turn.
+  const prevPendingKey = useRef(effectivePendingKey)
+  useEffect(() => {
+    if (prevPendingKey.current !== effectivePendingKey) {
+      prevPendingKey.current = effectivePendingKey
+      setAgentOverride(null)
+    }
+  }, [effectivePendingKey])
+
+  // The agent this send/execute will actually run under: the manual override if
+  // set, otherwise the effective command's default. Drives the composer picker's
+  // value and its "→ Name" preview so the coupling stays visible (and any override
+  // is reflected) before sending or pressing "Execute plan".
+  const pendingAgentId = useMemo(() => {
+    if (!effectivePendingKey) return null
+    const target = agentOverride ?? defaultAgents?.[effectivePendingKey]
+    return target && agentNameById.has(target) ? target : null
+  }, [effectivePendingKey, agentOverride, defaultAgents, agentNameById])
+
+  const pendingAgentName = useMemo(() => {
+    if (!pendingAgentId || pendingAgentId === selectedAgentId) return null
+    return agentNameById.get(pendingAgentId) ?? null
+  }, [pendingAgentId, selectedAgentId, agentNameById])
 
   // Carry the approved plan out as a goal. The visible "Execute plan" turn reads
   // cleanly in the transcript; the backend ignores its text and seeds the goal
