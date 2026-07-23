@@ -14,16 +14,22 @@ interface DockRailProps {
  */
 export function DockRail({ onOpen }: DockRailProps) {
   return (
-    <div className="flex w-9 shrink-0 flex-col items-center border-l border-border/40 bg-background py-2">
-      <button
-        type="button"
-        onClick={onOpen}
-        title="Show panel"
-        aria-label="Show panel"
-        className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-      >
-        <SidebarSimple className="h-4 w-4" />
-      </button>
+    <div className="flex w-9 shrink-0 flex-col items-center bg-background">
+      {/* Top row is pinned to the same `h-9` as the chat header so the expand
+          toggle lines up exactly with the header's new-chat button, and the
+          `h-7 w-7` button mirrors that button's hit area. No border here — the
+          rail reads as a seamless continuation of the header. */}
+      <div className="flex h-9 shrink-0 items-center">
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Show panel"
+          aria-label="Show panel"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <SidebarSimple className="h-4 w-4" />
+        </button>
+      </div>
     </div>
   )
 }
