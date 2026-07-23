@@ -69,16 +69,9 @@ export function GoalRunPanel({
   children: ReactNode
 }) {
   const [tasksOpen, setTasksOpen] = useState(false)
-  // Lead the header with the plan doc name when we have one; the raw success
-  // criteria is cryptic, so it drops to a dim sub-line (and the hover tooltip).
-  const condition = cleanObjective(objective) || "Goal"
-  const title = planName?.trim() || condition
-  // Keep the sub-line to a short glance; the full criteria stays on the tooltip.
-  const subline = planName?.trim()
-    ? condition.length > 48
-      ? `${condition.slice(0, 48).trimEnd()}…`
-      : condition
-    : null
+  // Lead the header with the plan doc name when we have one; fall back to the
+  // cleaned success criteria only when there's no plan to name.
+  const title = planName?.trim() || cleanObjective(objective) || "Goal"
   const total = todos.length
   const completed = todos.filter((t) => t.status === "completed").length
   const active = todos.find((t) => t.status === "in_progress")
@@ -90,20 +83,15 @@ export function GoalRunPanel({
   return (
     <div className="px-4 pb-4 pt-1 sm:px-6">
       <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm">
-        {/* Status header: plan name (with the criteria as a dim sub-line), a
-            live pulse, the turn counter, and stop. */}
+        {/* Status header: plan name, a live pulse, the turn counter, and stop. */}
         <div className="flex items-center gap-2.5 px-3.5 py-2.5">
           <Target className="h-4 w-4 shrink-0 text-primary" />
-          <div className="min-w-0 flex-1">
-            <div title={condition} className="truncate text-sm font-medium text-foreground">
-              {title}
-            </div>
-            {subline && (
-              <div title={condition} className="truncate text-xs text-muted-foreground">
-                {subline}
-              </div>
-            )}
-          </div>
+          <span
+            title={title}
+            className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
+          >
+            {title}
+          </span>
           <span className="relative flex h-2 w-2 shrink-0" title="Running">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60 motion-reduce:hidden" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
