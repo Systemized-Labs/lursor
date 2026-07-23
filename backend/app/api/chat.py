@@ -699,6 +699,10 @@ def _goal_status_publisher(thread_id: str, condition: str, max_iter: int):
                 reason=reason,
                 plan_path=plan_path,
             ),
+            # Goal status is coarse (run start + turn boundaries only), so it
+            # ages out of the trimmable buffer during a long turn. Keep it sticky
+            # so a mid-turn reconnect still replays goal mode.
+            sticky_key="goal_status",
         )
 
     return publish

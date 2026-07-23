@@ -38,6 +38,14 @@ class ChatRunManager:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._queues: dict[str, set[asyncio.Queue[str | None]]] = defaultdict(set)
         self._buffers: dict[str, list[str]] = {}
+        # Latest value of "sticky" events (keyed by a caller-supplied key, e.g.
+        # "goal_status"), kept out of band from the trimmable buffer. Coarse
+        # events — goal status is emitted only at run start and turn boundaries —
+        # would otherwise age out of the size-capped buffer during a long turn,
+        # so a reconnecting client would replay text/todos but never learn the
+        # run is a goal, dropping the UI out of goal mode. These are replayed
+        # last (latest wins) on every subscribe regardless of trimming.
+        self._sticky: dict[str, dict[str, str]] = {}
         self._status: dict[str, RunStatus] = {}
         self._finished_order: deque[str] = deque()
 
@@ -53,6 +61,7 @@ class ChatRunManager:
             return False
 
         self._buffers[thread_id] = []
+        self._sticky[thread_id] = {}
         self._status[thread_id] = "running"
 
         async def _wrapped() -> None:
@@ -89,12 +98,18 @@ class ChatRunManager:
 
     # --- producer ----------------------------------------------------------------
 
-    def publish(self, thread_id: str, encoded: str) -> None:
-        """Buffer an encoded SSE line and push it to every live subscriber."""
+    def publish(self, thread_id: str, encoded: str, *, sticky_key: str | None = None) -> None:
+        """Buffer an encoded SSE line and push it to every live subscriber.
+
+        ``sticky_key`` also records this as the latest value of a sticky event,
+        replayed on every reconnect even after the buffer trims it away.
+        """
         buffer = self._buffers.setdefault(thread_id, [])
         buffer.append(encoded)
         if len(buffer) > _MAX_BUFFER_EVENTS:
             del buffer[:_TRIM_CHUNK]
+        if sticky_key is not None:
+            self._sticky.setdefault(thread_id, {})[sticky_key] = encoded
         for queue in self._queues.get(thread_id, set()):
             with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(encoded)
@@ -117,6 +132,7 @@ class ChatRunManager:
             if self._status.get(old) == "running":
                 continue  # re-run reused the id; keep it
             self._buffers.pop(old, None)
+            self._sticky.pop(old, None)
             self._status.pop(old, None)
 
     # --- consumer ----------------------------------------------------------------
@@ -129,7 +145,10 @@ class ChatRunManager:
         through the gap between "what's replayed" and "what's streamed live".
         """
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1024)
+        # Sticky snapshots go last so the freshest goal status wins even if an
+        # older copy still lingers in the buffer (or the buffer trimmed it away).
         replay = list(self._buffers.get(thread_id, []))
+        replay.extend(self._sticky.get(thread_id, {}).values())
         self._queues[thread_id].add(queue)
         return queue, replay
 
