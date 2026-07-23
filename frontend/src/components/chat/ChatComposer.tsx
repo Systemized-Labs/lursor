@@ -129,6 +129,10 @@ export interface ChatComposerProps {
    *  target agent's name — shown as a "→ Name" preview so the coupling between a
    *  command and its agent is visible before sending. */
   pendingAgentName?: string | null
+  /** The id of {@link pendingAgentName}'s agent — drives the picker's value so
+   *  the dropdown highlights the agent the queued command will run under (which
+   *  may be a manual per-turn override of that command's default). */
+  pendingAgentId?: string | null
 }
 
 /** Message composer: a growing textarea inside a rounded card, with send/stop,
@@ -156,6 +160,7 @@ export function ChatComposer({
   selectedAgentId,
   onAgentChange,
   pendingAgentName,
+  pendingAgentId,
 }: ChatComposerProps) {
   const canAttach = !!onAttachmentsChange && !disabled
   // The agent picker lives in the toolbar only on the standalone composer; the
@@ -454,7 +459,7 @@ export function ChatComposer({
             )}
             {showAgentPicker && (
               <Select
-                value={selectedAgentId}
+                value={pendingAgentId ?? selectedAgentId}
                 onValueChange={(v) => onAgentChange?.(v)}
                 disabled={disabled}
               >

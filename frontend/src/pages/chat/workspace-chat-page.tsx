@@ -83,17 +83,43 @@ export function WorkspaceChatPage() {
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
   const { data: defaultAgents } = useDefaultAgents()
 
-  // If the draft opens with a slash command bound to a different default agent,
-  // preview the agent this send will switch to — makes the command↔agent coupling
-  // visible in the composer before sending.
+  // A manual per-turn override of the agent a queued slash command would switch
+  // to. Null unless the user picks a different agent from the composer while a
+  // command is in the draft; reset whenever the draft's command changes so it
+  // never leaks past the turn it was chosen for.
+  const [agentOverride, setAgentOverride] = useState<string | null>(null)
+
+  // The `agentKey` of the slash command currently in the draft (if any) — the
+  // mode whose default agent this send would switch to.
+  const pendingKey = useMemo<keyof DefaultAgentsSettings | null>(
+    () => parseSlashCommand(draft)?.command.agentKey ?? null,
+    [draft]
+  )
+
+  // Drop a stale override whenever the queued command changes (including when it
+  // clears on send) so a manual override applies to exactly one turn.
+  const prevPendingKey = useRef(pendingKey)
+  useEffect(() => {
+    if (prevPendingKey.current !== pendingKey) {
+      prevPendingKey.current = pendingKey
+      setAgentOverride(null)
+    }
+  }, [pendingKey])
+
+  // The agent this send will actually switch to: the manual override if set,
+  // otherwise the queued command's default. Drives the composer picker's value
+  // and its "→ Name" preview so the command↔agent coupling stays visible (and
+  // any override is reflected) before sending.
+  const pendingAgentId = useMemo(() => {
+    if (!pendingKey) return null
+    const target = agentOverride ?? defaultAgents?.[pendingKey]
+    return target && agentNameById.has(target) ? target : null
+  }, [pendingKey, agentOverride, defaultAgents, agentNameById])
+
   const pendingAgentName = useMemo(() => {
-    const parsed = parseSlashCommand(draft)
-    const key = parsed?.command.agentKey
-    if (!key) return null
-    const target = defaultAgents?.[key]
-    if (!target || target === selectedAgentId || !agentNameById.has(target)) return null
-    return agentNameById.get(target) ?? null
-  }, [draft, defaultAgents, selectedAgentId, agentNameById])
+    if (!pendingAgentId || pendingAgentId === selectedAgentId) return null
+    return agentNameById.get(pendingAgentId) ?? null
+  }, [pendingAgentId, selectedAgentId, agentNameById])
 
   const chat = useChatEngine({
     workspaceId,
@@ -207,22 +233,36 @@ export function WorkspaceChatPage() {
     return id && agents.some((a) => a.id === id) ? id : undefined
   }
 
-  // Resolve the agent a command runs under. A sticky (`"thread"`) command
-  // persists the switch to the open thread so later turns reuse it; a one-off
-  // (`"turn"`) command leaves the thread's agent untouched and just overrides
-  // this turn (the id rides on the wire for the backend to honor once). Returns
-  // the `{ id, name }` to send the turn as, or `null` if a required persist
-  // failed (caller should abort the send).
+  // Resolve the agent a command runs under. A manual per-turn override wins over
+  // the command's default and never persists — it's a turn-only choice. Without
+  // one, a sticky (`"thread"`) command persists its default agent to the open
+  // thread so later turns reuse it; a one-off (`"turn"`) command leaves the
+  // thread's agent untouched and just overrides this turn (the id rides on the
+  // wire for the backend to honor once). Returns the `{ id, name }` to send the
+  // turn as, or `null` if a required persist failed (caller should abort).
   async function agentForCommand(
     key: keyof DefaultAgentsSettings,
     scope: AgentScope
   ): Promise<{ id: string; name?: string } | null> {
-    const target = defaultAgentFor(key)
+    const target = agentOverride ?? defaultAgentFor(key)
     const runId = target ?? selectedAgentId
-    if (scope === "thread" && target && target !== selectedAgentId) {
+    if (scope === "thread" && !agentOverride && target && target !== selectedAgentId) {
       if (!(await handleAgentChange(target))) return null
     }
     return { id: runId, name: agentNameById.get(runId) }
+  }
+
+  // The composer's agent picker. While a slash command is queued, picking an
+  // agent other than that command's default overrides it for this one turn
+  // (never persisted); picking the default clears the override. With no command
+  // queued it's a normal agent switch that persists to the open thread.
+  function handlePickerAgentChange(agentId: string) {
+    if (pendingKey) {
+      const commandDefault = defaultAgentFor(pendingKey)
+      setAgentOverride(agentId === commandDefault ? null : agentId)
+      return
+    }
+    void handleAgentChange(agentId)
   }
 
   function handleNewConversation() {
@@ -602,8 +642,9 @@ export function WorkspaceChatPage() {
               onResumeQueue={chat.resumeQueue}
               agents={noAgents ? undefined : agents}
               selectedAgentId={selectedAgentId}
-              onAgentChange={(v) => void handleAgentChange(v)}
+              onAgentChange={handlePickerAgentChange}
               pendingAgentName={pendingAgentName}
+              pendingAgentId={pendingAgentId}
             />
           </>
         )}
