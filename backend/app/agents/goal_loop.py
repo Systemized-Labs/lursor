@@ -209,8 +209,8 @@ def read_plan_doc(workspace_path: str | Path, plan_path: str) -> str:
 def extract_plan_title(doc_text: str) -> str:
     """Return the plan's first Markdown H1 (``# Title``) text, or ``""``.
 
-    Used as the human-readable objective for the goal header and the execute
-    divider, so they read as e.g. "Stripe checkout" rather than the file path.
+    Used as the human-readable objective for the goal header when a plan is
+    executed, so it reads as e.g. "Stripe checkout" rather than the file path.
     """
     for line in doc_text.splitlines():
         m = re.match(r"^#\s+(.*\S)\s*$", line)

@@ -257,13 +257,14 @@ async def test_plan_parks_then_refines_then_execute_plan_runs(
     assert "The thing is done." in executed["success_criteria"]
 
 
-async def test_execute_plan_clears_planning_context_and_leaves_a_divider(
+async def test_execute_plan_seeds_the_loop_with_a_clean_context(
     client: AsyncClient, monkeypatch, tmp_path
 ):
-    """Executing a plan is a context boundary: the planning transcript is dropped
-    (marked compacted, hidden from the UI and from the model) and replaced by a
-    ``kind="divider"`` seam, so the goal loop starts seeded only by the plan doc.
-    A bare ``/goal`` never enters this branch and keeps its transcript."""
+    """Executing a plan is a context boundary: the execution loop is seeded with no
+    prior history, so the planning back-and-forth never reaches the model — the
+    approved plan rides in via the kickoff instead. No transcript surgery: the
+    planning conversation stays visible in scrollback. A bare ``/goal`` keeps its
+    own transcript as its seed."""
     import pathlib
 
     monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
@@ -271,8 +272,8 @@ async def test_execute_plan_clears_planning_context_and_leaves_a_divider(
         "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
     )
 
-    # Capture the history the execution loop is seeded with — it must be empty once
-    # the planning rows are compacted and the divider is excluded from context.
+    # Capture the history the execution loop is seeded with — it must be empty for an
+    # execute_plan turn regardless of how much planning preceded it.
     seen: dict = {}
     real_run = __import__("app.api.chat", fromlist=["_run_goal_execution"])._run_goal_execution
 
@@ -324,22 +325,19 @@ async def test_execute_plan_clears_planning_context_and_leaves_a_divider(
         await _drain_chat(client, tid, _input("m3", "Execute plan", "execute_plan"))
     )
 
-    # The execution loop was seeded with no prior transcript.
+    # The execution loop was seeded with no prior transcript — the planning
+    # back-and-forth never reaches the model.
     assert seen["initial_history"] == []
 
-    # Planning rows (and the bodyless "Execute plan" turn) are gone from the visible
-    # transcript; a divider marks the handoff and points at the plan doc.
+    # The planning transcript stays visible in scrollback (no compaction, no
+    # divider/goal_brief surgery); the goal header reads the plan's H1 title.
     after = (await client.get(f"/threads/{tid}/messages")).json()
-    assert not any(m["content"] in {"refactor it", "tweak it"} for m in after)
-    dividers = [m for m in after if m["kind"] == "divider"]
-    assert len(dividers) == 1
-    # The divider carries the plan's H1 title as the objective (not the path).
-    assert dividers[0]["content"] == "Executing plan — Plan"
-    # A goal brief surfaces the success criteria; both are UI-only (excluded from
-    # the model context asserted above via ``initial_history == []``).
-    briefs = [m for m in after if m["kind"] == "goal_brief"]
-    assert len(briefs) == 1
-    assert "thing is done" in briefs[0]["content"]
+    assert any(m["content"] == "refactor it" for m in after)
+    assert any(m["content"] == "tweak it" for m in after)
+    assert not any(m["kind"] in {"divider", "goal_brief"} for m in after)
+    executed = (await client.get(f"/threads/{tid}")).json()
+    assert executed["goal"] == "Plan"
+    assert "The thing is done." in executed["success_criteria"]
 
 
 async def test_goal_command_keeps_its_transcript(client: AsyncClient, monkeypatch):

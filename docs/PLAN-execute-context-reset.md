@@ -1,8 +1,24 @@
 # PLAN: Clear context when executing a plan (plan → execute handoff)
 
-Status: **IMPLEMENTED** (2026-07-23)
+Status: **SIMPLIFIED to Option A** (see note below); originally Option C
 Owner: jon
 Date: 2026-07-23
+
+## Update (2026-07-23) — simplified to Option A
+
+The Option-C machinery below (compacting the planning rows, a `divider` seam, a
+`goal_brief` card, the client `resetMessages` mirror) was removed. A goal run's
+context is set entirely by `initial_history` + the kickoff — it never uses the
+visible transcript — so "clean context" needs nothing more than seeding
+`execute_plan` with `initial_history = []`. The approved plan still rides in via
+`plan_execute_kickoff(plan_path, doc_text)` and the doc's Success Criteria is the
+evaluator condition, so the refinement back-and-forth never reaches the model. The
+planning conversation now stays visible in scrollback (harmless), the `divider`
+and `goal_brief` message kinds are gone, and the execute turn shows a normal
+bubble. The GoalRunPanel already surfaces the objective + criteria during the run.
+`extract_plan_title` is kept (sets the goal header via `thread.goal`).
+
+The Option-C write-up is retained below for history only.
 
 ## Implementation notes (what shipped)
 

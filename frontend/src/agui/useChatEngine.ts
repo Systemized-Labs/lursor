@@ -440,14 +440,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
           name: a.name,
         })),
       }
-      // "Execute plan" is a bodyless context boundary: the backend clears the
-      // planning transcript and inserts a divider, so we don't show a user bubble
-      // for it — the caller (handleExecutePlan) has already put the divider in the
-      // store's place. Every other turn shows its bubble. The transport still
-      // carries the turn either way so the run kicks off.
-      if (turnIntent !== "execute_plan") {
-        store.getState().appendMessage(userMessage)
-      }
+      store.getState().appendMessage(userMessage)
       agent.addMessage({
         id: userMessage.id,
         role: "user",

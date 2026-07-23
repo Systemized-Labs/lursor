@@ -1134,49 +1134,15 @@ async def chat(
                 )
             # Execute is a context boundary: the plan doc is the *compiled* context,
             # so the planning back-and-forth that produced it is redundant (and
-            # drift-prone) to replay into the execution loop. Mark the visible
-            # planning rows compacted — kept in the DB for scrollback, hidden from the
-            # UI and from model context, exactly like ``/compact`` — and drop a
-            # divider marking the handoff. The goal loop then starts clean, seeded
-            # only by the plan-execute kickoff (which points the agent at the doc) and
-            # the doc's Success Criteria as the completion condition. Scoped to
-            # ``execute_plan``; a bare ``/goal`` never enters this branch and keeps
-            # its full transcript (its objective *is* the conversation).
-            planning_rows = (
-                await session.execute(
-                    select(Message).where(
-                        Message.thread_id == thread_id,
-                        Message.compacted == False,  # noqa: E712
-                    )
-                )
-            ).scalars().all()
-            for row in planning_rows:
-                row.compacted = True
-                session.add(row)
-            # A human objective for the divider + goal header (the plan's H1),
-            # falling back to the path when the plan has no title.
-            plan_title = extract_plan_title(doc_text) or plan_path
-            # The handoff seam...
-            session.add(
-                Message(
-                    thread_id=thread_id,
-                    role="assistant",
-                    content=f"Executing plan — {plan_title}",
-                    kind="divider",
-                )
-            )
-            # ...and a brief surfacing what "done" means (the Success Criteria) so
-            # the user can see what the agent is set to do without reading the seed.
-            # Both are UI-only (excluded from model context below); the model gets
-            # the full plan inline via the kickoff.
-            session.add(
-                Message(
-                    thread_id=thread_id,
-                    role="assistant",
-                    content=goal_condition,
-                    kind="goal_brief",
-                )
-            )
+            # drift-prone) to replay into the execution loop. We keep it clean simply
+            # by seeding the loop with no history — the approved plan is reproduced in
+            # full via the kickoff and the doc's Success Criteria is the completion
+            # condition, so the refinement chatter never enters context. No transcript
+            # surgery: the planning conversation stays visible in scrollback (a goal
+            # run doesn't use the visible transcript as its context anyway). Scoped to
+            # ``execute_plan``; a bare ``/goal`` keeps its full transcript below (its
+            # objective *is* the conversation).
+            initial_history = []
             # Persist the derived goal + clear the park so the run (and any reconnect)
             # shows the objective and no longer reads as awaiting approval. The goal
             # header reads ``thread.goal``, so use the plan title (not the path).
@@ -1194,24 +1160,17 @@ async def chat(
         else:
             goal_condition = condition
             goal_kickoff = AUTONOMOUS_KICKOFF
-
-        rows = (
-            await session.execute(
-                select(Message)
-                .where(
-                    Message.thread_id == thread_id,
-                    Message.compacted == False,  # noqa: E712
-                    # Dividers and goal briefs are UI-only surfaces for the plan →
-                    # execute handoff, never part of the context the model sees (it
-                    # gets the plan inline via the kickoff). Excluding them also keeps
-                    # ``execute_plan`` history genuinely empty (planning rows are
-                    # compacted just above), so the loop starts from the kickoff alone.
-                    Message.kind.not_in(["divider", "goal_brief"]),
+            rows = (
+                await session.execute(
+                    select(Message)
+                    .where(
+                        Message.thread_id == thread_id,
+                        Message.compacted == False,  # noqa: E712
+                    )
+                    .order_by(Message.created_at)
                 )
-                .order_by(Message.created_at)
-            )
-        ).scalars().all()
-        initial_history = messages_to_history(rows)
+            ).scalars().all()
+            initial_history = messages_to_history(rows)
         evaluator = build_goal_evaluator(
             _resolve_evaluator_model(app_config, thread, agent_row), custom_providers
         )

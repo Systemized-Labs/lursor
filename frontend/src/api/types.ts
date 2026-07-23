@@ -237,18 +237,8 @@ export type MessageRole = "user" | "assistant" | "system" | "tool"
 
 /** How a user turn was sent, surfaced as a history badge on the bubble. The
  *  assistant-authored `summary` marks a `/compact` digest that stands in for the
- *  messages it condensed (rendered as a distinct card, not a normal reply).
- *  `divider` is a UI-only seam (e.g. the plan → execute handoff), rendered as a
- *  labelled rule; `goal_brief` is the UI-only card that surfaces what the agent
- *  is set to do (objective + success criteria). Neither is sent to the model. */
-export type MessageKind =
-  | "chat"
-  | "ask"
-  | "plan"
-  | "goal"
-  | "summary"
-  | "divider"
-  | "goal_brief"
+ *  messages it condensed (rendered as a distinct card, not a normal reply). */
+export type MessageKind = "chat" | "ask" | "plan" | "goal" | "summary"
 
 export interface ThreadMessageToolCall {
   id: string
