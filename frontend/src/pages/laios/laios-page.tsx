@@ -3,6 +3,7 @@ import {
   CaretDown,
   Check,
   CaretUpDown,
+  Copy,
   Cpu,
   FileText,
   Gear,
@@ -26,10 +27,13 @@ import {
   useDeleteLaiosConnection,
   useLaiosBudget,
   useLaiosCluster,
+  useLaiosClusterToken,
   useLaiosConnections,
   useLaiosInstances,
+  useLaiosMetrics,
   useLaiosStatus,
   useRemoveInstance,
+  useRemoveWorker,
   useServeManager,
   useStopInstance,
 } from "@/api/laios"
@@ -37,6 +41,7 @@ import type {
   LaiosConnection,
   LaiosInstance,
   LaiosInstanceStatus,
+  LaiosModelMetrics,
   LaiosNodeResources,
 } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
@@ -44,13 +49,6 @@ import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -71,7 +69,7 @@ import { DaemonDialog } from "./daemon-dialog"
 import { InstanceLogsDialog } from "./instance-logs-dialog"
 import { LaiosConnectionDialog } from "./laios-connection-dialog"
 import { LaiosStatusBadge } from "./laios-status-badge"
-import { ServeModelDialog } from "./serve-model-dialog"
+import { ModelLibrary } from "./model-library"
 
 const DESCRIPTION =
   "Connect to LAIOS daemons to see what's running, spin models up and down, and monitor VRAM — across one or more local or remote nodes."
@@ -123,7 +121,6 @@ export function LaiosPage() {
   const [connFormOpen, setConnFormOpen] = useState(false)
   const [editingConn, setEditingConn] = useState<LaiosConnection | undefined>()
   const [connToDelete, setConnToDelete] = useState<LaiosConnection | undefined>()
-  const [serveOpen, setServeOpen] = useState(false)
   const [daemonOpen, setDaemonOpen] = useState(false)
   const [logsFor, setLogsFor] = useState<LaiosInstance | undefined>()
   const [toStop, setToStop] = useState<LaiosInstance | undefined>()
@@ -231,15 +228,23 @@ export function LaiosPage() {
           </div>
 
           {activeConnection ? (
-            <ConnectionPanel
-              connection={activeConnection}
-              downloads={serveManager.downloads}
-              onDismissDownload={serveManager.dismiss}
-              onServe={() => setServeOpen(true)}
-              onLogs={setLogsFor}
-              onStop={setToStop}
-              onRemove={setToRemove}
-            />
+            <>
+              <ConnectionPanel
+                connection={activeConnection}
+                downloads={serveManager.downloads}
+                onDismissDownload={serveManager.dismiss}
+                onCancelDownload={serveManager.cancel}
+                onLogs={setLogsFor}
+                onStop={setToStop}
+                onRemove={setToRemove}
+              />
+              {/* Browsing + serving lives inline, right beneath what's running —
+                  the persistent VRAM bar above answers "will it fit". */}
+              <ModelLibrary
+                connectionId={activeConnection.id}
+                onServe={serveManager.start}
+              />
+            </>
           ) : null}
         </>
       )}
@@ -252,12 +257,6 @@ export function LaiosPage() {
 
       {activeConnection ? (
         <>
-          <ServeModelDialog
-            open={serveOpen}
-            onOpenChange={setServeOpen}
-            connectionId={activeConnection.id}
-            onServe={serveManager.start}
-          />
           <InstanceLogsDialog
             open={Boolean(logsFor)}
             onOpenChange={(open) => !open && setLogsFor(undefined)}
@@ -510,7 +509,7 @@ function ConnectionPanel({
   connection,
   downloads,
   onDismissDownload,
-  onServe,
+  onCancelDownload,
   onLogs,
   onStop,
   onRemove,
@@ -518,7 +517,7 @@ function ConnectionPanel({
   connection: LaiosConnection
   downloads: DownloadCard[]
   onDismissDownload: (key: string) => void
-  onServe: () => void
+  onCancelDownload: (key: string) => void
   onLogs: (i: LaiosInstance) => void
   onStop: (i: LaiosInstance) => void
   onRemove: (i: LaiosInstance) => void
@@ -529,6 +528,17 @@ function ConnectionPanel({
     isError,
     error,
   } = useLaiosInstances(connection.id)
+  const { data: metrics } = useLaiosMetrics(connection.id)
+
+  // Metrics are reported per served model; index by instance id so each card can
+  // show its own request/throughput line when the gateway exposes metrics.
+  const metricsByInstance = useMemo(() => {
+    const m = new Map<string, LaiosModelMetrics>()
+    for (const row of metrics?.models ?? []) {
+      if (row.instance_id) m.set(row.instance_id, row)
+    }
+    return m
+  }, [metrics])
 
   // A stopped model is gone — don't keep it in the "running" view. Keep failed
   // ones (their error is actionable) and sort active first, failed last.
@@ -542,92 +552,74 @@ function ConnectionPanel({
     visible.some((i) => isTransitional(i.status))
   const empty = visible.length === 0 && downloads.length === 0
 
-  return (
-    <div className="space-y-5">
-      {updating ? (
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <DotGridLoader size="2xs" />
-          updating
-        </div>
-      ) : null}
-
-      {isLoading && empty ? (
-        <p className="text-sm text-muted-foreground">Loading models…</p>
-      ) : isError && empty ? (
+  // Nothing running and nothing loading/failing: the section stays out of the
+  // way entirely — the Library below carries serving. Only surface a spinner
+  // or error while the first fetch is resolving.
+  if (empty) {
+    if (isLoading) {
+      return <p className="text-sm text-muted-foreground">Loading models…</p>
+    }
+    if (isError) {
+      return (
         <p className="text-sm text-destructive">
           {error instanceof Error ? error.message : "Failed to load models"}
         </p>
-      ) : empty ? (
-        // Nothing running — a slim full-width CTA rather than a lone tall tile
-        // stranded in a wide grid.
-        <ServeModelBar onClick={onServe} />
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {/* In-flight downloads first — a downloading/starting model has no
-              daemon instance yet, so it lives only as a download card until
-              serve. Progress is read live from the daemon's pull job. */}
-          {downloads.map((d) => (
-            <DownloadTile
-              key={d.key}
-              download={d}
-              onDismiss={() => onDismissDownload(d.key)}
-            />
-          ))}
-          {visible.map((inst) => (
-            <InstanceCard
-              key={inst.id}
-              instance={inst}
-              onLogs={() => onLogs(inst)}
-              onStop={() => onStop(inst)}
-              onRemove={() => onRemove(inst)}
-            />
-          ))}
-          {/* Alongside real models the serve action is one more tile in the
-              grid; on its own (empty) it becomes the slim bar above instead. */}
-          <NewModelCard onClick={onServe} />
-        </div>
-      )}
+      )
+    }
+    return null
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-foreground">Running</h2>
+        {updating ? (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <DotGridLoader size="2xs" />
+            updating
+          </span>
+        ) : null}
+      </div>
+
+      {/* A stacked list of full-width rows rather than a card grid: a running
+          model carries wide, horizontal detail (endpoint, stats, actions), so
+          one or two of them read as an intentional list instead of lone tiles
+          stranded in an empty grid. */}
+      <div className="space-y-3">
+        {/* In-flight downloads first — a downloading/starting model has no
+            daemon instance yet, so it lives only as a download row until
+            serve. Progress is read live from the daemon's pull job. */}
+        {downloads.map((d) => (
+          <DownloadTile
+            key={d.key}
+            download={d}
+            onDismiss={() => onDismissDownload(d.key)}
+            onCancel={() => onCancelDownload(d.key)}
+          />
+        ))}
+        {visible.map((inst) => (
+          <InstanceCard
+            key={inst.id}
+            instance={inst}
+            metrics={metricsByInstance.get(inst.id)}
+            onLogs={() => onLogs(inst)}
+            onStop={() => onStop(inst)}
+            onRemove={() => onRemove(inst)}
+          />
+        ))}
+      </div>
     </div>
-  )
-}
-
-// The empty-state serve prompt: a slim full-width dashed bar. Used when nothing
-// is running so the CTA doesn't stretch into a lone oversized tile; once models
-// exist the grid uses NewModelCard instead.
-function ServeModelBar({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-border py-3 text-sm font-medium text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-    >
-      <Plus className="h-4 w-4" />
-      Serve a model
-    </button>
-  )
-}
-
-// Dashed placeholder tile that kicks off the serve flow. Sits in the models
-// grid alongside running models so adding one reads as "one more card".
-function NewModelCard({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex min-h-[11rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-    >
-      <Plus className="h-5 w-5" />
-      <span className="text-sm font-medium">Serve a model</span>
-    </button>
   )
 }
 
 function DownloadTile({
   download,
   onDismiss,
+  onCancel,
 }: {
   download: DownloadCard
   onDismiss: () => void
+  onCancel: () => void
 }) {
   const failed = download.phase === "failed"
   const pulling = download.phase === "pulling"
@@ -658,31 +650,35 @@ function DownloadTile({
       : "Failed to start"
 
   return (
-    <Card
-      className={
-        failed ? "flex h-full flex-col" : "flex h-full flex-col ring-1 ring-border"
-      }
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-card p-4",
+        !failed && "ring-1 ring-border"
+      )}
     >
-      <CardHeader>
-        <div className="flex items-start justify-between gap-2">
-          <CardTitle className="truncate">{download.name}</CardTitle>
-          <Badge
-            variant={failed ? "destructive" : "secondary"}
-            className="shrink-0 gap-1 font-normal"
-          >
-            {failed ? (
-              <WarningCircle className="h-3 w-3" />
-            ) : (
-              <DotGridLoader size="2xs" />
-            )}
-            {label}
-          </Badge>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold text-foreground">
+              {download.name}
+            </h3>
+            <Badge
+              variant={failed ? "destructive" : "secondary"}
+              className="shrink-0 gap-1 font-normal"
+            >
+              {failed ? (
+                <WarningCircle className="h-3 w-3" />
+              ) : (
+                <DotGridLoader size="2xs" />
+              )}
+              {label}
+            </Badge>
+          </div>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{detail}</p>
         </div>
-        <CardDescription className="truncate text-xs">{detail}</CardDescription>
-      </CardHeader>
-      <CardContent className="mt-auto space-y-3">
+
         {hasProgress ? (
-          <div className="space-y-1">
+          <div className="w-full space-y-1 sm:w-56">
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
               <div
                 className={cn(
@@ -701,19 +697,30 @@ function DownloadTile({
             ) : null}
           </div>
         ) : null}
-        {failed && download.error ? (
-          <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs text-destructive">
-            {download.error}
-          </p>
-        ) : null}
-        {failed ? (
-          <Button variant="outline" size="sm" onClick={onDismiss}>
-            <X className="h-4 w-4" />
-            Dismiss
-          </Button>
-        ) : null}
-      </CardContent>
-    </Card>
+
+        <div className="shrink-0 sm:ml-auto">
+          {failed ? (
+            <Button variant="outline" size="sm" onClick={onDismiss}>
+              <X className="h-4 w-4" />
+              Dismiss
+            </Button>
+          ) : pulling ? (
+            // While weights are still downloading the pull can be aborted — asks
+            // the daemon to cancel the job and clears the row.
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              <X className="h-4 w-4" />
+              Cancel
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {failed && download.error ? (
+        <p className="mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs text-destructive">
+          {download.error}
+        </p>
+      ) : null}
+    </div>
   )
 }
 
@@ -731,11 +738,13 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function InstanceCard({
   instance,
+  metrics,
   onLogs,
   onStop,
   onRemove,
 }: {
   instance: LaiosInstance
+  metrics?: LaiosModelMetrics
   onLogs: () => void
   onStop: () => void
   onRemove: () => void
@@ -743,51 +752,69 @@ function InstanceCard({
   const terminal =
     instance.status === "stopped" || instance.status === "failed"
   const transitioning = isTransitional(instance.status)
+  // Only show throughput once the model has actually served requests.
+  const showMetrics =
+    instance.status === "running" && metrics && metrics.request_count > 0
   return (
-    <Card
-      className={
-        transitioning
-          ? "flex h-full flex-col ring-1 ring-border transition-shadow"
-          : "flex h-full flex-col"
-      }
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-card p-4",
+        transitioning && "ring-1 ring-border"
+      )}
     >
-      <CardHeader>
-        <div className="flex items-start justify-between gap-2">
-          <CardTitle className="truncate">{instance.served_name}</CardTitle>
-          <Badge
-            variant={STATE_VARIANT[instance.status]}
-            className="shrink-0 gap-1 font-normal"
-          >
-            {transitioning ? <DotGridLoader size="2xs" /> : null}
-            {instance.status}
-          </Badge>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
+        {/* Identity: name, live state, and the gateway endpoint. */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold text-foreground">
+              {instance.served_name}
+            </h3>
+            <Badge
+              variant={STATE_VARIANT[instance.status]}
+              className="shrink-0 gap-1 font-normal"
+            >
+              {transitioning ? <DotGridLoader size="2xs" /> : null}
+              {instance.status}
+            </Badge>
+          </div>
+          <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+            {instance.endpoint}
+          </p>
+          {instance.model_id ? (
+            <p className="truncate font-mono text-xs text-muted-foreground/70">
+              {instance.model_id}
+            </p>
+          ) : null}
         </div>
-        <CardDescription className="truncate font-mono text-xs">
-          {instance.endpoint}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="mt-auto space-y-3">
-        <div className="grid grid-cols-3 gap-2">
+
+        {/* Stats band: the always-known facts, plus live throughput once served. */}
+        <div className="flex shrink-0 items-center gap-6 sm:gap-8">
           <Stat label="Engine" value={instance.engine} />
           <Stat label="Context" value={instance.max_model_len.toLocaleString()} />
           <Stat label="VRAM" value={fmtGb(instance.vram_allocated_mb)} />
+          {showMetrics && metrics ? (
+            <>
+              <Stat
+                label="Requests"
+                value={metrics.request_count.toLocaleString()}
+              />
+              {metrics.tokens_per_second > 0 ? (
+                <Stat
+                  label="Throughput"
+                  value={`${metrics.tokens_per_second.toFixed(1)} tok/s`}
+                />
+              ) : null}
+            </>
+          ) : null}
         </div>
-        {instance.model_id ? (
-          <p className="truncate font-mono text-xs text-muted-foreground">
-            {instance.model_id}
-          </p>
-        ) : null}
-        {instance.error ? (
-          <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs text-destructive">
-            {instance.error}
-          </p>
-        ) : null}
-        <div className="flex items-center gap-2">
+
+        {/* Actions pinned to the right on wide rows. */}
+        <div className="flex items-center gap-2 lg:ml-auto">
           <Button variant="outline" size="sm" onClick={onLogs}>
             <FileText className="h-4 w-4" />
             Logs
           </Button>
-          {/* A terminal card (a failed spin-up, or a stopped model still shown)
+          {/* A terminal row (a failed spin-up, or a stopped model still shown)
               is dead weight — offer Remove to clear it. A live one gets Stop. */}
           {terminal ? (
             <Button variant="outline" size="sm" onClick={onRemove}>
@@ -806,8 +833,14 @@ function InstanceCard({
             </Button>
           )}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+
+      {instance.error ? (
+        <p className="mt-3 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-xs text-destructive">
+          {instance.error}
+        </p>
+      ) : null}
+    </div>
   )
 }
 
@@ -1032,13 +1065,44 @@ function VramBar({ connectionId }: { connectionId: string }) {
 function ClusterPanel({ connectionId }: { connectionId: string }) {
   const { data } = useLaiosCluster(connectionId)
   const { data: instances } = useLaiosInstances(connectionId)
+  const token = useLaiosClusterToken(connectionId)
+  const removeWorker = useRemoveWorker(connectionId)
   const [open, setOpen] = useState(false)
+  const [workerToRemove, setWorkerToRemove] = useState<
+    LaiosNodeResources | undefined
+  >()
   const res = data?.resources
   if (!res || res.total_nodes_known <= 1) return null
 
+  const isHead = data?.role === "head"
   const running = (instances ?? []).filter((i) => i.status === "running")
   const modelsForNode = (nodeId: string) =>
     running.filter((i) => i.node_id === nodeId)
+
+  async function copyJoinToken() {
+    try {
+      const { data: t } = await token.refetch({ throwOnError: true })
+      if (!t?.join_token) throw new Error("No join token available")
+      await navigator.clipboard.writeText(t.join_token)
+      toast.success("Join token copied to clipboard")
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to fetch join token"
+      )
+    }
+  }
+
+  async function confirmRemoveWorker() {
+    if (!workerToRemove) return
+    try {
+      await removeWorker.mutateAsync(workerToRemove.node_id)
+      toast.success(`Removed ${workerToRemove.name}`)
+      setWorkerToRemove(undefined)
+    } catch (err) {
+      // The daemon returns 409 when an active instance is still placed there.
+      toast.error(err instanceof Error ? err.message : "Failed to remove worker")
+    }
+  }
 
   return (
     // A section within the node card (not its own boxed panel) — a top border
@@ -1073,16 +1137,63 @@ function ClusterPanel({ connectionId }: { connectionId: string }) {
       </button>
 
       {open ? (
-        <div className="divide-y divide-border px-4 pb-4">
-          {res.nodes.map((n) => (
-            <ClusterNodeRow
-              key={n.node_id}
-              node={n}
-              models={modelsForNode(n.node_id)}
-            />
-          ))}
+        <div className="px-4 pb-4">
+          <div className="divide-y divide-border">
+            {res.nodes.map((n) => (
+              <ClusterNodeRow
+                key={n.node_id}
+                node={n}
+                models={modelsForNode(n.node_id)}
+                // Only the head can drop workers, and only worker rows are
+                // removable (you can't evict the head from itself).
+                onRemove={
+                  isHead && n.role === "worker"
+                    ? () => setWorkerToRemove(n)
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+
+          {/* Adding a node needs the head's join token; offer to copy it here so
+              the whole membership workflow lives in one place. */}
+          {isHead ? (
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                Add a worker with the head's join token.
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={copyJoinToken}
+                disabled={token.isFetching}
+              >
+                {token.isFetching ? (
+                  <DotGridLoader size="2xs" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+                Copy join token
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={Boolean(workerToRemove)}
+        onOpenChange={(o) => !o && setWorkerToRemove(undefined)}
+        title="Remove worker"
+        description={
+          workerToRemove
+            ? `Drop "${workerToRemove.name}" from the cluster? It stops contributing capacity; if it's still running it will need to rejoin with the join token.`
+            : undefined
+        }
+        confirmLabel="Remove"
+        destructive
+        loading={removeWorker.isPending}
+        onConfirm={confirmRemoveWorker}
+      />
     </div>
   )
 }
@@ -1090,9 +1201,11 @@ function ClusterPanel({ connectionId }: { connectionId: string }) {
 function ClusterNodeRow({
   node,
   models,
+  onRemove,
 }: {
   node: LaiosNodeResources
   models: LaiosInstance[]
+  onRemove?: () => void
 }) {
   return (
     <div className={cn("py-2 text-xs", !node.online && "opacity-50")}>
@@ -1112,12 +1225,25 @@ function ClusterNodeRow({
           </Badge>
           <span className="text-muted-foreground">{node.status}</span>
         </div>
-        <div className="shrink-0 text-muted-foreground">
-          {node.gpus} GPU{node.gpus === 1 ? "" : "s"} ·{" "}
-          <span className="font-medium text-foreground">
-            {fmtGb(node.free_vram_mb)}
-          </span>{" "}
-          free / {fmtGb(node.total_vram_mb)}
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="text-muted-foreground">
+            {node.gpus} GPU{node.gpus === 1 ? "" : "s"} ·{" "}
+            <span className="font-medium text-foreground">
+              {fmtGb(node.free_vram_mb)}
+            </span>{" "}
+            free / {fmtGb(node.total_vram_mb)}
+          </div>
+          {onRemove ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-destructive"
+              onClick={onRemove}
+              aria-label={`Remove ${node.name}`}
+            >
+              <Trash className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
         </div>
       </div>
 

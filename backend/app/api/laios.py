@@ -351,6 +351,49 @@ async def catalog_recipe(
     return await _forward(await _get_conn(cid, session), "GET", f"/v1/catalog/{recipe_id}")
 
 
+# --- Model inventory proxy (installed weights + run stats) -----------------------
+#
+# The catalog above is the *recipe* list (what could run); this is the *inventory*
+# (what is downloaded on disk), carrying per-model run stats (#36), on-disk size,
+# and any live instance. ``/models/partial`` surfaces orphaned/incomplete
+# downloads (#35) and ``DELETE /models/{id}`` reclaims disk (id may be a recipe
+# id OR a raw model-dir name; 409 if the model is in use).
+#
+# Route order matters: ``/models/partial`` is declared before ``/models/{id}`` so
+# the literal path isn't captured as a model id by the parameterized route.
+
+
+@router.get("/connections/{cid}/models")
+async def models(cid: str, session: AsyncSession = Depends(get_session)):
+    return await _forward(await _get_conn(cid, session), "GET", "/v1/models")
+
+
+@router.get("/connections/{cid}/models/partial")
+async def partial_models(cid: str, session: AsyncSession = Depends(get_session)):
+    return await _forward(await _get_conn(cid, session), "GET", "/v1/models/partial")
+
+
+@router.get("/connections/{cid}/models/{model_id:path}")
+async def model_detail(
+    cid: str, model_id: str, session: AsyncSession = Depends(get_session)
+):
+    return await _forward(
+        await _get_conn(cid, session), "GET", f"/v1/models/{model_id}"
+    )
+
+
+@router.delete("/connections/{cid}/models/{model_id:path}")
+async def delete_model(
+    cid: str, model_id: str, session: AsyncSession = Depends(get_session)
+):
+    return await _forward(
+        await _get_conn(cid, session),
+        "DELETE",
+        f"/v1/models/{model_id}",
+        timeout=httpx.Timeout(60.0),
+    )
+
+
 @router.get("/connections/{cid}/instances")
 async def instances(cid: str, session: AsyncSession = Depends(get_session)):
     return await _forward(await _get_conn(cid, session), "GET", "/v1/instances")
@@ -440,6 +483,16 @@ async def job(cid: str, job_id: str, session: AsyncSession = Depends(get_session
     return await _forward(await _get_conn(cid, session), "GET", f"/v1/jobs/{job_id}")
 
 
+@router.post("/connections/{cid}/jobs/{job_id}/cancel")
+async def cancel_job(
+    cid: str, job_id: str, session: AsyncSession = Depends(get_session)
+):
+    """Cancel an in-flight pull. The daemon returns 409 if it already finished."""
+    return await _forward(
+        await _get_conn(cid, session), "POST", f"/v1/jobs/{job_id}/cancel"
+    )
+
+
 @router.get("/connections/{cid}/budget")
 async def budget(cid: str, session: AsyncSession = Depends(get_session)):
     return await _forward(await _get_conn(cid, session), "GET", "/v1/budget")
@@ -448,6 +501,12 @@ async def budget(cid: str, session: AsyncSession = Depends(get_session)):
 @router.get("/connections/{cid}/doctor")
 async def doctor(cid: str, session: AsyncSession = Depends(get_session)):
     return await _forward(await _get_conn(cid, session), "GET", "/v1/doctor")
+
+
+@router.get("/connections/{cid}/metrics")
+async def metrics_summary(cid: str, session: AsyncSession = Depends(get_session)):
+    """Per-served-model request/token/throughput rollup from the gateway."""
+    return await _forward(await _get_conn(cid, session), "GET", "/v1/metrics/summary")
 
 
 @router.get("/connections/{cid}/cluster")
@@ -459,6 +518,29 @@ async def cluster_status(cid: str, session: AsyncSession = Depends(get_session))
     inflates the reported capacity shown in the UI.
     """
     return await _forward(await _get_conn(cid, session), "GET", "/v1/cluster/status")
+
+
+@router.get("/connections/{cid}/cluster/token")
+async def cluster_token(cid: str, session: AsyncSession = Depends(get_session)):
+    """The head's join token — what a new worker needs to join the cluster."""
+    return await _forward(await _get_conn(cid, session), "GET", "/v1/cluster/token")
+
+
+@router.delete("/connections/{cid}/cluster/workers/{worker_id}")
+async def remove_worker(
+    cid: str, worker_id: str, session: AsyncSession = Depends(get_session)
+):
+    """Drop a worker from the cluster (id or unique prefix).
+
+    The daemon returns 404 if no such worker and 409 if an active instance is
+    still placed on it — both surface to the UI via the shared error relay.
+    """
+    return await _forward(
+        await _get_conn(cid, session),
+        "DELETE",
+        f"/v1/cluster/workers/{worker_id}",
+        timeout=httpx.Timeout(30.0),
+    )
 
 
 # --- Daemon lifecycle proxy (version / restart / update) ------------------------

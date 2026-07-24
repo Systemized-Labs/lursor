@@ -10,6 +10,7 @@ import { api } from "./client"
 import type {
   LaiosBudget,
   LaiosClusterStatus,
+  LaiosClusterToken,
   LaiosConnection,
   LaiosConnectionInput,
   LaiosConnectionStatus,
@@ -17,11 +18,16 @@ import type {
   LaiosDaemonUpdateLog,
   LaiosDaemonUpdateStarted,
   LaiosDaemonVersion,
+  LaiosDoctorReport,
   LaiosInstance,
   LaiosInstanceLogs,
   LaiosInstanceStatus,
   LaiosJob,
   LaiosJobStatus,
+  LaiosMetricsSummary,
+  LaiosModel,
+  LaiosModelDeleted,
+  LaiosOrphanedModel,
   LaiosRecipeSummary,
   LaiosServeInput,
 } from "./types"
@@ -56,16 +62,44 @@ export const laiosApi = {
     api.get<LaiosInstance[]>(`/laios/connections/${id}/instances`, signal),
   catalog: (id: string, signal?: AbortSignal) =>
     api.get<LaiosRecipeSummary[]>(`/laios/connections/${id}/catalog`, signal),
+  // The on-disk model inventory (downloaded weights + run stats), distinct from
+  // the catalog of recipes above.
+  models: (id: string, signal?: AbortSignal) =>
+    api.get<LaiosModel[]>(`/laios/connections/${id}/models`, signal),
+  partialModels: (id: string, signal?: AbortSignal) =>
+    api.get<LaiosOrphanedModel[]>(
+      `/laios/connections/${id}/models/partial`,
+      signal
+    ),
+  deleteModel: (id: string, modelId: string) =>
+    api.delete<LaiosModelDeleted>(
+      `/laios/connections/${id}/models/${encodeURIComponent(modelId)}`
+    ),
   budget: (id: string, signal?: AbortSignal) =>
     api.get<LaiosBudget>(`/laios/connections/${id}/budget`, signal),
+  metrics: (id: string, signal?: AbortSignal) =>
+    api.get<LaiosMetricsSummary>(`/laios/connections/${id}/metrics`, signal),
+  doctor: (id: string, signal?: AbortSignal) =>
+    api.get<LaiosDoctorReport>(`/laios/connections/${id}/doctor`, signal),
   cluster: (id: string, signal?: AbortSignal) =>
     api.get<LaiosClusterStatus>(`/laios/connections/${id}/cluster`, signal),
+  clusterToken: (id: string, signal?: AbortSignal) =>
+    api.get<LaiosClusterToken>(
+      `/laios/connections/${id}/cluster/token`,
+      signal
+    ),
+  removeWorker: (id: string, workerId: string) =>
+    api.delete<unknown>(
+      `/laios/connections/${id}/cluster/workers/${encodeURIComponent(workerId)}`
+    ),
   pull: (id: string, recipe: string) =>
     api.post<LaiosJob>(`/laios/connections/${id}/pull`, { recipe }),
   jobs: (id: string, signal?: AbortSignal) =>
     api.get<LaiosJob[]>(`/laios/connections/${id}/jobs`, signal),
   job: (id: string, jobId: string, signal?: AbortSignal) =>
     api.get<LaiosJob>(`/laios/connections/${id}/jobs/${jobId}`, signal),
+  cancelJob: (id: string, jobId: string) =>
+    api.post<LaiosJob>(`/laios/connections/${id}/jobs/${jobId}/cancel`, {}),
   serve: (id: string, input: LaiosServeInput) =>
     api.post<LaiosInstance>(`/laios/connections/${id}/serve`, input),
   stop: (id: string, instanceId: string) =>
@@ -111,7 +145,11 @@ export const laiosKeys = {
   status: (id: string) => ["laios", id, "status"] as const,
   instances: (id: string) => ["laios", id, "instances"] as const,
   catalog: (id: string) => ["laios", id, "catalog"] as const,
+  models: (id: string) => ["laios", id, "models"] as const,
+  partialModels: (id: string) => ["laios", id, "models", "partial"] as const,
   budget: (id: string) => ["laios", id, "budget"] as const,
+  metrics: (id: string) => ["laios", id, "metrics"] as const,
+  doctor: (id: string) => ["laios", id, "doctor"] as const,
   cluster: (id: string) => ["laios", id, "cluster"] as const,
   jobs: (id: string) => ["laios", id, "jobs"] as const,
   logs: (id: string, instanceId: string) =>
@@ -175,12 +213,68 @@ export function useLaiosCatalog(id: string | undefined) {
   })
 }
 
+// The on-disk model inventory. Polled on a slow cadence so run stats (last
+// served / run count) and a freshly-pulled model appear without a manual
+// refresh, but without the churn of the instances poll.
+export function useLaiosModels(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.models(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.models(id as string, signal),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+// Orphaned / incomplete download dirs. Rare and cheap to compute, so a plain
+// on-demand fetch (no polling) — the inventory panel refetches it after a delete.
+export function useLaiosPartialModels(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.partialModels(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.partialModels(id as string, signal),
+    enabled: Boolean(id),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
 export function useLaiosBudget(id: string | undefined) {
   return useQuery({
     queryKey: id ? laiosKeys.budget(id) : laiosKeys.all,
     queryFn: ({ signal }) => laiosApi.budget(id as string, signal),
     enabled: Boolean(id),
     refetchInterval: 8_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+// Daemon self-diagnostics (platform probe + actionable checks). Gated by the
+// caller (enabled only when the diagnostics view is open) and refetched on
+// demand — nothing to poll for a one-shot health check.
+export function useLaiosDoctor(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.doctor(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.doctor(id as string, signal),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+// Gateway metrics (request/token throughput per served model). Polled while the
+// panel is mounted so counters tick; the daemon reports metrics_available=false
+// when the gateway isn't exposing them, which the UI handles.
+export function useLaiosMetrics(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? laiosKeys.metrics(id) : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.metrics(id as string, signal),
+    enabled: Boolean(id),
+    refetchInterval: 10_000,
     refetchOnWindowFocus: false,
     retry: false,
   })
@@ -462,6 +556,60 @@ export function useRemoveInstance(connectionId: string) {
   })
 }
 
+// Delete a model's weights from disk. Accepts a recipe id or a raw model-dir
+// name (so it clears orphaned/partial downloads too). The daemon returns 409 if
+// the model is in use — surfaced to the caller. Invalidates every view the
+// weights touch: the inventory, orphan list, VRAM budget, and instances.
+export function useDeleteModel(connectionId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (modelId: string) => laiosApi.deleteModel(connectionId, modelId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: laiosKeys.models(connectionId) })
+      qc.invalidateQueries({ queryKey: laiosKeys.partialModels(connectionId) })
+      qc.invalidateQueries({ queryKey: laiosKeys.budget(connectionId) })
+    },
+  })
+}
+
+// Drop a worker from the cluster. The daemon returns 409 if an active instance
+// is still placed there — surfaced to the caller so the UI can explain it.
+export function useRemoveWorker(connectionId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (workerId: string) =>
+      laiosApi.removeWorker(connectionId, workerId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: laiosKeys.cluster(connectionId) })
+    },
+  })
+}
+
+// The head's join token, fetched on demand (a worker needs it to join). Disabled
+// by default; call refetch() when the user asks to reveal/copy it.
+export function useLaiosClusterToken(id: string | undefined) {
+  return useQuery({
+    queryKey: id
+      ? ([...laiosKeys.cluster(id), "token"] as const)
+      : laiosKeys.all,
+    queryFn: ({ signal }) => laiosApi.clusterToken(id as string, signal),
+    enabled: false,
+    retry: false,
+    gcTime: 60_000,
+  })
+}
+
+// Cancel an in-flight pull job. The daemon returns 409 if it already finished.
+export function useCancelJob(connectionId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (jobId: string) => laiosApi.cancelJob(connectionId, jobId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: laiosKeys.jobs(connectionId) })
+    },
+  })
+}
+
 // --- Serve manager: track in-flight downloads → spin-ups as visible cards ------
 //
 // A model has no daemon instance record until *after* it's downloaded and serve
@@ -523,6 +671,7 @@ export function useServeManager(connectionId: string | undefined) {
   const [intents, setIntents] = useState<ServeIntent[]>(loadIntents)
   const { data: jobs } = useLaiosJobs(connectionId)
   const serveModel = useServeModel(connectionId ?? "")
+  const cancelJob = useCancelJob(connectionId ?? "")
   // Guards the auto-serve so a re-render (or Strict Mode double-invoke) can't
   // fire serve twice for the same intent before `served` has been flushed.
   const servingRef = useRef<Set<string>>(new Set())
@@ -665,5 +814,31 @@ export function useServeManager(connectionId: string | undefined) {
     [removeIntent]
   )
 
-  return { downloads, start, dismiss }
+  // Cancel an in-flight pull, then forget the card. Resolves the job id behind
+  // the card (an intent we started, or a bare daemon job) and asks the daemon to
+  // cancel it; the cancelled job then drops out of the active jobs list.
+  const cancel = useCallback(
+    async (key: string) => {
+      let jobId: string | undefined
+      if (key.startsWith("job:")) {
+        jobId = key.slice("job:".length)
+      } else {
+        jobId = intents.find((it) => it.key === key)?.jobId
+      }
+      if (jobId) {
+        try {
+          await cancelJob.mutateAsync(jobId)
+        } catch (err) {
+          toast.error(
+            err instanceof Error ? err.message : "Failed to cancel download"
+          )
+          return
+        }
+      }
+      removeIntent(key)
+    },
+    [intents, cancelJob, removeIntent]
+  )
+
+  return { downloads, start, dismiss, cancel }
 }

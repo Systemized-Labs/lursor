@@ -526,7 +526,7 @@ export type LaiosInstanceStatus =
   | "stopped"
   | "failed"
 
-export type LaiosEngine = "vllm" | "llamacpp" | "ollama"
+export type LaiosEngine = "vllm" | "sglang" | "llamacpp" | "ollama"
 
 /** A model instance served by the daemon (subset of the daemon's InstanceRecord). */
 export interface LaiosInstance {
@@ -558,6 +558,68 @@ export interface LaiosRecipeSummary {
   vram_estimate_mb: number | null
 }
 
+/** The live instance (if any) serving a model, embedded in a model summary. */
+export interface LaiosModelRunningInstance {
+  id: string
+  status: LaiosInstanceStatus
+  endpoint: string
+  node_id: string
+  served_name: string
+  max_model_len: number
+}
+
+/**
+ * A model in the daemon's on-disk inventory (distinct from a catalog recipe):
+ * downloaded weights plus run history (#36) and any live instance. Fields
+ * mirror the daemon's `ModelSummary`.
+ */
+export interface LaiosModel {
+  id: string
+  recipe_id: string
+  model_id: string | null
+  name: string
+  engine: LaiosEngine
+  source: string
+  capabilities: string[]
+  installed: boolean
+  /** Whether a catalog recipe still references this model (else it's orphaned). */
+  recipe_present: boolean
+  path: string
+  bytes_total: number
+  served_model_name: string
+  running_instance?: LaiosModelRunningInstance
+  available_on_nodes: string[]
+  /** Other recipe ids that can serve these same weights (e.g. solo vs cluster). */
+  usable_recipes: string[]
+  /** How many times this recipe has been successfully served (#36). */
+  run_count: number
+  /** RFC3339 timestamp of the most recent successful serve, if any. */
+  last_served_at?: string | null
+  /** Context window the most recent run actually used. */
+  last_max_model_len?: number | null
+  /** Node the most recent run was placed on. */
+  last_node_id?: string | null
+}
+
+/**
+ * A model-data directory on disk with no manifest: a partial/dead download or
+ * weights unmatched to any current recipe (#35). `looks_complete` tells the two
+ * apart. Mirrors the daemon's `OrphanedModelDir`.
+ */
+export interface LaiosOrphanedModel {
+  dir_name: string
+  path: string
+  bytes_on_disk: number
+  looks_complete: boolean
+}
+
+/** Result of deleting a model's weights: how much disk was reclaimed. */
+export interface LaiosModelDeleted {
+  id: string
+  model_id: string | null
+  bytes_freed: number
+}
+
 export interface LaiosBudget {
   total_mb: number
   reserved_mb: number
@@ -587,16 +649,83 @@ export interface LaiosClusterResources {
   nodes: LaiosNodeResources[]
 }
 
+export type LaiosWorkerStatus =
+  | "joining"
+  | "ready"
+  | "busy"
+  | "unhealthy"
+  | "offline"
+
+/** A cluster worker as tracked by the head; mirrors the daemon's `WorkerInfo`. */
+export interface LaiosWorker {
+  id: string
+  name: string
+  advertise: string
+  status: LaiosWorkerStatus
+  last_heartbeat: string
+  joined_at: string
+}
+
+/** A remote OpenAI-compatible route the head federates to. */
+export interface LaiosRemoteRoute {
+  name: string
+  base_url: string
+  models: string[]
+  healthy: boolean
+  last_checked: string | null
+}
+
 /** Response of the daemon's cluster/status, proxied through the backend. */
 export interface LaiosClusterStatus {
   head_id: string
   role: string
   advertise: string
-  workers: unknown[]
+  workers: LaiosWorker[]
   join_token_set: boolean
-  remotes: unknown[]
+  remotes: LaiosRemoteRoute[]
   heartbeat_timeout_secs: number
   resources: LaiosClusterResources
+}
+
+/** The head's cluster join token (what a new worker needs to join). */
+export interface LaiosClusterToken {
+  join_token: string
+}
+
+/** Per-served-model line in the gateway metrics rollup. */
+export interface LaiosModelMetrics {
+  served_name: string
+  instance_id: string
+  status: LaiosInstanceStatus
+  node_id: string
+  uptime_seconds: number
+  request_count: number
+  input_tokens: number
+  output_tokens: number
+  tokens_per_second: number
+}
+
+/** Response of the daemon's `/v1/metrics/summary`. */
+export interface LaiosMetricsSummary {
+  metrics_available: boolean
+  metrics_enabled: boolean
+  gateway_metrics_url: string | null
+  models: LaiosModelMetrics[]
+}
+
+/** One actionable check in the daemon's `/v1/doctor` diagnostics. */
+export interface LaiosDoctorCheck {
+  name: string
+  ok: boolean
+  detail: string
+}
+
+/** Daemon self-diagnostics (platform probe + checks). */
+export interface LaiosDoctorReport {
+  // The full platform probe; we only surface the checks + overall status.
+  platform: Record<string, unknown>
+  ok: boolean
+  checks: LaiosDoctorCheck[]
 }
 
 /** Serve knobs POSTed to the daemon (all optional except recipe). */
@@ -652,7 +781,12 @@ export interface LaiosDaemonUpdateLog {
   active: boolean
 }
 
-export type LaiosJobStatus = "queued" | "running" | "succeeded" | "failed"
+export type LaiosJobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
 
 /** An async daemon job (currently only model pulls/downloads). */
 export interface LaiosJob {

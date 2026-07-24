@@ -1,4 +1,10 @@
-import { ArrowCircleUp, ArrowsClockwise, GitCommit } from "@phosphor-icons/react"
+import {
+  ArrowCircleUp,
+  ArrowsClockwise,
+  CheckCircle,
+  GitCommit,
+  WarningCircle,
+} from "@phosphor-icons/react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -6,6 +12,7 @@ import {
   useDaemonRestart,
   useDaemonUpdate,
   useLaiosDaemonVersion,
+  useLaiosDoctor,
   useLaiosUpdateCheck,
 } from "@/api/laios"
 import { ConfirmDialog } from "@/components/confirm-dialog"
@@ -205,6 +212,8 @@ export function DaemonDialog({
                 laios.toml to enable it.
               </p>
             ) : null}
+
+            <DiagnosticsSection connectionId={scoped} />
           </div>
         </DialogContent>
       </Dialog>
@@ -238,5 +247,87 @@ export function DaemonDialog({
         log={updateLog}
       />
     </>
+  )
+}
+
+// Daemon self-diagnostics: the `/v1/doctor` checks (GPU/driver/gateway/etc.)
+// collapsed by default so the dialog stays focused on version + lifecycle, and
+// only fetched (via the gated hook) when the dialog is open.
+function DiagnosticsSection({ connectionId }: { connectionId: string | undefined }) {
+  const { data, isLoading, isError, error, refetch, isFetching } =
+    useLaiosDoctor(connectionId)
+  const [open, setOpen] = useState(false)
+
+  const failing = data?.checks.filter((c) => !c.ok).length ?? 0
+
+  return (
+    <div className="rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium text-foreground transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <span>Diagnostics</span>
+        {data ? (
+          data.ok ? (
+            <Badge variant="success" className="gap-1 font-normal">
+              <CheckCircle className="h-3 w-3" />
+              healthy
+            </Badge>
+          ) : (
+            <Badge variant="destructive" className="gap-1 font-normal">
+              <WarningCircle className="h-3 w-3" />
+              {failing} issue{failing === 1 ? "" : "s"}
+            </Badge>
+          )
+        ) : null}
+      </button>
+
+      {open ? (
+        <div className="space-y-2 border-t border-border p-3">
+          {isLoading ? (
+            <p className="text-xs text-muted-foreground">Running checks…</p>
+          ) : isError ? (
+            <p className="text-xs text-destructive">
+              {error instanceof Error ? error.message : "Diagnostics failed"}
+            </p>
+          ) : data ? (
+            <>
+              <ul className="space-y-1.5">
+                {data.checks.map((c) => (
+                  <li key={c.name} className="flex items-start gap-2 text-xs">
+                    {c.ok ? (
+                      <CheckCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                    ) : (
+                      <WarningCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+                    )}
+                    <span className="min-w-0">
+                      <span className="font-medium text-foreground">{c.name}</span>
+                      {c.detail ? (
+                        <span className="text-muted-foreground"> — {c.detail}</span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refetch()}
+                disabled={isFetching}
+              >
+                {isFetching ? (
+                  <DotGridLoader size="xs" />
+                ) : (
+                  <ArrowsClockwise className="h-4 w-4" />
+                )}
+                Re-run
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
