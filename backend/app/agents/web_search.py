@@ -42,6 +42,7 @@ def build_web_search_capability(
     *,
     tavily_api_key: str | None = None,
     exa_api_key: str | None = None,
+    force_local: bool = False,
 ) -> WebSearch:
     """Build the ``WebSearch`` capability for the configured ``provider``.
 
@@ -57,10 +58,21 @@ def build_web_search_capability(
       dependency is missing we degrade to the DuckDuckGo auto behaviour.
 
     Unknown values fall back to DuckDuckGo.
+
+    ``force_local`` disables the model's native web tool (``native=False``) even
+    for the auto/``native`` providers. Use it for models whose API can't host
+    pydantic-ai's builtin web tool — a custom/local ``OpenAIChatModel`` served by
+    vLLM/etc., where enabling the native tool raises "WebSearchTool is not
+    supported with OpenAIChatModel". Such models still get web search, always via
+    the local backend.
     """
     name = (provider or DEFAULT_WEB_SEARCH_PROVIDER).strip().lower()
+    allow_native = not force_local
 
     if name == "native":
+        if force_local:
+            # No usable native tool on this model — degrade to DuckDuckGo.
+            return WebSearch(native=False, local="duckduckgo")
         # Native only — no local fallback. Errors on models without a native
         # web tool, which is the point of opting into this provider.
         return WebSearch(local=False)
@@ -70,17 +82,17 @@ def build_web_search_capability(
         if tool is not None:
             # native=False forces Tavily even on models with a native web tool.
             return WebSearch(native=False, local=tool)
-        return WebSearch(local="duckduckgo")
+        return WebSearch(native=allow_native, local="duckduckgo")
 
     if name == "exa":
         tool = _exa_tool(exa_api_key)
         if tool is not None:
             # native=False forces Exa even on models with a native web tool.
             return WebSearch(native=False, local=tool)
-        return WebSearch(local="duckduckgo")
+        return WebSearch(native=allow_native, local="duckduckgo")
 
     # duckduckgo (the default) and any unrecognized value.
-    return WebSearch(local="duckduckgo")
+    return WebSearch(native=allow_native, local="duckduckgo")
 
 
 def _tavily_tool(api_key: str | None):

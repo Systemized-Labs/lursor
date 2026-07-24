@@ -138,6 +138,10 @@ _KEEPALIVE_TIMEOUT = 25.0  # seconds between ": keepalive" comments on an idle s
 # pydantic-ai's default of 50, which trips deep agents on tool-heavy turns before
 # they can finish the work.
 _MAX_TURN_REQUESTS = 150
+# Cap on total tool calls within a single agent turn. pydantic-ai leaves this
+# uncapped by default; a generous ceiling keeps a runaway loop bounded without
+# cutting off legitimately tool-heavy turns.
+_MAX_TURN_TOOL_CALLS = 300
 _TEXT_DELTA_TYPES = {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_CHUNK}
 # Run-lifecycle events. A goal run drives many agent turns through one SSE
 # stream, but the AG-UI client requires exactly one RUN_STARTED…RUN_FINISHED per
@@ -629,7 +633,10 @@ async def _stream_turn(
         deps=deps,
         on_complete=on_complete,
         instructions=instructions,
-        usage_limits=UsageLimits(request_limit=_MAX_TURN_REQUESTS),
+        usage_limits=UsageLimits(
+            request_limit=_MAX_TURN_REQUESTS,
+            tool_calls_limit=_MAX_TURN_TOOL_CALLS,
+        ),
         capabilities=[*(capabilities or []), probe_capability],
     )
     try:

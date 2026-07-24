@@ -26,6 +26,7 @@ from pydantic_ai.retries import (
 )
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext, ToolDefinition
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 from pydantic_deep.prompts import BASE_PROMPT
@@ -164,6 +165,12 @@ CUSTOM_PREFIX = "custom:"
 # Prefix marking a cloud model served through OpenRouter.
 OPENROUTER_PREFIX = "openrouter:"
 
+# Usage budget for each delegated subagent (``task``) run. pydantic-ai defaults to
+# request_limit=50 and no tool-call cap, which trips on deep, tool-heavy delegated
+# work ("Error executing task: The next request would exceed the request_limit of
+# 50"). Match the top-level turn's budget so a subagent has the same room to work.
+_SUBAGENT_USAGE_LIMITS = UsageLimits(request_limit=150, tool_calls_limit=300)
+
 # OpenRouter routes to shared upstream provider pools that rate-limit (HTTP 429,
 # "temporarily rate-limited upstream. Please retry shortly") and occasionally
 # return transient 5xx. Left alone these surface as a fatal ``ModelHTTPError``
@@ -286,20 +293,16 @@ def _readonly_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDef
 # else — no building — so, like read-only, this is enforced at the tool layer, not
 # just by the planning prompt (weaker models ignore "do not build yet" and start
 # editing/running). It's the read-only surface plus ``write_file`` (to write the
-# plan doc) and MINUS the todo-board tools: an execution todo list during planning
-# reads as "already building" and isn't the plan artifact. ``edit_file`` stays out
-# — a refinement rewrites the whole doc via ``write_file`` — so source files can't
-# be edited and shell/``execute``/``task`` can't run.
-_PLAN_TOOL_ALLOWLIST = (
-    _READONLY_TOOL_ALLOWLIST
-    - {
-        "write_todos",
-        "add_todo",
-        "remove_todo",
-        "update_todo_status",
-        "update_todo_statuses",
-    }
-) | {"write_file"}
+# plan doc). Crucially the read-only surface KEEPS the todo-board tools: local
+# reasoning models (GLM/DeepSeek) plan by first laying out a todo list, then
+# acting — so ``write_todos`` is the scaffolding that gets them into the agentic
+# loop where they actually call ``write_file``. Stripping it (an earlier attempt)
+# dropped those models back to answering in prose and never writing the plan doc,
+# while stronger models were unaffected. The todo board can't edit files or run
+# anything, so keeping it doesn't weaken the "no building" guarantee. ``edit_file``
+# still stays out — a refinement rewrites the whole doc via ``write_file`` — so
+# source files can't be edited and shell/``execute``/``task`` can't run.
+_PLAN_TOOL_ALLOWLIST = _READONLY_TOOL_ALLOWLIST | {"write_file"}
 
 
 def _plan_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
@@ -684,9 +687,31 @@ def build_deep_agent(
     # capability ourselves and suppress the library's (``library_web_search`` →
     # False) to avoid registering the ``web_search`` tool twice. The default
     # provider stays on the library path, unchanged from before.
+    # Resolve the model now (needed below to decide the web-search path).
+    model = resolve_model(
+        model_override or row.model or settings.default_model, custom_providers or {}
+    )
+
     provider = web_search_provider or DEFAULT_WEB_SEARCH_PROVIDER
+    # A custom/local model routed through TolerantOpenAIChatModel is an
+    # OpenAIChatModel; pydantic-ai's builtin/native WebSearchTool only works with
+    # OpenAIResponsesModel and raises "WebSearchTool is not supported with
+    # OpenAIChatModel" on it. So for local models we always route web search
+    # through the local backend (native disabled) — they keep web search instead
+    # of the turn failing instantly at request build.
+    is_local_model = isinstance(model, TolerantOpenAIChatModel)
     use_custom_web_search = row.web_search and provider != DEFAULT_WEB_SEARCH_PROVIDER
-    if use_custom_web_search:
+    if row.web_search and is_local_model:
+        capabilities.append(
+            build_web_search_capability(
+                provider,
+                tavily_api_key=tavily_api_key,
+                exa_api_key=exa_api_key,
+                force_local=True,
+            )
+        )
+        library_web_search = False
+    elif use_custom_web_search:
         capabilities.append(
             build_web_search_capability(
                 provider,
@@ -694,7 +719,9 @@ def build_deep_agent(
                 exa_api_key=exa_api_key,
             )
         )
-    library_web_search = row.web_search and not use_custom_web_search
+        library_web_search = False
+    else:
+        library_web_search = row.web_search
 
     # Browser QA: give executing agents a headless browser to see and test the app
     # they build (see ``browser_qa.py``). A fresh capability per build keeps its
@@ -721,10 +748,6 @@ def build_deep_agent(
                 headless=settings.browser_qa_headless,
             )
         )
-
-    model = resolve_model(
-        model_override or row.model or settings.default_model, custom_providers or {}
-    )
 
     # For local models whose chat template (not a top-level API field) controls
     # reasoning, translate the UI thinking level into extra_body.chat_template_kwargs.
@@ -769,6 +792,7 @@ def build_deep_agent(
         include_plan=row.include_plan,
         web_search=library_web_search,
         thinking=thinking,
+        subagent_usage_limits=_SUBAGENT_USAGE_LIMITS,
         capabilities=capabilities or None,
         **managed_kwargs,
         **subagents_kwarg,

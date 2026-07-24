@@ -68,9 +68,9 @@ function findFreePort(preferred) {
  * @returns {{ command: string, args: string[], cwd: string, dataDir: string | null }}
  */
 function resolveBackendCommand(port) {
-  const args = [
-    "-m",
-    "uvicorn",
+  // Arguments for the uvicorn app itself, shared by both launch modes. The
+  // packaged and dev branches each prepend their own way of invoking uvicorn.
+  const appArgs = [
     "app.main:app",
     "--host",
     "127.0.0.1",
@@ -87,8 +87,9 @@ function resolveBackendCommand(port) {
         : [path.join(binDir, "python3"), path.join(binDir, "python")]
     const python = candidates.find((p) => fs.existsSync(p)) ?? candidates[0]
     return {
+      // Frozen interpreter: `python -m uvicorn app.main:app ...`
       command: python,
-      args,
+      args: ["-m", "uvicorn", ...appArgs],
       cwd: bundleDir,
       // Packaged app bundle is read-only: keep all writable state in ~/.lursor.
       dataDir: path.join(os.homedir(), ".lursor"),
@@ -99,8 +100,9 @@ function resolveBackendCommand(port) {
   // existing dev defaults (DB next to the backend, data under ~/.lursor).
   const backendDir = path.join(__dirname, "..", "..", "backend")
   return {
+    // `uv run uvicorn app.main:app ...`
     command: "uv",
-    args: ["run", "uvicorn", ...args],
+    args: ["run", "uvicorn", ...appArgs],
     cwd: backendDir,
     dataDir: null,
   }
