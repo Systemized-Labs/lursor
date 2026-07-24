@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from ag_ui.core import (
     EventType,
+    RunErrorEvent,
     ToolCallArgsEvent,
     ToolCallResultEvent,
     ToolCallStartEvent,
@@ -61,16 +62,18 @@ def test_turn_content_abort_before_any_text_is_empty():
 async def _collect(events, *, strip_lifecycle=False):
     accumulated: list[str] = []
     tool_calls: dict[str, dict] = {}
+    errors: list[str] = []
 
     async def _gen():
         for e in events:
             yield e
 
-    async for _ in _tee_events(
-        _gen(), accumulated, tool_calls, strip_lifecycle=strip_lifecycle
+    passed: list = []
+    async for event in _tee_events(
+        _gen(), accumulated, tool_calls, strip_lifecycle=strip_lifecycle, errors=errors
     ):
-        pass
-    return accumulated, tool_calls
+        passed.append(event)
+    return accumulated, tool_calls, errors, passed
 
 
 async def test_tee_events_accumulates_tool_calls():
@@ -87,13 +90,37 @@ async def test_tee_events_accumulates_tool_calls():
             message_id="m1",
         ),
     ]
-    _, tool_calls = await _collect(events)
+    _, tool_calls, errors, _ = await _collect(events)
 
     assert list(tool_calls) == ["t1"]
     call = tool_calls["t1"]
     assert call["name"] == "write_file"
     assert call["arguments"] == '{"path":"a.txt"}'
     assert call["result"] == "written"
+    assert errors == []
+
+
+async def test_tee_events_records_a_run_error_even_when_stripped():
+    """A stripped RUN_ERROR must still be reported to the caller.
+
+    Goal and plan runs wrap all their turns in one outer AG-UI lifecycle, so they
+    drop each turn's own RUN_STARTED/FINISHED/ERROR. pydantic-ai reports a failed
+    run *as* a RUN_ERROR event rather than raising, so dropping it without
+    recording it is how a failed turn used to vanish silently.
+    """
+    events = [
+        RunErrorEvent(type=EventType.RUN_ERROR, message="the model exploded"),
+    ]
+
+    # Goal/plan mode: the event is stripped from the stream but still reported.
+    _, _, errors, passed = await _collect(events, strip_lifecycle=True)
+    assert errors == ["the model exploded"]
+    assert passed == []
+
+    # Plain chat: the event also reaches the client, which renders the failure.
+    _, _, errors, passed = await _collect(events, strip_lifecycle=False)
+    assert errors == ["the model exploded"]
+    assert [e.type for e in passed] == [EventType.RUN_ERROR]
 
 
 async def test_persist_message_saves_tool_only_turn(client, monkeypatch):

@@ -48,6 +48,22 @@ def _fake_deep_agent(row, workspace_path, *args, **kwargs):
     return agent, create_default_deps(backend)
 
 
+def _fake_tool_calling_agent(row, workspace_path, *args, **kwargs):
+    """Like ``_fake_deep_agent`` but its model calls tools, so turns take several
+    model rounds — the only way to exercise the per-turn round cap."""
+    backend = LocalBackend(root_dir=str(workspace_path))
+    agent = create_deep_agent(
+        model=TestModel(),  # calls every tool it is offered
+        backend=backend,
+        include_subagents=False,
+        include_plan=False,
+        web_search=False,
+        web_fetch=False,
+        tool_search=False,
+    )
+    return agent, create_default_deps(backend)
+
+
 async def _drain_chat(client: AsyncClient, thread_id: str, body: str) -> list[str]:
     """POST a goal turn, read the SSE stream to completion, and return event types.
 
@@ -338,6 +354,130 @@ async def test_execute_plan_seeds_the_loop_with_a_clean_context(
     executed = (await client.get(f"/threads/{tid}")).json()
     assert executed["goal"] == "Plan"
     assert "The thing is done." in executed["success_criteria"]
+
+
+async def test_spent_round_budget_keeps_the_turns_work(
+    client: AsyncClient, monkeypatch
+):
+    """Regression: a goal turn that exhausts its per-turn model-round budget.
+
+    pydantic-ai enforces the cap by raising, and its UI event stream *catches*
+    that and re-emits it as RUN_ERROR — which a goal run strips, since one outer
+    lifecycle wraps every turn. The turn therefore produced no ``AgentRunResult``,
+    and the loop used to fall back to the *pre-turn* history: every turn's work
+    was discarded, the agent redid it, hit the cap again, and the run ground to
+    the iteration cap having kept nothing.
+
+    Drives the real endpoint with the cap forced low so each turn trips it. The
+    history handed to the evaluator must grow turn over turn.
+    """
+    seen: list[int] = []
+
+    class _RecordingEvaluator:
+        async def evaluate(self, condition: str, messages: list) -> GoalEvaluation:
+            seen.append(len(messages))
+            return GoalEvaluation(met=False, reason="not yet")
+
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_tool_calling_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _RecordingEvaluator()
+    )
+    # One model round per turn, so the second round trips the cap every turn.
+    monkeypatch.setattr("app.api.chat._MAX_TURN_REQUESTS", 1)
+
+    agent = (await client.post("/agents", json={"name": "Capped"})).json()
+    ws = (await client.post("/workspaces", json={"name": "CappedWS"})).json()
+    thread = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()
+    tid = thread["id"]
+    # Keep the run short; the point is what happens between turns.
+    await client.patch(f"/threads/{tid}", json={"max_iterations": 3})
+
+    body = RunAgentInput(
+        thread_id=tid,
+        run_id="capped-1",
+        state=None,
+        messages=[UserMessage(id="c1", role="user", content="do the long thing")],
+        tools=[],
+        context=[],
+        forwarded_props={"turn": "goal"},
+    ).model_dump_json(by_alias=True)
+    types = await _drain_chat(client, tid, body)
+    _assert_valid_lifecycle(types)
+
+    # Each turn ran and was evaluated — a spent round budget is a turn boundary,
+    # not a failure, so it does not trip the turn-error breaker.
+    assert len(seen) == 3, f"expected 3 evaluated turns, got {seen}"
+    # The heart of it: history grows. Before the fix this was [1, 1, 1] — every
+    # turn's work thrown away and the same turn attempted from scratch.
+    assert seen == sorted(seen) and seen[-1] > seen[0], (
+        f"history did not carry forward across capped turns: {seen}"
+    )
+
+    refreshed = (await client.get(f"/threads/{tid}")).json()
+    assert refreshed["status"] == "failed"  # genuinely out of iterations
+    assert refreshed["iteration"] == 3
+
+
+async def test_failed_goal_turn_surfaces_instead_of_silently_looping(
+    client: AsyncClient, monkeypatch
+):
+    """A goal turn that dies for a real reason reports it and stops early.
+
+    Distinct from the round-budget case above: there is no work to keep and
+    retrying the same broken thing 25 times helps nobody, so the loop trips its
+    breaker and the thread ends `blocked` naming the cause — rather than
+    `failed` with the evaluator's unrelated "not met" reason.
+    """
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
+    )
+
+    from app.agents.goal_loop import TurnResult
+    from app.api import chat as chat_mod
+
+    real_stream_turn = chat_mod._stream_turn
+
+    async def broken_stream_turn(*args, **kwargs):
+        turn = await real_stream_turn(*args, **kwargs)
+        # Same shape `_stream_turn` returns when pydantic-ai's stream reports a
+        # failed run: no result, so no work, plus the reason.
+        return TurnResult(messages=turn.messages, error="model provider is down")
+
+    monkeypatch.setattr("app.api.chat._stream_turn", broken_stream_turn)
+
+    agent = (await client.post("/agents", json={"name": "Broken"})).json()
+    ws = (await client.post("/workspaces", json={"name": "BrokenWS"})).json()
+    thread = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()
+    tid = thread["id"]
+    await client.patch(f"/threads/{tid}", json={"max_iterations": 25})
+
+    body = RunAgentInput(
+        thread_id=tid,
+        run_id="broken-1",
+        state=None,
+        messages=[UserMessage(id="b1", role="user", content="do the thing")],
+        tools=[],
+        context=[],
+        forwarded_props={"turn": "goal"},
+    ).model_dump_json(by_alias=True)
+    await _drain_chat(client, tid, body)
+
+    refreshed = (await client.get(f"/threads/{tid}")).json()
+    assert refreshed["status"] == "blocked"
+    # The real cause reaches the user instead of being swallowed with the
+    # per-turn RUN_ERROR events a goal run strips.
+    assert "model provider is down" in refreshed["last_reason"]
+    # Bailed fast rather than burning all 25 iterations on the same failure.
+    assert refreshed["iteration"] == 0
 
 
 async def test_goal_command_keeps_its_transcript(client: AsyncClient, monkeypatch):

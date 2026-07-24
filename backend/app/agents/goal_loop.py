@@ -338,6 +338,27 @@ class GoalOutcome:
     last_reason: str
 
 
+@dataclass
+class TurnResult:
+    """What one execution turn produced, as handed back to :func:`drive_goal_loop`.
+
+    ``messages`` is the history to carry into the next turn. On a turn that
+    aborted mid-run this must be the work-so-far snapshot, never the pre-turn
+    history — returning the latter silently rewinds the loop's context, so the
+    agent redoes the turn, aborts the same way, and grinds to the iteration cap
+    having kept nothing.
+
+    ``error`` is why the turn's agent run aborted (``""`` on a clean finish).
+    ``rounds_exhausted`` narrows that to the benign case: the turn simply used up
+    its per-turn model-round budget. The work is real and the history intact, so
+    the loop treats it as an ordinary turn boundary rather than a failure.
+    """
+
+    messages: list[ModelMessage]
+    error: str = ""
+    rounds_exhausted: bool = False
+
+
 def build_goal_evaluator(
     model_str: str,
     custom_providers: dict[str, CustomProvider] | None = None,
@@ -427,6 +448,37 @@ EVALUATOR_UNAVAILABLE_REASON = (
     "(goal_evaluator_model, or the thread agent's model)."
 )
 
+# Sibling breaker for the *agent* side. A transient model/tool blip shouldn't end
+# a 25-turn run, so a failed turn is retried against the partial history it left
+# behind; but an unrecoverable failure (bad credentials, missing model) should
+# surface in seconds rather than burn every remaining turn on the same error.
+_MAX_CONSECUTIVE_TURN_ERRORS = 3
+
+
+def turn_failed_reason(error: str) -> str:
+    """Terminal reason when the agent turn itself keeps failing."""
+    return (
+        "The agent run failed repeatedly and could not make progress. "
+        f"Last error: {error}"
+    )
+
+
+def rounds_exhausted_directive(condition: str, reason: str) -> str:
+    """Continue directive for a turn that was cut off at its round budget.
+
+    The plain continue directive would leave the agent guessing why it stopped
+    mid-thought; saying so plainly (and that its work survived) is what keeps the
+    next turn from restarting the same approach and hitting the same wall.
+    """
+    return (
+        f"{goal_continue_directive(condition, reason)}\n\n"
+        "Note: your previous turn was cut off after using up its budget of "
+        "model/tool rounds. It did not fail, and everything you did is still in "
+        "context — pick up exactly where you left off. Prefer fewer, larger steps "
+        "(batch related edits, run one broad command instead of many narrow ones) "
+        "so you can finish within this turn's budget."
+    )
+
 
 async def _evaluate_resiliently(
     evaluate: Callable[[str, list[ModelMessage]], Awaitable[GoalEvaluation]],
@@ -456,11 +508,13 @@ async def drive_goal_loop(
     *,
     condition: str,
     max_turns: int,
-    run_turn: Callable[[int, str | None], Awaitable[list[ModelMessage]]],
+    run_turn: Callable[[int, str | None], Awaitable[TurnResult]],
     evaluate: Callable[[str, list[ModelMessage]], Awaitable[GoalEvaluation]],
     on_evaluation: Callable[[GoalState, GoalEvaluation], Awaitable[None]] | None = None,
+    on_turn_error: Callable[[GoalState, str], Awaitable[None]] | None = None,
     initial_seed: str | None = None,
     evaluator_retry_backoff: tuple[float, ...] = _EVALUATOR_RETRY_BACKOFF,
+    max_consecutive_turn_errors: int = _MAX_CONSECUTIVE_TURN_ERRORS,
 ) -> GoalOutcome:
     """Run execution turns until the goal is met, judged impossible, or capped.
 
@@ -473,22 +527,41 @@ async def drive_goal_loop(
     Args:
         condition: The completion condition the evaluator judges against.
         max_turns: Hard cap on execution turns (``GoalState.max_turns``).
-        run_turn: ``(turn_number, seed) -> messages``. ``seed`` is
+        run_turn: ``(turn_number, seed) -> TurnResult``. ``seed`` is
             ``initial_seed`` for the first turn, then the evaluator-informed
             continue directive.
         evaluate: ``(condition, messages) -> GoalEvaluation``.
         on_evaluation: Optional hook after each evaluation (persist/emit status).
+        on_turn_error: Optional hook when an agent turn aborts and will be
+            retried (surface/log the error).
         initial_seed: Seed prompt for the first execution turn.
         evaluator_retry_backoff: Per-retry sleeps for a failing evaluator before
             the circuit breaker trips. Tests pass zeros to avoid real sleeps.
+        max_consecutive_turn_errors: Failed agent turns in a row before the loop
+            gives up on the run.
     """
     state = GoalState(condition=condition, max_turns=max_turns)
     state.started_monotonic = time.monotonic()
     seed = initial_seed
+    consecutive_turn_errors = 0
     while True:
-        messages = await run_turn(state.turns + 1, seed)
+        turn = await run_turn(state.turns + 1, seed)
+        if turn.error and not turn.rounds_exhausted:
+            # The agent run aborted outright. Don't spend an evaluation on it —
+            # the evaluator would judge a half-turn and report "not met", hiding
+            # the real cause. Retry the same seed against whatever history the
+            # turn did produce, and give up if the failure keeps repeating.
+            consecutive_turn_errors += 1
+            if consecutive_turn_errors >= max_consecutive_turn_errors:
+                return GoalOutcome(
+                    ThreadStatus.blocked, state.turns, turn_failed_reason(turn.error)
+                )
+            if on_turn_error is not None:
+                await on_turn_error(state, turn.error)
+            continue
+        consecutive_turn_errors = 0
         evaluation, errored = await _evaluate_resiliently(
-            evaluate, condition, messages, evaluator_retry_backoff
+            evaluate, condition, turn.messages, evaluator_retry_backoff
         )
         if errored:
             # Circuit breaker: a persistently failing evaluator can't judge
@@ -507,4 +580,8 @@ async def drive_goal_loop(
             return GoalOutcome(ThreadStatus.blocked, state.turns, evaluation.reason)
         if state.exhausted:
             return GoalOutcome(ThreadStatus.failed, state.turns, evaluation.reason)
-        seed = goal_continue_directive(condition, evaluation.reason)
+        seed = (
+            rounds_exhausted_directive(condition, evaluation.reason)
+            if turn.rounds_exhausted
+            else goal_continue_directive(condition, evaluation.reason)
+        )

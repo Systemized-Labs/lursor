@@ -12,11 +12,13 @@ from pydantic_deep import GoalEvaluation
 from app.agents.goal_loop import (
     EVALUATOR_ERROR_REASON,
     EVALUATOR_UNAVAILABLE_REASON,
+    TurnResult,
     _enqueue_interjections,
     drain_interjections,
     drive_goal_loop,
     extract_success_criteria,
     queue_interjection,
+    turn_failed_reason,
 )
 from app.db.models import ThreadStatus
 
@@ -61,9 +63,9 @@ def _scripted_evaluator(evaluations: list[GoalEvaluation]):
 async def test_completes_when_evaluator_confirms():
     seeds: list[str | None] = []
 
-    async def run_turn(turn_no: int, seed: str | None) -> list:
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
         seeds.append(seed)
-        return [f"turn-{turn_no}"]
+        return TurnResult(messages=[f"turn-{turn_no}"])
 
     outcome = await drive_goal_loop(
         condition="ship it",
@@ -88,8 +90,8 @@ async def test_completes_when_evaluator_confirms():
 
 
 async def test_blocked_when_evaluator_says_impossible():
-    async def run_turn(turn_no: int, seed: str | None) -> list:
-        return []
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        return TurnResult(messages=[])
 
     outcome = await drive_goal_loop(
         condition="divide by zero safely and unsafely at once",
@@ -107,9 +109,9 @@ async def test_blocked_when_evaluator_says_impossible():
 async def test_fails_when_iteration_cap_is_hit():
     turns = {"n": 0}
 
-    async def run_turn(turn_no: int, seed: str | None) -> list:
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
         turns["n"] += 1
-        return []
+        return TurnResult(messages=[])
 
     outcome = await drive_goal_loop(
         condition="never satisfied",
@@ -126,8 +128,8 @@ async def test_fails_when_iteration_cap_is_hit():
 async def test_on_evaluation_hook_sees_each_turn():
     observed: list[tuple[int, bool]] = []
 
-    async def run_turn(turn_no: int, seed: str | None) -> list:
-        return []
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        return TurnResult(messages=[])
 
     async def on_evaluation(state, evaluation) -> None:
         observed.append((state.turns, evaluation.met))
@@ -156,9 +158,9 @@ async def test_breaker_trips_when_evaluator_persistently_errors():
     """A persistently failing evaluator stops the loop fast, not at the turn cap."""
     turns = {"n": 0}
 
-    async def run_turn(turn_no: int, seed: str | None) -> list:
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
         turns["n"] += 1
-        return []
+        return TurnResult(messages=[])
 
     outcome = await drive_goal_loop(
         condition="verify something",
@@ -181,8 +183,8 @@ async def test_breaker_trips_when_evaluator_persistently_errors():
 async def test_transient_evaluator_error_recovers_and_continues():
     """One eval error followed by a real verdict retries in-turn, no breaker trip."""
 
-    async def run_turn(turn_no: int, seed: str | None) -> list:
-        return []
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        return TurnResult(messages=[])
 
     outcome = await drive_goal_loop(
         condition="ship it",
@@ -201,6 +203,109 @@ async def test_transient_evaluator_error_recovers_and_continues():
     assert outcome.status == ThreadStatus.completed
     assert outcome.turns == 1
     assert outcome.last_reason == "done"
+
+
+# --- aborted agent turns ------------------------------------------------------
+
+
+async def test_spent_round_budget_is_an_ordinary_turn_boundary():
+    """A turn that used up its model-round budget is not a failure.
+
+    Its work is real and its history intact, so the loop evaluates it like any
+    other turn — and tells the next turn it was cut off rather than leaving the
+    agent to guess why it stopped mid-thought.
+    """
+    seeds: list[str | None] = []
+    judged: list[list] = []
+
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        seeds.append(seed)
+        return TurnResult(
+            messages=[f"work-{turn_no}"],
+            error="The next request would exceed the request_limit of 150",
+            rounds_exhausted=True,
+        )
+
+    async def evaluate(condition: str, messages: list) -> GoalEvaluation:
+        judged.append(messages)
+        return GoalEvaluation(met=len(judged) == 2, reason="progressing")
+
+    outcome = await drive_goal_loop(
+        condition="ship it",
+        max_turns=10,
+        run_turn=run_turn,
+        evaluate=evaluate,
+        initial_seed="kick off",
+    )
+
+    assert outcome.status == ThreadStatus.completed
+    assert outcome.turns == 2
+    # Every turn was evaluated against the work it produced — not skipped, and
+    # not judged against a rewound history.
+    assert judged == [["work-1"], ["work-2"]]
+    # The follow-up seed explains the cut-off and that the work survived.
+    assert "cut off" in seeds[1]
+    assert "still in context" in seeds[1]
+
+
+async def test_failed_turn_retries_then_trips_the_breaker():
+    """A turn that aborts is retried, and a persistent failure ends the run fast."""
+    attempts = {"n": 0}
+    evaluations = {"n": 0}
+    reported: list[str] = []
+
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        attempts["n"] += 1
+        return TurnResult(messages=["partial work"], error="model provider is down")
+
+    async def evaluate(condition: str, messages: list) -> GoalEvaluation:
+        evaluations["n"] += 1
+        return GoalEvaluation(met=False, reason="not yet")
+
+    async def on_turn_error(state, error: str) -> None:
+        reported.append(error)
+
+    outcome = await drive_goal_loop(
+        condition="ship it",
+        max_turns=25,
+        run_turn=run_turn,
+        evaluate=evaluate,
+        on_turn_error=on_turn_error,
+        max_consecutive_turn_errors=3,
+    )
+
+    assert outcome.status == ThreadStatus.blocked
+    assert outcome.last_reason == turn_failed_reason("model provider is down")
+    # Bailed after three attempts instead of grinding through all 25 turns...
+    assert attempts["n"] == 3
+    # ...and never asked the evaluator to judge a turn that never really ran.
+    assert evaluations["n"] == 0
+    # The caller heard about each retried failure (the goal run strips per-turn
+    # RUN_ERROR events, so this hook is the only way it surfaces).
+    assert reported == ["model provider is down"] * 2
+
+
+async def test_transient_turn_failure_recovers_without_losing_the_run():
+    """One failed turn followed by a good one keeps going; the breaker resets."""
+    turns = {"n": 0}
+
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        turns["n"] += 1
+        if turns["n"] == 1:
+            return TurnResult(messages=["partial"], error="transient blip")
+        return TurnResult(messages=["real work"])
+
+    outcome = await drive_goal_loop(
+        condition="ship it",
+        max_turns=10,
+        run_turn=run_turn,
+        evaluate=_scripted_evaluator([GoalEvaluation(met=True, reason="done")]),
+    )
+
+    assert outcome.status == ThreadStatus.completed
+    assert outcome.last_reason == "done"
+    # The failed attempt didn't consume an iteration — only the turn that ran.
+    assert outcome.turns == 1
 
 
 # --- mid-run interjection -----------------------------------------------------

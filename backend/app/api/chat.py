@@ -30,8 +30,9 @@ from ag_ui.core import (
     RunStartedEvent,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, Hooks
 from pydantic_ai.messages import ModelMessage
+from pydantic_ai.tools import RunContext
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 from pydantic_ai.usage import UsageLimits
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +46,7 @@ from app.agents.compaction import summarize_thread
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     PLAN_DIR,
+    TurnResult,
     build_continuation_adapter,
     build_goal_evaluator,
     build_steer_capability,
@@ -471,18 +473,27 @@ async def _tee_events(
     tool_calls: dict[str, dict],
     *,
     strip_lifecycle: bool,
+    errors: list[str],
 ) -> AsyncIterator:
     """Pass events through, accumulating assistant text + tool calls for persist.
 
     ``accumulated`` gathers streamed text (used for the stop/cancel partial);
     ``tool_calls`` collects each tool call so the turn can be persisted with the
-    same tool blocks the user watched — not just the final text.
+    same tool blocks the user watched — not just the final text. ``errors``
+    collects the reason a turn aborted, if it did.
 
-    In goal mode (``strip_lifecycle``) the per-turn RUN_STARTED/FINISHED/ERROR
-    events are dropped so the caller can wrap all turns in one outer lifecycle.
+    In goal/plan mode (``strip_lifecycle``) the per-turn
+    RUN_STARTED/FINISHED/ERROR events are dropped so the caller can wrap all
+    turns in one outer lifecycle.
     """
     async for event in stream:
         etype = getattr(event, "type", None)
+        if etype == EventType.RUN_ERROR:
+            # pydantic-ai's UI event stream *catches* a failed run and re-emits it
+            # as RUN_ERROR instead of raising, so this event is the only signal
+            # that the turn aborted. Record it before the lifecycle strip below —
+            # otherwise a goal/plan turn's failure vanishes without a trace.
+            errors.append(getattr(event, "message", "") or "the agent run failed")
         if strip_lifecycle and etype in _LIFECYCLE_TYPES:
             continue
         if etype in _TEXT_DELTA_TYPES:
@@ -492,6 +503,41 @@ async def _tee_events(
         else:
             _collect_tool_call(event, etype, tool_calls)
         yield event
+
+
+def _build_run_probe() -> tuple[Hooks, dict]:
+    """A capability that keeps live handles on the run's message history + usage.
+
+    ``run_stream`` only hands back an ``AgentRunResult`` when the run *finishes*.
+    A run that aborts mid-flight yields nothing, which used to leave the caller
+    holding only the pre-turn history — the silent-rewind bug that made a goal
+    loop redo (and re-fail) the same turn until it hit the iteration cap.
+
+    pydantic-ai builds each ``RunContext`` around the run's own mutable state
+    objects (``ctx.messages`` *is* ``state.message_history``, ``ctx.usage`` *is*
+    ``state.usage``), so stashing them on the first model request leaves us a live
+    view of the work-so-far that stays accurate however the run ends.
+    """
+    probe: dict = {"messages": None, "usage": None}
+
+    async def before_model_request(ctx: RunContext, request_context):
+        probe["messages"] = ctx.messages
+        probe["usage"] = ctx.usage
+        return request_context
+
+    return Hooks(before_model_request=before_model_request), probe
+
+
+def _hit_round_cap(usage) -> bool:
+    """Did an aborted run stop because it used up its model-round budget?
+
+    Structural rather than error-message matching: ``check_before_request``
+    raises once the *next* request would exceed ``request_limit``, so a run cut
+    off by the cap has exactly ``_MAX_TURN_REQUESTS`` requests recorded against
+    it. Distinguishing this from a real failure is what lets a goal loop treat a
+    long turn as an ordinary turn boundary instead of an error.
+    """
+    return getattr(usage, "requests", 0) >= _MAX_TURN_REQUESTS
 
 
 def _turn_content(streamed: str, result) -> str:
@@ -525,22 +571,28 @@ async def _stream_turn(
     strip_lifecycle: bool = False,
     kind: str = "chat",
     capabilities: Sequence[AbstractCapability] | None = None,
-) -> list[ModelMessage]:
+) -> TurnResult:
     """Run one agent turn to completion, streaming events + todos to subscribers.
 
-    Returns the full message history after the turn (``result.all_messages()``)
-    so a goal loop can feed it into the next turn. ``todos_state`` carries the
-    last-published todo JSON across a run's turns (``{"json": str | None}``).
-    ``kind`` (chat | plan | goal) tags the usage row recorded on completion.
+    Returns the message history after the turn, plus how the turn ended, so a
+    goal loop can feed the history into the next turn and react to a failure.
+    ``todos_state`` carries the last-published todo JSON across a run's turns
+    (``{"json": str | None}``). ``kind`` (chat | plan | goal) tags the usage row.
 
     The assistant turn is persisted from a ``finally`` so it survives *however*
     the stream ends — clean finish, stop/abort, or a model/tool error. We save the
     streamed transcript (the text the user actually saw, across every model round)
     plus the turn's tool calls, so a reloaded thread matches what streamed live and
-    a stopped turn keeps its tool blocks (usage is only recorded when the run
-    actually completed). See ``persist_turn`` for why this beats ``result.output``.
+    a stopped turn keeps its tool blocks. See ``persist_turn`` for why this beats
+    ``result.output``.
     """
     captured: dict[str, object] = {}
+    # Filled by ``_tee_events`` if the run aborts: pydantic-ai turns the failure
+    # into a RUN_ERROR event rather than raising, so this is how we hear about it.
+    errors: list[str] = []
+    # Live handles on the run's own history/usage, so an aborted turn still yields
+    # the work it did instead of silently rewinding to the pre-turn history.
+    probe_capability, probe = _build_run_probe()
     # Per-turn buffers, filled as events flow through ``_tee_events``. ``text`` is
     # the streamed transcript (every text delta, all rounds) persisted as the turn's
     # content; ``tool_calls`` (keyed by id, insertion-ordered) is persisted with the
@@ -565,11 +617,12 @@ async def _stream_turn(
         await _persist_message(
             thread_id, "assistant", content, tool_calls=list(tool_calls.values())
         )
-        if result is not None:
-            # ``AgentRunResult.usage`` is a property (not a method) that returns the
-            # run's ``RunUsage``; ``_persist_usage`` guards its own failures. Usage is
-            # only known on a completed run, so skip it on abort/error.
-            await _persist_usage(thread_id, kind, getattr(result, "usage", None))
+        # ``AgentRunResult.usage`` is a property (not a method) returning the run's
+        # ``RunUsage``; the probe holds that same object, so an aborted turn still
+        # records what it spent — a turn that burns its whole round budget is the
+        # most expensive kind there is, and used to be billed as zero.
+        usage = getattr(result, "usage", None) if result is not None else probe["usage"]
+        await _persist_usage(thread_id, kind, usage)
 
     stream = turn_adapter.run_stream(
         message_history=message_history,
@@ -577,11 +630,17 @@ async def _stream_turn(
         on_complete=on_complete,
         instructions=instructions,
         usage_limits=UsageLimits(request_limit=_MAX_TURN_REQUESTS),
-        capabilities=capabilities,
+        capabilities=[*(capabilities or []), probe_capability],
     )
     try:
         async for encoded in turn_adapter.encode_stream(
-            _tee_events(stream, text, tool_calls, strip_lifecycle=strip_lifecycle)
+            _tee_events(
+                stream,
+                text,
+                tool_calls,
+                strip_lifecycle=strip_lifecycle,
+                errors=errors,
+            )
         ):
             chat_run_manager.publish(thread_id, encoded)
             # A todo tool call mutated deps.todos in place — surface the new list to
@@ -599,7 +658,20 @@ async def _stream_turn(
         await persist_turn()
 
     result = captured.get("result")
-    return result.all_messages() if result is not None else (message_history or [])
+    if result is not None:
+        return TurnResult(messages=result.all_messages())
+    # The run aborted (round cap, model/tool error). Carry forward the history the
+    # run actually built — falling back to the pre-turn history only if it died
+    # before its first model request, when there is genuinely nothing to keep.
+    error = errors[0] if errors else ""
+    live_messages = probe["messages"]
+    return TurnResult(
+        messages=list(live_messages)
+        if live_messages
+        else list(message_history or []),
+        error=error,
+        rounds_exhausted=bool(error) and _hit_round_cap(probe["usage"]),
+    )
 
 
 async def _build_agent_and_context(
@@ -743,12 +815,12 @@ async def _run_goal_execution(
         # step (not just between whole agent runs).
         steer = build_steer_capability(thread_id)
 
-        async def run_turn(turn_no: int, seed: str | None) -> list[ModelMessage]:
+        async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
             nonlocal history
             turn_adapter = build_continuation_adapter(
                 agent, seed or kickoff, thread_id, accept
             )
-            history = await _stream_turn(
+            turn = await _stream_turn(
                 thread_id,
                 turn_adapter,
                 deps,
@@ -759,7 +831,19 @@ async def _run_goal_execution(
                 kind="goal",
                 capabilities=[steer],
             )
-            return history
+            # Carry the turn's history forward even when it aborted — it holds the
+            # work the agent actually did, so the next turn resumes instead of
+            # starting the same turn over.
+            history = turn.messages
+            if turn.rounds_exhausted:
+                logger.info(
+                    "goal thread %s: turn %d used its full round budget (%d); "
+                    "continuing from where it left off",
+                    thread_id,
+                    turn_no,
+                    _MAX_TURN_REQUESTS,
+                )
+            return turn
 
         async def on_evaluation(state, evaluation) -> None:
             await _set_thread_state(
@@ -770,6 +854,20 @@ async def _run_goal_execution(
                 todos=_todos_snapshot(deps),
             )
             publish_status(ThreadStatus.running, state.turns, evaluation.reason)
+
+        async def on_turn_error(state, error: str) -> None:
+            # A goal run strips per-turn RUN_ERROR events (one outer lifecycle
+            # wraps every turn), so without this the failure would never reach the
+            # user. Report it on the status pill and retry.
+            logger.warning("goal thread %s: turn failed, retrying: %s", thread_id, error)
+            reason = f"Turn failed, retrying — {error}"
+            await _set_thread_state(
+                thread_id,
+                status=ThreadStatus.running,
+                iteration=state.turns,
+                last_reason=reason,
+            )
+            publish_status(ThreadStatus.running, state.turns, reason)
 
         # Judge completion against the *rendered* app, not just the transcript:
         # wrap the transcript evaluator so each evaluation also gets a live
@@ -783,6 +881,7 @@ async def _run_goal_execution(
             run_turn=run_turn,
             evaluate=evaluate,
             on_evaluation=on_evaluation,
+            on_turn_error=on_turn_error,
             initial_seed=kickoff,
         )
         await _set_thread_state(
@@ -1062,7 +1161,7 @@ async def chat(
                 thread_id, status=ThreadStatus.planning, plan_path=known_path or None
             )
             publish_status(ThreadStatus.planning, 0, plan_path=known_path)
-            await _stream_turn(
+            turn = await _stream_turn(
                 thread_id,
                 adapter,
                 deps,
@@ -1072,6 +1171,12 @@ async def chat(
                 strip_lifecycle=True,
                 kind="plan",
             )
+            if turn.error:
+                # A plan turn also strips its per-turn RUN_ERROR (manual outer
+                # lifecycle), so a failed turn would otherwise park the thread in
+                # `awaiting_approval` pointing at a plan doc that was never
+                # written. Fail loudly instead; the handler below reports it.
+                raise RuntimeError(turn.error)
             # Resolve the doc the agent wrote (fresh round) or reuse the known one
             # (refinement). Falls back to a title-derived name only if the agent left
             # no detectable plan file. Pin it so the UI + later turns open the same doc.
@@ -1108,6 +1213,10 @@ async def chat(
                 thread_id,
                 _encode_ag_ui_event(RunErrorEvent(type=EventType.RUN_ERROR, message=str(exc))),
             )
+            # Don't strand the thread in `planning` — nothing is running any more,
+            # and a stuck status blocks the user from retrying.
+            await _set_thread_state(thread_id, status=ThreadStatus.failed)
+            publish_status(ThreadStatus.failed, 0, str(exc), plan_path=known_path)
             raise
         _publish_lifecycle_finish(thread_id, run_id)
         chat_run_manager.finish(thread_id, "finished")
