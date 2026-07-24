@@ -387,7 +387,11 @@ export function ChatComposer({
               // identical metrics, or the caret drifts ahead of the text.
               data-composer-overlay
               className={cn(
-                "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-foreground",
+                // `scrollbar-gutter: stable` must match the textarea so both
+                // layers reserve the same width whether or not the textarea's
+                // scrollbar is showing; otherwise lines wrap at different points
+                // and the caret runs ahead of the painted glyphs.
+                "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-foreground [scrollbar-gutter:stable]",
                 FIELD_TYPO
               )}
             >
@@ -421,7 +425,10 @@ export function ChatComposer({
               disabled={disabled}
               rows={1}
               className={cn(
-                "relative min-h-[34px] resize-none overflow-y-auto border-0 bg-transparent shadow-none",
+                // `break-words` + `scrollbar-gutter: stable` mirror the overlay
+                // exactly so both layers wrap identically and the caret stays
+                // aligned with the visible text (see overlay comment above).
+                "relative min-h-[34px] resize-none overflow-y-auto break-words border-0 bg-transparent shadow-none [scrollbar-gutter:stable]",
                 "text-transparent caret-foreground",
                 FIELD_TYPO,
                 "focus-visible:border-transparent focus-visible:bg-transparent focus-visible:ring-0 dark:bg-transparent disabled:bg-transparent dark:disabled:bg-transparent"
