@@ -171,6 +171,12 @@ OPENROUTER_PREFIX = "openrouter:"
 # 50"). Match the top-level turn's budget so a subagent has the same room to work.
 _SUBAGENT_USAGE_LIMITS = UsageLimits(request_limit=150, tool_calls_limit=300)
 
+# Per-tool retry budget (create_deep_agent defaults to 3). Local reasoning models
+# often emit a malformed tool call or transient tool error a few times before
+# succeeding, so a higher ceiling keeps a turn alive instead of aborting it with
+# "Tool 'read_file' exceeded max retries count of 3".
+_TOOL_RETRIES = 10
+
 # OpenRouter routes to shared upstream provider pools that rate-limit (HTTP 429,
 # "temporarily rate-limited upstream. Please retry shortly") and occasionally
 # return transient 5xx. Left alone these surface as a fatal ``ModelHTTPError``
@@ -793,6 +799,7 @@ def build_deep_agent(
         web_search=library_web_search,
         thinking=thinking,
         subagent_usage_limits=_SUBAGENT_USAGE_LIMITS,
+        retries=_TOOL_RETRIES,
         capabilities=capabilities or None,
         **managed_kwargs,
         **subagents_kwarg,
