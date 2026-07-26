@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the main Lursor app and for the bundled Python interpreter.
+
+  Notarization requires the hardened runtime, which by default forbids most of
+  what this app does. Each key below is load-bearing:
+
+  - allow-jit / allow-unsigned-executable-memory: V8 (Electron) and CPython both
+    generate executable memory at runtime.
+  - disable-library-validation: the bundled interpreter dlopens extension
+    modules (.so) from wheels. They are signed by our afterPack hook, but this
+    keeps a wheel that ships its own unsigned dylib from killing the process.
+  - allow-dyld-environment-variables: uvicorn/PTY children inherit a patched
+    environment; python itself relies on PYTHON*/DYLD_* vars.
+  - network.client / network.server: the backend binds 127.0.0.1 and calls out
+    to OpenRouter, git remotes, and the web-search tools.
+  - files.user-selected.read-only: the file browser / workspace pickers.
+  - automation.apple-events: shell.openExternal and "reveal in Finder".
+  - cs.debugger is deliberately NOT set: it is only needed to attach a debugger
+    to other processes and widens the app's privileges for no benefit here.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+  </dict>
+</plist>

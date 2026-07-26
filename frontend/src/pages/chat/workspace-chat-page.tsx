@@ -326,7 +326,9 @@ export function WorkspaceChatPage() {
         setDraft(text)
         return
       }
-      let turnAgent = {
+      // Annotated to match agentForCommand's return type, which leaves `name`
+      // optional — inference from this initializer alone would make it required.
+      let turnAgent: { id: string; name?: string } = {
         id: selectedAgentId,
         name: agentNameById.get(selectedAgentId),
       }

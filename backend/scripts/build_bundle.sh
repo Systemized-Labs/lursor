@@ -77,10 +77,24 @@ if [[ ! -x "$PYBIN" ]]; then
 fi
 
 # --- 2. Install the backend + its (non-dev) dependencies into that interpreter. ---
-# Installing the project pulls in the main dependency set; the optional `dev`
-# extra is intentionally excluded from the shipped bundle.
+# Install from uv.lock rather than resolving fresh: `uv pip install <project>`
+# re-resolves and would let a release ship dependency versions that were never
+# tested locally. Exporting the lock gives byte-identical bundles for a given
+# commit. The optional `dev` extra is excluded from the shipped bundle.
 echo ">> Installing backend + dependencies into the bundled interpreter ..."
-uv pip install --python "$PYBIN" "$BACKEND_DIR"
+REQ_FILE="$OUTPUT_DIR/.requirements.txt"
+uv export \
+  --project "$BACKEND_DIR" \
+  --frozen \
+  --no-dev \
+  --no-emit-project \
+  --no-hashes \
+  -o "$REQ_FILE"
+uv pip install --python "$PYBIN" -r "$REQ_FILE"
+# The project itself is not in the exported requirements (--no-emit-project);
+# install it without deps so the lock stays the single source of versions.
+uv pip install --python "$PYBIN" --no-deps "$BACKEND_DIR"
+rm -f "$REQ_FILE"
 
 # --- 3. Smoke test: boot uvicorn against a throwaway data dir and hit health. ---
 echo ">> Smoke-testing the bundle ..."

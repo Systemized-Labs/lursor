@@ -12,7 +12,9 @@ dependencies = [
     "pydantic-settings>=2.5",
     "pydantic-ai>=0.0.20",
     "ag-ui-protocol>=0.1.7",
-    "pydantic-deep[browser] @ git+https://github.com/vstorm-co/pydantic-deepagents.git",
+    # Pinned to a commit: an unpinned git dependency makes releases
+    # unreproducible and lets an upstream push change what we ship.
+    "pydantic-deep[browser] @ git+https://github.com/vstorm-co/pydantic-deepagents.git@8b91848525f361b159fdd4c782c2f21a6f1b9871",
     "pydantic-ai-slim[duckduckgo,exa,tavily]>=2.8.0",
 ]
 

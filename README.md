@@ -44,6 +44,7 @@ lursor/
   frontend/    Vite + React + Tailwind + shadcn/ui       (see frontend/README.md)
                also runs as an Electron desktop app     (see docs/ELECTRON.md)
   docs/        Plans and design notes (docs/PLAN.md, docs/INSTALL.md)
+  packaging/   Homebrew cask template (rendered by the release workflow)
   scripts/     dev.sh — run backend + frontend together
                install.sh — one-line desktop installer (curl | sh)
 ```
@@ -57,9 +58,16 @@ backend** — no Python, `uv`, `bun`, or manual server needed:
 curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh
 ```
 
-macOS (Apple Silicon/Intel) and Linux x86_64. After it installs, open Lursor and
-paste your OpenRouter key in **Settings**. See [docs/INSTALL.md](docs/INSTALL.md)
-for options and uninstall.
+Or on macOS, via Homebrew:
+
+```bash
+brew tap --trust JonathanConn/lursor && brew install --cask lursor
+```
+
+macOS (Apple Silicon) and Linux x86_64. After it installs, open Lursor and paste
+your OpenRouter key in **Settings**. See [docs/INSTALL.md](docs/INSTALL.md) for
+options and uninstall, and [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for how
+releases are built and signed.
 
 ## Quick start (from source)
 

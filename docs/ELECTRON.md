@@ -74,8 +74,31 @@ bun run electron:build:mac        # or :linux  (each runs bundle:backend first)
 
 The frozen backend is **architecture-specific**, so a single machine builds for
 its own arch. CI (`.github/workflows/release.yml`) builds each arch on a matching
-runner: macOS arm64 (`macos-14`), macOS x64 (`macos-13`), and Linux x64.
+runner: macOS arm64 (`macos-15`) and Linux x64 (`ubuntu-latest`). Intel macOS is
+not built (see [DISTRIBUTION.md](./DISTRIBUTION.md)).
 
-Builds are currently **unsigned** — see the install flow in [INSTALL.md](./INSTALL.md)
-(the installer strips the macOS quarantine flag). Signing/notarization and
-Windows are fast-follows.
+## Signing and notarization (macOS)
+
+Released macOS builds are signed with a Developer ID certificate and notarized.
+Two pieces make that work with a bundled interpreter:
+
+- `build/entitlements.mac.plist` — the hardened runtime forbids most of what this
+  app does by default. JIT, unsigned executable memory, library validation, and
+  network client/server are all required by Electron or CPython; each key in the
+  file says which.
+- `scripts/sign-backend-bundle.cjs` — an `afterPack` hook that discovers every
+  Mach-O file under `Resources/backend` and codesigns it. Notarization requires
+  *every* nested binary to be signed, but `@electron/osx-sign` only signs
+  Electron's own binaries plus an explicit `mac.binaries` list — which would rot
+  on every dependency bump, so we discover them instead. It runs at `afterPack`
+  because signatures apply inside-out: the app's own signature seals the contents
+  of `Resources/`.
+
+Local builds without a certificate still work — the hook logs that it found no
+identity and leaves the bundle unsigned.
+
+Auto-update (`electron-updater`) is wired in `main.cjs` and covers macOS and the
+Linux AppImage. See [DISTRIBUTION.md](./DISTRIBUTION.md) for the release runbook,
+the CI secrets, and the Homebrew tap.
+
+Windows remains unbuilt.

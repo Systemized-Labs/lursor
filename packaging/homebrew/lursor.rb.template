@@ -1,0 +1,41 @@
+# Cask template for the Lursor Homebrew tap (JonathanConn/homebrew-lursor).
+#
+# The release workflow substitutes @@VERSION@@ / @@SHA256@@ and pushes the result
+# to Casks/lursor.rb in the tap repo. Don't edit the tap copy by hand — it is
+# overwritten on every release.
+#
+# Notes:
+#   - arm64 only, matching what the release workflow builds.
+#   - auto_updates true tells Homebrew the app updates itself (electron-updater),
+#     so `brew upgrade` won't fight the in-app updater.
+#   - Homebrew dropped --no-quarantine in 4.7, so this only works because the
+#     DMG is signed and notarized.
+cask "lursor" do
+  version "@@VERSION@@"
+  sha256 "@@SHA256@@"
+
+  url "https://github.com/JonathanConn/lursor/releases/download/v#{version}/Lursor-#{version}-mac-arm64.dmg"
+  name "Lursor"
+  desc "Self-hosted agent harness with workspaces, live terminal, and git review"
+  homepage "https://github.com/JonathanConn/lursor"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  auto_updates true
+  depends_on arch: :arm64
+
+  app "Lursor.app"
+
+  # ~/.lursor holds workspaces, skills, media and the SQLite DB, so it is only
+  # removed by an explicit `brew uninstall --zap`, never a plain uninstall.
+  zap trash: [
+    "~/.lursor",
+    "~/Library/Application Support/Lursor",
+    "~/Library/Logs/Lursor",
+    "~/Library/Preferences/com.lursor.app.plist",
+    "~/Library/Saved Application State/com.lursor.app.savedState",
+  ]
+end

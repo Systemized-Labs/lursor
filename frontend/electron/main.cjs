@@ -12,7 +12,7 @@ const fs = require("node:fs")
 const http = require("node:http")
 const net = require("node:net")
 const { spawn } = require("node:child_process")
-const { app, BrowserWindow, nativeImage, shell, ipcMain } = require("electron")
+const { app, BrowserWindow, nativeImage, shell, ipcMain, dialog } = require("electron")
 
 const isDev = !app.isPackaged
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:8888"
@@ -286,6 +286,74 @@ ipcMain.handle("open-external", (_event, url) => {
 })
 
 // ---------------------------------------------------------------------------
+// Auto-update
+// ---------------------------------------------------------------------------
+
+/** Re-check for updates on this cadence while the app stays open. */
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Whether this build can install an update in place.
+ *
+ * - dev: never (there is no update feed for an unpackaged app).
+ * - macOS: Squirrel.Mac validates the code signature, so unsigned builds can
+ *   download an update but never install one. We still let it try and surface
+ *   the failure in the log rather than second-guessing the signature here.
+ * - Linux: only AppImage self-updates. A .deb install is owned by apt/dpkg, and
+ *   electron-updater errors out if we ask it to update one, so skip.
+ */
+function canSelfUpdate() {
+  if (isDev) return false
+  if (process.platform === "linux") return Boolean(process.env.APPIMAGE)
+  return process.platform === "darwin"
+}
+
+function initAutoUpdate() {
+  if (!canSelfUpdate()) {
+    console.log("[updater] not supported for this build — skipping")
+    return
+  }
+
+  // Required lazily: pulling electron-updater into an unpackaged dev run would
+  // have it complain about the missing app-update.yml on startup.
+  const { autoUpdater } = require("electron-updater")
+
+  autoUpdater.logger = console
+  autoUpdater.autoDownload = true
+  // Installing on quit would race the backend teardown, so we drive the restart
+  // ourselves from the prompt below.
+  autoUpdater.autoInstallOnAppQuit = false
+
+  autoUpdater.on("error", (err) => {
+    console.error("[updater] check failed:", err?.message ?? err)
+  })
+  autoUpdater.on("update-available", (info) => {
+    console.log(`[updater] downloading ${info.version}`)
+  })
+
+  autoUpdater.on("update-downloaded", async (info) => {
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      message: `Lursor ${info.version} is ready to install`,
+      detail:
+        "Restarting takes a few seconds and will stop any running agents. The update installs on the next launch either way.",
+    })
+    if (response === 0) {
+      // quitAndInstall triggers before-quit, so killBackend still runs.
+      autoUpdater.quitAndInstall()
+    } else {
+      autoUpdater.autoInstallOnAppQuit = true
+    }
+  })
+
+  autoUpdater.checkForUpdates()
+  setInterval(() => autoUpdater.checkForUpdates(), UPDATE_CHECK_INTERVAL_MS)
+}
+
+// ---------------------------------------------------------------------------
 // App bootstrap
 // ---------------------------------------------------------------------------
 
@@ -322,6 +390,9 @@ if (!gotLock) {
     const healthy = await waitForHealth(port, HEALTH_TIMEOUT_MS)
     if (healthy) {
       loadApp()
+      // Only look for updates once the app is actually usable, so a slow or
+      // failing update check never delays startup.
+      initAutoUpdate()
     } else {
       showBackendError()
     }

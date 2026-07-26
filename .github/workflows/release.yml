@@ -1,9 +1,25 @@
 name: release
 
-# Build the desktop app (renderer + frozen backend) for macOS (arm64 + x64) and
-# Linux (x64), and attach the artifacts to a GitHub Release. Triggered by pushing
-# a v* tag. Unsigned for now (see docs/PLAN-desktop-install.md) — the installer
-# strips the macOS quarantine attribute.
+# Build the desktop app (renderer + frozen backend) for macOS (arm64) and Linux
+# (x64), sign + notarize the macOS build, and attach the artifacts to a GitHub
+# Release. Triggered by pushing a v* tag.
+#
+# Intel macOS is deliberately not built: Apple has dropped x86_64, GitHub retires
+# its last Intel runner in Aug 2027, and Homebrew demotes Intel to tier 3 in
+# Sept 2026. The frozen backend is arch-specific, so supporting it would mean a
+# second full build + notarization for a shrinking audience.
+#
+# macOS signing is opt-in on the secrets being present: with none configured the
+# build still succeeds, just unsigned (electron-builder skips both signing and
+# notarization). Secrets required for a signed build:
+#   APPLE_CERT_P12        base64 of the Developer ID Application .p12
+#   APPLE_CERT_PASSWORD   password used when exporting that .p12
+#   APPLE_API_KEY_P8      base64 of the App Store Connect API key (.p8)
+#   APPLE_API_KEY_ID      key ID for that .p8
+#   APPLE_API_ISSUER      issuer ID for that .p8
+#   APPLE_TEAM_ID         10-character Developer Team ID
+# Optional, for the Homebrew tap bump:
+#   HOMEBREW_TAP_TOKEN    PAT with contents:write on JonathanConn/homebrew-lursor
 
 on:
   push:
@@ -20,19 +36,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The frozen backend is arch-specific, so each arch is built on a
-          # matching runner rather than cross-built.
-          - os: macos-14 # Apple Silicon
+          # The frozen backend is arch-specific, so each arch builds on a
+          # matching runner rather than cross-building.
+          - os: macos-15 # Apple Silicon
             arch: arm64
-            builder_flags: --mac
-          - os: macos-13 # Intel
-            arch: x64
             builder_flags: --mac
           - os: ubuntu-latest
             arch: x64
             builder_flags: --linux
 
     runs-on: ${{ matrix.os }}
+
+    # Secrets can't be read from a step-level `if`, so map them into the job env
+    # and test those. electron-builder reads APPLE_* / CSC_* straight from here.
+    env:
+      APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +65,49 @@ jobs:
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2
+
+      # Import the Developer ID cert into a throwaway keychain. Both
+      # electron-builder and our afterPack hook sign out of it, via CSC_KEYCHAIN
+      # + CSC_NAME, so the app and the bundled Python tree get the same identity.
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS' && env.APPLE_CERT_P12 != ''
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/lursor-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          printf '%s' "$APPLE_CERT_P12" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          # Without this, codesign prompts for keychain access and hangs in CI.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # Keep the default keychains in the search list so system roots resolve.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT_PATH"
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
+          if [ -z "$IDENTITY" ]; then
+            echo "error: no Developer ID Application identity in the imported cert" >&2
+            exit 1
+          fi
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "CSC_NAME=$IDENTITY" >> "$GITHUB_ENV"
+
+      # notarytool wants a path to the .p8, not its contents.
+      - name: Stage App Store Connect API key
+        if: runner.os == 'macOS' && env.APPLE_API_KEY_P8 != ''
+        run: |
+          KEY_PATH="$RUNNER_TEMP/apple-api-key.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Build frozen backend bundle
         run: bash backend/scripts/build_bundle.sh backend/bundle
@@ -53,12 +120,32 @@ jobs:
         working-directory: frontend
         run: bun run build
 
+      # Slow step: ~85 nested Mach-O files in the Python bundle get signed
+      # (afterPack), then a ~400 MB disk image goes through Apple's notary.
       - name: Package desktop app
         working-directory: frontend
         env:
-          # Publish to the GitHub Release that matches the tag.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder ${{ matrix.builder_flags }} --publish always
+        run: |
+          npx electron-builder ${{ matrix.builder_flags }} \
+            ${{ startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
+
+      # One checksum file per platform, so the two matrix jobs never clobber each
+      # other's upload. scripts/install.sh verifies the download against this.
+      - name: Publish checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: frontend/release
+        run: |
+          SUMS="SHA256SUMS-${{ matrix.os == 'ubuntu-latest' && 'linux' || 'mac' }}-${{ matrix.arch }}.txt"
+          : > "$SUMS"
+          for f in *.dmg *.zip *.AppImage *.deb; do
+            [ -f "$f" ] || continue
+            shasum -a 256 "$f" >> "$SUMS"
+          done
+          cat "$SUMS"
+          gh release upload "$GITHUB_REF_NAME" "$SUMS" --clobber
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -70,3 +157,53 @@ jobs:
             frontend/release/*.AppImage
             frontend/release/*.deb
           if-no-files-found: ignore
+
+  # Point the Homebrew tap at the new version. Runs only for tagged releases and
+  # only when a tap token is configured; the tap repo itself is
+  # JonathanConn/homebrew-lursor (see docs/DISTRIBUTION.md).
+  homebrew:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump the cask
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ASSET="Lursor-${VERSION}-mac-arm64.dmg"
+
+          # Reuse the checksum the build job published rather than re-downloading
+          # a 400 MB image just to hash it.
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "SHA256SUMS-mac-arm64.txt" --output sums.txt
+          SHA="$(awk -v a="$ASSET" '$2 == a || $2 == "*" a {print $1}' sums.txt | head -n 1)"
+          if [ -z "$SHA" ]; then
+            echo "error: no checksum for $ASSET in the release" >&2
+            exit 1
+          fi
+
+          sed -e "s/@@VERSION@@/$VERSION/" -e "s/@@SHA256@@/$SHA/" \
+            packaging/homebrew/lursor.rb.template > lursor.rb
+
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/JonathanConn/homebrew-lursor.git" tap
+          mkdir -p tap/Casks
+          mv lursor.rb tap/Casks/lursor.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/lursor.rb
+          # --cached, so this also catches the first-ever (untracked) cask.
+          if git diff --cached --quiet -- Casks/lursor.rb; then
+            echo "cask already at $VERSION — nothing to push"
+            exit 0
+          fi
+          git commit -m "lursor $VERSION"
+          # -u HEAD works whether or not the tap already has a default branch.
+          git push -u origin HEAD

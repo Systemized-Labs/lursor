@@ -44,7 +44,14 @@ if [ "$OS_TAG" = "linux" ] && [ "$ARCH_TAG" != "x64" ]; then
   die "no Linux $ARCH_TAG build is published yet (only linux-x64)."
 fi
 
+# Intel Macs are not built: the bundled Python interpreter is arch-specific and
+# Apple has dropped x86_64. Building from source still works on Intel.
+if [ "$OS_TAG" = "mac" ] && [ "$ARCH_TAG" != "arm64" ]; then
+  die "macOS builds are Apple Silicon only. On an Intel Mac, run Lursor from source (see README)."
+fi
+
 SUFFIX="${OS_TAG}-${ARCH_TAG}.${EXT}"
+SUMS_ASSET="SHA256SUMS-${OS_TAG}-${ARCH_TAG}.txt"
 
 # --- Uninstall ------------------------------------------------------------
 uninstall() {
@@ -74,6 +81,7 @@ command -v curl >/dev/null 2>&1 || die "curl is required."
 if [ -n "$VERSION" ]; then
   ASSET="Lursor-${VERSION}-${SUFFIX}"
   URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
+  SUMS_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${SUMS_ASSET}"
 else
   info "Resolving latest release of ${REPO} ..."
   API="https://api.github.com/repos/${REPO}/releases/latest"
@@ -85,6 +93,8 @@ else
     | head -n 1 || true)"
   [ -n "$URL" ] || die "no ${SUFFIX} asset found in the latest release of ${REPO}."
   ASSET="$(basename "$URL")"
+  # The checksum file sits next to the asset in the same release.
+  SUMS_URL="$(dirname "$URL")/${SUMS_ASSET}"
 fi
 
 # --- Download -------------------------------------------------------------
@@ -92,6 +102,33 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 info "Downloading ${ASSET} ..."
 curl -fSL --progress-bar "$URL" -o "$TMP/$ASSET" || die "download failed: $URL"
+
+# --- Verify ---------------------------------------------------------------
+# Fail closed on a mismatch, but tolerate a release that predates the checksum
+# files rather than blocking the install outright.
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+if curl -fsSL "$SUMS_URL" -o "$TMP/$SUMS_ASSET" 2>/dev/null; then
+  EXPECTED="$(awk -v a="$ASSET" '$2 == a || $2 == "*" a {print $1}' "$TMP/$SUMS_ASSET" | head -n 1)"
+  ACTUAL="$(sha256_of "$TMP/$ASSET")"
+  if [ -z "$ACTUAL" ]; then
+    warn "neither shasum nor sha256sum found — skipping checksum verification."
+  elif [ -z "$EXPECTED" ]; then
+    warn "no checksum listed for ${ASSET} — skipping verification."
+  elif [ "$EXPECTED" != "$ACTUAL" ]; then
+    die "checksum mismatch for ${ASSET} (expected ${EXPECTED}, got ${ACTUAL}). Aborting."
+  else
+    info "Checksum verified."
+  fi
+else
+  warn "no ${SUMS_ASSET} published for this release — skipping checksum verification."
+fi
 
 # --- Install --------------------------------------------------------------
 if [ "$OS_TAG" = "mac" ]; then
@@ -112,11 +149,19 @@ if [ "$OS_TAG" = "mac" ]; then
   cp -R "$MOUNT/Lursor.app" "$DEST/"
   hdiutil detach "$MOUNT" >/dev/null || true
 
-  # The app is unsigned and was downloaded via curl, so Gatekeeper would
-  # quarantine it. Clear the flag so it opens without the "damaged" prompt.
-  xattr -dr com.apple.quarantine "$DEST/Lursor.app" 2>/dev/null || true
-
   APP_PATH="$DEST/Lursor.app"
+
+  # Released builds are signed and notarized, so Gatekeeper accepts them and the
+  # quarantine flag can stay put (leaving it is what lets macOS keep verifying
+  # the app). Only fall back to clearing it if this build fails assessment —
+  # e.g. a locally built or otherwise unsigned artifact — since macOS 15 no
+  # longer offers the Control-click bypass for those.
+  if spctl --assess --type execute "$APP_PATH" >/dev/null 2>&1; then
+    info "Signature verified by Gatekeeper."
+  else
+    warn "this build is not notarized; clearing the quarantine flag so it can open."
+    xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
+  fi
 else
   PREFIX="${LURSOR_PREFIX:-$HOME/.local/bin}"
   mkdir -p "$PREFIX"
@@ -125,17 +170,35 @@ else
   cp "$TMP/$ASSET" "$APP_PATH"
   chmod +x "$APP_PATH"
 
+  # Icon for the app menu. Fetched from the repo rather than unpacked from the
+  # AppImage, which would mean extracting a ~400 MB squashfs to get one PNG.
+  ICONS_DIR="$HOME/.local/share/icons"
+  ICON_PATH="$ICONS_DIR/lursor.png"
+  ICON_REF="${LURSOR_VERSION:+v$LURSOR_VERSION}"
+  mkdir -p "$ICONS_DIR"
+  if ! curl -fsSL \
+    "https://raw.githubusercontent.com/${REPO}/${ICON_REF:-main}/frontend/build/icon.png" \
+    -o "$ICON_PATH" 2>/dev/null; then
+    rm -f "$ICON_PATH"
+    warn "could not fetch the app icon; the menu entry will use a generic one."
+  fi
+
   # Desktop entry so it shows up in the app menu.
   APPS_DIR="$HOME/.local/share/applications"
   mkdir -p "$APPS_DIR"
-  cat > "$APPS_DIR/lursor.desktop" <<EOF
-[Desktop Entry]
-Name=Lursor
-Exec=$APP_PATH
-Terminal=false
-Type=Application
-Categories=Development;
-EOF
+  {
+    echo "[Desktop Entry]"
+    echo "Name=Lursor"
+    echo "Comment=Self-hosted agent harness"
+    echo "Exec=$APP_PATH"
+    [ -f "$ICON_PATH" ] && echo "Icon=$ICON_PATH"
+    echo "Terminal=false"
+    echo "Type=Application"
+    echo "Categories=Development;"
+    # Electron sets the WM class from productName; matching it here keeps the
+    # running window grouped under this launcher instead of a second entry.
+    echo "StartupWMClass=Lursor"
+  } > "$APPS_DIR/lursor.desktop"
 fi
 
 # --- Runtime soft-check ---------------------------------------------------
