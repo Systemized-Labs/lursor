@@ -352,35 +352,15 @@ def _readonly_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDef
     return [t for t in tool_defs if t.name in _READONLY_TOOL_ALLOWLIST]
 
 
-# Tools a plan-mode turn keeps. Plan mode must produce a plan *doc* and nothing
-# else — no building — so, like read-only, this is enforced at the tool layer, not
-# just by the planning prompt (weaker models ignore "do not build yet" and start
-# editing/running). It's the read-only surface plus ``write_file`` (to write the
-# plan doc) and MINUS the todo-board tools: an execution todo list during planning
-# reads as "already building" and isn't the plan artifact. ``edit_file`` stays out
-# — a refinement rewrites the whole doc via ``write_file`` — so source files can't
-# be edited and shell/``execute``/``task`` can't run.
-_PLAN_TOOL_ALLOWLIST = (
-    _READONLY_TOOL_ALLOWLIST
-    - {
-        "write_todos",
-        "add_todo",
-        "remove_todo",
-        "update_todo_status",
-        "update_todo_statuses",
-    }
-) | {"write_file"}
-
-
-def _plan_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
-    """A ``ToolsPrepareFunc`` that keeps only plan-safe tools each step.
-
-    Enforces plan mode at the tool layer: the agent can research the workspace and
-    write its plan doc (``write_file``), but every build/execute path — source
-    edits, shell/``execute``, subagent delegation (``task``), the todo board — is
-    removed before the model sees it, so a plan turn cannot start implementing.
-    """
-    return [t for t in tool_defs if t.name in _PLAN_TOOL_ALLOWLIST]
+# Plan mode has no tool allowlist on purpose. It used to run a plan-specific
+# filter (the read-only surface plus ``write_file``), but gating the toolset
+# starved the planning loop itself: without the todo board and delegation, local
+# reasoning models (GLM/DeepSeek) fell back to answering in prose and never wrote
+# the plan doc at all, and a filtered-out local web-search tool made a plan turn
+# with web search fail outright on ``OpenAIChatModel``. A plan turn now sees the
+# full toolset and is held to planning by the planning prompt alone (see
+# ``planning_instruction`` in ``goal_loop.py``, which says not to start the work).
+# ``/ask`` read-only mode keeps its allowlist — there the guarantee is the point.
 
 
 @dataclass
@@ -591,6 +571,11 @@ def build_deep_agent(
     filtered out via a ``PrepareTools`` capability, so the agent can read and
     search the workspace but never modify it.
 
+    ``plan_mode`` marks a planning turn. It does **not** filter the toolset (see
+    the note where ``_readonly_tool_filter`` is applied): the agent keeps its full
+    tools and is held to planning by the planning prompt. It only turns off
+    browser QA and the dev-server directive, neither of which a plan turn needs.
+
     Skills are discovered by scope (global + this workspace's ``.agents/skills``)
     and handed to the deep agent as skill directories (on-disk SKILL.md folders
     with bundled resources/scripts), the workspace winning on slug collision; see
@@ -745,11 +730,9 @@ def build_deep_agent(
 
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
-    elif plan_mode:
-        # Plan mode is a produce-a-doc turn, not execution: strip every build path
-        # at the tool layer so the model can't ignore the planning prompt and start
-        # implementing (see ``_plan_tool_filter``).
-        capabilities.append(PrepareTools(_plan_tool_filter))
+    # Plan mode deliberately adds no filter here — a plan turn keeps the full
+    # toolset and is held to planning by the planning prompt alone (see the note
+    # above the ``ForceToolChoice`` class for why the plan allowlist was dropped).
 
     # Forced tool choice: an agent can require the model to call a tool (on the
     # opening step) or forbid tool calls entirely. "auto" is the model default,

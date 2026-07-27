@@ -99,6 +99,29 @@ tool layer, mirroring `/ask`:
   threads it through `_build_agent_and_context`.
 - Tests: `test_build_deep_agent_plan_mode_allowlists_tools` (mirrors the read-only test).
 
+### Follow-up 4 — drop the plan-mode tool gate (2026-07-27)
+
+Follow-up 3 is **reverted**: `_PLAN_TOOL_ALLOWLIST` and `_plan_tool_filter` are gone and
+plan mode no longer filters tools. Gating the toolset traded one failure for worse ones on
+weaker/local models:
+
+- With no todo board and no delegation, local reasoning models (GLM/DeepSeek via vLLM)
+  scaffold a plan by laying out a todo list first; stripped of that they answered in prose
+  and never called `write_file`, so a `/plan` turn produced **no plan doc at all** — a
+  harder failure than a plan turn that edits a file.
+- The filter also removed the local web-search tool (registered as `duckduckgo_search`,
+  which the allowlist never named), and on an `OpenAIChatModel` a native `WebSearchTool`
+  with no surviving local fallback raises `WebSearchTool is not supported with
+  OpenAIChatModel` at request build — so a plan turn with web search on failed instantly.
+
+A plan turn now sees the same toolset as a build turn and is held to planning by
+`planning_instruction()` ("Plan mode — propose, do NOT execute yet … make no changes").
+`plan_mode` still turns off browser QA and the dev-server directive. `/ask` keeps its
+read-only allowlist — there the no-write guarantee is the feature, not a nudge.
+
+- Tests: `test_build_deep_agent_plan_mode_keeps_full_toolset` asserts plan mode's tool set
+  equals a normal build turn's, and that `write_file`/`write_todos`/`task` survive.
+
 ---
 
 ## Original plan (retained for context)

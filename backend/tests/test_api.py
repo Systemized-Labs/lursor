@@ -460,19 +460,16 @@ async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient, 
     assert not (tools & forbidden), f"read-only agent exposed write paths: {tools & forbidden}"
 
 
-async def test_build_deep_agent_plan_mode_allowlists_tools(client: AsyncClient, tmp_path):
-    """Plan mode exposes reads + write_file, but no build/execute paths.
+async def test_build_deep_agent_plan_mode_keeps_full_toolset(client: AsyncClient, tmp_path):
+    """Plan mode does NOT gate tools — the planning prompt is the only guard.
 
-    Enforced at the tool layer (not just the planning prompt) so a weaker model
-    can't ignore "do not build yet" and start editing/running: source edits,
-    shell/execute, subagent delegation, and the todo board are all removed, while
-    write_file stays so the agent can write its plan doc.
+    Plan mode used to run its own allowlist (reads + ``write_file``), but gating
+    the toolset starved the planning loop: without the todo board and delegation,
+    local reasoning models answered in prose and never wrote the plan doc. So a
+    plan turn now sees the same tools as a normal build turn; ``goal_loop``'s
+    planning instruction ("do NOT execute yet") is what keeps it to planning.
     """
-    from app.agents.builder import (
-        _PLAN_TOOL_ALLOWLIST,
-        _plan_tool_filter,
-        build_deep_agent,
-    )
+    from app.agents.builder import build_deep_agent
     from app.db.models import Agent as AgentRow
     from pydantic_ai.messages import ModelResponse, TextPart
     from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -480,54 +477,32 @@ async def test_build_deep_agent_plan_mode_allowlists_tools(client: AsyncClient, 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
     row.include_subagents = True  # ensure the `task` delegation tool is present
 
-    # The pure filter keeps write_file (for the plan doc) but drops edit/exec/todos.
-    class _Def:
-        def __init__(self, name):
-            self.name = name
-
-    kept = {
-        d.name
-        for d in _plan_tool_filter(
-            None,
-            [
-                _Def(n)
-                for n in [
-                    "read_file",
-                    "write_file",
-                    "edit_file",
-                    "execute",
-                    "task",
-                    "write_todos",
-                ]
-            ],
-        )
-    }
-    assert kept == {"read_file", "write_file"}
-
     seen: dict[str, list[str]] = {}
 
     def _capture(_messages, info: AgentInfo):
         seen["tools"] = [t.name for t in info.function_tools]
         return ModelResponse(parts=[TextPart("ok")])
 
+    # No workspace_id in either build, so browser QA is off on both sides and the
+    # only difference under test is the (now absent) plan-mode tool filter.
     agent, deps = build_deep_agent(row, str(tmp_path), plan_mode=True)
     with agent.override(model=FunctionModel(_capture)):
         await agent.run("hi", deps=deps)
+    plan_tools = set(seen["tools"])
 
-    tools = set(seen["tools"])
-    assert tools <= _PLAN_TOOL_ALLOWLIST, f"leaked: {tools - _PLAN_TOOL_ALLOWLIST}"
-    assert "write_file" in tools, "plan mode must keep write_file for the plan doc"
-    forbidden = {
-        "task",
-        "edit_file",
-        "hashline_edit",
-        "execute",
-        "run_in_background",
-        "run_skill_script",
-        "write_todos",
-        "add_todo",
-    }
-    assert not (tools & forbidden), f"plan agent exposed build paths: {tools & forbidden}"
+    agent, deps = build_deep_agent(row, str(tmp_path))
+    with agent.override(model=FunctionModel(_capture)):
+        await agent.run("hi", deps=deps)
+    build_tools = set(seen["tools"])
+
+    assert plan_tools == build_tools, (
+        "plan mode must not filter tools: "
+        f"missing {build_tools - plan_tools}, extra {plan_tools - build_tools}"
+    )
+    # The tools the planning loop actually needs, spelled out so a future filter
+    # can't quietly take them away again.
+    for needed in ("write_file", "write_todos", "task"):
+        assert needed in plan_tools, f"plan mode lost {needed}"
 
 
 async def test_prompt_template_crud_and_builtin_protection(client: AsyncClient):

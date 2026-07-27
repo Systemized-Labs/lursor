@@ -1184,9 +1184,9 @@ async def chat(
     # A "/ask" turn on a chat thread builds a read-only agent (no write/edit/shell).
     read_only = thread.mode == ThreadMode.chat and turn == "ask"
     # A plan turn (fresh `/plan`, or a plain message refining a parked plan) builds a
-    # plan-mode agent: it can research and write the plan doc but no build/execute
-    # tools, so it can't ignore the planning prompt and start implementing. Kept in
-    # sync with ``run_plan`` below (recomputed there once ``parked`` is available).
+    # plan-mode agent: full toolset (the planning prompt keeps it to planning), minus
+    # browser QA and the dev-server directive. Kept in sync with ``run_plan`` below
+    # (recomputed there once ``parked`` is available).
     plan_mode = turn == "plan" or (
         thread.status == ThreadStatus.awaiting_approval and turn == "chat"
     )
