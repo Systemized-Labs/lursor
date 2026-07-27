@@ -27,6 +27,7 @@ from pydantic_ai.retries import (
 )
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext, ToolDefinition
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
 from pydantic_deep.prompts import BASE_PROMPT
@@ -159,6 +160,24 @@ def _environment_instructions(
         ]
     )
 
+# Model rounds a single agent turn may take, up from pydantic-ai's default of 50,
+# which trips deep agents on tool-heavy turns before they can finish the work.
+# ``api/chat.py`` applies it to the top-level turn; ``_SUBAGENT_USAGE_LIMITS``
+# below applies the same figure to delegated runs.
+TURN_REQUEST_LIMIT = 150
+
+# Usage budget for a delegated subagent (``task``) run.
+#
+# pydantic-deep hands ``subagent_usage_limits`` straight to its subagent toolset,
+# and leaving it unset means each subagent runs on a bare ``UsageLimits()`` —
+# pydantic-ai's default ``request_limit=50`` — while the turn that delegated to it
+# gets ``TURN_REQUEST_LIMIT``. Deep, tool-heavy delegation then dies with "Error
+# executing task: The next request would exceed the request_limit of 50" while the
+# parent still had budget to spare. A subagent is doing the same kind of work as
+# its caller, so give it the same room. Per-agent overrides go through the
+# ``extra_config`` escape hatch, which wins over this default.
+_SUBAGENT_USAGE_LIMITS = UsageLimits(request_limit=TURN_REQUEST_LIMIT)
+
 # Per-tool retry budget, up from the pydantic-deep default of 3.
 #
 # A "retry" here is a ``ModelRetry`` or an argument-validation failure fed back to
@@ -168,9 +187,9 @@ def _environment_instructions(
 #
 # 5 rather than 3 because the models most likely to need the extra attempts are
 # small local ones getting a tool schema slightly wrong, and the cost of being
-# generous is trivial: at worst two more model rounds out of the 150-round turn
-# budget (``_MAX_TURN_REQUESTS`` in api/chat.py). Per-agent overrides go through
-# the ``extra_config`` escape hatch, which wins over this default.
+# generous is trivial: at worst two more model rounds out of the
+# ``TURN_REQUEST_LIMIT`` budget. Per-agent overrides go through the
+# ``extra_config`` escape hatch, which wins over this default.
 #
 # Note this is deliberately not the answer to environmental failures dressed up as
 # ``ModelRetry`` — see agents/web_fetch.py, which returns those to the model as
@@ -710,6 +729,8 @@ def build_deep_agent(
         managed_kwargs["max_nesting_depth"] = resolved_defaults["max_nesting_depth"]
     if "retries" not in extra_config:
         managed_kwargs["retries"] = _TOOL_RETRIES
+    if "subagent_usage_limits" not in extra_config:
+        managed_kwargs["subagent_usage_limits"] = _SUBAGENT_USAGE_LIMITS
 
     # view_image is always available so any agent can inspect user-attached
     # media (and workspace images) via the dedicated vision model, regardless of

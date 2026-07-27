@@ -383,7 +383,7 @@ async def test_spent_round_budget_keeps_the_turns_work(
         "app.api.chat.build_goal_evaluator", lambda *a, **k: _RecordingEvaluator()
     )
     # One model round per turn, so the second round trips the cap every turn.
-    monkeypatch.setattr("app.api.chat._MAX_TURN_REQUESTS", 1)
+    monkeypatch.setattr("app.api.chat.TURN_REQUEST_LIMIT", 1)
 
     agent = (await client.post("/agents", json={"name": "Capped"})).json()
     ws = (await client.post("/workspaces", json={"name": "CappedWS"})).json()

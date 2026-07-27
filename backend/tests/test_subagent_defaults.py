@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from httpx import AsyncClient
+from pydantic_ai.usage import UsageLimits
 
-from app.agents.builder import _subagent_config, build_deep_agent
+from app.agents import builder
+from app.agents.builder import TURN_REQUEST_LIMIT, _subagent_config, build_deep_agent
 from app.db.models import Agent, Subagent, ThinkingLevel
 
 # DB / workspace isolation and the ``client`` fixture live in ``conftest.py``.
@@ -181,3 +183,41 @@ async def test_subagent_factory_builds_full_agent_and_bounds_nesting(tmp_path):
     assert callable(cfg["agent_factory"])
     sub_agent = cfg["agent_factory"](cfg)
     assert sub_agent is not None
+
+
+def _captured_kwargs(monkeypatch, row: Agent, workspace) -> dict:
+    """Build an agent with ``create_deep_agent`` stubbed, returning its kwargs."""
+    seen: dict = {}
+
+    def fake_create_deep_agent(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(builder, "create_deep_agent", fake_create_deep_agent)
+    build_deep_agent(row, str(workspace), {}, [], {})
+    return seen
+
+
+def test_subagents_get_the_same_request_budget_as_their_caller(monkeypatch, tmp_path):
+    """Left unset, a delegated run is capped far below the turn that spawned it.
+
+    pydantic-deep passes ``subagent_usage_limits`` through untouched, so ``None``
+    means each ``task`` run gets pydantic-ai's bare default and a deep, tool-heavy
+    delegation dies with "the next request would exceed the request_limit of 50"
+    while the parent turn still had budget to spare.
+    """
+    kwargs = _captured_kwargs(monkeypatch, _agent(), tmp_path)
+
+    assert kwargs["subagent_usage_limits"].request_limit == TURN_REQUEST_LIMIT
+    assert UsageLimits().request_limit < TURN_REQUEST_LIMIT, (
+        "upstream default no longer undercuts the turn budget — override may be moot"
+    )
+
+
+def test_subagent_usage_limits_stay_overridable(monkeypatch, tmp_path):
+    """The ``extra_config`` escape hatch wins, and the keyword is never passed twice
+    (which would be a ``TypeError`` at build time)."""
+    row = _agent(extra_config={"subagent_usage_limits": None})
+    kwargs = _captured_kwargs(monkeypatch, row, tmp_path)
+
+    assert kwargs["subagent_usage_limits"] is None

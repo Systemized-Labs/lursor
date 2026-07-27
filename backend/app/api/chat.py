@@ -42,7 +42,7 @@ from sqlmodel import select
 from starlette.responses import StreamingResponse
 
 from app.agents.browser_qa import wrap_evaluate_with_visual_qa
-from app.agents.builder import build_deep_agent
+from app.agents.builder import TURN_REQUEST_LIMIT, build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
 from app.agents.compaction import summarize_thread
 from app.agents.goal_loop import (
@@ -136,10 +136,8 @@ def _schedule_auto_title(thread_id: str, user_text: str, placeholder: str) -> No
         task.add_done_callback(_auto_title_tasks.discard)
 
 _KEEPALIVE_TIMEOUT = 25.0  # seconds between ": keepalive" comments on an idle stream
-# Cap on model request/tool-call rounds within a single agent turn. Overrides
-# pydantic-ai's default of 50, which trips deep agents on tool-heavy turns before
-# they can finish the work.
-_MAX_TURN_REQUESTS = 150
+# ``TURN_REQUEST_LIMIT`` (the per-turn model-round cap) is defined in
+# ``agents/builder.py``, which also hands the same budget to delegated subagents.
 _TEXT_DELTA_TYPES = {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_CHUNK}
 # Run-lifecycle events. A goal run drives many agent turns through one SSE
 # stream, but the AG-UI client requires exactly one RUN_STARTED…RUN_FINISHED per
@@ -650,11 +648,11 @@ def _hit_round_cap(usage) -> bool:
 
     Structural rather than error-message matching: ``check_before_request``
     raises once the *next* request would exceed ``request_limit``, so a run cut
-    off by the cap has exactly ``_MAX_TURN_REQUESTS`` requests recorded against
+    off by the cap has exactly ``TURN_REQUEST_LIMIT`` requests recorded against
     it. Distinguishing this from a real failure is what lets a goal loop treat a
     long turn as an ordinary turn boundary instead of an error.
     """
-    return getattr(usage, "requests", 0) >= _MAX_TURN_REQUESTS
+    return getattr(usage, "requests", 0) >= TURN_REQUEST_LIMIT
 
 
 def _turn_content(streamed: str, result) -> str:
@@ -746,7 +744,7 @@ async def _stream_turn(
         deps=deps,
         on_complete=on_complete,
         instructions=instructions,
-        usage_limits=UsageLimits(request_limit=_MAX_TURN_REQUESTS),
+        usage_limits=UsageLimits(request_limit=TURN_REQUEST_LIMIT),
         capabilities=[*(capabilities or []), probe_capability],
     )
     try:
@@ -963,7 +961,7 @@ async def _run_goal_execution(
                     "continuing from where it left off",
                     thread_id,
                     turn_no,
-                    _MAX_TURN_REQUESTS,
+                    TURN_REQUEST_LIMIT,
                 )
             return turn
 

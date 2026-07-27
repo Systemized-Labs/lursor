@@ -68,15 +68,9 @@ function findFreePort(preferred) {
  * @returns {{ command: string, args: string[], cwd: string, dataDir: string | null }}
  */
 function resolveBackendCommand(port) {
-  const args = [
-    "-m",
-    "uvicorn",
-    "app.main:app",
-    "--host",
-    "127.0.0.1",
-    "--port",
-    String(port),
-  ]
+  // Arguments to uvicorn itself, shared by both modes; each prepends its own way
+  // of reaching the uvicorn entrypoint.
+  const appArgs = ["app.main:app", "--host", "127.0.0.1", "--port", String(port)]
 
   if (!isDev) {
     const bundleDir = path.join(process.resourcesPath, "backend")
@@ -88,7 +82,7 @@ function resolveBackendCommand(port) {
     const python = candidates.find((p) => fs.existsSync(p)) ?? candidates[0]
     return {
       command: python,
-      args,
+      args: ["-m", "uvicorn", ...appArgs],
       cwd: bundleDir,
       // Packaged app bundle is read-only: keep all writable state in ~/.lursor.
       dataDir: path.join(os.homedir(), ".lursor"),
@@ -100,7 +94,7 @@ function resolveBackendCommand(port) {
   const backendDir = path.join(__dirname, "..", "..", "backend")
   return {
     command: "uv",
-    args: ["run", "uvicorn", ...args],
+    args: ["run", "uvicorn", ...appArgs],
     cwd: backendDir,
     dataDir: null,
   }
