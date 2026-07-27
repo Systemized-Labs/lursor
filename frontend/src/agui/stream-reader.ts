@@ -201,10 +201,14 @@ function dispatch(
       break
     }
     case "TEXT_MESSAGE_START": {
-      if (event.messageId) {
-        textBuffers.set(event.messageId, "")
-        handlers.onTextStart(event.messageId)
-      }
+      const id = event.messageId
+      if (!id) break
+      // Idempotent, like the tool-call branch below and the AG-UI client's own
+      // applier: a message the backend re-opens (it does that to keep trailing
+      // text after a tool call inside a valid START…END pair — see
+      // `_repair_text_messages`) must keep accumulating, not restart from empty.
+      if (!textBuffers.has(id)) textBuffers.set(id, "")
+      handlers.onTextStart(id)
       break
     }
     case "TEXT_MESSAGE_CONTENT":

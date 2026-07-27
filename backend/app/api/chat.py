@@ -28,6 +28,8 @@ from ag_ui.core import (
     RunErrorEvent,
     RunFinishedEvent,
     RunStartedEvent,
+    TextMessageEndEvent,
+    TextMessageStartEvent,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic_ai.capabilities import AbstractCapability, Hooks
@@ -148,6 +150,9 @@ _LIFECYCLE_TYPES = {
     EventType.RUN_FINISHED,
     EventType.RUN_ERROR,
 }
+# The subset that closes a run: the AG-UI client rejects *any* event after one,
+# so anything we still owe the stream has to go out ahead of it.
+_TERMINAL_LIFECYCLE_TYPES = {EventType.RUN_FINISHED, EventType.RUN_ERROR}
 
 
 def _encode_ag_ui_event(event) -> str:
@@ -505,6 +510,75 @@ async def _tee_events(
         yield event
 
 
+async def _repair_text_messages(stream: AsyncIterator) -> AsyncIterator:
+    """Re-open text messages that pydantic-ai reopens without a START event.
+
+    AG-UI requires every TEXT_MESSAGE_CONTENT to sit inside an open
+    START…END pair, and the `@ag-ui/client` verifier *throws* on a violation —
+    which tears the live SSE subscription down mid-reply. pydantic-ai can emit
+    one: its AG-UI stream stamps every text delta with a single "current"
+    message id, while the parts manager keys text on a stable vendor id, so an
+    earlier text part can be appended to after another part closed it:
+
+        content            -> TEXT_MESSAGE_START(M) + CONTENT(M)
+        tool call/reasoning-> (part end for the text part) TEXT_MESSAGE_END(M)
+        content again      -> CONTENT(M)   <- M is closed; the verifier throws
+
+    Local OpenAI-compatible servers (vLLM/llama.cpp/Ollama/LM Studio) hit this
+    routinely with Qwen-family models: their tool parsers flush trailing content
+    after emitting the tool call, and reasoning arrives interleaved with content
+    on `reasoning_content`. Cloud providers never interleave that way, which is
+    why this only shows up on local models.
+
+    Re-emitting START for the *same* id is the right repair: the AG-UI client
+    keeps one message per id and only creates it if absent, so the text keeps
+    accumulating into the same assistant bubble — matching what we persist for
+    the turn (one message, all text concatenated). A fresh id would split it
+    into a second bubble that a reload wouldn't reproduce.
+
+    Any message still open when the stream ends is closed here, before the
+    terminal lifecycle event: the verifier rejects a TEXT_MESSAGE_END sent after
+    RUN_FINISHED. In goal/plan mode those lifecycle events are already stripped
+    upstream, so the flush happens when the per-turn stream runs out instead.
+    """
+    # Insertion-ordered so the end-of-stream flush is deterministic.
+    open_ids: dict[str, None] = {}
+
+    def close_open() -> list[TextMessageEndEvent]:
+        events = [
+            TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=mid)
+            for mid in open_ids
+        ]
+        open_ids.clear()
+        return events
+
+    async for event in stream:
+        etype = getattr(event, "type", None)
+        message_id = getattr(event, "message_id", None)
+        if etype == EventType.TEXT_MESSAGE_START and message_id:
+            open_ids[message_id] = None
+        elif etype == EventType.TEXT_MESSAGE_CONTENT and message_id not in open_ids:
+            if not message_id:
+                continue  # nothing we can open or attribute it to
+            open_ids[message_id] = None
+            yield TextMessageStartEvent(
+                type=EventType.TEXT_MESSAGE_START, message_id=message_id
+            )
+        elif etype == EventType.TEXT_MESSAGE_END:
+            # An END for a message that isn't open is equally fatal to the
+            # verifier, and closes nothing — drop it.
+            if message_id not in open_ids:
+                continue
+            del open_ids[message_id]
+        elif etype in _TERMINAL_LIFECYCLE_TYPES:
+            for end_event in close_open():
+                yield end_event
+        yield event
+
+    for end_event in close_open():
+        yield end_event
+
+
 def _build_run_probe() -> tuple[Hooks, dict]:
     """A capability that keeps live handles on the run's message history + usage.
 
@@ -634,12 +708,17 @@ async def _stream_turn(
     )
     try:
         async for encoded in turn_adapter.encode_stream(
-            _tee_events(
-                stream,
-                text,
-                tool_calls,
-                strip_lifecycle=strip_lifecycle,
-                errors=errors,
+            # The repair sits last, immediately before encoding, so both
+            # transports see a protocol-valid stream: the live subscriber and the
+            # reconnect reader both replay what gets published here.
+            _repair_text_messages(
+                _tee_events(
+                    stream,
+                    text,
+                    tool_calls,
+                    strip_lifecycle=strip_lifecycle,
+                    errors=errors,
+                )
             )
         ):
             chat_run_manager.publish(thread_id, encoded)
