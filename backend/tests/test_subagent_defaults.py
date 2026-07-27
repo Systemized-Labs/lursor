@@ -178,6 +178,9 @@ async def test_subagent_factory_builds_full_agent_and_bounds_nesting(tmp_path):
         tavily_api_key=None,
         exa_api_key=None,
         child_depth=1,
+        # No skills/env resolved for this build (the parent would normally pass its
+        # own runtime down).
+        skill_runtime=None,
     )
     assert cfg["name"] == "deep"
     assert callable(cfg["agent_factory"])

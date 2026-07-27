@@ -118,17 +118,38 @@ class ThreadStatus(StrEnum):
     stopped = "stopped"
 
 
-class SkillScope(StrEnum):
-    """Where a skill lives — mirrors Claude Code's user-global / project split.
+class SkillOrigin(StrEnum):
+    """Where a skill folder physically lives, which decides how it is assigned.
 
-    ``global`` skills sit under ``settings.skills_dir`` and apply to every agent in
-    every workspace. ``workspace`` skills sit under ``<workspace.path>/.agents/skills/``
-    and apply only while an agent runs in that workspace. On a slug collision the
-    workspace copy wins (closest scope). See ``app/skills/store.py``.
+    ``managed`` — the canonical store (``settings.skills_dir``,
+    ``~/.lursor/skills/<slug>/``). One copy, wherever it applies: a managed skill
+    carries an *assignment* (``is_global``, or rows in
+    :class:`SkillWorkspaceLink`), so it can be re-pointed at any set of
+    workspaces without moving files.
+
+    ``local`` — discovered in ``<workspace.path>/.agents/skills/<slug>/``. It
+    travels with the workspace directory (git-shareable, the Claude Code
+    convention) and applies only there, so it has no assignment to edit;
+    ``POST /skills/{id}/promote`` moves the folder into the canonical store and
+    turns it into a managed skill.
     """
 
-    global_ = "global"
-    workspace = "workspace"
+    managed = "managed"
+    local = "local"
+
+
+class SkillWorkspaceLink(SQLModel, table=True):
+    """A managed skill's assignment to one workspace.
+
+    Rows exist only for ``origin == "managed"`` skills that are not
+    ``is_global`` (global already covers every workspace, so the API clears these
+    when global is set). No rows and not global means "in the catalog, injected
+    nowhere" — a deliberate parked state, not an error.
+    """
+
+    __tablename__ = "skill_workspaces"
+    skill_id: str = Field(foreign_key="skills.id", primary_key=True)
+    workspace_id: str = Field(foreign_key="workspaces.id", primary_key=True)
 
 
 class Skill(TimestampMixin, table=True):
@@ -136,16 +157,23 @@ class Skill(TimestampMixin, table=True):
 
     The source of truth is the folder ``<root>/<slug>/`` containing a ``SKILL.md``
     (+ optional resources and ``scripts/``), where ``<root>`` depends on the
-    :class:`SkillScope`; see ``app/skills/store.py``. Skills are **not** linked to
-    agents — an agent discovers whatever exists in the global scope plus its
-    current workspace's scope at build time, gated only by its ``include_skills``
-    toggle. This row exists so listing is cheap and so the UI has a stable id;
+    :class:`SkillOrigin`; see ``app/skills/store.py``. Skills are **not** linked
+    to agents — an agent discovers whatever is in scope for the workspace it runs
+    in (see ``app/skills/resolve.py``), gated only by its ``include_skills``
+    toggle. This row exists so listing is cheap, so the UI has a stable id, and so
+    assignments and env vars have something to hang off;
     ``name``/``description``/``content`` are a cache of the folder's contents,
     refreshed from disk on reconcile (``api/skills.py``).
 
-    Identity is ``(scope, workspace_id, slug)`` — a workspace may legitimately
-    redefine a global slug (that is the collision case, resolved at build time).
-    ``workspace_id`` is set only when ``scope == "workspace"``.
+    Identity is ``(origin, workspace_id, slug)`` — a workspace may legitimately
+    redefine a managed skill's slug with a local one (that is the collision case,
+    resolved at build time: closest layer wins). ``workspace_id`` is the owning
+    workspace for a ``local`` skill and is null for a managed one, whose reach is
+    ``is_global`` plus its :class:`SkillWorkspaceLink` rows.
+
+    The legacy ``scope`` column (``"global"``/``"workspace"``) is dormant: it is
+    still present in existing databases and is what ``origin``/``is_global`` were
+    backfilled from (``db/session.py``), but nothing reads it any more.
     """
 
     __tablename__ = "skills"
@@ -154,25 +182,81 @@ class Skill(TimestampMixin, table=True):
     name: str = Field(index=True)
     description: str = ""
     content: str = ""  # cached markdown body (disk is authoritative)
-    # Store the enum's *value* ("global"/"workspace"), not its member name — the
-    # member ``global_`` is spelled with a trailing underscore only because
-    # ``global`` is a Python keyword. ``values_callable`` keeps the DB column
-    # readable and matches what the migration/API write (a plain VARCHAR value).
-    scope: SkillScope = Field(
-        default=SkillScope.global_,
+    # Store the enum's *value*, not its member name, so the column stays readable
+    # and matches what the migration/API write (a plain VARCHAR value).
+    origin: SkillOrigin = Field(
+        default=SkillOrigin.managed,
         sa_column=Column(
             SAEnum(
-                SkillScope,
-                name="skillscope",
+                SkillOrigin,
+                name="skillorigin",
                 values_callable=lambda enum: [m.value for m in enum],
             ),
             nullable=False,
             index=True,
-            server_default=SkillScope.global_.value,
+            server_default=SkillOrigin.managed.value,
         ),
     )
-    # Owning workspace when scope == "workspace"; null for global skills.
+    # Managed skills only: applies in every workspace. Mutually exclusive with
+    # SkillWorkspaceLink rows by API normalization, not by schema.
+    is_global: bool = Field(default=False, index=True)
+    # Owning workspace for a local skill; null for managed.
     workspace_id: str | None = Field(default=None, foreign_key="workspaces.id", index=True)
+
+
+class EnvVar(TimestampMixin, table=True):
+    """One environment variable Lursor injects into agent runs.
+
+    A var is *assigned* rather than owned: it can be marked ``is_global``
+    (every run), linked to workspaces (:class:`EnvVarWorkspaceLink`), and linked
+    to skills (:class:`EnvVarSkillLink`) — any mix. At run time the layers merge
+    global → workspace → skill, with the later layer winning; see
+    ``app/envvars/resolve.py``.
+
+    ``key`` is deliberately **not** unique: the same name may legitimately hold
+    different values at different layers (a per-workspace ``DATABASE_URL`` over a
+    global fallback). Uniqueness is enforced per layer by the API instead — one
+    row per key among globals, per ``(key, workspace)``, and per ``(key, skill)``
+    — so precedence is always well defined.
+
+    ``value`` is stored in plaintext, like every other secret this app holds
+    (:class:`GitHubConfig.token`, :class:`LaiosConnection.master_key`, provider
+    keys). It is never returned by the API for a secret var — reads expose
+    ``has_value`` only — and injected values are redacted out of shell output
+    before they can reach the transcript (``agents/deduping_backend.py``).
+    """
+
+    __tablename__ = "env_vars"
+
+    key: str = Field(index=True)  # POSIX name: ^[A-Za-z_][A-Za-z0-9_]*$
+    value: str = ""
+    description: str = ""
+    # False for non-sensitive config (a region, a feature flag): the value is then
+    # readable in the UI and excluded from output redaction.
+    is_secret: bool = Field(default=True)
+    is_global: bool = Field(default=False, index=True)
+
+
+class EnvVarWorkspaceLink(SQLModel, table=True):
+    """Assignment of an env var to one workspace (applies to every run there)."""
+
+    __tablename__ = "env_var_workspaces"
+    env_var_id: str = Field(foreign_key="env_vars.id", primary_key=True)
+    workspace_id: str = Field(foreign_key="workspaces.id", primary_key=True)
+
+
+class EnvVarSkillLink(SQLModel, table=True):
+    """Assignment of an env var to one skill.
+
+    Injected whenever that skill is in scope for the run, and — precisely — into
+    ``run_skill_script`` for that skill's own scripts (see
+    ``app/skills/script_exec.py``), so one skill's scripts never see another
+    skill's secrets.
+    """
+
+    __tablename__ = "env_var_skills"
+    env_var_id: str = Field(foreign_key="env_vars.id", primary_key=True)
+    skill_id: str = Field(foreign_key="skills.id", primary_key=True)
 
 
 class PromptTemplate(TimestampMixin, table=True):

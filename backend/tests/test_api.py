@@ -35,60 +35,158 @@ async def test_skill_and_tool_crud(client: AsyncClient):
     return skill, tool
 
 
-async def test_workspace_scoped_skills_and_precedence(client: AsyncClient):
-    """Skills come from two scopes; the workspace copy wins on slug collision.
+async def test_skill_layers_and_precedence(client: AsyncClient):
+    """Three layers resolve for a workspace, closest one winning on slug collision.
 
-    Exercises the whole path the builder relies on: a workspace-scoped skill is
-    written under ``<workspace>/.agents/skills/`` and ``merged_skill_dirs`` returns
-    global + workspace dirs with the workspace winning when slugs collide.
+    Exercises the path the builder relies on: a globally-assigned catalog skill, a
+    local skill committed into the repo under ``<workspace>/.agents/skills/``, and
+    ``skills_in_scope`` returning both with the local copy winning the collision.
     """
     import os
 
-    from app.skills import store
+    from app.db.session import async_session_factory
+    from app.skills.resolve import skills_in_scope
 
     ws = (await client.post("/workspaces", json={"name": "Scoped"})).json()
 
-    # A global skill and a workspace skill that share the slug "shared".
+    # A catalog skill (global by default) and a local one sharing the slug "shared".
     g = (
         await client.post("/skills", json={"name": "shared", "content": "GLOBAL"})
     ).json()
-    assert g["scope"] == "global"
+    assert g["origin"] == "managed" and g["is_global"] is True
     w = (
         await client.post(
             "/skills",
             json={
                 "name": "shared",
                 "content": "WORKSPACE",
-                "scope": "workspace",
+                "origin": "local",
                 "workspace_id": ws["id"],
             },
         )
     ).json()
-    assert w["scope"] == "workspace" and w["workspace_id"] == ws["id"]
+    assert w["origin"] == "local" and w["workspace_id"] == ws["id"]
 
-    # The workspace skill landed under <workspace>/.agents/skills/shared/.
+    # The local skill landed under <workspace>/.agents/skills/shared/.
     ws_skill_md = os.path.join(ws["path"], ".agents", "skills", "shared", "SKILL.md")
     assert os.path.isfile(ws_skill_md)
 
-    # A workspace skill requires a workspace_id.
-    bad = await client.post(
-        "/skills", json={"name": "x", "scope": "workspace"}
-    )
+    # A local skill requires a workspace_id.
+    bad = await client.post("/skills", json={"name": "x", "origin": "local"})
     assert bad.status_code == 400
 
-    # Filtering by scope works.
+    # Filtering to a workspace returns what is in scope there, tagged by layer.
     ws_list = (
-        await client.get("/skills", params={"scope": "workspace", "workspace_id": ws["id"]})
+        await client.get(
+            "/skills", params={"assignment": "workspace", "workspace_id": ws["id"]}
+        )
     ).json()
-    assert [s["id"] for s in ws_list] == [w["id"]]
+    shared_rows = [s for s in ws_list if s["slug"] == "shared"]
+    # One winner for the colliding slug, and it is the repo-local copy.
+    assert [s["id"] for s in shared_rows] == [w["id"]]
+    assert shared_rows[0]["layer"] == "local"
 
-    # Precedence: merged dirs include both slugs' folders, workspace winning on
-    # the colliding "shared" slug.
-    dirs = store.merged_skill_dirs(ws["path"])
-    shared = [d for d in dirs if d.rstrip("/").endswith("/shared")]
-    assert len(shared) == 1
+    # Precedence at the resolution layer the builder calls.
+    async with async_session_factory() as session:
+        scoped = await skills_in_scope(
+            session, workspace_path=ws["path"], workspace_id=ws["id"]
+        )
+    shared_scoped = [s for s in scoped if s.slug == "shared"]
+    assert [(s.slug, s.layer) for s in shared_scoped] == [("shared", "local")]
     ws_root = os.path.realpath(os.path.join(ws["path"], ".agents", "skills"))
-    assert os.path.realpath(shared[0]).startswith(ws_root)
+    assert os.path.realpath(str(shared_scoped[0].folder)).startswith(ws_root)
+
+
+async def test_skill_reassignment(client: AsyncClient):
+    """A catalog skill can be re-pointed at many workspaces, global, or nowhere."""
+    a = (await client.post("/workspaces", json={"name": "A"})).json()
+    b = (await client.post("/workspaces", json={"name": "B"})).json()
+    skill = (
+        await client.post(
+            "/skills",
+            json={"name": "Shared Helper", "content": "body", "is_global": False},
+        )
+    ).json()
+    # No assignment given and is_global explicitly false: parked.
+    assert skill["is_global"] is False and skill["workspace_ids"] == []
+    parked = (await client.get("/skills", params={"assignment": "unassigned"})).json()
+    assert skill["id"] in [s["id"] for s in parked]
+
+    # Assign to two workspaces at once.
+    r = await client.put(
+        f"/skills/{skill['id']}/assignment",
+        json={"is_global": False, "workspace_ids": [a["id"], b["id"]]},
+    )
+    assert r.status_code == 200
+    assert sorted(r.json()["workspace_ids"]) == sorted([a["id"], b["id"]])
+    for ws in (a, b):
+        in_scope = (
+            await client.get(
+                "/skills", params={"assignment": "workspace", "workspace_id": ws["id"]}
+            )
+        ).json()
+        mine = [s for s in in_scope if s["id"] == skill["id"]]
+        assert [s["layer"] for s in mine] == ["workspace"]
+
+    # Going global clears the per-workspace links (one unambiguous state).
+    r = await client.put(
+        f"/skills/{skill['id']}/assignment",
+        json={"is_global": True, "workspace_ids": [a["id"]]},
+    )
+    assert r.json()["is_global"] is True and r.json()["workspace_ids"] == []
+
+    # Back to nothing.
+    r = await client.put(
+        f"/skills/{skill['id']}/assignment", json={"is_global": False}
+    )
+    assert r.json()["is_global"] is False and r.json()["workspace_ids"] == []
+    in_scope = (
+        await client.get(
+            "/skills", params={"assignment": "workspace", "workspace_id": a["id"]}
+        )
+    ).json()
+    assert skill["id"] not in [s["id"] for s in in_scope]
+
+
+async def test_local_skill_promote(client: AsyncClient):
+    """A repo-local skill can't be assigned until promoted into the catalog."""
+    import os
+
+    ws = (await client.post("/workspaces", json={"name": "Repo"})).json()
+    other = (await client.post("/workspaces", json={"name": "Other"})).json()
+    local = (
+        await client.post(
+            "/skills",
+            json={
+                "name": "Repo Skill",
+                "content": "body",
+                "origin": "local",
+                "workspace_id": ws["id"],
+            },
+        )
+    ).json()
+
+    # Assignment is refused while it lives in the repo.
+    r = await client.put(
+        f"/skills/{local['id']}/assignment",
+        json={"is_global": False, "workspace_ids": [other["id"]]},
+    )
+    assert r.status_code == 409
+
+    promoted = (await client.post(f"/skills/{local['id']}/promote")).json()
+    assert promoted["origin"] == "managed"
+    # Reach is unchanged by the promote itself: still just its own workspace.
+    assert promoted["workspace_ids"] == [ws["id"]]
+    # The folder moved out of the repo and into the catalog.
+    assert not os.path.exists(
+        os.path.join(ws["path"], ".agents", "skills", local["slug"])
+    )
+    # Now it can be assigned elsewhere.
+    r = await client.put(
+        f"/skills/{promoted['id']}/assignment",
+        json={"is_global": False, "workspace_ids": [other["id"]]},
+    )
+    assert r.status_code == 200 and r.json()["workspace_ids"] == [other["id"]]
 
 
 async def test_skill_bundled_resources(client: AsyncClient):
@@ -121,11 +219,47 @@ async def test_skill_bundled_resources(client: AsyncClient):
     from app.skills import store
 
     with pytest.raises(ValueError):
-        store.write_file(skill["slug"], store.global_skills_root(), "../escape.md", "x")
+        store.write_file(skill["slug"], store.catalog_root(), "../escape.md", "x")
 
     # Deleting the skill removes the folder and its bundled files.
     assert (await client.delete(f"/skills/{sid}")).status_code == 204
     assert (await client.get(f"/skills/{sid}")).status_code == 404
+
+
+async def test_skill_md_edited_as_a_file(client: AsyncClient):
+    """SKILL.md round-trips through the file endpoints, frontmatter and all.
+
+    The editor shows the real file, so keys the UI doesn't model have to survive a
+    save — and the name/description it *does* model must follow the frontmatter.
+    """
+    skill = (
+        await client.post(
+            "/skills", json={"name": "Grill", "description": "old", "content": "body"}
+        )
+    ).json()
+    sid = skill["id"]
+
+    raw = (await client.get(f"/skills/{sid}/files/SKILL.md")).json()["content"]
+    assert "name: Grill" in raw and "body" in raw
+
+    edited = (
+        "---\nname: Grill Deeply\ndescription: sharper\nlicense: MIT\n"
+        "allowed-tools: read_file\n---\n\n# Grill\nAsk hard questions.\n"
+    )
+    r = await client.put(f"/skills/{sid}/files/SKILL.md", json={"content": edited})
+    assert r.status_code == 200
+    # The index follows the frontmatter immediately, without waiting for a list.
+    assert r.json()["name"] == "Grill Deeply"
+    assert r.json()["description"] == "sharper"
+    assert "Ask hard questions." in r.json()["content"]
+
+    # Unmodelled frontmatter keys are still on disk after the round-trip.
+    back = (await client.get(f"/skills/{sid}/files/SKILL.md")).json()["content"]
+    assert "license: MIT" in back and "allowed-tools: read_file" in back
+
+    # But it can't be deleted out from under the skill.
+    r = await client.delete(f"/skills/{sid}/files/SKILL.md")
+    assert r.status_code == 400 and "delete the skill" in r.json()["detail"]
 
 
 async def test_import_skill_from_zip(client: AsyncClient):
@@ -221,10 +355,10 @@ async def test_import_skill_from_folder(client: AsyncClient):
 
 
 async def test_agent_with_links_and_workspace_thread(client: AsyncClient):
-    # Skills are global (scope-discovered), not linked to agents; agents only link
-    # tools now.
+    # Skills carry an assignment (global by default) rather than being linked to
+    # agents; agents only link tools now.
     skill = (await client.post("/skills", json={"name": "S1"})).json()
-    assert skill["scope"] == "global" and skill["workspace_id"] is None
+    assert skill["is_global"] is True and skill["workspace_id"] is None
     tool = (await client.post("/tools", json={"name": "T1"})).json()
 
     r = await client.post(

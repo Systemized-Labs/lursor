@@ -1,13 +1,15 @@
 """Unit tests for @-referenced skill force-loading (chat composer `@skill`).
 
 Covers ``app.api.chat._referenced_skill_instructions``: the helper that turns the
-slugs a user @-references in the composer into a per-turn instruction block, with
-workspace-over-global precedence and safe handling of client-supplied slugs.
+slugs a user @-references in the composer into a per-turn instruction block. It
+resolves against the run's own in-scope skill list, so a reference can only ever
+load a skill the agent actually has — an out-of-scope or client-invented slug is
+dropped.
 """
 
 from __future__ import annotations
 
-import json
+from pathlib import Path
 
 from ag_ui.core import RunAgentInput, UserMessage
 from httpx import AsyncClient
@@ -17,67 +19,100 @@ from pydantic_deep import create_deep_agent, create_default_deps
 
 from app.api.chat import _referenced_skill_instructions
 from app.skills import store
+from app.skills.resolve import ScopedSkill
 
 # DB / workspace isolation and temp SKILLS_DIR live in ``conftest.py``.
 
 
-def _write_global(slug: str, *, name: str, content: str) -> None:
-    store.write_skill(
-        slug, store.global_skills_root(), name=name, description="", content=content
+def _catalog_skill(slug: str, *, name: str, content: str) -> ScopedSkill:
+    """Write a catalog skill and return it as the resolver would hand it over."""
+    root = store.catalog_root()
+    store.write_skill(slug, root, name=name, description="", content=content)
+    return ScopedSkill(
+        skill_id=f"id-{slug}",
+        slug=slug,
+        name=name,
+        folder=store.path_for(slug, root),
+        layer="global",
     )
 
 
-def _write_workspace(ws: str, slug: str, *, name: str, content: str) -> None:
-    store.write_skill(
-        slug,
-        store.workspace_skills_root(ws),
+def _local_skill(ws: str, slug: str, *, name: str, content: str) -> ScopedSkill:
+    root = store.workspace_skills_root(ws)
+    store.write_skill(slug, root, name=name, description="", content=content)
+    return ScopedSkill(
+        skill_id=f"local-{slug}",
+        slug=slug,
         name=name,
-        description="",
-        content=content,
+        folder=store.path_for(slug, root),
+        layer="local",
     )
 
 
 def test_none_when_no_slugs(tmp_path):
-    assert _referenced_skill_instructions([], str(tmp_path)) is None
+    assert _referenced_skill_instructions([], []) is None
 
 
-def test_loads_global_skill_body(tmp_path):
-    _write_global("summarize", name="Summarize", content="Lead with the answer.")
-    out = _referenced_skill_instructions(["summarize"], str(tmp_path))
+def test_loads_skill_body(tmp_path):
+    scoped = [_catalog_skill("summarize", name="Summarize", content="Lead with the answer.")]
+    out = _referenced_skill_instructions(["summarize"], scoped)
     assert out is not None
     assert "referenced the following skill" in out
     assert "## Summarize" in out
     assert "Lead with the answer." in out
 
 
-def test_workspace_wins_slug_collision(tmp_path):
+def test_closest_layer_wins_slug_collision(tmp_path):
+    """The resolver already collapsed the collision; the helper honours its pick."""
     ws = str(tmp_path)
-    _write_global("shared", name="Shared", content="GLOBAL BODY")
-    _write_workspace(ws, "shared", name="Shared", content="WORKSPACE BODY")
-    out = _referenced_skill_instructions(["shared"], ws) or ""
+    _catalog_skill("shared", name="Shared", content="GLOBAL BODY")
+    scoped = [_local_skill(ws, "shared", name="Shared", content="WORKSPACE BODY")]
+    out = _referenced_skill_instructions(["shared"], scoped) or ""
     assert "WORKSPACE BODY" in out
     assert "GLOBAL BODY" not in out
 
 
+def test_out_of_scope_slug_skipped(tmp_path):
+    """A real skill that isn't in scope for this run can't be pulled in."""
+    real = _catalog_skill("real", name="Real", content="body")
+    # Exists on disk but not in scope (parked, or assigned to another workspace).
+    _catalog_skill("parked", name="Parked", content="SECRET BODY")
+
+    assert _referenced_skill_instructions(["parked"], [real]) is None
+    out = _referenced_skill_instructions(["parked", "real"], [real]) or ""
+    assert "body" in out
+    assert "SECRET BODY" not in out
+
+
 def test_unknown_slug_skipped(tmp_path):
-    _write_global("real", name="Real", content="body")
-    # Only an unknown slug → nothing to inject.
-    assert _referenced_skill_instructions(["nope"], str(tmp_path)) is None
-    # Mixed: the known one still loads, the unknown is dropped.
-    out = _referenced_skill_instructions(["nope", "real"], str(tmp_path)) or ""
+    real = _catalog_skill("real2", name="Real", content="body")
+    assert _referenced_skill_instructions(["nope"], [real]) is None
+    out = _referenced_skill_instructions(["nope", "real2"], [real]) or ""
     assert "body" in out
 
 
 def test_malformed_slug_is_safe(tmp_path):
     # Client-supplied slugs could attempt traversal; must not raise or escape.
-    _write_global("real", name="Real", content="body")
-    out = _referenced_skill_instructions(["../../etc/passwd", "real"], str(tmp_path))
+    real = _catalog_skill("real3", name="Real", content="body")
+    out = _referenced_skill_instructions(["../../etc/passwd", "real3"], [real])
     assert out is not None and "body" in out
 
 
+def test_missing_folder_is_skipped(tmp_path):
+    """A stale entry (folder deleted under it) degrades to "nothing to inject"."""
+    entry = ScopedSkill(
+        skill_id="x",
+        slug="ghost",
+        name="Ghost",
+        folder=Path(tmp_path) / "ghost",
+        layer="global",
+    )
+    assert _referenced_skill_instructions(["ghost"], [entry]) is None
+
+
 def test_duplicate_slugs_loaded_once(tmp_path):
-    _write_global("dup", name="Dup", content="ONCE")
-    out = _referenced_skill_instructions(["dup", "dup"], str(tmp_path)) or ""
+    scoped = [_catalog_skill("dup", name="Dup", content="ONCE")]
+    out = _referenced_skill_instructions(["dup", "dup"], scoped) or ""
     assert out.count("## Dup") == 1
 
 
@@ -131,13 +166,13 @@ async def test_at_referenced_skill_force_loaded_into_turn(
 
     agent = (await client.post("/agents", json={"name": "Ref"})).json()
     ws = (await client.post("/workspaces", json={"name": "RefWS"})).json()
-    # A workspace-scoped skill the user will @-reference.
+    # A skill committed into this workspace, which the user will @-reference.
     await client.post(
         "/skills",
         json={
             "name": "House Style",
             "content": "ALWAYS write in the second person.",
-            "scope": "workspace",
+            "origin": "local",
             "workspace_id": ws["id"],
         },
     )

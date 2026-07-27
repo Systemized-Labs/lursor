@@ -73,12 +73,37 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(text("ALTER TABLE skills ADD COLUMN slug VARCHAR DEFAULT ''"))
     # Scope columns for the global/workspace skill split. Existing rows are all
     # global (they came from the single flat skills dir), so backfill scope.
+    # ``scope`` is dormant since the assignment model landed (see below); it is
+    # still created here so the backfill has something to read on an older DB.
     if "scope" not in skill_cols:
         await conn.execute(
             text("ALTER TABLE skills ADD COLUMN scope VARCHAR DEFAULT 'global'")
         )
     if "workspace_id" not in skill_cols:
         await conn.execute(text("ALTER TABLE skills ADD COLUMN workspace_id VARCHAR"))
+    # Assignment model: a skill is either ``managed`` (canonical store, reach set
+    # by ``is_global`` + the ``skill_workspaces`` links) or ``local`` (lives in
+    # ``<workspace>/.agents/skills``, applies only there). Backfill off the legacy
+    # ``scope`` column so an existing install keeps behaving identically: global
+    # skills stay global, workspace skills stay exactly where they are on disk.
+    # Nothing is moved and no assignment is invented.
+    skill_additions = {
+        "origin": "ALTER TABLE skills ADD COLUMN origin VARCHAR DEFAULT 'managed'",
+        "is_global": "ALTER TABLE skills ADD COLUMN is_global BOOLEAN DEFAULT 0",
+    }
+    added_assignment_cols = [c for c in skill_additions if c not in skill_cols]
+    for col in added_assignment_cols:
+        await conn.execute(text(skill_additions[col]))
+    if added_assignment_cols and "scope" in skill_cols:
+        # Only on the migrating step, so a user who later parks a global skill
+        # (is_global=0) doesn't get it silently re-globalized on the next boot.
+        await conn.execute(
+            text(
+                "UPDATE skills SET origin = CASE WHEN scope = 'workspace' "
+                "THEN 'local' ELSE 'managed' END, "
+                "is_global = CASE WHEN scope = 'workspace' THEN 0 ELSE 1 END"
+            )
+        )
 
     # Skills are no longer linked per-agent/subagent — membership is derived from
     # scope. Drop the join tables; existing links are intentionally discarded (the

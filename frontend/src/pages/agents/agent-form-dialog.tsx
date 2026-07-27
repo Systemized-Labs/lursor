@@ -143,10 +143,11 @@ export function AgentFormDialog({
   agent,
 }: AgentFormDialogProps) {
   const [form, setForm] = useState<FormState>(emptyState)
-  // Skills are no longer linked per-agent — they are discovered by scope (global
-  // + workspace) at build time. We still read the global set so prompt authoring
-  // stays capability-aware about what an agent with skills-on will see.
-  const skillsQuery = useSkills({ scope: "global" })
+  // Skills are no longer linked per-agent — each carries an assignment and is
+  // discovered at build time for whatever workspace the agent runs in. We still
+  // read the globally-assigned set so prompt authoring stays capability-aware
+  // about what an agent with skills-on will see everywhere.
+  const skillsQuery = useSkills({ assignment: "global" })
   const toolsQuery = useTools()
   const templatesQuery = usePromptTemplates()
   const createAgent = useCreateAgent()

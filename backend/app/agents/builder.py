@@ -30,15 +30,17 @@ from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_backends import LocalBackend
 from pydantic_deep import DeepAgentDeps, create_deep_agent, create_default_deps
+from pydantic_deep.features.skills import SkillsDirectory
 from pydantic_deep.prompts import BASE_PROMPT
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.agents.browser_qa import BrowserQACapability
-from app.agents.deduping_backend import DedupingLocalBackend
+from app.agents.deduping_backend import DedupingLocalBackend, set_run_env
 from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
 )
+from app.agents.skill_runtime import SkillRuntime
 from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.agents.tool_errors import ToolErrorsAsText
 from app.agents.vision import make_view_image_tool
@@ -51,7 +53,7 @@ from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider, ToolChoice
 from app.db.models import Subagent as SubagentRow
-from app.skills import store as skill_store
+from app.skills.script_exec import SkillEnvScriptExecutor
 
 settings = get_settings()
 
@@ -129,10 +131,67 @@ def _workspace_backend(workspace_path: str | Path) -> LocalBackend:
     return backend
 
 
+def _skill_directories(runtime: SkillRuntime | None) -> list[Any]:
+    """The ``skill_directories`` value for ``create_deep_agent``.
+
+    Plain folder paths when no skill carries env vars. Otherwise a
+    ``SkillsDirectory`` per folder, wired to :class:`SkillEnvScriptExecutor` so
+    ``run_skill_script`` spawns with the env of the skill that owns the script —
+    the precision the shell path can't offer.
+
+    pydantic-deep's ``skill_directories`` parameter is typed for strings, dicts, or
+    ``BackendSkillsDirectory``, but its implementation forwards anything else
+    untouched (``pydantic_deep/agent.py``, ``directories.append(sd)``) and
+    ``SkillsToolset`` accepts a ``SkillsDirectory`` instance directly
+    (``features/skills/toolset.py``, the ``isinstance`` branch in
+    ``_load_directory_skills``). That is what makes a custom executor reachable
+    from here; the type ignore at the call site is for the annotation, not the
+    behaviour.
+    """
+    if runtime is None:
+        return []
+    if not runtime.env_by_folder:
+        return runtime.skill_dirs
+    executor = SkillEnvScriptExecutor(runtime.env_by_folder, runtime.secrets)
+    return [
+        SkillsDirectory(path=folder, script_executor=executor)  # type: ignore[arg-type]
+        for folder in runtime.skill_dirs
+    ]
+
+
+def _env_var_instructions(runtime: SkillRuntime | None) -> list[str]:
+    """Lines naming the env vars this run can use — **names only, never values**.
+
+    Without this the agent has no reason to believe a credential is present: it
+    would ask the user for a key that is already in its shell. Values are
+    deliberately absent from the prompt (and redacted out of command output), so
+    the model can reference ``$STRIPE_SECRET_KEY`` without ever seeing it.
+    """
+    if runtime is None or not runtime.run_env.values:
+        return []
+    lines = [
+        "- Environment variables available to your shell and skill scripts:",
+    ]
+    for key in sorted(runtime.run_env.values):
+        source = runtime.run_env.provenance.get(key, "")
+        description = runtime.run_env.descriptions.get(key, "")
+        detail = " ".join(
+            part for part in (description, f"({source})" if source else "") if part
+        )
+        lines.append(f"  - {key}" + (f" — {detail}" if detail else ""))
+    lines.append(
+        "  Reference them as `$NAME` in commands; they are already set. Their "
+        "values are secret: never print, echo, or copy one into a file, a message, "
+        "or a commit."
+    )
+    return lines
+
+
 def _environment_instructions(
     workspace_path: str | Path,
     workspace_name: str | None,
     workspace_description: str | None,
+    skill_runtime: SkillRuntime | None = None,
 ) -> str:
     """A system-prompt section telling the agent where it is on disk.
 
@@ -143,6 +202,9 @@ def _environment_instructions(
     guesses absolute paths, trips the sandbox boundary, and can't emit correct
     ``path:line`` references. Stating the root, name, and purpose up front fixes
     that. ``workspace_name`` falls back to the directory's basename when unset.
+
+    ``skill_runtime`` adds the names of the environment variables injected into
+    this run (see :func:`_env_var_instructions`).
     """
     root = str(workspace_path)
     name = workspace_name or Path(root).name
@@ -157,6 +219,7 @@ def _environment_instructions(
             "- Every file tool is sandboxed to this directory and relative paths "
             "resolve against it. Reference files by their path under this root "
             "(e.g. `path/to/file.py:42`).",
+            *_env_var_instructions(skill_runtime),
         ]
     )
 
@@ -522,6 +585,7 @@ def _subagent_config(
     tavily_api_key: str | None,
     exa_api_key: str | None,
     child_depth: int,
+    skill_runtime: SkillRuntime | None,
 ) -> dict:
     """Turn a stored subagent row into a pydantic-deep ``SubAgentConfig`` dict.
 
@@ -554,6 +618,10 @@ def _subagent_config(
             web_search_provider=web_search_provider,
             tavily_api_key=tavily_api_key,
             exa_api_key=exa_api_key,
+            # The parent already resolved which skills are in scope and what env
+            # they carry; a subagent works in the same workspace, so it inherits
+            # both rather than re-resolving (it has no session anyway).
+            skill_runtime=skill_runtime,
             _subagent_depth=child_depth,
         )
         return sub_agent
@@ -581,6 +649,7 @@ def build_deep_agent(
     workspace_name: str | None = None,
     workspace_description: str | None = None,
     workspace_id: str | None = None,
+    skill_runtime: SkillRuntime | None = None,
     _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
@@ -595,10 +664,12 @@ def build_deep_agent(
     tools and is held to planning by the planning prompt. It only turns off
     browser QA and the dev-server directive, neither of which a plan turn needs.
 
-    Skills are discovered by scope (global + this workspace's ``.agents/skills``)
-    and handed to the deep agent as skill directories (on-disk SKILL.md folders
-    with bundled resources/scripts), the workspace winning on slug collision; see
-    ``skill_store.merged_skill_dirs``. ``row.include_skills`` gates them entirely.
+    ``skill_runtime`` carries the skills in scope for this workspace and the
+    environment variables that go with them, resolved by the caller because both
+    need a database session (``agents/skill_runtime.py``). ``None`` means "build
+    without skills or injected env" — the case for the handful of callers that have
+    no session. ``row.include_skills`` still gates the skills entirely, and the
+    env-var listing in the prompt names keys only, never values.
     Tool rows are catalogued in the DB but not yet wired into execution (see
     docs/PLAN.md — deferred); the deep agent ships its own builtin toolset.
 
@@ -642,17 +713,32 @@ def build_deep_agent(
     # thinking is stored as an enum: "off" disables, otherwise pass the level string.
     thinking: bool | str = False if row.thinking.value == "off" else row.thinking.value
 
-    # Skills are on-disk folders (SKILL.md + resources + scripts) discovered by
-    # *scope*, not linked per-agent: the user-global set (``~/.lursor/skills/``)
-    # plus this workspace's own (``<workspace>/.agents/skills/``), the workspace
-    # winning on slug collision. Hand the deep agent each folder so it discovers
-    # the full standard — bundled resources (`read_skill_resource`) and scripts
-    # (`run_skill_script`), not just the markdown body. ``include_skills`` is the
-    # master switch: when off, no skills of either scope are injected. See
-    # app/skills/store.py (``merged_skill_dirs``).
-    skill_dirs = (
-        skill_store.merged_skill_dirs(workspace_path) if row.include_skills else []
-    )
+    # Skills are on-disk folders (SKILL.md + resources + scripts), not per-agent
+    # links: whatever is in scope for this workspace (global assignment → assigned
+    # → the repo's own ``.agents/skills``, closest layer winning) was resolved by
+    # the caller into ``skill_runtime``. Hand the deep agent each folder so it
+    # discovers the full standard — bundled resources (`read_skill_resource`) and
+    # scripts (`run_skill_script`), not just the markdown body. ``include_skills``
+    # is the master switch: when off, no skills are injected at all.
+    runtime = skill_runtime if row.include_skills else None
+    skill_dirs = _skill_directories(runtime)
+
+    # Environment variables (see ``app/envvars/resolve.py``). ``set_run_env``
+    # installs them for this run's context so every shell call in the run — and in
+    # its subagents — spawns with them; ``set_default_env`` covers processes started
+    # outside a run (an auto-restarted preview server).
+    #
+    # The env is a property of the *run*, not of this row's skills toggle: the
+    # caller already excluded skill vars when the top-level agent has skills off
+    # (``load_skill_runtime``), and a subagent shares its parent's shell environment
+    # even if it can't see the skills those vars came from. So this reads the
+    # runtime's env unconditionally, while ``runtime`` above gates the skill folders.
+    run_env = skill_runtime.run_env if skill_runtime else None
+    if run_env is not None and run_env.values:
+        secrets = run_env.secret_values
+        set_run_env(run_env.values, secrets)
+        if isinstance(backend, DedupingLocalBackend):
+            backend.set_default_env(run_env.values, secrets)
 
     # Global subagents apply only when the agent opts into subagents. We assemble
     # the full roster ourselves — user subagents plus the pydantic-deep built-ins
@@ -693,6 +779,7 @@ def build_deep_agent(
                 tavily_api_key=tavily_api_key,
                 exa_api_key=exa_api_key,
                 child_depth=child_depth,
+                skill_runtime=skill_runtime,
             )
 
         # Built-in override rows (builtin_name set) win over the library default;
@@ -838,7 +925,7 @@ def build_deep_agent(
     # than replace it — passing a non-None value swaps out the default entirely.
     base_instructions = row.instructions or BASE_PROMPT
     environment = _environment_instructions(
-        workspace_path, workspace_name, workspace_description
+        workspace_path, workspace_name, workspace_description, skill_runtime
     )
     instructions = (
         f"{base_instructions}\n\n{environment}\n\n{DEFAULT_LANGUAGE_DIRECTIVE}"

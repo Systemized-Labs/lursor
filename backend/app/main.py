@@ -11,6 +11,7 @@ from app.api import (
     agents,
     analytics,
     chat,
+    env_vars,
     files,
     git,
     github,
@@ -79,6 +80,7 @@ async def health() -> dict[str, str]:
 for module in (
     agents,
     analytics,
+    env_vars,
     skills,
     subagents,
     prompt_templates,

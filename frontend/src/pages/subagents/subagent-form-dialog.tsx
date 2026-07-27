@@ -400,8 +400,8 @@ export function SubagentFormDialog({
               emptyText="No tools created yet."
             />
             <p className="text-xs text-muted-foreground">
-              Skills are discovered by scope (global + workspace), not attached
-              here. Toggle the{" "}
+              Skills are picked up from whatever is assigned to the workspace this
+              runs in, not attached here. Toggle the{" "}
               <span className="font-medium text-foreground">Skills</span>{" "}
               capability above to let this subagent use them.
             </p>

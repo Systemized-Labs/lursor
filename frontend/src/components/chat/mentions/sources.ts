@@ -15,29 +15,29 @@ const PLAN_DIR = ".agents/plan"
 /** Mention sources for the workspace chat composer:
  *  - `@files` — fuzzy search over the whole workspace tree (lazy).
  *  - `@plan` — the plan docs under `.agents/plan/` (hidden from `@files`).
- *  - `@skill` — global + this workspace's skills (pre-loaded, root-searchable).
+ *  - `@skill` — the skills in scope for this workspace (pre-loaded, root-searchable).
  *    Referencing a skill force-loads its full body into that turn server-side.
  */
 export function useWorkspaceChatMentionSources(
   workspaceId: string | undefined
 ): MentionSource[] {
-  // Skills come from two scopes, exactly what the agent sees at build time:
-  // user-global plus this workspace's own, the workspace winning on a slug
-  // collision (see backend `merged_skill_dirs`). Small lists, so pre-load them
-  // and let the menu filter locally rather than hitting the server per keystroke.
-  const globalSkills = useSkills({ scope: "global" })
-  const workspaceSkills = useSkills(
-    workspaceId ? { scope: "workspace", workspace_id: workspaceId } : undefined
+  // Exactly what the agent sees at build time: the backend resolves the three
+  // layers (global assignment → assigned to this workspace → the repo's own
+  // .agents/skills) and returns one winner per slug. Asking for the resolved set
+  // rather than merging here means a parked or elsewhere-assigned skill is never
+  // offered — referencing it would be a no-op server-side. Small list, so
+  // pre-load it and filter locally rather than hitting the server per keystroke.
+  const skillsQuery = useSkills(
+    workspaceId
+      ? { assignment: "workspace", workspace_id: workspaceId }
+      : undefined
   )
 
   return useMemo<MentionSource[]>(() => {
     if (!workspaceId) return []
 
-    const bySlug = new Map<string, Skill>()
-    for (const s of globalSkills.data ?? []) bySlug.set(s.slug, s)
-    for (const s of workspaceSkills.data ?? []) bySlug.set(s.slug, s) // workspace wins
-    const skillItems = [...bySlug.values()]
-      .sort((a, b) => a.name.localeCompare(b.name))
+    const skillItems = [...(skillsQuery.data ?? [])]
+      .sort((a: Skill, b: Skill) => a.name.localeCompare(b.name))
       .map<MentionItem>((s) => ({
         id: s.id,
         label: s.name,
@@ -93,5 +93,5 @@ export function useWorkspaceChatMentionSources(
         items: skillItems,
       },
     ]
-  }, [workspaceId, globalSkills.data, workspaceSkills.data])
+  }, [workspaceId, skillsQuery.data])
 }

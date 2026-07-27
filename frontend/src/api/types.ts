@@ -41,8 +41,15 @@ export interface AgentInput {
   tool_ids: string[]
 }
 
-/** Where a skill lives: user-global, or scoped to one workspace directory. */
-export type SkillScope = "global" | "workspace"
+/** Where a skill folder lives, which decides how it can be assigned.
+ *
+ *  `managed` — the catalog (`~/.lursor/skills`): one copy, re-pointable at any
+ *  set of workspaces. `local` — `<workspace>/.agents/skills`, committed into a
+ *  repo: applies only there and must be promoted before it can be reassigned. */
+export type SkillOrigin = "managed" | "local"
+
+/** Which layer a skill won at when listing for one workspace. */
+export type SkillLayer = "global" | "workspace" | "local"
 
 export interface Skill {
   id: string
@@ -50,11 +57,17 @@ export interface Skill {
   name: string
   description: string
   content: string
-  // global (~/.lursor/skills) or workspace (<workspace>/.agents/skills). On a
-  // slug collision the workspace copy wins at build time.
-  scope: SkillScope
-  // Owning workspace when scope === "workspace"; null for global skills.
+  origin: SkillOrigin
+  /** Managed skills: applies in every workspace. */
+  is_global: boolean
+  /** Managed skills: the workspaces it is assigned to (empty if global/parked). */
+  workspace_ids: string[]
+  /** Local skills: the workspace whose folder holds it. */
   workspace_id: string | null
+  /** Set only in a per-workspace listing; null in catalog-wide ones. */
+  layer: SkillLayer | null
+  /** Env vars attached to this skill (ids only — values never leave the server). */
+  env_var_ids: string[]
   // Bundled files discovered in the skill folder (relative paths). These are
   // what the agent can load via read_skill_resource / run_skill_script.
   resources: string[]
@@ -67,10 +80,74 @@ export interface SkillInput {
   name: string
   description: string
   content: string
-  // Defaults to "global" on the backend when omitted; set both to create a
-  // workspace-scoped skill.
-  scope?: SkillScope
+  /** Defaults to "managed" on the backend. "local" requires `workspace_id`. */
+  origin?: SkillOrigin
+  /** Omitted means "global unless workspace_ids were given". */
+  is_global?: boolean
+  workspace_ids?: string[]
   workspace_id?: string | null
+}
+
+export interface SkillAssignmentInput {
+  is_global: boolean
+  workspace_ids: string[]
+}
+
+/** An environment variable Lursor injects into agent runs. */
+export interface EnvVar {
+  id: string
+  key: string
+  description: string
+  /** Secret values are write-only: reads expose `has_value`, never `value`. */
+  is_secret: boolean
+  is_global: boolean
+  workspace_ids: string[]
+  skill_ids: string[]
+  has_value: boolean
+  /** Present only for non-secret vars. */
+  value: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface EnvVarInput {
+  key: string
+  value?: string
+  description?: string
+  is_secret?: boolean
+  is_global?: boolean
+  workspace_ids?: string[]
+  skill_ids?: string[]
+}
+
+export interface EnvVarUpdateInput {
+  key?: string
+  /** Omit to keep the stored value; "" clears it. */
+  value?: string
+  description?: string
+  is_secret?: boolean
+}
+
+export interface EnvVarAssignmentInput {
+  is_global: boolean
+  workspace_ids: string[]
+  skill_ids: string[]
+}
+
+/** One key in a workspace's effective environment. Never carries a value. */
+export interface ResolvedEnvEntry {
+  key: string
+  description: string
+  /** "global" | "workspace" | "skill:<slug>" — the layer that won. */
+  source: string
+  /** Every layer that set the key, lowest precedence first (>1 means shadowing). */
+  overridden: string[]
+  has_value: boolean
+}
+
+export interface ResolvedEnv {
+  workspace_id: string
+  entries: ResolvedEnvEntry[]
 }
 
 export interface Subagent {

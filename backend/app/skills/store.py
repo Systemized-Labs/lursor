@@ -8,17 +8,19 @@ carry bundled **resource** files (``.md``/``.json``/``.yaml``/``.yml``/``.csv``/
 ``SkillsDirectory`` discovers at run time, so what the UI shows here matches what
 the agent actually loads.
 
-Skills come from two **scopes**, mirroring Claude Code:
+Skill folders live in one of two kinds of root:
 
-- **global** — ``~/.lursor/skills/`` (``settings.skills_dir``): applies to every
-  agent, in every workspace.
-- **workspace** — ``<workspace.path>/.agents/skills/``: travels with the workspace
-  directory (git-shareable) and only applies while an agent runs in it.
+- the **catalog** — ``~/.lursor/skills/`` (``settings.skills_dir``): one copy of
+  every UI-managed skill, wherever it applies. Which workspaces a catalog skill
+  reaches is an *assignment* held in the database, not a location on disk.
+- a **workspace** root — ``<workspace.path>/.agents/skills/``: travels with the
+  workspace directory (git-shareable, the Claude Code convention) and applies
+  only there.
 
-Every path helper takes an explicit ``root`` so the same code serves both scopes;
-``global_skills_root`` / ``workspace_skills_root`` resolve the two roots.
-``merged_skill_dirs`` is what the builder hands the deep agent for a run: the two
-scopes merged with the workspace copy winning on slug collision (closest scope).
+Every path helper takes an explicit ``root`` so the same code serves both;
+``catalog_root`` / ``workspace_skills_root`` resolve them. What a given run
+actually sees is decided in ``app/skills/resolve.py``, which needs the database
+(assignments) and therefore does not live here.
 
 This module is filesystem-only — it never touches the database. The DB ``skills``
 table is a rebuildable index reconciled against this store in ``app/api/skills.py``.
@@ -62,8 +64,13 @@ class ParsedSkill:
     scripts: list[str] = field(default_factory=list)
 
 
-def global_skills_root() -> Path:
-    """The user-global skills root (``~/.lursor/skills/``), created if missing."""
+def catalog_root() -> Path:
+    """The canonical store for managed skills (``~/.lursor/skills/``).
+
+    Created if missing. Every UI-created or imported skill lands here exactly
+    once; its reach (global / a set of workspaces / nowhere) is an assignment in
+    the database, so re-pointing a skill never moves files.
+    """
     root = get_settings().skills_dir
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -124,21 +131,19 @@ def list_slugs(root: Path) -> list[str]:
     )
 
 
-def merged_skill_dirs(workspace_path: str | Path) -> list[str]:
-    """Absolute skill folders for a run: global skills plus the workspace's own.
+def move_skill(slug: str, src_root: Path, dst_root: Path, *, taken: set[str]) -> str:
+    """Move a skill folder between roots, returning the (possibly new) slug.
 
-    On a slug collision the workspace copy wins (closest scope, like Claude Code).
-    Reads the two roots directly off disk — independent of the DB index — so a run
-    always sees exactly what is on disk for wherever it is working.
+    Used by promote (workspace root → catalog): the whole folder moves so bundled
+    resources and scripts come along. The slug is re-derived against ``taken`` so
+    a name already present in the destination doesn't clobber it.
     """
-    by_slug: dict[str, Path] = {}
-    global_root = global_skills_root()
-    for slug in list_slugs(global_root):
-        by_slug[slug] = path_for(slug, global_root)
-    ws_root = workspace_skills_root(workspace_path)
-    for slug in list_slugs(ws_root):
-        by_slug[slug] = path_for(slug, ws_root)
-    return [str(p) for p in by_slug.values()]
+    src = path_for(slug, src_root)
+    new_slug = slug if slug not in taken else slugify(slug, taken=taken)
+    dst = path_for(new_slug, dst_root)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+    return new_slug
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
@@ -227,7 +232,7 @@ def delete_skill(slug: str, root: Path) -> None:
         shutil.rmtree(folder)
 
 
-# --- Bundled resource / script files -------------------------------------------
+# --- Files inside a skill folder -----------------------------------------------
 
 
 def _resource_path(slug: str, root: Path, rel: str) -> Path:
@@ -238,9 +243,18 @@ def _resource_path(slug: str, root: Path, rel: str) -> Path:
         target.relative_to(folder)
     except ValueError as exc:
         raise ValueError(f"Path escapes skill folder: {rel!r}") from exc
-    if target == folder / SKILL_FILE:
-        raise ValueError("SKILL.md is edited via the skill body, not as a resource")
     return target
+
+
+def is_skill_file(slug: str, root: Path, rel: str) -> bool:
+    """Does ``rel`` point at the folder's ``SKILL.md``?
+
+    ``SKILL.md`` is editable like any other file — the editor shows the real file,
+    frontmatter included, so keys the UI doesn't model (``license``, ``version``,
+    ``allowed-tools``…) survive a round-trip. Callers use this to refresh the
+    cached name/description afterwards, since those live in that frontmatter.
+    """
+    return _resource_path(slug, root, rel) == path_for(slug, root).resolve() / SKILL_FILE
 
 
 def read_file(slug: str, root: Path, rel: str) -> str:
@@ -254,6 +268,10 @@ def write_file(slug: str, root: Path, rel: str, content: str) -> None:
 
 
 def delete_file(slug: str, root: Path, rel: str) -> None:
+    # Deleting SKILL.md would leave a folder that no longer reads as a skill, so
+    # the whole skill is deleted through its own endpoint instead.
+    if is_skill_file(slug, root, rel):
+        raise ValueError("SKILL.md can't be deleted — delete the skill instead")
     target = _resource_path(slug, root, rel)
     if target.is_file():
         target.unlink()

@@ -67,6 +67,7 @@ from app.agents.goal_loop import (
     scan_plan_dir,
 )
 from app.agents.preview_service import preview_service
+from app.agents.skill_runtime import load_skill_runtime
 from app.agents.titler import generate_title
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
@@ -86,6 +87,7 @@ from app.db.session import async_session_factory, get_session
 from app.media_store import media_path, save_base64_image
 from app.pricing import compute_cost
 from app.skills import store as skill_store
+from app.skills.resolve import ScopedSkill
 
 logger = logging.getLogger(__name__)
 
@@ -197,35 +199,35 @@ def _join_instructions(*parts: str | None) -> str | None:
 
 
 def _referenced_skill_instructions(
-    slugs: list[str], workspace_path: str
+    slugs: list[str], scoped: Sequence[ScopedSkill]
 ) -> str | None:
     """Force-load the full body of every ``@``-referenced skill into this turn.
 
     Mirrors Claude Code's explicit skill invocation: when the user ``@``-references
     a skill in the composer, its whole ``SKILL.md`` body is injected into this
     turn's instructions so the agent is guaranteed to follow it — rather than
-    relying on the agent to discover it via its skill tools. Each slug resolves
-    against the same two scopes the builder uses — this workspace's
-    ``.agents/skills`` first, then the user-global store — so a workspace skill
-    wins a slug collision, matching ``skill_store.merged_skill_dirs``. Unknown or
-    malformed slugs (the list is client-supplied) are skipped.
+    relying on the agent to discover it via its skill tools.
+
+    Resolution goes through the run's own ``scoped`` list (``skills_in_scope``), so
+    a reference can only ever load a skill the agent actually has, with the same
+    closest-layer-wins precedence. A slug that is out of scope — parked, assigned
+    elsewhere, or simply invented by the client — is skipped.
     """
     if not slugs:
         return None
-    global_root = skill_store.global_skills_root()
-    ws_root = skill_store.workspace_skills_root(workspace_path)
+    by_slug = {entry.slug: entry for entry in scoped}
     sections: list[str] = []
     seen: set[str] = set()
     for slug in slugs:
         if slug in seen:
             continue
         seen.add(slug)
+        entry = by_slug.get(slug)
+        if entry is None:
+            continue
         parsed = None
-        for root in (ws_root, global_root):  # workspace wins on collision
-            with contextlib.suppress(ValueError):
-                parsed = skill_store.read_skill(slug, root)
-            if parsed is not None:
-                break
+        with contextlib.suppress(ValueError):
+            parsed = skill_store.read_skill(entry.slug, entry.folder.parent)
         if parsed is None:
             continue
         sections.append(f"## {parsed.name}\n\n{parsed.content}".strip())
@@ -803,6 +805,11 @@ async def _build_agent_and_context(
 ):
     """Build the deep agent + deps for a thread and load the app-wide context.
 
+    Returns the agent, its deps, the provider map, the app config, and the
+    resolved :class:`SkillRuntime` (which skills are in scope plus the environment
+    installed for the run) — the caller needs the last one to force-load
+    ``@``-referenced skills against the same set the agent sees.
+
     Shared by the chat/planning endpoint and the goal-execution start so both
     resolve providers, subagents, and deep-defaults identically. ``read_only``
     gates the agent to "ask" mode (no file writes / shell). The run always uses the
@@ -815,6 +822,15 @@ async def _build_agent_and_context(
     subagents = list((await session.execute(select(Subagent))).scalars().all())
     app_config = (await session.execute(select(AppConfig))).scalars().first()
     deep_defaults = app_config.deep_defaults if app_config else None
+    # Which skills are in scope here, and the env vars they carry. Resolved before
+    # the build because both need this session; the builder is synchronous and the
+    # run task inherits the environment installed during the build.
+    skill_runtime = await load_skill_runtime(
+        session,
+        workspace_path=workspace.path,
+        workspace_id=workspace.id,
+        include_skills=agent_row.include_skills,
+    )
     agent, deps = build_deep_agent(
         agent_row,
         workspace.path,
@@ -824,6 +840,7 @@ async def _build_agent_and_context(
         workspace_name=workspace.name,
         workspace_description=workspace.description or None,
         workspace_id=workspace.id,
+        skill_runtime=skill_runtime,
         read_only=read_only,
         plan_mode=plan_mode,
         web_search_provider=app_config.web_search_provider if app_config else None,
@@ -833,7 +850,7 @@ async def _build_agent_and_context(
         exa_api_key=(app_config.exa_api_key if app_config else None)
         or settings.exa_api_key,
     )
-    return agent, deps, custom_providers, app_config
+    return agent, deps, custom_providers, app_config, skill_runtime
 
 
 def _resolve_evaluator_model(
@@ -1171,14 +1188,6 @@ async def chat(
     # of them via view_image, regardless of the model's own vision support.
     media_instructions = await _thread_media_instructions(session, thread_id)
 
-    # Fold any @-referenced skills into the per-turn instruction blocks so every
-    # driver (chat, /ask, plan, goal) force-loads them. Reuses media_instructions
-    # as the shared base the drivers already thread through.
-    skill_instructions = _referenced_skill_instructions(
-        referenced_skill_slugs, workspace.path
-    )
-    media_instructions = _join_instructions(media_instructions, skill_instructions)
-
     # A "/ask" turn on a chat thread builds a read-only agent (no write/edit/shell).
     read_only = thread.mode == ThreadMode.chat and turn == "ask"
     # A plan turn (fresh `/plan`, or a plain message refining a parked plan) builds a
@@ -1188,9 +1197,21 @@ async def chat(
     plan_mode = turn == "plan" or (
         thread.status == ThreadStatus.awaiting_approval and turn == "chat"
     )
-    agent, deps, custom_providers, app_config = await _build_agent_and_context(
-        session, agent_row, workspace, read_only=read_only, plan_mode=plan_mode
+    agent, deps, custom_providers, app_config, skill_runtime = (
+        await _build_agent_and_context(
+            session, agent_row, workspace, read_only=read_only, plan_mode=plan_mode
+        )
     )
+
+    # Fold any @-referenced skills into the per-turn instruction blocks so every
+    # driver (chat, /ask, plan, goal) force-loads them. Resolved against the run's
+    # own in-scope set, so a reference can only load a skill this agent actually
+    # has. Reuses media_instructions as the shared base the drivers thread through.
+    media_instructions = _join_instructions(
+        media_instructions,
+        _referenced_skill_instructions(referenced_skill_slugs, skill_runtime.scoped),
+    )
+
     # Build the adapter (parses the request body/messages) before returning, so the
     # detached driver never touches the request object after the response starts.
     adapter = await AGUIAdapter.from_request(request, agent=agent)

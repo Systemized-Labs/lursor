@@ -40,14 +40,21 @@ async def seed_example_agent(session) -> None:
         "When responding, lead with the answer. Avoid preamble and "
         "restating the question. Prefer short paragraphs and lists.\n"
     )
-    # Skills live in the global scope now (no per-agent link) — any agent with
-    # ``include_skills`` on discovers them. Seed one global skill + one agent.
-    root = skill_store.global_skills_root()
+    # Skills aren't linked per-agent — they carry an assignment, and any agent
+    # with ``include_skills`` on discovers whatever is in scope. Seed one catalog
+    # skill assigned globally, plus one agent.
+    root = skill_store.catalog_root()
     slug = skill_store.slugify(name, taken=set(skill_store.list_slugs(root)))
     skill_store.write_skill(
         slug, root, name=name, description=description, content=content
     )
-    skill = Skill(slug=slug, name=name, description=description, content=content)
+    skill = Skill(
+        slug=slug,
+        name=name,
+        description=description,
+        content=content,
+        is_global=True,
+    )
     agent = Agent(
         name="Assistant",
         description="A general-purpose helper agent.",

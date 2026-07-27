@@ -142,3 +142,112 @@ def test_pattern_outside_the_root_matches_nothing(populated):
 def test_degenerate_patterns_return_empty_instead_of_raising(populated, pattern):
     """``ValueError`` / ``IndexError`` out of pathlib must not reach the turn."""
     assert populated.glob_info(pattern) == []
+
+
+# --- Environment injection + secret redaction ----------------------------------
+#
+# ``execute`` is reimplemented (the base method takes no ``env=``), so these pin
+# both the new behaviour and parity with the base backend's contract.
+
+
+def test_execute_parity_without_env(backend):
+    """With no env set, ``execute`` behaves exactly like the base implementation."""
+    ok = backend.execute("echo hi")
+    assert ok.output.strip() == "hi" and ok.exit_code == 0 and ok.truncated is False
+
+    failed = backend.execute("exit 7")
+    assert failed.exit_code == 7
+
+    # Timeout maps to the base backend's sentinel rather than raising.
+    timed_out = backend.execute("sleep 2", timeout=1)
+    assert timed_out.exit_code == 124 and "timed out" in timed_out.output
+
+    # cwd is the backend root, as before.
+    assert backend.execute("pwd").output.strip().endswith(backend.root_dir.name)
+
+
+def test_execute_truncates_long_output(backend):
+    from app.agents.deduping_backend import MAX_EXECUTE_OUTPUT
+
+    r = backend.execute(f"python3 -c \"print('x' * {MAX_EXECUTE_OUTPUT + 500})\"")
+    assert r.truncated is True and len(r.output) == MAX_EXECUTE_OUTPUT
+
+
+def test_run_env_is_injected_and_redacted(backend):
+    from app.agents.deduping_backend import set_run_env
+
+    set_run_env({"MY_TOKEN": "tok-abcdefghij"}, ("tok-abcdefghij",))
+    try:
+        # The variable reaches the child process...
+        present = backend.execute('test -n "$MY_TOKEN" && echo present')
+        assert present.output.strip() == "present"
+        # ...but echoing it back never puts the value in tool output.
+        assert backend.execute("echo $MY_TOKEN").output.strip() == "***REDACTED***"
+    finally:
+        set_run_env({}, ())
+
+
+def test_run_env_does_not_leak_across_contexts(backend):
+    """A second run in the same workspace must not inherit the first one's env."""
+    import contextvars
+
+    from app.agents.deduping_backend import set_run_env
+
+    def with_secret() -> str:
+        set_run_env({"SCOPED": "scoped-value-1"}, ("scoped-value-1",))
+        return backend.execute("echo ${SCOPED:-unset}").output.strip()
+
+    def without_secret() -> str:
+        return backend.execute("echo ${SCOPED:-unset}").output.strip()
+
+    assert contextvars.copy_context().run(with_secret) == "***REDACTED***"
+    # A sibling context (another run) never saw the set().
+    assert contextvars.copy_context().run(without_secret) == "unset"
+
+
+def test_default_env_covers_spawns_outside_a_run(backend):
+    """``set_default_env`` is the fallback for out-of-run processes."""
+    backend.set_default_env({"WS_VAR": "workspace-value"})
+    assert backend.execute("echo $WS_VAR").output.strip() == "workspace-value"
+
+
+def test_background_process_inherits_run_env(backend):
+    import time
+
+    from app.agents.deduping_backend import set_run_env
+
+    set_run_env({"BG_TOKEN": "bg-secret-value"}, ("bg-secret-value",))
+    try:
+        out_file = backend.root_dir / "bg.txt"
+        backend.execute_background(f'echo "$BG_TOKEN" > {out_file}')
+        for _ in range(50):
+            if out_file.exists() and out_file.read_text().strip():
+                break
+            time.sleep(0.05)
+        assert out_file.read_text().strip() == "bg-secret-value"
+        # os.environ is restored after the spawn, so nothing leaks process-wide.
+        import os
+
+        assert "BG_TOKEN" not in os.environ
+    finally:
+        set_run_env({}, ())
+
+
+def test_read_background_redacts_secrets(backend):
+    import time
+
+    from app.agents.deduping_backend import set_run_env
+
+    set_run_env({"LOG_TOKEN": "log-secret-value"}, ("log-secret-value",))
+    try:
+        backend.execute_background('echo "starting with $LOG_TOKEN"')
+        drained = ""
+        for _ in range(50):
+            drained += backend.read_background("bg_1").stdout
+            if drained.strip():
+                break
+            time.sleep(0.05)
+        assert "log-secret-value" not in drained
+        assert "***REDACTED***" in drained
+    finally:
+        set_run_env({}, ())
