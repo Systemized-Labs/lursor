@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Check,
   CaretLeft,
+  CaretRight,
   CaretUpDown,
   Coins,
   Cpu,
@@ -145,6 +146,143 @@ function ModelDetail({
           {isActive ? null : <Lightning className="h-4 w-4" />}
         </Button>
       </div>
+    </div>
+  )
+}
+
+/** Horizontally scrollable provider tab strip.
+ *
+ *  With enough custom providers the tabs overflow the dialog width, so the
+ *  strip scrolls. Scrolling is discoverable three ways: edge fades that only
+ *  appear on the side that has more tabs, chevron buttons for pointers with no
+ *  horizontal wheel, and vertical wheel deltas translated to horizontal scroll.
+ */
+function ProviderTabs({
+  tabs,
+  activeTab,
+  onSelect,
+}: {
+  tabs: { key: string; label: string }[]
+  activeTab: string
+  onSelect: (key: string) => void
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [overflow, setOverflow] = useState({ left: false, right: false })
+
+  const sync = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const max = el.scrollWidth - el.clientWidth
+    setOverflow({ left: el.scrollLeft > 1, right: el.scrollLeft < max - 1 })
+  }, [])
+
+  // Recompute the fades when the strip or its contents resize (dialog width is
+  // viewport-relative, so this also covers window resizes).
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    sync()
+    const observer = new ResizeObserver(sync)
+    observer.observe(el)
+    if (el.firstElementChild) observer.observe(el.firstElementChild)
+    return () => observer.disconnect()
+  }, [sync, tabs.length])
+
+  // Keep the selected provider visible — it may start off-screen when the
+  // dialog opens on a tab far down the list. Scrolls the minimum distance and
+  // leaves EDGE_CLEARANCE px of room so the tab doesn't land under a fade or
+  // chevron; a tab that's already comfortably in view is left alone.
+  useEffect(() => {
+    const el = scrollRef.current
+    const tab = el?.querySelector<HTMLElement>('[data-active="true"]')
+    if (!el || !tab) return
+    const EDGE_CLEARANCE = 44
+    const left = tab.offsetLeft
+    const right = left + tab.offsetWidth
+    if (left < el.scrollLeft + EDGE_CLEARANCE) {
+      el.scrollTo({ left: Math.max(0, left - EDGE_CLEARANCE), behavior: "smooth" })
+    } else if (right > el.scrollLeft + el.clientWidth - EDGE_CLEARANCE) {
+      el.scrollTo({ left: right + EDGE_CLEARANCE - el.clientWidth, behavior: "smooth" })
+    }
+  }, [activeTab])
+
+  const scrollBy = (direction: -1 | 1) => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollBy({ left: direction * el.clientWidth * 0.6, behavior: "smooth" })
+  }
+
+  // A plain mouse wheel only produces deltaY, which would otherwise do nothing
+  // over a horizontal strip. Registered natively because React's synthetic
+  // `wheel` listener is passive, so it can't preventDefault.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+      el.scrollLeft += e.deltaY
+      e.preventDefault()
+    }
+    el.addEventListener("wheel", onWheel, { passive: false })
+    return () => el.removeEventListener("wheel", onWheel)
+  }, [])
+
+  return (
+    <div className="relative shrink-0 border-b border-border/60">
+      {/* `mr-9` keeps the scroll viewport clear of the dialog's close button so
+          tabs are never clipped underneath it. */}
+      <div
+        ref={scrollRef}
+        onScroll={sync}
+        className="no-scrollbar mr-9 overflow-x-auto overflow-y-hidden"
+      >
+        <div className="flex w-max items-center gap-1 px-3">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              data-active={activeTab === tab.key}
+              onClick={() => onSelect(tab.key)}
+              className={cn(
+                "shrink-0 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
+                activeTab === tab.key
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {overflow.left ? (
+        <>
+          <div className="pointer-events-none absolute bottom-0 left-0 top-0 w-10 bg-gradient-to-r from-popover to-transparent" />
+          <button
+            type="button"
+            aria-label="Scroll providers left"
+            onClick={() => scrollBy(-1)}
+            className="absolute left-0 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-popover text-muted-foreground shadow-sm transition-colors hover:text-foreground"
+          >
+            <CaretLeft className="h-3.5 w-3.5" />
+          </button>
+        </>
+      ) : null}
+
+      {overflow.right ? (
+        <>
+          <div className="pointer-events-none absolute bottom-0 right-9 top-0 w-10 bg-gradient-to-l from-popover to-transparent" />
+          <button
+            type="button"
+            aria-label="Scroll providers right"
+            onClick={() => scrollBy(1)}
+            className="absolute right-9 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-popover text-muted-foreground shadow-sm transition-colors hover:text-foreground"
+          >
+            <CaretRight className="h-3.5 w-3.5" />
+          </button>
+        </>
+      ) : null}
     </div>
   )
 }
@@ -325,28 +463,12 @@ export function ModelPicker({
           }
         >
           <DialogTitle className="sr-only">Select model</DialogTitle>
-          <div className="flex h-full min-h-0 flex-col">
-            {/* Provider tabs — one per custom/top-cloud provider, plus "All".
-                Scroll horizontally when they overflow the dialog width. */}
-            <div className="shrink-0 overflow-x-auto border-b border-border/60">
-              <div className="flex items-center gap-1 px-3">
-                {tabs.map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setActiveTab(tab.key)}
-                    className={cn(
-                      "shrink-0 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
-                      activeTab === tab.key
-                        ? "border-primary text-foreground"
-                        : "border-transparent text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+          {/* `min-w-0` is required: DialogContent is a grid, so without it this
+              item's automatic minimum width grows to fit the widest child (the
+              provider tab row) and the tab strip can never scroll. */}
+          <div className="flex h-full min-h-0 min-w-0 flex-col">
+            {/* Provider tabs — OpenRouter plus one per custom provider. */}
+            <ProviderTabs tabs={tabs} activeTab={activeTab} onSelect={setActiveTab} />
 
             <div className="flex min-h-0 flex-1">
             {/* Left — search + list. On mobile this is full-width and hidden
