@@ -55,6 +55,19 @@ function readDockState(workspaceId?: string): DockState {
   }
 }
 
+/**
+ * Whether this workspace has a saved layout yet. Lets a caller seed a sensible
+ * first-visit dock (see the Skill Studio in {@link AppShell}) without ever
+ * overriding a layout the user has arranged.
+ */
+export function hasStoredDockState(workspaceId?: string): boolean {
+  try {
+    return localStorage.getItem(keyFor(workspaceId)) !== null
+  } catch {
+    return false
+  }
+}
+
 function writeDockState(workspaceId: string | undefined, state: DockState) {
   try {
     const stored: StoredDock = {
@@ -113,6 +126,29 @@ export function useDockState(workspaceId?: string) {
     [update]
   )
 
+  /**
+   * Reveal a panel of `kind`: focus the existing one, or add it if absent.
+   *
+   * Deliberately decided inside the updater rather than from `tabs` in the
+   * caller's closure. On the render where the active workspace changes, that
+   * closure still holds the *previous* workspace's tabs (the reload effect has
+   * not committed yet), so a caller checking `tabs.some(...)` itself would add
+   * a second tab of the same kind. That matters beyond tidiness: a duplicate
+   * file tab means two FileViewers, and `consumePendingFile` hands the pending
+   * "open this file" request to whichever mounts first — leaving the tab the
+   * user is looking at empty.
+   */
+  const ensureTab = useCallback(
+    (kind: DockKind) =>
+      update((prev) => {
+        const existing = prev.tabs.find((t) => t.kind === kind)
+        if (existing) return { ...prev, activeId: existing.id }
+        const tab: DockTab = { id: nextTabId(), kind }
+        return { ...prev, tabs: [...prev.tabs, tab], activeId: tab.id }
+      }),
+    [update]
+  )
+
   const closeTab = useCallback(
     (id: string) =>
       update((prev) => {
@@ -137,6 +173,7 @@ export function useDockState(workspaceId?: string) {
     activeId: state.activeId,
     setCollapsed,
     openTab,
+    ensureTab,
     closeTab,
     selectTab,
   }

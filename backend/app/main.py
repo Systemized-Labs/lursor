@@ -42,11 +42,14 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     settings.apply_env()
     await init_db()
-    # Ship the curated built-in prompt templates on every start (idempotent), and
+    # Ship the curated built-in prompt templates on every start (idempotent),
+    # register the skills catalog as a workspace so it can be chatted with, and
     # reconcile the skills index against the on-disk skill folders so agent runs
     # always see up-to-date skill directories (and pre-folder rows migrate).
+    # The workspace goes in before ``reconcile``, which iterates workspaces.
     async with async_session_factory() as session:
         await seed_prompt_templates(session)
+        await workspaces.ensure_skills_workspace(session)
         await skills.reconcile(session)
     # Run state is in-memory only, so nothing survives a restart: any thread the
     # last process left mid-run would otherwise show a live status pill forever.

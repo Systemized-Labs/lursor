@@ -22,17 +22,24 @@ import {
   Gear,
   SlidersHorizontal,
   ShootingStar,
+  Sparkle,
   Wrench,
   type Icon,
 } from "@phosphor-icons/react"
 
 import { filesApi } from "@/api/files"
+import { useSkills } from "@/api/skills"
 import { threadKeys, threadsApi } from "@/api/threads"
 import { useWorkspaces } from "@/api/workspaces"
-import type { Thread } from "@/api/types"
+import type { Skill, Thread } from "@/api/types"
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from "@/components/ui/dialog"
 import { fileKind } from "@/components/files/file-icon"
 import { requestOpenFile } from "@/lib/open-file"
+import {
+  revealSkill,
+  skillLocation,
+  type SkillLocation,
+} from "@/lib/skill-location"
 import { cn } from "@/lib/utils"
 
 // --- Public API -------------------------------------------------------------
@@ -102,11 +109,12 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
 
 // --- Filters ----------------------------------------------------------------
 
-type Filter = "all" | "agents" | "files" | "actions"
+type Filter = "all" | "agents" | "files" | "skills" | "actions"
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "agents", label: "Agents" },
   { key: "files", label: "Files" },
+  { key: "skills", label: "Skills" },
   { key: "actions", label: "Actions" },
 ]
 
@@ -240,6 +248,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
 
   const { threads, workspaces } = useAllThreads()
   const files = useAllFiles(debouncedQuery, workspaces)
+  const skills = useSkills().data ?? []
 
   const go = useCallback(
     (to: string) => {
@@ -259,6 +268,15 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         name: file.name,
       })
       go(`/workspaces/${file.workspaceId}/chat`)
+    },
+    [go]
+  )
+
+  // Selecting a skill: same trick as a file, aimed at its SKILL.md — the
+  // catalog workspace for a managed skill, the owning repo for a local one.
+  const openSkill = useCallback(
+    (location: NonNullable<ReturnType<typeof skillLocation>>) => {
+      go(revealSkill(location))
     },
     [go]
   )
@@ -284,12 +302,42 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       onSelect: () => openFile(f),
     }))
 
+    // Every skill, deep-linked to its own SKILL.md. Reaching a skill's files
+    // was three clicks through Customization; here it is the name you already
+    // know. Skipped when nothing can open it (a local skill with no workspace).
+    const skillRows: Row[] = skills
+      .filter((s) => !q || s.name.toLowerCase().includes(q) || s.slug.includes(q))
+      .map((s) => ({ skill: s, location: skillLocation(s, workspaces) }))
+      .filter(
+        (entry): entry is { skill: Skill; location: SkillLocation } =>
+          entry.location !== null
+      )
+      .map(({ skill, location }) => ({
+        id: `skill:${skill.id}`,
+        label: skill.name,
+        sublabel: skill.description || undefined,
+        meta: skill.origin === "local" ? "in repo" : undefined,
+        icon: Sparkle,
+        onSelect: () => openSkill(location),
+      }))
+
+    const studio = workspaces.find((ws) => ws.is_system)
     const actionDefs: {
       label: string
       icon: Icon
       to: string
       meta?: string
     }[] = [
+      ...(studio
+        ? [
+            {
+              label: "Skill Studio",
+              icon: Sparkle,
+              to: `/workspaces/${studio.id}/chat`,
+              meta: "write a skill",
+            },
+          ]
+        : []),
       { label: "LAIOS", icon: Cpu, to: "/laios" },
       { label: "Customization", icon: SlidersHorizontal, to: "/customization" },
       { label: "Agents", icon: ShootingStar, to: "/customization?tab=agents" },
@@ -324,13 +372,14 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         title: searching ? "Files" : "Recent Files",
         rows: cap(fileRows),
       },
+      { key: "skills", title: "Skills", rows: cap(skillRows) },
       { key: "actions", title: "Actions", rows: cap(actionRows) },
     ]
 
     return all.filter(
       (s) => (filter === "all" || filter === s.key) && s.rows.length > 0
     )
-  }, [threads, files, q, filter, go, openFile])
+  }, [threads, files, skills, workspaces, q, filter, go, openFile, openSkill])
 
   // Flattened rows drive keyboard navigation across every visible section.
   const flatRows = useMemo(() => sections.flatMap((s) => s.rows), [sections])

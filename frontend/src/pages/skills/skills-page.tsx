@@ -6,10 +6,12 @@ import {
   MagnifyingGlass,
   Pencil,
   Plus,
+  Sparkle,
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { Link, useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 
 import {
@@ -25,6 +27,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
+import { revealSkill, skillLocation } from "@/lib/skill-location"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,6 +46,11 @@ const DESCRIPTION =
 // New skills and imports land in the catalog applying everywhere; narrowing is a
 // click on the row. Reach is an assignment, so nothing here decides a location.
 const IMPORT_TARGET: SkillTarget = { origin: "managed", is_global: true }
+
+// Seeds the Skill Studio composer. Landing on an empty chat rooted in a
+// directory tells you nothing about what to do with it; landing on a half-typed
+// sentence does. Deliberately unfinished — the cursor sits where you continue.
+const STUDIO_DRAFT = "Write me a skill that "
 
 /** Where a skill applies, as the four buckets the page is organised into. */
 type GroupKey = "global" | "assigned" | "local" | "unassigned"
@@ -103,6 +111,7 @@ interface SkillRowProps {
   workspaces: Workspace[]
   workspaceNames: Map<string, string>
   onEdit: (skill: Skill) => void
+  onOpenInWorkspace: (skill: Skill) => void
   onPromote: (skill: Skill) => void
   onDelete: (skill: Skill) => void
 }
@@ -112,6 +121,7 @@ function SkillRow({
   workspaces,
   workspaceNames,
   onEdit,
+  onOpenInWorkspace,
   onPromote,
   onDelete,
 }: SkillRowProps) {
@@ -182,6 +192,13 @@ function SkillRow({
               <Pencil className="h-4 w-4" />
               Edit files
             </DropdownMenuItem>
+            {/* The same files, in a workspace: an agent that can rewrite them, a
+                terminal to run the scripts, and every sibling skill to crib
+                from. Local skills open in the repo that owns them. */}
+            <DropdownMenuItem onSelect={() => onOpenInWorkspace(skill)}>
+              <Sparkle className="h-4 w-4" />
+              {isLocal ? "Open in workspace" : "Open in Skill Studio"}
+            </DropdownMenuItem>
             {isLocal && (
               <DropdownMenuItem onSelect={() => onPromote(skill)}>
                 <ArrowLineUp className="h-4 w-4" />
@@ -208,6 +225,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const promoteSkill = usePromoteSkill()
   const importSkills = useImportSkills()
 
+  const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
   // The skill being edited is tracked by id and re-read from the list, so saving
   // SKILL.md (which can rename the skill) updates the editor's own header.
@@ -225,6 +243,13 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
     () => new Map(workspaces.map((ws) => [ws.id, ws.name])),
     [workspaces]
   )
+  // The catalog directory registered as a workspace: chat, a file tree over
+  // every skill, and a terminal to run their scripts. Registered at startup, so
+  // it is only missing if the backend hasn't finished booting.
+  const skillsWorkspace = workspaces.find((ws) => ws.is_system)
+  const studioHref = skillsWorkspace
+    ? `/workspaces/${skillsWorkspace.id}/chat?draft=${encodeURIComponent(STUDIO_DRAFT)}`
+    : null
   const editing = skills?.find((s) => s.id === editingId)
 
   // Groups replace the old scope dropdown: every skill is visible at once, sorted
@@ -256,6 +281,17 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
 
   function openEdit(skill: Skill) {
     setEditingId(skill.id)
+  }
+
+  /** Leave the manager for the workspace that owns this skill's files. */
+  function openInWorkspace(skill: Skill) {
+    const location = skillLocation(skill, workspaces)
+    if (!location) {
+      toast.error("No workspace can open this skill yet")
+      return
+    }
+    setEditingId(undefined) // in case we came from the editor dialog
+    navigate(revealSkill(location))
   }
 
   async function importFiles(files: File[]) {
@@ -353,6 +389,17 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {studioHref ? (
+        <Button variant="outline" asChild>
+          <Link
+            to={studioHref}
+            title="Open Skill Studio — an agent, a terminal and the file tree over your whole catalog"
+          >
+            <Sparkle className="h-4 w-4" />
+            Author with agent
+          </Link>
+        </Button>
+      ) : null}
       <Button onClick={() => setCreateOpen(true)}>
         <Plus className="h-4 w-4" />
         New skill
@@ -380,12 +427,27 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
       ) : (skills ?? []).length === 0 ? (
         <EmptyState
           title="No skills yet"
-          description="A skill is a folder of instructions an agent loads when it is in scope. Create one, or import a folder you already have."
+          description="A skill is a folder of instructions an agent loads when it is in scope. Describe one and have it written for you, start from a blank SKILL.md, or import a folder you already have."
           action={
-            <Button onClick={() => setCreateOpen(true)}>
-              <Plus className="h-4 w-4" />
-              New skill
-            </Button>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {/* Agent-first: describing the first skill beats staring at an
+                  empty frontmatter form when you've never written one. */}
+              {studioHref ? (
+                <Button asChild>
+                  <Link to={studioHref}>
+                    <Sparkle className="h-4 w-4" />
+                    Describe a skill
+                  </Link>
+                </Button>
+              ) : null}
+              <Button
+                variant={studioHref ? "outline" : "default"}
+                onClick={() => setCreateOpen(true)}
+              >
+                <Plus className="h-4 w-4" />
+                New skill
+              </Button>
+            </div>
           }
         />
       ) : grouped.length === 0 ? (
@@ -418,6 +480,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
                     workspaces={workspaces}
                     workspaceNames={workspaceNames}
                     onEdit={openEdit}
+                    onOpenInWorkspace={openInWorkspace}
                     onPromote={setToPromote}
                     onDelete={setToDelete}
                   />
@@ -438,6 +501,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
         open={Boolean(editing)}
         onOpenChange={(open) => !open && setEditingId(undefined)}
         skill={editing}
+        onOpenInWorkspace={openInWorkspace}
       />
 
       <ConfirmDialog

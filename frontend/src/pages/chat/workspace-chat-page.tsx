@@ -1,6 +1,6 @@
-import { Robot, NotePencil } from "@phosphor-icons/react"
+import { Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useLocation, useParams, useSearchParams } from "react-router-dom"
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useStore } from "zustand"
@@ -179,6 +179,25 @@ export function WorkspaceChatPage() {
     window.history.replaceState({}, "")
     void chat.send(text, atts)
   }, [location.state, cParam, agents, selectedAgentId, chat])
+
+  // A prompt seeded through the URL (`?draft=`) — e.g. "Author with agent" from
+  // the Skills manager. Unlike the hand-off above this never sends: the point is
+  // to land mid-sentence with a cursor, not to fire a half-written request. The
+  // param is stripped once consumed so a reload (or Back) can't overwrite what
+  // has been typed since.
+  const draftParam = searchParams.get("draft")
+  useEffect(() => {
+    if (!draftParam) return
+    setDraft(draftParam)
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete("draft")
+        return next
+      },
+      { replace: true }
+    )
+  }, [draftParam, setSearchParams])
 
   // Switch the active agent and persist it to the open thread. Returns whether
   // the change stuck: on a failed PATCH we revert the local selection (so the
@@ -535,6 +554,24 @@ export function WorkspaceChatPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-0.5">
+            {/* A skill written here lands in the catalog assigned to nothing.
+                Keep the place that fixes that one click away. */}
+            {workspace?.is_system ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
+                asChild
+              >
+                <Link
+                  to="/customization?tab=skills"
+                  title="Manage and assign skills — new ones land unassigned"
+                >
+                  <SquaresFour className="h-4 w-4" />
+                  <span className="hidden sm:inline">Manage skills</span>
+                </Link>
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="icon"
@@ -555,17 +592,42 @@ export function WorkspaceChatPage() {
             <div className="flex h-full items-center justify-center">
               <div className="space-y-3 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/15">
-                  <Robot className="h-7 w-7 text-primary" />
+                  {workspace?.is_system && !noAgents ? (
+                    <Sparkle className="h-7 w-7 text-primary" />
+                  ) : (
+                    <Robot className="h-7 w-7 text-primary" />
+                  )}
                 </div>
+                {/* The studio is a directory of skills, which an empty chat does
+                    nothing to convey. Say what this place can do, and where the
+                    result of doing it shows up. */}
                 <div className="space-y-1">
                   <p className="text-sm font-semibold text-foreground">
-                    {noAgents ? "No agents yet" : "Start the conversation"}
+                    {noAgents
+                      ? "No agents yet"
+                      : workspace?.is_system
+                        ? "Skill Studio"
+                        : "Start the conversation"}
                   </p>
-                  <p className="mx-auto max-w-[16rem] text-xs text-muted-foreground">
+                  <p className="mx-auto max-w-[18rem] text-xs text-muted-foreground">
                     {noAgents
                       ? "Create an agent in Customization to start chatting."
-                      : "Pick an agent above and send the first message."}
+                      : workspace?.is_system
+                        ? "Ask for a skill and it gets written into your catalog — SKILL.md, references and scripts. Every existing skill is in the file tree to crib from, and the terminal runs their scripts."
+                        : "Pick an agent above and send the first message."}
                   </p>
+                  {workspace?.is_system && !noAgents ? (
+                    <p className="mx-auto max-w-[18rem] pt-1 text-xs text-muted-foreground">
+                      New skills arrive unassigned — pick where they apply in{" "}
+                      <Link
+                        to="/customization?tab=skills"
+                        className="font-medium text-foreground underline underline-offset-2"
+                      >
+                        Skills
+                      </Link>
+                      .
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </div>

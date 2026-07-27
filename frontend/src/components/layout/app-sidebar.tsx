@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   SlidersHorizontal,
+  Sparkle,
   Trash,
   X,
 } from "@phosphor-icons/react"
@@ -239,10 +240,11 @@ export function AppSidebar() {
     })
   }
 
+  const openWorkspace = (id: string) =>
+    setOpenWorkspaces((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+
   const newConversation = (workspaceId: string) => {
-    setOpenWorkspaces((prev) =>
-      prev.has(workspaceId) ? prev : new Set(prev).add(workspaceId)
-    )
+    openWorkspace(workspaceId)
     navigate(`/workspaces/${workspaceId}/chat`)
     closeMobile()
   }
@@ -371,8 +373,31 @@ export function AppSidebar() {
     }
   }
 
-  const workspaces = workspacesQuery.data ?? []
+  // Skill Studio is a fixed destination, not one of your projects: it lives in
+  // Platform above the Workspaces group. Still rendered as a workspace row
+  // there, so conversations about skills nest under it and stay resumable.
+  const allWorkspaces = workspacesQuery.data ?? []
+  const skillStudio = allWorkspaces.find((ws) => ws.is_system)
+  const workspaces = allWorkspaces.filter((ws) => !ws.is_system)
   const orderedWorkspaceIds = workspaces.map((ws) => ws.id)
+
+  // Entering the studio expands it, however you got there — its own row, the
+  // manager's "Author with agent", a skill deep link, the palette. Otherwise you
+  // land inside a workspace whose sidebar row still looks shut. Only on the way
+  // *in*: collapsing it by hand while you're already there has to stick, which a
+  // plain `activeWorkspaceId === id` effect would undo on the next render.
+  const studioId = skillStudio?.id
+  const prevActiveWorkspace = useRef(activeWorkspaceId)
+  useEffect(() => {
+    const entered = prevActiveWorkspace.current !== activeWorkspaceId
+    prevActiveWorkspace.current = activeWorkspaceId
+    if (entered && studioId && activeWorkspaceId === studioId) {
+      openWorkspace(studioId)
+    }
+    // `openWorkspace` is a stable state setter wrapper; re-running on identity
+    // would fire this on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspaceId, studioId])
 
   return (
     <Sidebar collapsible="icon">
@@ -419,7 +444,10 @@ export function AppSidebar() {
       <SidebarContent className="overflow-hidden">
         <SidebarGroup className="shrink-0">
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
-          <SidebarGroupContent>
+          {/* Fixed-height group, except that Skill Studio's conversations hang
+              off it — cap the growth and scroll, so a busy studio can never
+              push the workspace list out of the viewport. */}
+          <SidebarGroupContent className="scrollbar-hover max-h-[55vh] overflow-y-auto group-data-[collapsible=icon]:overflow-hidden">
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton
@@ -463,6 +491,54 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
+              {/* A destination like the rest of this group, but a real
+                  workspace underneath — so it keeps the folder's expandable
+                  conversation list. Not selectable: it can't be bulk-deleted
+                  (the API refuses), so it stays out of range selection too. */}
+              {skillStudio ? (
+                <WorkspaceRow
+                  workspaceId={skillStudio.id}
+                  name={skillStudio.name}
+                  isSystem
+                  isOpen={openWorkspaces.has(skillStudio.id)}
+                  isActive={activeWorkspaceId === skillStudio.id}
+                  isSelected={false}
+                  selection={selection}
+                  onSelect={() => {}}
+                  activeThreadId={activeThreadId}
+                  activeRuns={activeRuns}
+                  // A nav item should navigate. Coming from outside, clicking
+                  // only travels — the effect above does the expanding, so an
+                  // already-open studio can't get collapsed by the click that
+                  // enters it. Once inside, it's a plain folder toggle;
+                  // navigating again would drop the `?c=` and reset the open
+                  // conversation.
+                  onToggle={() => {
+                    if (activeWorkspaceId === skillStudio.id) {
+                      toggleWorkspace(skillStudio.id)
+                      return
+                    }
+                    navigate(`/workspaces/${skillStudio.id}/chat`)
+                    closeMobile()
+                  }}
+                  onNewConversation={() => newConversation(skillStudio.id)}
+                  onNavigate={closeMobile}
+                  onRename={(t) => {
+                    setRenameTarget(t)
+                    setRenameValue(t.title)
+                  }}
+                  onDelete={setDeleteTarget}
+                  onRenameWorkspace={() => {
+                    setRenameWsTarget({
+                      id: skillStudio.id,
+                      name: skillStudio.name,
+                    })
+                    setRenameWsValue(skillStudio.name)
+                  }}
+                  onDeleteWorkspace={() => {}}
+                  onCloneWorkspace={() => {}}
+                />
+              ) : null}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -531,6 +607,7 @@ export function AppSidebar() {
                     key={ws.id}
                     workspaceId={ws.id}
                     name={ws.name}
+                    isSystem={ws.is_system}
                     isOpen={openWorkspaces.has(ws.id)}
                     isActive={activeWorkspaceId === ws.id}
                     isSelected={selection.isWorkspaceSelected(ws.id)}
@@ -779,6 +856,8 @@ interface WorkspaceTarget {
 interface WorkspaceRowProps {
   workspaceId: string
   name: string
+  /** App-owned (the skills catalog): distinct glyph, no delete, no clone. */
+  isSystem: boolean
   isOpen: boolean
   isActive: boolean
   isSelected: boolean
@@ -799,6 +878,7 @@ interface WorkspaceRowProps {
 function WorkspaceRow({
   workspaceId,
   name,
+  isSystem,
   isOpen,
   isActive,
   isSelected,
@@ -849,7 +929,11 @@ function WorkspaceRow({
                 "bg-primary/15 text-foreground hover:bg-primary/20 data-[active=true]:bg-primary/25"
             )}
           >
-            {isOpen ? (
+            {/* The skills catalog keeps one glyph open or closed — it reads as
+                a destination rather than a folder you filed things into. */}
+            {isSystem ? (
+              <Sparkle className="size-4" />
+            ) : isOpen ? (
               <FolderOpen className="size-4" />
             ) : (
               <Folder className="size-4" />
@@ -862,17 +946,23 @@ function WorkspaceRow({
             <Pencil className="size-4" />
             Rename
           </ContextMenuItem>
-          <ContextMenuItem onSelect={onCloneWorkspace}>
-            <GitBranch className="size-4" />
-            Clone repo
-          </ContextMenuItem>
-          <ContextMenuItem
-            className="text-destructive focus:text-destructive"
-            onSelect={onDeleteWorkspace}
-          >
-            <Trash className="size-4" />
-            Delete
-          </ContextMenuItem>
+          {/* Delete is refused by the API; cloning a repo into the catalog
+              would strew a checkout through your skills. Offer neither. */}
+          {isSystem ? null : (
+            <>
+              <ContextMenuItem onSelect={onCloneWorkspace}>
+                <GitBranch className="size-4" />
+                Clone repo
+              </ContextMenuItem>
+              <ContextMenuItem
+                className="text-destructive focus:text-destructive"
+                onSelect={onDeleteWorkspace}
+              >
+                <Trash className="size-4" />
+                Delete
+              </ContextMenuItem>
+            </>
+          )}
         </ContextMenuContent>
       </ContextMenu>
 

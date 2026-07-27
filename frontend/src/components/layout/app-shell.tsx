@@ -15,7 +15,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import { useDockState } from "@/hooks/use-dock-state"
+import { hasStoredDockState, useDockState } from "@/hooks/use-dock-state"
 import type { DockKind } from "@/hooks/use-dock-state"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePreviewWatch } from "@/hooks/use-preview-watch"
@@ -97,6 +97,20 @@ export function AppShell() {
     }
   }, [workspaceId, isMobile])
 
+  // First visit to the Skill Studio: open the Files panel. Its whole point is
+  // the tree over every skill, and a blank right-hand side hides that the dock
+  // is even there. Only when nothing is stored for this workspace — after that
+  // the layout is the user's, closed dock included.
+  const seededDockRef = useRef<string | null>(null)
+  useEffect(() => {
+    const isStudio = workspaceForTitle.data?.is_system === true
+    if (!isStudio || !workspaceId || isMobile) return
+    if (seededDockRef.current === workspaceId) return
+    seededDockRef.current = workspaceId
+    if (hasStoredDockState(workspaceId)) return
+    dock.ensureTab("file")
+  }, [workspaceForTitle.data?.is_system, workspaceId, isMobile, dock])
+
   // Global "open this file" requests (from the command palette) land here: once
   // we're on the target workspace, reveal the dock and ensure a file tab so the
   // editor mounts and can pick the request up.
@@ -121,7 +135,7 @@ export function AppShell() {
       }
       return
     }
-    if (!dock.tabs.some((t) => t.kind === "file")) dock.openTab("file")
+    dock.ensureTab("file")
     dock.setCollapsed(false)
   }, [openFileTick, workspaceId, dock, isMobile])
 
@@ -142,7 +156,7 @@ export function AppShell() {
       showMobileKind("preview")
       return
     }
-    if (!dock.tabs.some((t) => t.kind === "preview")) dock.openTab("preview")
+    dock.ensureTab("preview")
     dock.setCollapsed(false)
   }, [openPreviewTick, workspaceId, dock, isMobile, showMobileKind])
 

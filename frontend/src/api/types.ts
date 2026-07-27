@@ -298,6 +298,9 @@ export interface Workspace {
   name: string
   description: string
   path: string
+  // App-owned workspace (the skills catalog). Computed from the path server
+  // side; can be renamed but not deleted or relocated.
+  is_system: boolean
   created_at: string
   updated_at: string
 }

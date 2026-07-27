@@ -1,4 +1,4 @@
-import { FilePlus, Trash } from "@phosphor-icons/react"
+import { FilePlus, Sparkle, Trash } from "@phosphor-icons/react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
@@ -38,6 +38,8 @@ interface SkillEditorDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   skill: Skill | undefined
+  /** Trade the dialog for the workspace that owns these files (agent + terminal). */
+  onOpenInWorkspace: (skill: Skill) => void
 }
 
 /**
@@ -52,14 +54,15 @@ export function SkillEditorDialog({
   open,
   onOpenChange,
   skill,
+  onOpenInWorkspace,
 }: SkillEditorDialogProps) {
   // The editor lives in a keyed child, so its buffers reset per skill; the count
   // of unsaved buffers is mirrored here to guard closing.
   const dirtyRef = useRef(0)
 
-  function handleOpenChange(next: boolean) {
+  /** Close, confirming first if buffers are dirty. Returns whether it closed. */
+  function handleClose(): boolean {
     if (
-      !next &&
       dirtyRef.current > 0 &&
       !window.confirm(
         `Discard unsaved changes to ${dirtyRef.current} file${
@@ -67,9 +70,18 @@ export function SkillEditorDialog({
         }?`
       )
     ) {
-      return
+      return false
     }
     dirtyRef.current = 0
+    onOpenChange(false)
+    return true
+  }
+
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      handleClose()
+      return
+    }
     onOpenChange(next)
   }
 
@@ -83,6 +95,11 @@ export function SkillEditorDialog({
             onDirtyCount={(n) => {
               dirtyRef.current = n
             }}
+            // Route the handoff through the same close guard, so leaving for the
+            // workspace can't silently drop unsaved buffers.
+            onOpenInWorkspace={() => {
+              if (handleClose()) onOpenInWorkspace(skill)
+            }}
           />
         ) : null}
       </DialogContent>
@@ -93,9 +110,14 @@ export function SkillEditorDialog({
 interface SkillEditorProps {
   skill: Skill
   onDirtyCount: (count: number) => void
+  onOpenInWorkspace: () => void
 }
 
-function SkillEditor({ skill, onDirtyCount }: SkillEditorProps) {
+function SkillEditor({
+  skill,
+  onDirtyCount,
+  onOpenInWorkspace,
+}: SkillEditorProps) {
   const qc = useQueryClient()
   const deleteFile = useDeleteSkillFile()
   const [listHidden, setListHidden] = useState(false)
@@ -193,17 +215,32 @@ function SkillEditor({ skill, onDirtyCount }: SkillEditorProps) {
 
   return (
     <>
-      <DialogHeader className="shrink-0 space-y-0.5 border-b border-border/60 px-4 py-3 pr-12 text-left">
-        <DialogTitle className="truncate text-base text-foreground">
-          {skill.name}
-        </DialogTitle>
-        <DialogDescription className="text-xs">
-          {skill.origin === "local"
-            ? "Lives in this workspace's .agents/skills folder."
-            : "Lives in your skills catalog."}{" "}
-          Editing SKILL.md updates the name and description too — they are its
-          frontmatter.
-        </DialogDescription>
+      <DialogHeader className="shrink-0 flex-row items-start gap-3 space-y-0 border-b border-border/60 px-4 py-3 pr-12 text-left">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <DialogTitle className="truncate text-base text-foreground">
+            {skill.name}
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            {skill.origin === "local"
+              ? "Lives in this workspace's .agents/skills folder."
+              : "Lives in your skills catalog."}{" "}
+            Editing SKILL.md updates the name and description too — they are its
+            frontmatter.
+          </DialogDescription>
+        </div>
+        {/* This dialog is the editor without the workspace around it. When the
+            job needs an agent to write the thing, or a terminal to run a script
+            it bundles, this is the way out. */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={onOpenInWorkspace}
+          title="Open these files in a workspace, with an agent and a terminal"
+        >
+          <Sparkle className="h-4 w-4" />
+          {skill.origin === "local" ? "Open in workspace" : "Open in Skill Studio"}
+        </Button>
       </DialogHeader>
 
       <div className="flex min-h-0 flex-1 flex-col">
