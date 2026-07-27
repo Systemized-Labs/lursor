@@ -39,7 +39,9 @@ from app.agents.deep_defaults import (
     resolve_subagent_defaults,
 )
 from app.agents.tolerant_model import TolerantOpenAIChatModel
+from app.agents.tool_errors import ToolErrorsAsText
 from app.agents.vision import make_view_image_tool
+from app.agents.web_fetch import build_web_fetch_capability
 from app.agents.web_search import (
     DEFAULT_WEB_SEARCH_PROVIDER,
     build_web_search_capability,
@@ -156,6 +158,24 @@ def _environment_instructions(
             "(e.g. `path/to/file.py:42`).",
         ]
     )
+
+# Per-tool retry budget, up from the pydantic-deep default of 3.
+#
+# A "retry" here is a ``ModelRetry`` or an argument-validation failure fed back to
+# the model; the count is per tool name and *consecutive* (pydantic-ai rebuilds it
+# each step from the tools that failed in that step, so one success clears it).
+# Exhausting it raises ``UnexpectedModelBehavior`` and aborts the turn.
+#
+# 5 rather than 3 because the models most likely to need the extra attempts are
+# small local ones getting a tool schema slightly wrong, and the cost of being
+# generous is trivial: at worst two more model rounds out of the 150-round turn
+# budget (``_MAX_TURN_REQUESTS`` in api/chat.py). Per-agent overrides go through
+# the ``extra_config`` escape hatch, which wins over this default.
+#
+# Note this is deliberately not the answer to environmental failures dressed up as
+# ``ModelRetry`` — see agents/web_fetch.py, which returns those to the model as
+# text so they never consume this budget at all.
+_TOOL_RETRIES = 5
 
 # Prefix on a stored model string that marks a locally-hosted custom provider.
 # Format: "custom:{provider_id}:{model_name}" (model_name may itself contain
@@ -689,8 +709,8 @@ def build_deep_agent(
             # built-in stays a plain config so the library builds it as before.
             subagent_configs.append(_config(override) if override else dict(builtin))
 
-    # `subagents` and the managed subagent-default knobs may also be supplied via
-    # the extra_config escape hatch; where they are, let it win rather than passing
+    # Every library knob we set a non-default value for may also be supplied via
+    # the extra_config escape hatch; where it is, let it win rather than passing
     # the keyword twice.
     extra_config = dict(row.extra_config)
     subagents_kwarg = (
@@ -703,6 +723,8 @@ def build_deep_agent(
         managed_kwargs["include_builtin_subagents"] = False
     if "max_nesting_depth" not in extra_config:
         managed_kwargs["max_nesting_depth"] = resolved_defaults["max_nesting_depth"]
+    if "retries" not in extra_config:
+        managed_kwargs["retries"] = _TOOL_RETRIES
 
     # view_image is always available so any agent can inspect user-attached
     # media (and workspace images) via the dedicated vision model, regardless of
@@ -714,6 +736,13 @@ def build_deep_agent(
     # capability. Merge with any capabilities supplied through the escape hatch
     # so we never pass the keyword twice.
     capabilities = list(extra_config.pop("capabilities", []) or [])
+
+    # First in the list on purpose — it is a fallback, and the combined capability
+    # consults error hooks in reverse order (see ``ToolErrorsAsText``). Without it
+    # a single unhandled tool exception (a `web_search` rate-limit, say) kills the
+    # turn outright, with no retry and no way for the model to react.
+    capabilities.insert(0, ToolErrorsAsText())
+
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
     elif plan_mode:
@@ -745,6 +774,15 @@ def build_deep_agent(
             )
         )
     library_web_search = row.web_search and not use_custom_web_search
+
+    # Web fetch: same shape as the custom web-search path — build the capability
+    # ourselves and suppress the library's (``web_fetch=False``) so the tool isn't
+    # registered twice. Ours differs from ``WebFetch(local=True)`` only in that a
+    # failed fetch returns text instead of burning retry budget and eventually
+    # killing the turn; see agents/web_fetch.py.
+    if "web_fetch" not in extra_config:
+        capabilities.append(build_web_fetch_capability())
+        managed_kwargs["web_fetch"] = False
 
     # Browser QA: give executing agents a headless browser to see and test the app
     # they build (see ``browser_qa.py``). A fresh capability per build keeps its

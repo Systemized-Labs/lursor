@@ -136,7 +136,14 @@ def make_view_image_tool(
 
         if not resolved.is_file():
             return f"Error: no such image file: {image_path}"
-        raw = resolved.read_bytes()
+        try:
+            raw = resolved.read_bytes()
+        except OSError as exc:
+            # is_file() above doesn't make the read safe: permissions, a deleted
+            # file, or an unreadable mount all raise here. Every other failure in
+            # this tool is text, so this one must be too — an exception escaping a
+            # tool body aborts the whole run.
+            return f"Error: could not read image {image_path!r}: {exc}"
         return await describe_image_bytes(raw, mime_for_path(resolved), question)
 
     return view_image
