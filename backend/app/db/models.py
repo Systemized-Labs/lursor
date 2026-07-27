@@ -325,6 +325,16 @@ class CustomProvider(TimestampMixin, table=True):
     name: str = Field(index=True)  # display name, e.g. "Local Ollama"
     base_url: str = ""  # OpenAI-compatible base, e.g. "http://localhost:11434/v1"
     api_key: str | None = None  # optional; local servers usually don't require one
+    # Fallback model IDs for endpoints that serve inference but don't expose a
+    # usable ``/models`` (auth-gated or simply unimplemented). Comma- or
+    # newline-separated; used only when discovery yields nothing, so a provider
+    # whose catalogue *is* readable keeps updating itself automatically.
+    manual_models: str = ""
+
+    def manual_model_ids(self) -> list[str]:
+        """Split :attr:`manual_models` into a clean list of model IDs."""
+        entries = self.manual_models.replace("\n", ",").split(",")
+        return [entry.strip() for entry in entries if entry.strip()]
 
 
 class LaiosConnection(TimestampMixin, table=True):

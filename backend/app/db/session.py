@@ -187,6 +187,14 @@ async def _apply_lightweight_migrations(conn) -> None:
     if "require_plan_approval" in thread_cols:
         await conn.execute(text("ALTER TABLE threads DROP COLUMN require_plan_approval"))
 
+    # Manually-listed model IDs for providers that don't expose ``/models``.
+    # Existing rows default to "" and keep relying on discovery alone.
+    provider_cols = await columns("custom_providers")
+    if "manual_models" not in provider_cols:
+        await conn.execute(
+            text("ALTER TABLE custom_providers ADD COLUMN manual_models VARCHAR DEFAULT ''")
+        )
+
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency that yields a database session per request."""

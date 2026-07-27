@@ -168,6 +168,12 @@ async def _custom_group(provider: CustomProvider) -> dict[str, Any] | None:
 
     Returns a picker group, or ``None`` if the endpoint is unreachable so one
     dead provider can't blank out the whole catalogue.
+
+    Discovery is best-effort: some endpoints serve ``/chat/completions`` happily
+    while ``/models`` is auth-gated or unimplemented (e.g. an inference server
+    behind a gateway that only proxies the completion routes). Those providers
+    fall back to ``manual_models`` so their models are still selectable — without
+    it the provider would be dropped here and there'd be no way to pick it.
     """
     base = provider.base_url.rstrip("/")
     if not base:
@@ -176,28 +182,37 @@ async def _custom_group(provider: CustomProvider) -> dict[str, Any] | None:
     if provider.api_key:
         headers["Authorization"] = f"Bearer {provider.api_key}"
 
+    raw: list[dict[str, Any]] = []
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{base}/models", headers=headers)
             resp.raise_for_status()
             raw = resp.json().get("data", [])
-    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
         logger.warning("models: custom provider %r unreachable: %s", provider.name, exc)
-        return None
 
-    models: list[dict[str, Any]] = []
-    for m in raw:
-        model_id = m.get("id", "")
-        if not model_id:
-            continue
-        models.append(
+    model_ids = [m.get("id", "") for m in raw if isinstance(m, dict)]
+    model_ids = [model_id for model_id in model_ids if model_id]
+    if not model_ids:
+        model_ids = provider.manual_model_ids()
+        if model_ids:
+            logger.info(
+                "models: custom provider %r using %d manually-listed model(s)",
+                provider.name,
+                len(model_ids),
+            )
+
+    if not model_ids:
+        return None
+    return {
+        "label": provider.name,
+        "models": [
             {
                 "id": model_id,
                 "label": model_id,
                 "name": model_id,
                 "value": f"{CUSTOM_PREFIX}{provider.id}:{model_id}",
             }
-        )
-    if not models:
-        return None
-    return {"label": provider.name, "models": models}
+            for model_id in model_ids
+        ],
+    }

@@ -24,17 +24,20 @@ import {
 } from "@/components/ui/responsive-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 
 interface FormState {
   name: string
   baseUrl: string
   apiKey: string
+  manualModels: string
 }
 
 const EMPTY: FormState = {
   name: "",
   baseUrl: "",
   apiKey: "",
+  manualModels: "",
 }
 
 interface ProviderFormDialogProps {
@@ -65,6 +68,7 @@ export function ProviderFormDialog({
               name: provider.name,
               baseUrl: provider.base_url,
               apiKey: provider.api_key ?? "",
+              manualModels: provider.manual_models ?? "",
             }
           : EMPTY
       )
@@ -83,6 +87,7 @@ export function ProviderFormDialog({
         name: form.name.trim() || "test",
         base_url: form.baseUrl.trim(),
         api_key: form.apiKey.trim() || null,
+        manual_models: form.manualModels.trim(),
       })
       setTestResult(result)
     } catch (err) {
@@ -110,6 +115,7 @@ export function ProviderFormDialog({
       name: form.name.trim(),
       base_url: form.baseUrl.trim(),
       api_key: form.apiKey.trim() || null,
+      manual_models: form.manualModels.trim(),
     }
 
     try {
@@ -178,19 +184,45 @@ export function ProviderFormDialog({
               autoComplete="off"
             />
           </div>
+          <div className="grid gap-2">
+            <Label htmlFor="provider-models">Model IDs (optional)</Label>
+            <Textarea
+              id="provider-models"
+              placeholder={"moonshotai/Kimi-K3\nqwen/Qwen3-Coder"}
+              value={form.manualModels}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, manualModels: e.target.value }))
+              }
+              className="min-h-[72px] font-mono text-sm"
+              spellCheck={false}
+            />
+            <p className="text-xs text-muted-foreground">
+              Only needed if the endpoint doesn't serve a readable{" "}
+              <code>/models</code> list. One ID per line (or comma-separated);
+              these are used as a fallback so the models still appear in the
+              picker.
+            </p>
+          </div>
 
           {testResult ? (
             testResult.status === "ok" ? (
-              <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-foreground">
-                <CheckCircle className="h-4 w-4 shrink-0 text-success" />
-                <span>
-                  Connected
-                  {typeof testResult.model_count === "number"
-                    ? ` — ${testResult.model_count} model${
-                        testResult.model_count === 1 ? "" : "s"
-                      } available.`
-                    : "."}
-                </span>
+              <div className="flex items-start gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-foreground">
+                <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                <div className="grid gap-1">
+                  <span>
+                    Connected
+                    {typeof testResult.model_count === "number"
+                      ? ` — ${testResult.model_count} model${
+                          testResult.model_count === 1 ? "" : "s"
+                        } available.`
+                      : "."}
+                  </span>
+                  {testResult.note ? (
+                    <span className="text-xs text-muted-foreground">
+                      {testResult.note}
+                    </span>
+                  ) : null}
+                </div>
               </div>
             ) : (
               <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground">

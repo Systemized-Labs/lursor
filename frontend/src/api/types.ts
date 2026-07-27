@@ -369,6 +369,8 @@ export interface CustomProvider {
   name: string
   base_url: string
   api_key: string | null
+  /** Comma/newline-separated model IDs, used when /models isn't readable. */
+  manual_models: string
   created_at: string
   updated_at: string
 }
@@ -377,11 +379,14 @@ export interface CustomProviderInput {
   name: string
   base_url: string
   api_key?: string | null
+  manual_models?: string
 }
 export interface ProviderHealth {
   status: "ok" | "error"
   model_count: number | null
   error: string | null
+  /** Caveat on an otherwise-ok result, e.g. discovery fell back to manual IDs. */
+  note?: string | null
 }
 
 /** The user's GitHub connection status (token is never returned in full). */

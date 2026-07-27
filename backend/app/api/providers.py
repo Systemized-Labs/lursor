@@ -34,9 +34,32 @@ async def _probe_provider(provider: CustomProvider) -> ProviderHealth:
     Mirrors how ``models._custom_group`` fetches the catalogue, but instead of
     silently dropping a failing provider it reports *why* it failed so the UI can
     surface it (unreachable, bad key, empty catalogue, …).
+
+    A provider with ``manual_models`` set is still usable when ``/models`` fails
+    — that's the whole point of the field — so those failures are reported as
+    ``ok`` with a ``note`` naming the discovery problem, matching what
+    ``_custom_group`` will actually put in the picker.
     """
+    manual = provider.manual_model_ids()
+
+    def failed(reason: str) -> ProviderHealth:
+        """Report a discovery failure, softened to ``ok`` if manual IDs exist."""
+        if manual:
+            detail = reason.rstrip(".")
+            return ProviderHealth(
+                status="ok",
+                model_count=len(manual),
+                note=(
+                    f"Using {len(manual)} manually-listed model"
+                    f"{'' if len(manual) == 1 else 's'} — the endpoint's own "
+                    f"model list wasn't usable ({detail[0].lower()}{detail[1:]})."
+                ),
+            )
+        return ProviderHealth(status="error", error=reason)
+
     base = provider.base_url.rstrip("/")
     if not base:
+        # Not rescuable by manual IDs: with no base URL there's nothing to call.
         return ProviderHealth(status="error", error="No base URL configured.")
 
     headers = {"Accept": "application/json"}
@@ -47,45 +70,32 @@ async def _probe_provider(provider: CustomProvider) -> ProviderHealth:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{base}/models", headers=headers)
     except httpx.TimeoutException:
-        return ProviderHealth(
-            status="error", error="Timed out reaching the endpoint (5s)."
-        )
+        return failed("Timed out reaching the endpoint (5s).")
     except httpx.RequestError as exc:
         logger.warning("health: %r unreachable: %s", provider.name, exc)
-        return ProviderHealth(
-            status="error",
-            error=(
-                "Could not reach the endpoint — check the base URL and that "
-                "the server is running."
-            ),
+        return failed(
+            "Could not reach the endpoint — check the base URL and that "
+            "the server is running."
         )
 
     if resp.status_code in (401, 403):
-        return ProviderHealth(
-            status="error",
-            error=(
-                "Authentication failed — this endpoint requires an API key "
-                "(or the key is wrong)."
-            ),
+        return failed(
+            "Authentication failed — this endpoint requires an API key "
+            "(or the key is wrong)."
         )
     if resp.status_code >= 400:
-        return ProviderHealth(
-            status="error",
-            error=f"Endpoint returned HTTP {resp.status_code}.",
-        )
+        return failed(f"Endpoint returned HTTP {resp.status_code}.")
 
     try:
         data = resp.json().get("data", [])
     except ValueError:
-        return ProviderHealth(
-            status="error", error="Response was not valid JSON — is this an OpenAI-compatible URL?"
+        return failed(
+            "Response was not valid JSON — is this an OpenAI-compatible URL?"
         )
 
     count = sum(1 for m in data if isinstance(m, dict) and m.get("id"))
     if count == 0:
-        return ProviderHealth(
-            status="error", error="Reachable, but the endpoint returned no models."
-        )
+        return failed("Reachable, but the endpoint returned no models.")
     return ProviderHealth(status="ok", model_count=count)
 
 
