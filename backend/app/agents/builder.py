@@ -7,6 +7,7 @@ filesystem is rooted at the workspace directory via a ``LocalBackend``.
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -170,32 +171,77 @@ OPENROUTER_PREFIX = "openrouter:"
 # that aborts the whole agent turn. Statuses we retry rather than propagate.
 _OPENROUTER_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 
-# Process-shared HTTP client for every local (custom) provider. pydantic-ai's
-# default client caps read/write/pool at 600s, which aborts a single long local
-# generation (big reasoning outputs, slow prefill) mid-stream. We disable the
-# read timeout (`read=None`) so streaming has no wall-clock ceiling here — the
-# LiteLLM gateway's own `request_timeout` is the authoritative backstop against a
-# genuinely stuck upstream. Connect/write/pool stay finite so setup faults still
-# surface. Shared (not per-request): OpenAIProvider does NOT own/close a
-# passed-in client, and the agent is rebuilt per turn, so a fresh client each
-# time would leak connections. Lazily created to stay off the import path.
-_LOCAL_HTTP_TIMEOUT = httpx.Timeout(timeout=30.0, connect=15.0, read=None)
+# Keep-alive probes on every model connection, so a peer that dies without
+# sending a FIN (tunnel drop, NAT/idle reaping, host vanishing mid-stream) is
+# detected at the socket layer instead of looking permanently healthy. This is
+# the backstop *under* the read timeout below: it fails the socket outright,
+# which also covers the case where the gateway keeps trickling bytes but the
+# path to the real upstream is gone. Values are conservative — first probe after
+# 60s idle, then every 15s, dead after 4 unanswered (~2min worst case).
+#
+# TCP_KEEPINTVL/TCP_KEEPCNT are Linux-only names in Python's socket module; macOS
+# exposes TCP_KEEPALIVE for the idle time instead of TCP_KEEPIDLE. Each option is
+# added only if this platform defines it, so the list degrades gracefully rather
+# than raising on import.
+def _keepalive_socket_options() -> list[tuple[int, int, int]]:
+    """Portable TCP keep-alive socket options for the shared model clients."""
+    options: list[tuple[int, int, int]] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    for name, value in (
+        ("TCP_KEEPIDLE", 60),  # Linux: idle seconds before the first probe
+        ("TCP_KEEPALIVE", 60),  # macOS: same knob, different name
+        ("TCP_KEEPINTVL", 15),  # seconds between probes
+        ("TCP_KEEPCNT", 4),  # unanswered probes before the socket is dead
+    ):
+        option = getattr(socket, name, None)
+        if option is not None:
+            options.append((socket.IPPROTO_TCP, option, value))
+    return options
+
+
+# Process-shared HTTP client for every local (custom) provider.
+#
+# `read` is deliberately finite but generous: httpx applies it per socket read,
+# so it *resets on every chunk*. A long local generation (big reasoning output,
+# slow prefill) streams for as long as it wants without tripping it — only a
+# stream that stops producing bytes entirely does. It was previously `read=None`
+# on the theory that the LiteLLM gateway's own `request_timeout` was a sufficient
+# backstop; it isn't. When the connection to the gateway dies mid-stream the
+# gateway never learns a request is in flight, so nothing anywhere holds a
+# stopwatch and the run hangs forever (observed: a 90-minute-dead turn on an
+# ESTABLISHED socket with an empty receive queue). Connect/write/pool stay finite
+# so setup faults still surface.
+#
+# Shared (not per-request): OpenAIProvider does NOT own/close a passed-in client,
+# and the agent is rebuilt per turn, so a fresh client each time would leak
+# connections. Lazily created to stay off the import path — and so the timeout
+# reflects settings at first use rather than import time.
 _local_http_client: httpx.AsyncClient | None = None
+
+
+def _model_http_timeout() -> httpx.Timeout:
+    """Timeout policy shared by both model clients (see the note above)."""
+    return httpx.Timeout(
+        timeout=30.0,
+        connect=15.0,
+        read=get_settings().model_stream_stall_timeout,
+    )
 
 
 def _shared_local_http_client() -> httpx.AsyncClient:
     """Return the process-wide client used for local OpenAI-compatible providers."""
     global _local_http_client
     if _local_http_client is None or _local_http_client.is_closed:
-        _local_http_client = httpx.AsyncClient(timeout=_LOCAL_HTTP_TIMEOUT)
+        _local_http_client = httpx.AsyncClient(
+            transport=httpx.AsyncHTTPTransport(socket_options=_keepalive_socket_options()),
+            timeout=_model_http_timeout(),
+        )
     return _local_http_client
 
 
 # Process-shared retrying client for OpenRouter. Same lazy/shared rationale as
-# the local client: the provider does not own it and the agent is rebuilt per
-# turn. Streaming has no read ceiling (`read=None`); connect/write/pool stay
-# finite so setup faults still surface.
-_OPENROUTER_HTTP_TIMEOUT = httpx.Timeout(timeout=30.0, connect=15.0, read=None)
+# the local client, and the same finite per-chunk read timeout and keep-alive
+# probes — a cloud gateway's connection can drop mid-stream just as a tunnelled
+# local one can, and `read=None` stranded the run identically.
 _openrouter_http_client: httpx.AsyncClient | None = None
 
 
@@ -226,9 +272,13 @@ def _shared_openrouter_http_client() -> httpx.AsyncClient:
                 reraise=True,
             ),
             validate_response=_raise_on_retryable,
+            # Retry on top of a keep-alive-probing transport rather than the
+            # default one, so the retry layer and the socket-level dead-peer
+            # detection compose instead of the latter being lost.
+            wrapped=httpx.AsyncHTTPTransport(socket_options=_keepalive_socket_options()),
         )
         _openrouter_http_client = httpx.AsyncClient(
-            transport=transport, timeout=_OPENROUTER_HTTP_TIMEOUT
+            transport=transport, timeout=_model_http_timeout()
         )
     return _openrouter_http_client
 

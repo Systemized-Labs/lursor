@@ -402,6 +402,49 @@ async def _set_thread_state(
         await bg_session.commit()
 
 
+# In-flight statuses: a live background task is expected to move each of these on
+# to a terminal state. `awaiting_approval` is deliberately absent — a parked plan
+# is *meant* to outlive the process and is cleared by the user's next turn.
+_INTERRUPTED_RUN_STATUSES = (ThreadStatus.running, ThreadStatus.planning)
+
+
+async def reconcile_interrupted_runs() -> int:
+    """Mark runs that a previous process left mid-flight as ``stopped``.
+
+    Run state lives only in :data:`chat_run_manager` (in-memory), so nothing
+    survives a restart: at startup, a thread still recorded as ``running`` or
+    ``planning`` is by definition a leftover from a crash, a code reload, or the
+    desktop app quitting. Its driver task is gone, so the ``CancelledError``
+    handler that would have written a terminal status never ran.
+
+    Left alone the row is stuck forever, and the UI reads it as a live run — a
+    permanently spinning status pill on a conversation that died days ago. Call
+    this from startup *only*, where "in-flight" is unambiguously stale; running
+    it at any other time would stop live runs.
+
+    Returns the number of threads reconciled.
+    """
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Thread).where(Thread.status.in_(_INTERRUPTED_RUN_STATUSES))
+        )
+        threads = list(result.scalars())
+        for thread in threads:
+            thread.status = ThreadStatus.stopped
+            # The thread's own activity clock is left untouched: this is
+            # bookkeeping for a run that ended when the process died, not new
+            # activity, and bumping it would reshuffle the sidebar on every boot.
+            thread.last_reason = (
+                thread.last_reason
+                or "Interrupted — the app restarted while this run was in flight."
+            )
+            session.add(thread)
+        await session.commit()
+    if threads:
+        logger.info("reconciled %d interrupted run(s) to stopped", len(threads))
+    return len(threads)
+
+
 async def _persist_usage(thread_id: str, kind: str, usage) -> None:
     """Record one turn's token usage + cost (own background session).
 

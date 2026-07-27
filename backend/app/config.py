@@ -77,6 +77,20 @@ class Settings(BaseSettings):
     # Base URL for OpenRouter's REST API; "/models" is appended to list models.
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # Seconds a streaming model response may go without sending *any* bytes
+    # before it's treated as dead. This is httpx's per-read timeout, so it
+    # resets on every chunk: a generation that keeps emitting tokens runs as
+    # long as it likes, and only a stream that genuinely stops mid-flight
+    # trips it. Bounds the two waits that legitimately produce no bytes —
+    # gateway queueing and prefill — so it needs headroom over the slowest
+    # expected time-to-first-token, not over total generation time.
+    #
+    # Set because a dropped TLS connection to a remote model gateway strands a
+    # run forever otherwise: no FIN arrives, so the client waits on a socket
+    # that will never speak again and the turn never fails, never retries, and
+    # never returns. Raise it if a slow/queued cluster trips it during prefill.
+    model_stream_stall_timeout: float = 300.0
+
     # --- Web search ---
     # Optional API-key fallbacks for the paid search providers. A key saved on
     # the Settings page (stored on ``AppConfig``) takes precedence over these.

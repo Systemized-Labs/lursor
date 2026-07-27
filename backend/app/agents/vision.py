@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
+# Wall-clock ceiling for one vision call. Unlike the agent's own streaming
+# requests (bounded per-chunk in ``builder``), this is a single non-streaming
+# completion, so the read timeout *is* the total: one number covers the whole
+# answer. The OpenAI SDK's 600s default is far too generous for a screenshot
+# question that normally takes seconds — and it multiplies by the retry count.
+# This call sits inside every ``view_app`` and every goal-mode evaluation, so a
+# stalled one makes the whole run look hung; failing fast is strictly better,
+# since the caller degrades to an "Error: ..." string and the agent carries on.
+_VISION_TIMEOUT_SECONDS = 120.0
+
 # Cache of OpenRouter model ids that accept image input, refreshed lazily.
 _vision_ids: set[str] | None = None
 _vision_ids_fetched_at: float = 0.0
@@ -61,6 +71,7 @@ async def describe_image_bytes(raw: bytes, mime: str, question: str) -> str:
     client = AsyncOpenAI(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
+        timeout=_VISION_TIMEOUT_SECONDS,
     )
     try:
         completion = await client.chat.completions.create(

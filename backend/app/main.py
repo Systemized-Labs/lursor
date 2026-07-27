@@ -47,6 +47,9 @@ async def lifespan(app: FastAPI):
     async with async_session_factory() as session:
         await seed_prompt_templates(session)
         await skills.reconcile(session)
+    # Run state is in-memory only, so nothing survives a restart: any thread the
+    # last process left mid-run would otherwise show a live status pill forever.
+    await chat.reconcile_interrupted_runs()
     # Apply any UI-saved settings (e.g. OpenRouter key) over the env defaults.
     await settings_api.load_app_config()
     # Seed a "local" laios connection when running alongside a daemon.
