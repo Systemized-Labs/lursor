@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import re
 import threading
+from pathlib import Path
 
-from pydantic_ai_backends import BackgroundHandle, LocalBackend
+from pydantic_ai_backends import BackgroundHandle, FileInfo, LocalBackend
 
 # Pure file-descriptor redirections with no filename target (``2>&1``, ``1>&2``,
 # ``>&1`` …). Stripping these before comparison means the model launching
@@ -35,6 +36,26 @@ def _normalize(command: str) -> str:
     """Collapse whitespace and drop bare fd redirections so trivially-different
     spellings of the same command compare equal."""
     return re.sub(r"\s+", " ", _FD_REDIRECT.sub("", command)).strip()
+
+
+def _relativize_glob(pattern: str, root: Path) -> str:
+    """Rewrite an absolute glob pattern to one relative to the backend root.
+
+    ``LocalBackend.glob_info`` runs ``root.glob(pattern)``, and pathlib rejects an
+    absolute pattern with ``NotImplementedError: Non-relative patterns are
+    unsupported`` — which escapes the backend's ``(PermissionError, OSError)``
+    guard and aborts the whole agent turn. Local reasoning models routinely pass
+    an absolute pattern (the workspace-absolute path they see in tool output), so
+    normalize it: strip the workspace-root prefix when the pattern is inside the
+    root, otherwise just drop the leading slash so the pattern stays relative.
+    A relative pattern (the common case) is returned untouched.
+    """
+    if not pattern or not pattern.startswith("/"):
+        return pattern
+    try:
+        return str(Path(pattern).relative_to(root))
+    except ValueError:
+        return pattern.lstrip("/")
 
 
 class DedupingLocalBackend(LocalBackend):
@@ -65,3 +86,13 @@ class DedupingLocalBackend(LocalBackend):
                         command=proc.command,
                     )
             return super().execute_background(command)
+
+    def glob_info(self, pattern: str, path: str = ".") -> list[FileInfo]:
+        """Glob, tolerating an absolute ``pattern`` instead of crashing on it.
+
+        See ``_relativize_glob``: local models often hand the ``glob`` tool an
+        absolute pattern, which pathlib refuses. Normalize to a root-relative
+        pattern first so the turn continues instead of failing with "Non-relative
+        patterns are unsupported".
+        """
+        return super().glob_info(_relativize_glob(pattern, self._root), path)
