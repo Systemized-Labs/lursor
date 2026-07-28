@@ -7,6 +7,7 @@ import {
   useSaveCompactionDefaults,
 } from "@/api/settings"
 import { CompactionSlider, clampPercent } from "@/components/compaction-slider"
+import { ModelPicker } from "@/components/model-picker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -17,6 +18,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Label } from "@/components/ui/label"
 
 /** Whole percent for a stored fraction, or `null` when it isn't loaded yet. */
 function toPercent(fraction: number | undefined): number | null {
@@ -25,14 +27,14 @@ function toPercent(fraction: number | undefined): number | null {
 
 /**
  * App-wide context-compaction defaults: when a run summarizes its own history,
- * and how much of it goes into the summary. Every agent and subagent without an
- * override of its own runs on these, and a save takes effect on the next run
- * without a restart.
+ * how much of it goes into the summary, and which model writes it. Every agent
+ * and subagent without an override of its own runs on these, and a save takes
+ * effect on the next run without a restart.
  *
  * Saved values sit on top of the backend's environment configuration
- * (`DEFAULT_COMPACTION_THRESHOLD` / `DEFAULT_COMPACTION_RATIO`), so **Reset**
- * clears them and hands the knob back to the environment rather than to a number
- * hardcoded here.
+ * (`DEFAULT_COMPACTION_THRESHOLD` / `_RATIO` / `DEFAULT_COMPACTION_MODEL`), so
+ * **Reset** clears them and hands the knob back to the environment rather than to
+ * a value hardcoded here.
  */
 export function CompactionSection() {
   const { data, isError } = useCompactionDefaults()
@@ -41,6 +43,10 @@ export function CompactionSection() {
   // Local draft, staged until Save (as the delegation-depth section does).
   const [threshold, setThreshold] = useState<number | null>(null)
   const [ratio, setRatio] = useState<number | null>(null)
+  // The model draft is the *saved* value, so "" means "inherit the environment's"
+  // — which is what the picker itself treats as an empty selection. `null` is the
+  // pre-load state, kept distinct so seeding can tell the two apart.
+  const [model, setModel] = useState<string | null>(null)
 
   // Seed once, on first load only: the query refetches on window focus, and
   // re-seeding from every response would throw away a slider the user had just
@@ -49,22 +55,35 @@ export function CompactionSection() {
     if (!data) return
     setThreshold((prev) => prev ?? clampPercent(data.threshold * 100))
     setRatio((prev) => prev ?? clampPercent(data.ratio * 100))
+    setModel((prev) => prev ?? (data.model_source === "database" ? data.model : ""))
   }, [data])
 
   const serverThreshold = toPercent(data?.threshold)
   const serverRatio = toPercent(data?.ratio)
+  const serverModel = data
+    ? data.model_source === "database"
+      ? data.model
+      : ""
+    : null
   const changed =
     data !== undefined &&
-    (threshold !== serverThreshold || ratio !== serverRatio)
+    (threshold !== serverThreshold ||
+      ratio !== serverRatio ||
+      model !== serverModel)
   const overridden =
-    data?.threshold_source === "database" || data?.ratio_source === "database"
+    data?.threshold_source === "database" ||
+    data?.ratio_source === "database" ||
+    data?.model_source === "database"
 
   async function handleSave() {
-    if (threshold === null || ratio === null) return
+    if (threshold === null || ratio === null || model === null) return
     try {
       await save.mutateAsync({
         threshold: threshold / 100,
         ratio: ratio / 100,
+        // An empty selection is a clear: the backend normalizes it to null and the
+        // environment's model takes over again.
+        model,
       })
       toast.success("Compaction defaults saved")
     } catch (err) {
@@ -74,12 +93,17 @@ export function CompactionSection() {
 
   async function handleReset() {
     try {
-      // Null clears both saved values; the response carries the environment's own,
-      // so the sliders are moved back onto them here (the seeding effect above
+      // Null clears every saved value; the response carries the environment's own,
+      // so the controls are moved back onto them here (the seeding effect above
       // deliberately only runs for the first load).
-      const reverted = await save.mutateAsync({ threshold: null, ratio: null })
+      const reverted = await save.mutateAsync({
+        threshold: null,
+        ratio: null,
+        model: null,
+      })
       setThreshold(clampPercent(reverted.threshold * 100))
       setRatio(clampPercent(reverted.ratio * 100))
+      setModel("")
       toast.success("Reverted to the environment defaults")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to reset")
@@ -93,9 +117,9 @@ export function CompactionSection() {
           <div>
             <CardTitle>Context compaction</CardTitle>
             <CardDescription>
-              When a long run summarizes its own history to free up context, and
-              how much of it goes into the summary. Applies to every agent and
-              subagent that doesn't set its own.
+              When a long run summarizes its own history to free up context, how
+              much of it goes into the summary, and which model writes it. Applies
+              to every agent and subagent that doesn't set its own.
             </CardDescription>
           </div>
           {overridden && <Badge variant="secondary">Overridden</Badge>}
@@ -144,6 +168,21 @@ export function CompactionSection() {
               : undefined
           }
         />
+
+        <div className="grid min-w-0 gap-2">
+          <Label htmlFor="compaction-default-model">Summarized by</Label>
+          <ModelPicker
+            value={model ?? ""}
+            onChange={setModel}
+            resolvedDefault={data?.env_model}
+          />
+          <p className="text-xs text-muted-foreground">
+            Writing a summary is a small, throwaway job, so it runs on a cheap
+            fast model rather than the agent's own — which may be a heavy or
+            offline one. Both the automatic mid-run compaction and{" "}
+            <code className="text-xs text-foreground">/compact</code> use this.
+          </p>
+        </div>
       </CardContent>
 
       <CardFooter className="gap-3">

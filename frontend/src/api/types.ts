@@ -458,8 +458,9 @@ export interface Thread {
   agent_id: string
   title: string
   /** Set when a {@link Schedule} fire opened this conversation. Scheduled threads
-   *  are left out of a workspace's conversation list by default — pass
-   *  `include_scheduled` to see them. */
+   *  are *included* in a workspace's conversation list by default — they're
+   *  ordinary threads, and hiding them hid the only signal that an overnight run
+   *  had finished. Pass `include_scheduled=false` to leave them out. */
   schedule_id?: string | null
   // Plan/goal mode (a plain chat thread leaves these at their defaults).
   mode: ThreadMode
@@ -801,13 +802,19 @@ export interface CompactionDefaults {
   threshold: number
   /** Effective fraction of the history folded into the summary (1 = all of it). */
   ratio: number
+  /** Model that writes the summary, as a stored routing string
+   *  (`openrouter:…` / `custom:{provider}:{model}`) — small and fast by default,
+   *  never the thread agent's own (possibly heavy or offline) model. */
+  model: string
   /** Whether each effective value was saved here or came from the backend's
    *  environment. Only a `database` value can be reset. */
   threshold_source: "database" | "env"
   ratio_source: "database" | "env"
+  model_source: "database" | "env"
   /** What a reset restores. */
   env_threshold: number
   env_ratio: number
+  env_model: string
 }
 
 /** Partial save: an omitted knob is left alone, an explicit `null` clears it back
@@ -815,6 +822,7 @@ export interface CompactionDefaults {
 export interface CompactionDefaultsInput {
   threshold?: number | null
   ratio?: number | null
+  model?: string | null
 }
 
 // --- laios control plane --------------------------------------------------------

@@ -30,9 +30,8 @@ import {
 
 import { filesApi } from "@/api/files"
 import { useSkills } from "@/api/skills"
-import { threadKeys, threadsApi } from "@/api/threads"
-import { useWorkspaces } from "@/api/workspaces"
-import type { Skill, Thread } from "@/api/types"
+import type { Skill } from "@/api/types"
+import { useAllThreads } from "@/hooks/use-all-threads"
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from "@/components/ui/dialog"
 import { fileKind } from "@/components/files/file-icon"
 import { requestOpenFile } from "@/lib/open-file"
@@ -42,6 +41,7 @@ import {
   skillSourceLabel,
   type SkillLocation,
 } from "@/lib/skill-location"
+import { timeAgo } from "@/lib/time-ago"
 import { cn } from "@/lib/utils"
 
 // --- Public API -------------------------------------------------------------
@@ -140,53 +140,7 @@ interface Section {
 
 const LIMIT_ALL = 5
 
-/** Compact relative time ("3s" / "5m" / "2h" / "4d"). */
-function timeAgo(iso?: string): string {
-  if (!iso) return ""
-  const then = new Date(iso).getTime()
-  if (Number.isNaN(then)) return ""
-  const s = Math.max(0, Math.floor((Date.now() - then) / 1000))
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h`
-  const d = Math.floor(h / 24)
-  if (d < 30) return `${d}d`
-  return `${Math.floor(d / 30)}mo`
-}
-
 // --- Data hooks -------------------------------------------------------------
-
-interface WorkspaceThread extends Thread {
-  workspaceName: string
-}
-
-/** Every workspace's conversations, merged and sorted newest-first. */
-function useAllThreads() {
-  const workspacesQuery = useWorkspaces()
-  const workspaces = workspacesQuery.data ?? []
-
-  const results = useQueries({
-    queries: workspaces.map((ws) => ({
-      queryKey: threadKeys.byWorkspace(ws.id),
-      queryFn: ({ signal }: { signal: AbortSignal }) =>
-        threadsApi.listByWorkspace(ws.id, signal),
-    })),
-  })
-
-  const threads: WorkspaceThread[] = []
-  results.forEach((result, i) => {
-    const ws = workspaces[i]
-    if (!ws) return
-    for (const t of result.data ?? []) {
-      threads.push({ ...t, workspaceName: ws.name })
-    }
-  })
-  threads.sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))
-
-  return { threads, workspaces }
-}
 
 interface WorkspaceFile {
   workspaceId: string
@@ -248,7 +202,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   const [activeIndex, setActiveIndex] = useState(0)
   const debouncedQuery = useDebounced(query)
 
-  const { threads, workspaces } = useAllThreads()
+  const { threads, workspaces, workspaceName } = useAllThreads()
   const files = useAllFiles(debouncedQuery, workspaces)
   const skills = useSkills().data ?? []
 
@@ -291,7 +245,9 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       .map((t) => ({
         id: `agent:${t.id}`,
         label: t.title || "Untitled",
-        meta: [t.workspaceName, timeAgo(t.updated_at)].filter(Boolean).join("  "),
+        meta: [workspaceName(t.workspace_id), timeAgo(t.updated_at)]
+          .filter(Boolean)
+          .join("  "),
         icon: ChatCentered,
         onSelect: () => go(`/workspaces/${t.workspace_id}/chat?c=${t.id}`),
       }))
@@ -386,7 +342,18 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     return all.filter(
       (s) => (filter === "all" || filter === s.key) && s.rows.length > 0
     )
-  }, [threads, files, skills, workspaces, q, filter, go, openFile, openSkill])
+  }, [
+    threads,
+    workspaceName,
+    files,
+    skills,
+    workspaces,
+    q,
+    filter,
+    go,
+    openFile,
+    openSkill,
+  ])
 
   // Flattened rows drive keyboard navigation across every visible section.
   const flatRows = useMemo(() => sections.flatMap((s) => s.rows), [sections])

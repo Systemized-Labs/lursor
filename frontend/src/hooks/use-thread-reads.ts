@@ -73,6 +73,26 @@ export function seedThreadRead(id: string, updatedAt: string) {
   emit()
 }
 
+/**
+ * Seed a whole list in one pass. The per-thread version clones the record,
+ * re-serialises it and notifies every subscriber on each call, so seeding a few
+ * hundred threads one at a time is quadratic string work and a few hundred
+ * synchronous storage writes — on first load, before anything has painted.
+ * This does the same job with one write and one notification.
+ */
+export function seedThreadReads(threads: { id: string; updated_at: string }[]) {
+  let next: Reads | null = null
+  for (const thread of threads) {
+    if (reads[thread.id] !== undefined) continue
+    next ??= { ...reads }
+    next[thread.id] = thread.updated_at
+  }
+  if (!next) return
+  reads = next
+  persist()
+  emit()
+}
+
 export function useThreadReads() {
   const snapshot = useSyncExternalStore(subscribe, () => reads)
 

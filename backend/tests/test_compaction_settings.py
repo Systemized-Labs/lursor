@@ -123,6 +123,26 @@ def test_an_untouched_agent_runs_on_the_app_defaults(tmp_path):
     assert capability.keep == ("messages", 0)
 
 
+def test_the_summarizer_runs_on_our_stack_not_the_librarys_anthropic_default(tmp_path):
+    """In-run compaction must summarize on the compaction model, not Anthropic.
+
+    pydantic-deep only inherits the primary model for summarization when it was
+    passed as a *string*; we always pass a built ``Model``, so without the repoint
+    it falls back to ``anthropic:claude-haiku-4-5`` and every compaction dies on a
+    missing ANTHROPIC_API_KEY (the history is then kept uncompacted).
+    """
+    from app.agents.builder import build_deep_agent
+
+    agent, _deps = build_deep_agent(Agent(name="Summarized"), tmp_path)
+    capability = agent._context_middleware
+    model = capability.summarization_model
+    assert not isinstance(model, str), "an unresolved string would re-infer a provider"
+    assert model.model_name == settings.default_compaction_model.split(":", 1)[1]
+    # ``for_run`` rebuilds the processor off the capability when it auto-detects the
+    # token budget, so the two must name the same model.
+    assert capability._summarization_processor.model is model
+
+
 def test_a_subagent_compacts_on_its_own_budget(tmp_path):
     """Subagents come through the same builder, so their overrides apply too."""
     from app.agents.builder import build_deep_agent
@@ -147,6 +167,54 @@ async def test_compaction_defaults_are_readable(client: AsyncClient):
     assert body["ratio_source"] == "env"
     assert body["env_threshold"] == settings.default_compaction_threshold
     assert body["env_ratio"] == settings.default_compaction_ratio
+    assert body["model"] == settings.default_compaction_model
+    assert body["model_source"] == "env"
+    assert body["env_model"] == settings.default_compaction_model
+
+
+async def test_the_summarizer_model_is_saveable_and_clearable(client: AsyncClient):
+    """The model knob stores on ``AppConfig`` and reverts to the env on a clear.
+
+    Unlike the two fractions it is *not* pushed into the running process — the run
+    builder and ``/compact`` both read the row — so what this checks is that the
+    row is what the endpoint reports back.
+    """
+    env_model = settings.default_compaction_model
+
+    saved = (
+        await client.put(
+            "/settings/compaction", json={"model": "openrouter:openai/gpt-4.1-mini"}
+        )
+    ).json()
+    assert saved["model"] == "openrouter:openai/gpt-4.1-mini"
+    assert saved["model_source"] == "database"
+    assert saved["env_model"] == env_model
+    # The fractions weren't in the body, so they were left alone.
+    assert saved["threshold_source"] == "env"
+
+    # A blank string is a clear, not a saved empty model (which would leave the
+    # summarizer with no model at all).
+    blanked = (await client.put("/settings/compaction", json={"model": "  "})).json()
+    assert blanked["model"] == env_model
+    assert blanked["model_source"] == "env"
+
+    # An explicit null clears it too — the Reset path.
+    await client.put("/settings/compaction", json={"model": "custom:abc:llama"})
+    cleared = (await client.put("/settings/compaction", json={"model": None})).json()
+    assert cleared["model"] == env_model
+    assert cleared["model_source"] == "env"
+
+
+def test_the_saved_summarizer_model_reaches_the_capability(tmp_path):
+    """A saved override is what the built agent summarizes on."""
+    from app.agents.builder import build_deep_agent
+
+    agent, _deps = build_deep_agent(
+        Agent(name="Overridden"),
+        tmp_path,
+        compaction_model="openrouter:openai/gpt-4.1-mini",
+    )
+    assert agent._context_middleware.summarization_model.model_name == "openai/gpt-4.1-mini"
 
 
 async def test_saved_defaults_take_effect_and_can_be_cleared(client: AsyncClient):
