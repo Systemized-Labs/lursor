@@ -39,6 +39,9 @@ class SkillUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     content: str | None = None
+    # Off keeps the skill and its files exactly as they are but excludes it from
+    # every run. Toggling it never touches SKILL.md — it isn't frontmatter.
+    enabled: bool | None = None
 
 
 class SkillPromote(BaseModel):
@@ -77,6 +80,8 @@ class SkillRead(BaseModel):
     # tool: it can be copied into the catalog but never moved out of, and a
     # delete removes a real file in the user's repo or home directory.
     is_owned_root: bool = True
+    # Off excludes the skill from every run, whatever its layer or assignment.
+    enabled: bool = True
     # Which layer this row won at, set only when listing for one workspace
     # ("user" | "global" | "workspace" | "local"). Null in catalog-wide listings.
     layer: str | None = None

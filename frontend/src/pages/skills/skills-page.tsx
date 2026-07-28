@@ -22,6 +22,7 @@ import {
   useImportSkills,
   usePromoteSkill,
   useSkills,
+  useUpdateSkill,
 } from "@/api/skills"
 import type { Skill, Workspace } from "@/api/types"
 import { useWorkspaces } from "@/api/workspaces"
@@ -29,6 +30,8 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
+import { cn } from "@/lib/utils"
 import { revealSkill, skillLocation } from "@/lib/skill-location"
 import {
   DropdownMenu,
@@ -43,7 +46,7 @@ import { SkillEnvMenu } from "./skill-env-menu"
 import { SkillScopeMenu } from "./skill-scope-menu"
 
 const DESCRIPTION =
-  "Reusable markdown instructions agents load on their own. One copy in your catalog — point it at whatever should use it."
+  "Reusable markdown instructions agents load on their own. One copy in your catalog — point it at whatever should use it, and switch any off to keep it without loading it."
 
 // New skills and imports land in the catalog applying everywhere; narrowing is a
 // click on the row. Reach is an assignment, so nothing here decides a location.
@@ -134,6 +137,7 @@ interface SkillRowProps {
   onOpenInWorkspace: (skill: Skill) => void
   onPromote: (skill: Skill) => void
   onCopy: (skill: Skill) => void
+  onToggle: (skill: Skill, enabled: boolean) => void
   onDelete: (skill: Skill) => void
 }
 
@@ -145,6 +149,7 @@ function SkillRow({
   onOpenInWorkspace,
   onPromote,
   onCopy,
+  onToggle,
   onDelete,
 }: SkillRowProps) {
   const isLocal = skill.origin === "local"
@@ -153,10 +158,25 @@ function SkillRow({
 
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
+      {/* Leading, so the on/off state of a whole list reads down one column. */}
+      <Switch
+        checked={skill.enabled}
+        onCheckedChange={(enabled) => onToggle(skill, enabled)}
+        className="shrink-0"
+        aria-label={`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
+        title={
+          skill.enabled
+            ? "Loaded by agents in scope. Switch off to keep it without loading it."
+            : "Kept, but loaded by nothing."
+        }
+      />
       <button
         type="button"
         onClick={() => onEdit(skill)}
-        className="min-w-0 flex-1 text-left"
+        className={cn(
+          "min-w-0 flex-1 text-left transition-opacity",
+          !skill.enabled && "opacity-50"
+        )}
         title="Open this skill's files"
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -184,7 +204,12 @@ function SkillRow({
         </p>
       </button>
 
-      <div className="flex shrink-0 items-center gap-1">
+      <div
+        className={cn(
+          "flex shrink-0 items-center gap-1",
+          !skill.enabled && "opacity-50"
+        )}
+      >
         {isLocal ? (
           <span
             className="hidden max-w-[12rem] truncate rounded-md border px-2 py-1 text-xs text-muted-foreground sm:inline-block"
@@ -273,6 +298,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const deleteSkill = useDeleteSkill()
   const promoteSkill = usePromoteSkill()
   const copySkill = useCopySkill()
+  const updateSkill = useUpdateSkill()
   const importSkills = useImportSkills()
 
   const navigate = useNavigate()
@@ -376,6 +402,17 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
       setToDelete(undefined)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete skill")
+    }
+  }
+
+  // No confirm: it changes nothing on disk and the switch itself is the undo.
+  async function toggleEnabled(skill: Skill, enabled: boolean) {
+    try {
+      await updateSkill.mutateAsync({ id: skill.id, input: { enabled } })
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : `Failed to ${enabled ? "enable" : "disable"} skill`
+      )
     }
   }
 
@@ -547,6 +584,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
                     onOpenInWorkspace={openInWorkspace}
                     onPromote={setToPromote}
                     onCopy={setToCopy}
+                    onToggle={toggleEnabled}
                     onDelete={setToDelete}
                   />
                 ))}

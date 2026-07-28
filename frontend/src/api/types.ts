@@ -76,6 +76,9 @@ export interface Skill {
    *  rather than moving it, and a delete removes a real file in the user's repo
    *  or home directory. */
   is_owned_root: boolean
+  /** Off excludes the skill from every run, whatever its layer or assignment.
+   *  The only off switch a repo-local or personal skill has. */
+  enabled: boolean
   /** Set only in a per-workspace listing; null in catalog-wide ones. */
   layer: SkillLayer | null
   /** Env vars attached to this skill (ids only — values never leave the server). */
@@ -92,6 +95,8 @@ export interface SkillInput {
   name: string
   description: string
   content: string
+  /** Off keeps the skill but excludes it from every run. */
+  enabled?: boolean
   /** Defaults to "managed" on the backend. "local" requires `workspace_id`. */
   origin?: SkillOrigin
   /** Omitted means "global unless workspace_ids were given". */

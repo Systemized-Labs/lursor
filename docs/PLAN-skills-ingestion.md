@@ -325,8 +325,25 @@ Plus `bunx tsc --noEmit` and `bun run build`.
 
 ## 7. Follow-ups
 
-- **Per-workspace enable gate** for foreign-root skills, if decision 5 proves
-  wrong in practice.
+- ~~**Per-workspace enable gate** for foreign-root skills, if decision 5 proves
+  wrong in practice.~~ **Done, as a global gate instead** — `Skill.enabled`,
+  mirroring `Subagent.enabled`, toggled from a switch on each row of the Skills
+  page. Decision 5 stands (a discovered skill is in scope the moment it is
+  found), but it is now revocable without deleting a folder out of a repo or out
+  of Claude Code, which was the only previous way to stop one loading.
+
+  Global rather than per-workspace because the Skills page has no workspace
+  context, and because the axis a managed skill was missing is *whether*, not
+  *where* — assignment already answers where. Checked in exactly one place,
+  `resolve.candidates`, so env vars, `@`-mentions and the agent's own skill
+  directories cannot disagree about what is loaded. Two properties are pinned in
+  `tests/test_skill_enable.py`: toggling never rewrites `SKILL.md` (verified
+  byte- and mtime-identical against a real repo, `git status` clean), and a
+  disabled row does not *shadow* — switching off a repo's `pdf` reveals the
+  catalog's `pdf` rather than leaving a hole.
+
+  The per-workspace variant is still open if turning one `~/.claude` skill off in
+  a single repo turns out to matter.
 - **`.cursor/rules` and `AGENTS.md`** are the other two things sitting in these
   repos unread. Different format, different layer, not skills — but the same gap,
   and worth naming as the next one.

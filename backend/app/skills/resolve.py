@@ -28,6 +28,12 @@ state.
 Disk stays authoritative for *content*: a row whose folder has vanished is
 skipped rather than injected, so a stale index can never hand the agent a
 directory that isn't there.
+
+A skill with ``enabled`` off is excluded here, before any of that. It is the only
+off switch a ``local`` or ``external`` skill has — neither carries an assignment,
+so turning one off is not a question of *where* it applies but *whether* — and it
+is deliberately checked in this one place, so nothing downstream (env vars,
+mentions, the agent's own skill directories) can disagree about what is loaded.
 """
 
 from __future__ import annotations
@@ -96,7 +102,7 @@ async def skills_in_scope(
         """``(row, root)`` for one layer, highest-precedence root first."""
         out: list[tuple[Skill, Path, int]] = []
         for row in rows:
-            if not row.slug:
+            if not row.slug or not row.enabled:
                 continue
             if layer == "local":
                 if row.origin != SkillOrigin.local or row.workspace_id != workspace_id:

@@ -221,6 +221,13 @@ class Skill(TimestampMixin, table=True):
     # file. ``server_default`` so a row inserted outside the ORM (and the
     # ``ADD COLUMN`` in db/session.py) lands on the catalog rather than NULL.
     root: str = Field(default="", index=True, sa_column_kwargs={"server_default": ""})
+    # When off, this skill is kept and still shown/editable in the manager but is
+    # excluded from every run, whatever its layer. This is the only off switch a
+    # ``local`` or ``external`` skill has — those carry no assignment, so before
+    # this the only way to stop a discovered skill loading was to delete the
+    # folder. For a managed skill it is a second axis alongside assignment:
+    # "parked" (assigned nowhere) says where, this says whether.
+    enabled: bool = Field(default=True, sa_column_kwargs={"server_default": "1"})
 
 
 class EnvVar(TimestampMixin, table=True):

@@ -167,6 +167,7 @@ def _to_read(
         root=row.root,
         root_label=store.root_label(row.root),
         is_owned_root=store.is_owned_root(row.root),
+        enabled=row.enabled,
         layer=layer,
         env_var_ids=env_var_ids or [],
         resources=parsed.resources if parsed else [],
@@ -913,19 +914,28 @@ async def update_skill(
     skill_id: str, payload: SkillUpdate, session: AsyncSession = Depends(get_session)
 ):
     skill = await _get_or_404(skill_id, session)
-    root = await _row_root_or_404(session, skill)
     data = payload.model_dump(exclude_unset=True)
+    # ``enabled`` is ours, not the file's. A toggle must not rewrite SKILL.md:
+    # for a discovered skill that would dirty a git tree (or bump the mtime of a
+    # file in someone's home directory) to record something the file never holds.
+    writes_file = bool({"name", "description", "content"} & data.keys())
+    root = (
+        await _row_root_or_404(session, skill)
+        if writes_file
+        else await _row_root(session, skill)
+    )
     for key, value in data.items():
         setattr(skill, key, value)
-    # Rewrite SKILL.md; the slug (folder) stays stable across renames so any
-    # bundled resources are preserved.
-    store.write_skill(
-        skill.slug,
-        root,
-        name=skill.name,
-        description=skill.description,
-        content=skill.content,
-    )
+    if writes_file:
+        # Rewrite SKILL.md; the slug (folder) stays stable across renames so any
+        # bundled resources are preserved.
+        store.write_skill(
+            skill.slug,
+            root,
+            name=skill.name,
+            description=skill.description,
+            content=skill.content,
+        )
     session.add(skill)
     await session.commit()
     await session.refresh(skill)

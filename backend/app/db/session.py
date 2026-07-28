@@ -116,6 +116,12 @@ async def _apply_lightweight_migrations(conn) -> None:
             text("UPDATE skills SET root = '.agents/skills' WHERE origin = 'local'")
         )
     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_skills_root ON skills (root)"))
+    # Per-skill off switch. Existing rows default to on, so an upgrade changes
+    # nothing about what loads.
+    if "enabled" not in skill_cols:
+        await conn.execute(
+            text("ALTER TABLE skills ADD COLUMN enabled BOOLEAN DEFAULT 1")
+        )
 
     # Skills are no longer linked per-agent/subagent — membership is derived from
     # scope. Drop the join tables; existing links are intentionally discarded (the
