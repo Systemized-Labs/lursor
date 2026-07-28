@@ -68,7 +68,7 @@ export function useResolvedEnv(workspaceId: string | undefined) {
 }
 
 /** Assignments live on both sides, so a change invalidates skills too. */
-function useEnvMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+function useEnvMutation<TArgs, TResult>(fn: (args: TArgs) => Promise<TResult>) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: fn,
@@ -80,7 +80,21 @@ function useEnvMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
 }
 
 export function useCreateEnvVar() {
-  return useEnvMutation((input: EnvVarInput) => envVarsApi.create(input))
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: EnvVarInput) => envVarsApi.create(input),
+    onSuccess: (created) => {
+      // Seeded into the unfiltered list *before* the refetch, not just left to
+      // it. The caller selects the new row the moment this resolves, and the rail
+      // drops any selection it can't find among its own rows — so a row that only
+      // exists once the invalidation lands would be silently re-selected away.
+      qc.setQueryData<EnvVar[]>(envVarKeys.list(), (prev) =>
+        prev ? [...prev, created] : prev
+      )
+      void qc.invalidateQueries({ queryKey: envVarKeys.all })
+      void qc.invalidateQueries({ queryKey: skillKeys.all })
+    },
+  })
 }
 
 export function useUpdateEnvVar() {

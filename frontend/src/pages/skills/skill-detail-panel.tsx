@@ -56,7 +56,10 @@ function Field({ label, children, hint }: FieldProps) {
       <span className="pt-1.5 text-xs font-medium text-muted-foreground">
         {label}
       </span>
-      <div className="min-w-0 space-y-1">
+      {/* Capped rather than fluid: on a wide window the pane is over 1000px, and
+          a one-line hint stretched across all of it is harder to read than the
+          same sentence wrapped twice. */}
+      <div className="min-w-0 max-w-xl space-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">{children}</div>
         {hint ? (
           <p className="text-[11px] leading-snug text-muted-foreground">{hint}</p>
@@ -366,8 +369,13 @@ export function SkillDetailPanel({
         <Separator />
 
         {/* The payload: a skill *is* its instructions, and reading them used to
-            cost a modal open, a Monaco mount and a modal close. */}
-        <div className="px-4 py-4">
+            cost a modal open, a Monaco mount and a modal close.
+
+            Held to a reading measure rather than the pane's full width. This pane
+            can be 1100px on a wide window, and SKILL.md is prose — at that width
+            the eye loses the line it is on between the right edge and the start of
+            the next one. Wide enough that a fenced code block still has room. */}
+        <div className="max-w-4xl px-4 py-4">
           {preview.isLoading ? (
             <p className="text-xs text-muted-foreground">Loading SKILL.md…</p>
           ) : preview.isError ? (

@@ -121,7 +121,7 @@ export function PromptsPage({ embedded = false }: { embedded?: boolean } = {}) {
               <h3 className="text-sm font-medium capitalize text-muted-foreground">
                 {category}
               </h3>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {items.map((template) => (
                   <Card key={template.id} className="flex flex-col">
                     <CardHeader>

@@ -80,7 +80,7 @@ export function ToolsPage({ embedded = false }: { embedded?: boolean } = {}) {
           }
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {tools.map((tool) => (
             <Card key={tool.id} className="flex flex-col">
               <CardHeader>

@@ -112,7 +112,7 @@ export function SkillEnvMenu({ skill }: SkillEnvMenuProps) {
           <CaretDown className="h-3 w-3 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-h-[70vh] w-72 overflow-y-auto">
+      <DropdownMenuContent align="end" className="max-h-[var(--radix-dropdown-menu-content-available-height)] w-72 overflow-y-auto">
         <DropdownMenuLabel>Injected when in scope</DropdownMenuLabel>
         {vars.length === 0 ? (
           <DropdownMenuItem disabled>

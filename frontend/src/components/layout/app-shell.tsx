@@ -167,6 +167,24 @@ export function AppShell() {
     pathname.includes("/threads/") ||
     pathname.endsWith("/chat")
 
+  /**
+   * The padded column every non-full-bleed route sits in.
+   *
+   * Customization gets a much wider cap than the rest. Its tabs are browsers and
+   * grids that spend every pixel they are given — the two-pane Skills and
+   * Environment rails most of all, where the default column left the detail pane
+   * narrower than the rail beside it. Settings and Analytics are forms and prose,
+   * which read worse the wider they get, so they keep the measured column.
+   *
+   * Still capped rather than edge-to-edge: on an ultrawide, an uncapped card grid
+   * stretches three cards across two feet of desk. The cap is high enough that any
+   * ordinary laptop is already below it and simply gets the full width.
+   */
+  const columnClass = cn(
+    "mx-auto w-full",
+    pathname.startsWith("/customization") ? "max-w-[100rem]" : "max-w-6xl"
+  )
+
   // ── Mobile layout ──────────────────────────────────────────────────────────
   // A single column under a global top header: the routed content fills the
   // space above a bottom tab bar (inside a workspace), and the bottom bar swaps
@@ -178,7 +196,12 @@ export function AppShell() {
       </main>
     ) : (
       <main className="flex-1 min-w-0 min-h-0 overflow-y-auto">
-        <div className="mx-auto w-full max-w-6xl px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+        <div
+          className={cn(
+            columnClass,
+            "px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+          )}
+        >
           <Outlet />
         </div>
       </main>
@@ -276,7 +299,7 @@ export function AppShell() {
     </main>
   ) : (
     <main className="flex-1 min-w-0 overflow-y-auto">
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">
+      <div className={cn(columnClass, "px-4 py-6 sm:px-6")}>
         <Outlet />
       </div>
     </main>

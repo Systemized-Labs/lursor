@@ -142,7 +142,7 @@ export function SkillScopeMenu({ skill, workspaces }: SkillScopeMenuProps) {
         </Button>
       </DropdownMenuTrigger>
       {/* Bounded so a long workspace list scrolls instead of running off-screen. */}
-      <DropdownMenuContent align="end" className="max-h-[70vh] w-64 overflow-y-auto">
+      <DropdownMenuContent align="end" className="max-h-[var(--radix-dropdown-menu-content-available-height)] w-64 overflow-y-auto">
         <DropdownMenuLabel>Where this applies</DropdownMenuLabel>
         <DropdownMenuCheckboxItem
           checked={draft.isGlobal}

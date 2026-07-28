@@ -30,10 +30,10 @@ export function CustomizationPage() {
   // it exists.
   const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null)
 
-  // `?skill=` (the skills browser's selected row) is deliberately left alone: it
-  // is inert on every other tab, and keeping it means a trip to another tab and
-  // back returns you to the pane you were reading. Clearing it here would not
-  // stick anyway — the rail is still mounted for that commit and re-publishes
+  // Each browser tab's selected row (`?skill=`, `?var=`) is deliberately left
+  // alone: it is inert on every other tab, and keeping it means a trip to another
+  // tab and back returns you to the pane you were reading. Clearing it here would
+  // not stick anyway — the rail is still mounted for that commit and re-publishes
   // its selection.
   function handleTabChange(value: string) {
     setSearchParams(
@@ -88,7 +88,7 @@ export function CustomizationPage() {
             <SkillsPage />
           </TabsContent>
           <TabsContent value="env">
-            <EnvPage embedded />
+            <EnvPage />
           </TabsContent>
           <TabsContent value="subagents">
             <SubagentsPage embedded />
