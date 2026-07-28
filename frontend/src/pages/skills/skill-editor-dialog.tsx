@@ -222,8 +222,10 @@ function SkillEditor({
           </DialogTitle>
           <DialogDescription className="text-xs">
             {skill.origin === "local"
-              ? "Lives in this workspace's .agents/skills folder."
-              : "Lives in your skills catalog."}{" "}
+              ? `Lives in this workspace's ${skill.root || ".agents/skills"} folder.`
+              : skill.origin === "external"
+                ? `Read in place from ${skill.root} — another tool owns this folder.`
+                : "Lives in your skills catalog."}{" "}
             Editing SKILL.md updates the name and description too — they are its
             frontmatter.
           </DialogDescription>
@@ -231,16 +233,20 @@ function SkillEditor({
         {/* This dialog is the editor without the workspace around it. When the
             job needs an agent to write the thing, or a terminal to run a script
             it bundles, this is the way out. */}
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          onClick={onOpenInWorkspace}
-          title="Open these files in a workspace, with an agent and a terminal"
-        >
-          <Sparkle className="h-4 w-4" />
-          {skill.origin === "local" ? "Open in workspace" : "Open in Skill Studio"}
-        </Button>
+        {/* A skill in a personal folder belongs to no workspace, so there is no
+            file tree to send it to — it stays in this dialog. */}
+        {skill.origin !== "external" && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={onOpenInWorkspace}
+            title="Open these files in a workspace, with an agent and a terminal"
+          >
+            <Sparkle className="h-4 w-4" />
+            {skill.origin === "local" ? "Open in workspace" : "Open in Skill Studio"}
+          </Button>
+        )}
       </DialogHeader>
 
       <div className="flex min-h-0 flex-1 flex-col">

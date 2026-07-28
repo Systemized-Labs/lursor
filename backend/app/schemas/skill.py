@@ -42,10 +42,12 @@ class SkillUpdate(BaseModel):
 
 
 class SkillPromote(BaseModel):
-    """Assignment to apply when promoting a local skill into the catalog.
+    """Assignment to apply when promoting or copying a skill into the catalog.
 
     Both unset means "assign it to the workspace it came from", so promoting
     changes where a skill *can* go without changing where it currently applies.
+    A copied ``external`` skill has no originating workspace and defaults to
+    global, matching the reach it already had.
     """
 
     is_global: bool | None = None
@@ -65,8 +67,18 @@ class SkillRead(BaseModel):
     workspace_ids: list[str] = []
     # Local skills: the workspace whose folder holds it.
     workspace_id: str | None = None
+    # Which root the folder lives in: workspace-relative for ``local``
+    # (".claude/skills"), absolute for ``external``, empty for the catalog.
+    root: str = ""
+    # Display form of ``root`` (".claude", "~/.claude"), computed server-side so
+    # no client has to parse paths. Empty for the catalog.
+    root_label: str = ""
+    # Whether Lursor owns this root. False means the folder belongs to another
+    # tool: it can be copied into the catalog but never moved out of, and a
+    # delete removes a real file in the user's repo or home directory.
+    is_owned_root: bool = True
     # Which layer this row won at, set only when listing for one workspace
-    # ("global" | "workspace" | "local"). Null in catalog-wide listings.
+    # ("user" | "global" | "workspace" | "local"). Null in catalog-wide listings.
     layer: str | None = None
     # Env vars attached to this skill (ids only; values never leave the server).
     env_var_ids: list[str] = []

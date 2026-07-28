@@ -27,6 +27,11 @@ _TMP = tempfile.mkdtemp(prefix="lursor-tests-")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP}/test.db"
 os.environ["WORKSPACES_DIR"] = f"{_TMP}/workspaces"
 os.environ["SKILLS_DIR"] = f"{_TMP}/skills"
+# The developer running the suite almost certainly has a populated
+# ``~/.claude/skills``; left at its default, skill discovery would index it and
+# every scope assertion would depend on whose machine ran the tests. Tests that
+# need a personal root point the setting at a tmp_path themselves.
+os.environ["USER_SKILL_ROOTS"] = "[]"
 # Dummy key so provider construction succeeds offline (no network call is made).
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
 # No LAIOS daemon in tests: drop any connection config the prod supervisor may

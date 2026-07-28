@@ -21,21 +21,26 @@ export interface SkillLocation {
 
 /**
  * Resolve a skill to an openable location, or null when nothing can open it
- * (a repo-local skill with no workspace, or the Skill Studio row not loaded
- * yet — it is registered at startup, so that window is the first paint only).
+ * (a repo-local skill with no workspace, a skill in a personal directory that
+ * belongs to no workspace at all, or the Skill Studio row not loaded yet — it is
+ * registered at startup, so that window is the first paint only).
  */
 export function skillLocation(
   skill: Skill,
   workspaces: Workspace[]
 ): SkillLocation | null {
-  // Repo-local skills live under their own workspace's .agents/skills/, which
+  // Skills in a personal root (~/.claude/skills) sit outside every workspace, so
+  // no file tree reaches them. The editor dialog still opens them by id.
+  if (skill.origin === "external") return null
+  // Repo-local skills live under one of their own workspace's skill roots, which
   // that workspace's own chat already edits — send them home rather than to the
-  // studio, which cannot see them.
+  // studio, which cannot see them. The root is whichever one they were found in,
+  // not always .agents/skills.
   if (skill.origin === "local") {
     return skill.workspace_id
       ? {
           workspaceId: skill.workspace_id,
-          path: `.agents/skills/${skill.slug}/SKILL.md`,
+          path: `${skill.root || ".agents/skills"}/${skill.slug}/SKILL.md`,
           name: `${skill.slug}/SKILL.md`,
         }
       : null

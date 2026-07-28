@@ -17,13 +17,15 @@ import type {
  *  `all` — everything; `global` — assigned everywhere; `unassigned` — in the
  *  catalog but applying nowhere; `workspace` — everything in scope for one
  *  workspace, each row tagged with the layer it won at; `local` — skills living
- *  in a repo's `.agents/skills`. */
+ *  in one of a repo's skill roots; `user` — skills discovered in a personal
+ *  directory owned by another tool. */
 export type SkillAssignmentFilter =
   | "all"
   | "global"
   | "unassigned"
   | "workspace"
   | "local"
+  | "user"
 
 export interface SkillListFilter {
   assignment?: SkillAssignmentFilter
@@ -72,8 +74,13 @@ export const skillsApi = {
   /** Re-point a managed skill: global, a set of workspaces, or nowhere. */
   setAssignment: (id: string, input: SkillAssignmentInput) =>
     api.put<Skill>(`/skills/${id}/assignment`, input),
-  /** Move a repo-local skill's folder into the catalog so it can be reassigned. */
+  /** Move a repo-local skill's folder into the catalog so it can be reassigned.
+   *  Only for a root Lursor owns (`.agents/skills`) — see `copy`. */
   promote: (id: string) => api.post<Skill>(`/skills/${id}/promote`, {}),
+  /** Duplicate a discovered skill into the catalog, leaving the source in place.
+   *  The only way in from a root another tool owns, where moving the folder would
+   *  mutate a git tree or delete the skill from under that tool. */
+  copy: (id: string) => api.post<Skill>(`/skills/${id}/copy`, {}),
   // Files inside the skill folder, including SKILL.md itself — the editor works
   // on the real files, so frontmatter the UI doesn't model survives a save.
   readFile: (id: string, path: string, signal?: AbortSignal) =>
@@ -147,6 +154,14 @@ export function usePromoteSkill() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => skillsApi.promote(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: skillKeys.all }),
+  })
+}
+
+export function useCopySkill() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => skillsApi.copy(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: skillKeys.all }),
   })
 }

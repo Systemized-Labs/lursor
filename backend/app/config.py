@@ -60,6 +60,27 @@ class Settings(BaseSettings):
     # rebuildable index (see ``app/skills/store.py`` and ``api/skills.py``).
     skills_dir: Path = Path.home() / ".lursor" / "skills"
 
+    # Workspace-relative directories scanned for repo-committed skills, in
+    # precedence order (later roots lose a slug collision). The first is Lursor's
+    # own convention and the only one it will create; the rest are read in place
+    # because other tools own them. Adding a fifth convention is a config line.
+    #
+    # A bare ``skills/`` is included because plenty of repos keep them at the top
+    # level rather than under a tool's dotfolder. It costs nothing when wrong: a
+    # folder is only a skill if it holds a ``SKILL.md``, so a ``skills/`` full of
+    # anything else stays invisible.
+    local_skill_roots: list[str] = [
+        ".agents/skills",
+        ".claude/skills",
+        ".cursor/skills",
+        "skills",
+    ]
+
+    # Absolute (``~``-expanded) directories of personal skills owned by other
+    # tools. In scope for every workspace, at the lowest precedence. Read-only:
+    # Lursor never creates these or rebuilds a folder inside one.
+    user_skill_roots: list[str] = ["~/.claude/skills", "~/.cursor/skills"]
+
     # --- Agents ---
     # Default model used when an agent row does not specify one.
     # Models are served through OpenRouter (prefix "openrouter:").

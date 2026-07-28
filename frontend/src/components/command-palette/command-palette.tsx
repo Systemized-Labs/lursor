@@ -304,7 +304,8 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
 
     // Every skill, deep-linked to its own SKILL.md. Reaching a skill's files
     // was three clicks through Customization; here it is the name you already
-    // know. Skipped when nothing can open it (a local skill with no workspace).
+    // know. Skipped when nothing can open it (a local skill with no workspace,
+    // or one in a personal folder that belongs to no workspace at all).
     const skillRows: Row[] = skills
       .filter((s) => !q || s.name.toLowerCase().includes(q) || s.slug.includes(q))
       .map((s) => ({ skill: s, location: skillLocation(s, workspaces) }))

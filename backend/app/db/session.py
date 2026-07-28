@@ -105,6 +105,18 @@ async def _apply_lightweight_migrations(conn) -> None:
             )
         )
 
+    # Which root a skill folder lives in, now that a workspace has several
+    # candidates (``.agents/skills``, ``.claude/skills``, ``.cursor/skills``) and
+    # personal roots (``~/.claude/skills``) are indexed too. Runs after the origin
+    # backfill above so ``origin`` is guaranteed to exist: every pre-existing local
+    # row came from the one root there was.
+    if "root" not in skill_cols:
+        await conn.execute(text("ALTER TABLE skills ADD COLUMN root VARCHAR DEFAULT ''"))
+        await conn.execute(
+            text("UPDATE skills SET root = '.agents/skills' WHERE origin = 'local'")
+        )
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_skills_root ON skills (root)"))
+
     # Skills are no longer linked per-agent/subagent — membership is derived from
     # scope. Drop the join tables; existing links are intentionally discarded (the
     # global scope now applies to every agent). SQLite ignores DROP on a missing

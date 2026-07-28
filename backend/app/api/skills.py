@@ -2,27 +2,38 @@
 
 Skills are stored on disk as standard skill folders (``SKILL.md`` + optional
 resources and ``scripts/``); see ``app/skills/store.py``. A skill folder lives in
-one of two kinds of root, which is what :class:`SkillOrigin` records:
+one of three kinds of root, which is what :class:`SkillOrigin` records, narrowed
+to the exact directory by ``Skill.root``:
 
 - **managed** — the catalog, ``settings.skills_dir`` (``~/.lursor/skills/``). One
   copy, wherever it applies: reach is an *assignment* in the database
   (``is_global``, or ``skill_workspaces`` rows), so re-pointing a skill at other
   workspaces is a DB write and never moves files.
-- **local** — ``<workspace.path>/.agents/skills/``, committed into a repo. It
-  applies only in that workspace and has no assignment to edit;
-  ``POST /skills/{id}/promote`` moves the folder into the catalog and turns it
-  into a managed skill (the only operation here that moves files out of a repo).
+- **local** — one of the workspace's own roots (``settings.local_skill_roots``:
+  ``.agents/skills``, ``.claude/skills``, ``.cursor/skills``), committed into a
+  repo. It applies only in that workspace and has no assignment to edit.
+- **external** — a personal directory owned by another tool
+  (``settings.user_skill_roots``: ``~/.claude/skills``, ``~/.cursor/skills``). In
+  scope everywhere, at the lowest precedence, with no assignment.
+
+Only ``.agents/skills`` and the catalog are Lursor's to create or rebuild; every
+other root is *discovered*. That distinction is load-bearing in two places:
+``POST /skills/{id}/promote`` (which moves a folder) is refused for a root we
+don't own, in favour of ``POST /skills/{id}/copy``; and ``reconcile`` never
+materializes a missing folder there — for a foreign root, disk is authoritative
+for existence, not just content.
 
 The ``skills`` DB table is a rebuildable index over those roots so listing stays
 cheap and the UI has a stable id per skill — which is also what assignments and
 env vars hang off. Skills are **not** linked to agents: an agent discovers
 whatever is in scope for the workspace it runs in (``app/skills/resolve.py``).
 
-``reconcile`` keeps the index and the on-disk folders in sync, per root: DB rows
-whose folder is missing are materialized from their cached content (auto-migrating
-pre-folder rows), skill folders on disk with no DB row get indexed, and rows with
-an existing folder have their cache refreshed from disk (disk is authoritative).
-Local rows whose workspace is gone are dropped, along with any assignment or
+``reconcile`` keeps the index and the on-disk folders in sync, per root: in an
+owned root, DB rows whose folder is missing are materialized from their cached
+content (auto-migrating pre-folder rows); in a foreign root they are dropped.
+Either way skill folders on disk with no DB row get indexed, and rows with an
+existing folder have their cache refreshed from disk (disk is authoritative).
+Rows whose root or workspace is gone are dropped, along with any assignment or
 env-var link pointing at a workspace/skill that no longer exists.
 """
 
@@ -70,7 +81,17 @@ async def _workspace_or_404(session: AsyncSession, workspace_id: str) -> Workspa
 async def _root_for(
     session: AsyncSession, origin: SkillOrigin, workspace_id: str | None
 ) -> Path:
-    """Resolve the on-disk root a skill of this origin belongs in."""
+    """Resolve the on-disk root a *new* skill of this origin is written into.
+
+    Authoring has one destination per origin: the catalog, or the workspace's own
+    ``.agents/skills``. Discovery reads other roots; creation never writes to them.
+    """
+    if origin == SkillOrigin.external:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "External skills are discovered in another tool's directory and can't "
+            "be created here. Create it in the catalog instead.",
+        )
     if origin == SkillOrigin.local:
         if not workspace_id:
             raise HTTPException(
@@ -83,11 +104,44 @@ async def _root_for(
 
 
 def _root_for_row(row: Skill, ws_by_id: dict[str, Workspace]) -> Path | None:
-    """Root for an already-loaded row, or ``None`` if its workspace is gone."""
-    if row.origin == SkillOrigin.local:
+    """The root an already-loaded row's folder lives in, from ``row.root``.
+
+    ``None`` when it is gone: the workspace was deleted, or a root we don't own
+    (and therefore never create) is no longer on disk.
+    """
+    if row.origin == SkillOrigin.managed:
+        return store.catalog_root()
+    if row.origin == SkillOrigin.external:
+        if not row.root:  # pragma: no cover — reconcile never writes such a row
+            return None
+        root = Path(row.root).expanduser()
+    else:
         ws = ws_by_id.get(row.workspace_id or "")
-        return store.workspace_skills_root(ws.path) if ws else None
-    return store.catalog_root()
+        if ws is None:
+            return None
+        root = store.local_root_path(ws.path, row.root)
+    # An owned root is created on demand, so its absence isn't an error.
+    return root if (store.is_owned_root(row.root) or root.is_dir()) else None
+
+
+async def _row_root(session: AsyncSession, row: Skill) -> Path | None:
+    """:func:`_root_for_row` for a single row, loading its workspace on demand."""
+    ws_by_id: dict[str, Workspace] = {}
+    if row.workspace_id:
+        ws = await session.get(Workspace, row.workspace_id)
+        if ws is not None:
+            ws_by_id[ws.id] = ws
+    return _root_for_row(row, ws_by_id)
+
+
+async def _row_root_or_404(session: AsyncSession, row: Skill) -> Path:
+    root = await _row_root(session, row)
+    if root is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "This skill's folder is no longer on disk",
+        )
+    return root
 
 
 def _to_read(
@@ -110,6 +164,9 @@ def _to_read(
         is_global=row.is_global,
         workspace_ids=workspace_ids or [],
         workspace_id=row.workspace_id,
+        root=row.root,
+        root_label=store.root_label(row.root),
+        is_owned_root=store.is_owned_root(row.root),
         layer=layer,
         env_var_ids=env_var_ids or [],
         resources=parsed.resources if parsed else [],
@@ -165,15 +222,27 @@ async def _set_assignment(
 # --- Reconcile -----------------------------------------------------------------
 
 
-def _reconcile_root(
+async def _reconcile_root(
     session: AsyncSession,
     root: Path,
     rows: list[Skill],
     *,
     origin: SkillOrigin,
     workspace_id: str | None,
+    root_key: str,
+    materialize: bool,
+    dropped: set[str],
 ) -> bool:
-    """Sync one root's DB rows against its on-disk folders. Returns whether dirty."""
+    """Sync one root's DB rows against its on-disk folders. Returns whether dirty.
+
+    ``materialize`` is the whole difference between a root we own and one we
+    merely read. With it, a row whose folder is missing is rebuilt from the DB
+    cache (that is how a pre-folder row migrates). Without it, the row is
+    **deleted**: pointed at ``.claude/skills`` the rebuild would create a
+    ``.claude/`` directory in a repo that never had one and resurrect skills the
+    user deleted in another tool, so for a foreign root disk is authoritative for
+    existence, not merely for content.
+    """
     taken = set(store.list_slugs(root)) | {r.slug for r in rows if r.slug}
     indexed: set[str] = set()
     dirty = False
@@ -184,9 +253,19 @@ def _reconcile_root(
             taken.add(row.slug)
             session.add(row)
             dirty = True
-        indexed.add(row.slug)
+        if row.root != root_key:
+            # Heal a row that predates ``root`` being recorded, or one grouped
+            # here by the empty-key fallback, so later lookups don't re-derive it.
+            row.root = root_key
+            session.add(row)
+            dirty = True
 
         if not store.exists(row.slug, root):
+            if not materialize:
+                await session.delete(row)
+                dropped.add(row.id)
+                dirty = True
+                continue
             # Pre-folder row (or a deleted folder): materialize from the cache.
             store.write_skill(
                 row.slug,
@@ -210,6 +289,7 @@ def _reconcile_root(
                 )
                 session.add(row)
                 dirty = True
+        indexed.add(row.slug)
 
     # Skill folders on disk with no index row yet. A folder that appears in the
     # catalog out of band (dropped in by hand, restored from a backup) is indexed
@@ -230,6 +310,7 @@ def _reconcile_root(
                 origin=origin,
                 is_global=False,
                 workspace_id=workspace_id,
+                root=root_key,
             )
         )
         dirty = True
@@ -237,43 +318,95 @@ def _reconcile_root(
     return dirty
 
 
+def _by_root(rows: list[Skill], *, default: str = "") -> dict[str, list[Skill]]:
+    """Group rows by the root they claim, so each root reconciles against its own."""
+    out: dict[str, list[Skill]] = {}
+    for row in rows:
+        out.setdefault(row.root or default, []).append(row)
+    return out
+
+
 async def reconcile(session: AsyncSession) -> None:
     """Make the DB index and the on-disk skill folders consistent, per root."""
     workspaces = (await session.execute(select(Workspace))).scalars().all()
     ws_by_id = {w.id: w for w in workspaces}
     rows = (await session.execute(select(Skill))).scalars().all()
+    dropped: set[str] = set()
     dirty = False
 
     # The catalog.
-    dirty |= _reconcile_root(
+    dirty |= await _reconcile_root(
         session,
         store.catalog_root(),
         [r for r in rows if r.origin == SkillOrigin.managed],
         origin=SkillOrigin.managed,
         workspace_id=None,
+        root_key="",
+        materialize=True,
+        dropped=dropped,
     )
 
-    # One root per existing workspace. Skip a workspace whose directory is gone so
-    # we don't resurrect a deleted workspace folder by materializing skills into it.
+    # Every configured local root of every existing workspace. Skip a workspace
+    # whose directory is gone so we don't resurrect a deleted workspace folder by
+    # materializing skills into it.
     for ws in workspaces:
         if not Path(ws.path).is_dir():
             continue
-        ws_rows = [
-            r
-            for r in rows
-            if r.origin == SkillOrigin.local and r.workspace_id == ws.id
-        ]
-        dirty |= _reconcile_root(
-            session,
-            store.workspace_skills_root(ws.path),
-            ws_rows,
-            origin=SkillOrigin.local,
-            workspace_id=ws.id,
+        pending = _by_root(
+            [r for r in rows if r.origin == SkillOrigin.local and r.workspace_id == ws.id],
+            default=store.DEFAULT_LOCAL_SKILL_ROOT,
         )
+        # Only roots that exist are scanned, plus our own — which is the write
+        # target for ``POST /skills`` whatever the config says, so rows there must
+        # always get the chance to materialize.
+        scanned = store.local_skill_roots(ws.path)
+        if all(key != store.DEFAULT_LOCAL_SKILL_ROOT for key, _ in scanned):
+            scanned.insert(
+                0, (store.DEFAULT_LOCAL_SKILL_ROOT, store.workspace_skills_root(ws.path))
+            )
+        for key, root in scanned:
+            dirty |= await _reconcile_root(
+                session,
+                root,
+                pending.pop(key, []),
+                origin=SkillOrigin.local,
+                workspace_id=ws.id,
+                root_key=key,
+                materialize=store.is_owned_root(key),
+                dropped=dropped,
+            )
+        # Rows in a root that has been un-configured or has vanished from disk.
+        # Nothing is deleted on disk — the directory is simply no longer indexed.
+        for orphans in pending.values():
+            for row in orphans:
+                await session.delete(row)
+                dropped.add(row.id)
+                dirty = True
+
+    # Personal roots owned by another tool. No workspace, never materialized.
+    pending_user = _by_root([r for r in rows if r.origin == SkillOrigin.external])
+    for key, root in store.user_skill_roots():
+        dirty |= await _reconcile_root(
+            session,
+            root,
+            pending_user.pop(key, []),
+            origin=SkillOrigin.external,
+            workspace_id=None,
+            root_key=key,
+            materialize=False,
+            dropped=dropped,
+        )
+    for orphans in pending_user.values():
+        for row in orphans:
+            await session.delete(row)
+            dropped.add(row.id)
+            dirty = True
 
     # Drop local rows whose workspace no longer exists at all.
-    live_ids = {r.id for r in rows}
+    live_ids = {r.id for r in rows} - dropped
     for row in rows:
+        if row.id in dropped:
+            continue
         if row.origin == SkillOrigin.local and row.workspace_id not in ws_by_id:
             await session.delete(row)
             live_ids.discard(row.id)
@@ -306,10 +439,20 @@ async def _get_or_404(skill_id: str, session: AsyncSession) -> Skill:
 
 
 async def _taken_slugs(
-    session: AsyncSession, root: Path, origin: SkillOrigin, workspace_id: str | None
+    session: AsyncSession,
+    root: Path,
+    origin: SkillOrigin,
+    workspace_id: str | None,
+    *,
+    root_key: str = "",
 ) -> set[str]:
-    """Slugs already used within one root (disk + DB)."""
-    stmt = select(Skill.slug).where(Skill.origin == origin)
+    """Slugs already used within one root (disk + DB).
+
+    Scoped to ``root_key`` as well as the workspace: two roots of the same
+    workspace may each hold a ``pdf-tools``, and that collision is resolved by
+    layer precedence, not by renaming one of them.
+    """
+    stmt = select(Skill.slug).where(Skill.origin == origin, Skill.root == root_key)
     stmt = (
         stmt.where(Skill.workspace_id == workspace_id)
         if workspace_id
@@ -323,12 +466,13 @@ async def _taken_slugs(
 async def list_skills(
     assignment: str = Query(
         "all",
-        pattern="^(all|global|unassigned|workspace|local)$",
+        pattern="^(all|global|unassigned|workspace|local|user)$",
         description=(
             "all — every skill; global — assigned everywhere; unassigned — in the "
             "catalog but applying nowhere; workspace — everything in scope for "
             "`workspace_id`, tagged with the layer it won at; local — skills living "
-            "in a repo's .agents/skills (optionally filtered to `workspace_id`)."
+            "in one of a repo's skill roots (optionally filtered to `workspace_id`); "
+            "user — skills discovered in a personal directory owned by another tool."
         ),
     ),
     workspace_id: str | None = Query(None),
@@ -389,6 +533,8 @@ async def list_skills(
             if r.origin == SkillOrigin.local
             and (workspace_id is None or r.workspace_id == workspace_id)
         ]
+    elif assignment == "user":
+        rows = [r for r in rows if r.origin == SkillOrigin.external]
 
     return [
         _to_read(
@@ -408,8 +554,13 @@ async def create_skill(payload: SkillCreate, session: AsyncSession = Depends(get
     # were named.
     is_local = payload.origin == SkillOrigin.local
     workspace_id = payload.workspace_id if is_local else None
+    # Authoring has one destination per origin: the catalog, or the workspace's
+    # own .agents/skills. Discovered roots are read, never written into.
+    root_key = store.DEFAULT_LOCAL_SKILL_ROOT if is_local else ""
     root = await _root_for(session, payload.origin, payload.workspace_id)
-    taken = await _taken_slugs(session, root, payload.origin, workspace_id)
+    taken = await _taken_slugs(
+        session, root, payload.origin, workspace_id, root_key=root_key
+    )
     slug = store.slugify(payload.name, taken=taken)
     store.write_skill(
         slug,
@@ -425,6 +576,7 @@ async def create_skill(payload: SkillCreate, session: AsyncSession = Depends(get
         content=payload.content,
         origin=payload.origin,
         workspace_id=workspace_id,
+        root=root_key,
     )
     session.add(skill)
     if not is_local:
@@ -450,11 +602,13 @@ async def set_assignment(
 ):
     """Re-point a managed skill: global, a set of workspaces, or nowhere."""
     skill = await _get_or_404(skill_id, session)
-    if skill.origin == SkillOrigin.local:
+    if skill.origin != SkillOrigin.managed:
+        verb = "Promote" if store.is_owned_root(skill.root) else "Copy"
+        where = store.root_label(skill.root) or "another tool's directory"
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "This skill lives in its workspace's .agents/skills folder. Promote it "
-            "into the catalog first to assign it elsewhere.",
+            f"This skill lives in {where}, so it has no assignment to change. "
+            f"{verb} it into the catalog first to assign it elsewhere.",
         )
     await _set_assignment(
         session,
@@ -483,23 +637,31 @@ async def promote_skill(
     """Move a local skill's folder out of its repo and into the catalog.
 
     The one operation that moves files out of a user's workspace directory, so it
-    is always explicit. With no body, the promoted skill stays assigned to the
-    workspace it came from — its reach doesn't change, only its ability to be
-    re-pointed.
+    is always explicit — and it is refused for a root Lursor doesn't own, where
+    moving would mutate a git-tracked ``.claude/`` tree behind the user's back.
+    Use ``POST /skills/{id}/copy`` there. With no body, the promoted skill stays
+    assigned to the workspace it came from — its reach doesn't change, only its
+    ability to be re-pointed.
     """
     skill = await _get_or_404(skill_id, session)
-    if skill.origin != SkillOrigin.local:
+    if skill.origin == SkillOrigin.managed:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "This skill is already in the catalog"
+        )
+    if not store.is_owned_root(skill.root):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{store.root_label(skill.root)} belongs to another tool, so its skills "
+            "can't be moved out of it. Copy this one into the catalog instead.",
         )
     if not skill.workspace_id:  # pragma: no cover — reconcile drops orphans
         raise HTTPException(status.HTTP_409_CONFLICT, "Skill has no owning workspace")
 
     origin_workspace_id = skill.workspace_id
     ws = await _workspace_or_404(session, origin_workspace_id)
-    src_root = store.workspace_skills_root(ws.path)
+    src_root = store.local_root_path(ws.path, skill.root)
     catalog = store.catalog_root()
-    taken = await _taken_slugs(session, catalog, SkillOrigin.managed, None)
+    taken = await _taken_slugs(session, catalog, SkillOrigin.managed, None, root_key="")
 
     try:
         skill.slug = store.move_skill(skill.slug, src_root, catalog, taken=taken)
@@ -509,6 +671,7 @@ async def promote_skill(
         ) from exc
     skill.origin = SkillOrigin.managed
     skill.workspace_id = None
+    skill.root = ""
 
     payload = payload or SkillPromote()
     workspace_ids = (
@@ -530,6 +693,71 @@ async def promote_skill(
         workspace_ids=assigned.get(skill.id, []),
         env_var_ids=env_links.get(skill.id, []),
     )
+
+
+@router.post("/{skill_id}/copy", response_model=SkillRead)
+async def copy_skill(
+    skill_id: str,
+    payload: SkillPromote | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Duplicate a discovered skill into the catalog, leaving the source alone.
+
+    The non-destructive counterpart to ``promote``, and the only way into the
+    catalog from a root another tool owns: taking the folder would mutate a repo
+    or delete a skill from under Claude Code. The source row stays exactly as it
+    was, still read in place; the copy is an ordinary managed skill that can be
+    edited and reassigned freely.
+
+    With no body the copy inherits the reach the source already had: the
+    originating workspace for a ``local`` skill, global for an ``external`` one
+    (which was in scope everywhere).
+    """
+    skill = await _get_or_404(skill_id, session)
+    if skill.origin == SkillOrigin.managed:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This skill is already in the catalog"
+        )
+    src_root = await _row_root_or_404(session, skill)
+    catalog = store.catalog_root()
+    taken = await _taken_slugs(session, catalog, SkillOrigin.managed, None, root_key="")
+
+    try:
+        slug = store.copy_skill(skill.slug, src_root, catalog, taken=taken)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Could not copy skill folder: {exc}"
+        ) from exc
+
+    parsed = store.read_skill(slug, catalog)
+    copy = Skill(
+        slug=slug,
+        name=parsed.name if parsed else skill.name,
+        description=parsed.description if parsed else skill.description,
+        content=parsed.content if parsed else skill.content,
+        origin=SkillOrigin.managed,
+        workspace_id=None,
+        root="",
+    )
+    session.add(copy)
+
+    payload = payload or SkillPromote()
+    if payload.is_global is None and payload.workspace_ids is None:
+        is_global = skill.origin == SkillOrigin.external
+        workspace_ids = [] if is_global else [skill.workspace_id or ""]
+    else:
+        is_global = bool(payload.is_global)
+        workspace_ids = payload.workspace_ids or []
+    await _set_assignment(
+        session,
+        copy,
+        is_global=is_global,
+        workspace_ids=[w for w in workspace_ids if w],
+    )
+    await session.commit()
+    await session.refresh(copy)
+    assigned = await _assignments(session)
+    return _to_read(copy, catalog, workspace_ids=assigned.get(copy.id, []))
 
 
 async def _import_zip(raw: bytes, root: Path, taken: set[str]) -> list[str]:
@@ -589,8 +817,11 @@ async def import_skills(
     """
     is_local = origin == SkillOrigin.local
     row_workspace_id = workspace_id if is_local else None
+    root_key = store.DEFAULT_LOCAL_SKILL_ROOT if is_local else ""
     root = await _root_for(session, origin, workspace_id)
-    taken = await _taken_slugs(session, root, origin, row_workspace_id)
+    taken = await _taken_slugs(
+        session, root, origin, row_workspace_id, root_key=root_key
+    )
     imported: list[str] = []
 
     # A folder upload arrives as multiple parts, or a single part whose name
@@ -633,6 +864,7 @@ async def import_skills(
                 select(Skill).where(
                     Skill.slug.in_(imported),
                     Skill.origin == origin,
+                    Skill.root == root_key,
                     Skill.workspace_id == row_workspace_id
                     if row_workspace_id
                     else Skill.workspace_id.is_(None),
@@ -665,7 +897,7 @@ async def import_skills(
 @router.get("/{skill_id}", response_model=SkillRead)
 async def get_skill(skill_id: str, session: AsyncSession = Depends(get_session)):
     row = await _get_or_404(skill_id, session)
-    root = await _root_for(session, row.origin, row.workspace_id)
+    root = await _row_root(session, row)
     assigned = await _assignments(session)
     env_links = await _env_links(session)
     return _to_read(
@@ -681,7 +913,7 @@ async def update_skill(
     skill_id: str, payload: SkillUpdate, session: AsyncSession = Depends(get_session)
 ):
     skill = await _get_or_404(skill_id, session)
-    root = await _root_for(session, skill.origin, skill.workspace_id)
+    root = await _row_root_or_404(session, skill)
     data = payload.model_dump(exclude_unset=True)
     for key, value in data.items():
         setattr(skill, key, value)
@@ -710,8 +942,12 @@ async def update_skill(
 @router.delete("/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_skill(skill_id: str, session: AsyncSession = Depends(get_session)):
     skill = await _get_or_404(skill_id, session)
-    root = await _root_for(session, skill.origin, skill.workspace_id)
-    store.delete_skill(skill.slug, root)
+    # Allowed on a foreign root: deleting a discovered skill has always meant
+    # deleting the real folder, and the UI names the absolute path before the
+    # click. A root that has already vanished just drops the row.
+    root = await _row_root(session, skill)
+    if root is not None:
+        store.delete_skill(skill.slug, root)
     # Links don't cascade in SQLite; drop them with the row so a recycled id can
     # never inherit another skill's assignment or secrets.
     await session.execute(
@@ -732,7 +968,7 @@ async def read_skill_file(
     skill_id: str, path: str, session: AsyncSession = Depends(get_session)
 ):
     skill = await _get_or_404(skill_id, session)
-    root = await _root_for(session, skill.origin, skill.workspace_id)
+    root = await _row_root_or_404(session, skill)
     try:
         return SkillResourceContent(content=store.read_file(skill.slug, root, path))
     except ValueError as exc:
@@ -749,7 +985,7 @@ async def write_skill_file(
     session: AsyncSession = Depends(get_session),
 ):
     skill = await _get_or_404(skill_id, session)
-    root = await _root_for(session, skill.origin, skill.workspace_id)
+    root = await _row_root_or_404(session, skill)
     try:
         store.write_file(skill.slug, root, path, payload.content)
         wrote_skill_md = store.is_skill_file(skill.slug, root, path)
@@ -779,7 +1015,7 @@ async def delete_skill_file(
     skill_id: str, path: str, session: AsyncSession = Depends(get_session)
 ):
     skill = await _get_or_404(skill_id, session)
-    root = await _root_for(session, skill.origin, skill.workspace_id)
+    root = await _row_root_or_404(session, skill)
     try:
         store.delete_file(skill.slug, root, path)
     except ValueError as exc:

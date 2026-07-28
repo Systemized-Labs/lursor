@@ -44,12 +44,15 @@ export interface AgentInput {
 /** Where a skill folder lives, which decides how it can be assigned.
  *
  *  `managed` — the catalog (`~/.lursor/skills`): one copy, re-pointable at any
- *  set of workspaces. `local` — `<workspace>/.agents/skills`, committed into a
- *  repo: applies only there and must be promoted before it can be reassigned. */
-export type SkillOrigin = "managed" | "local"
+ *  set of workspaces. `local` — one of the repo's own skill roots
+ *  (`.agents/skills`, `.claude/skills`, `.cursor/skills`): applies only there and
+ *  must be brought into the catalog before it can be reassigned. `external` — a
+ *  personal directory owned by another tool (`~/.claude/skills`): read in place
+ *  and in scope everywhere. */
+export type SkillOrigin = "managed" | "local" | "external"
 
 /** Which layer a skill won at when listing for one workspace. */
-export type SkillLayer = "global" | "workspace" | "local"
+export type SkillLayer = "user" | "global" | "workspace" | "local"
 
 export interface Skill {
   id: string
@@ -64,6 +67,15 @@ export interface Skill {
   workspace_ids: string[]
   /** Local skills: the workspace whose folder holds it. */
   workspace_id: string | null
+  /** Which root the folder lives in: workspace-relative for `local`
+   *  (".claude/skills"), absolute for `external`, empty for the catalog. */
+  root: string
+  /** Display form of `root` (".claude", "~/.claude"); empty for the catalog. */
+  root_label: string
+  /** False when the folder belongs to another tool: copy it into the catalog
+   *  rather than moving it, and a delete removes a real file in the user's repo
+   *  or home directory. */
+  is_owned_root: boolean
   /** Set only in a per-workspace listing; null in catalog-wide ones. */
   layer: SkillLayer | null
   /** Env vars attached to this skill (ids only — values never leave the server). */

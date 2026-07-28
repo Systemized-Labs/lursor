@@ -8,19 +8,29 @@ carry bundled **resource** files (``.md``/``.json``/``.yaml``/``.yml``/``.csv``/
 ``SkillsDirectory`` discovers at run time, so what the UI shows here matches what
 the agent actually loads.
 
-Skill folders live in one of two kinds of root:
+Skill folders live in one of three kinds of root:
 
 - the **catalog** — ``~/.lursor/skills/`` (``settings.skills_dir``): one copy of
   every UI-managed skill, wherever it applies. Which workspaces a catalog skill
   reaches is an *assignment* held in the database, not a location on disk.
-- a **workspace** root — ``<workspace.path>/.agents/skills/``: travels with the
-  workspace directory (git-shareable, the Claude Code convention) and applies
-  only there.
+- a **local** root — ``<workspace.path>/<subdir>/`` for each entry in
+  ``settings.local_skill_roots`` (``.agents/skills``, ``.claude/skills``,
+  ``.cursor/skills``): travels with the workspace directory (git-shareable) and
+  applies only there.
+- a **user** root — ``~/.claude/skills``, ``~/.cursor/skills`` and anything else
+  in ``settings.user_skill_roots``: personal skills owned by another tool, in
+  scope everywhere.
 
-Every path helper takes an explicit ``root`` so the same code serves both;
-``catalog_root`` / ``workspace_skills_root`` resolve them. What a given run
-actually sees is decided in ``app/skills/resolve.py``, which needs the database
-(assignments) and therefore does not live here.
+Only the first two are Lursor's to write into structurally, and only
+``.agents/skills`` among the local ones — see :func:`is_owned_root`. A root we
+don't own is *discovered*: never created, and a folder missing from it is gone
+rather than something to rebuild. Editing a skill's files through Lursor still
+writes to wherever it actually lives, foreign root included.
+
+Every path helper takes an explicit ``root`` so the same code serves all of them;
+``catalog_root`` / ``local_skill_roots`` / ``user_skill_roots`` resolve them. What
+a given run actually sees is decided in ``app/skills/resolve.py``, which needs the
+database (assignments) and therefore does not live here.
 
 This module is filesystem-only — it never touches the database. The DB ``skills``
 table is a rebuildable index reconciled against this store in ``app/api/skills.py``.
@@ -29,11 +39,12 @@ table is a rebuildable index reconciled against this store in ``app/api/skills.p
 from __future__ import annotations
 
 import io
+import os
 import re
 import shutil
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -46,10 +57,13 @@ RESOURCE_EXTENSIONS: frozenset[str] = frozenset(
 )
 SKILL_FILE = "SKILL.md"
 
-# Per-workspace skills live here, relative to the workspace directory. The
-# ``.agents/`` prefix matches the convention several agent tools/libraries already
-# use for on-disk configuration that travels with a repo.
-WORKSPACE_SKILLS_SUBDIR = Path(".agents") / "skills"
+# The one workspace-relative root Lursor writes into structurally: creates it,
+# authors into it, and rebuilds a folder there from the DB cache. The ``.agents/``
+# prefix matches the convention several agent tools/libraries already use for
+# on-disk configuration that travels with a repo. Other local roots
+# (``.claude/skills``, ``.cursor/skills``) belong to other tools and are read in
+# place.
+DEFAULT_LOCAL_SKILL_ROOT = ".agents/skills"
 
 
 @dataclass
@@ -76,22 +90,138 @@ def catalog_root() -> Path:
     return root
 
 
-def workspace_skills_root(workspace_path: str | Path) -> Path:
-    """The skills root for a workspace: ``<workspace.path>/.agents/skills/``.
+def _normalize_root_key(raw: str) -> str:
+    """Canonical form of a configured workspace-relative root.
 
-    Not created here — a workspace may have no skills, so absence is normal.
-    Directory creation is lazy, on the first workspace-scoped write.
+    Separators become ``/`` and surrounding slashes/whitespace are dropped, so
+    ``".claude/skills/"`` and ``".claude\\skills"`` are the same key — the key is
+    stored on every ``Skill`` row, and two spellings of one directory would index
+    it twice.
     """
-    return Path(workspace_path) / WORKSPACE_SKILLS_SUBDIR
+    key = raw.strip().replace("\\", "/").strip("/")
+    if not key or key == "." or ".." in PurePosixPath(key).parts:
+        return ""
+    return key
+
+
+def workspace_skills_root(workspace_path: str | Path) -> Path:
+    """The root a *new* workspace-local skill is written into.
+
+    ``<workspace.path>/.agents/skills/`` — the only local root Lursor creates.
+    Not created here: a workspace may have no skills, so absence is normal, and
+    directory creation is lazy on the first workspace-scoped write.
+    """
+    return Path(workspace_path) / DEFAULT_LOCAL_SKILL_ROOT
+
+
+def local_root_path(workspace_path: str | Path, key: str) -> Path:
+    """Absolute path of one local root, given the key a ``Skill`` row stores.
+
+    An empty or malformed key falls back to the default root, so a row written
+    before roots were configurable still resolves.
+    """
+    return Path(workspace_path) / (_normalize_root_key(key) or DEFAULT_LOCAL_SKILL_ROOT)
+
+
+def local_root_keys() -> list[str]:
+    """Configured workspace-relative roots, in precedence order, de-duplicated."""
+    keys: list[str] = []
+    for raw in get_settings().local_skill_roots:
+        key = _normalize_root_key(raw)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def local_skill_roots(workspace_path: str | Path) -> list[tuple[str, Path]]:
+    """``(key, absolute path)`` for every configured local root that exists.
+
+    ``key`` is the workspace-relative subdir as configured (``".claude/skills"``)
+    and is what a ``Skill`` row stores, so the row survives the workspace moving.
+    Non-existent roots are omitted: absence is the normal case.
+
+    The catalog is never returned as a *local* root. A workspace registered at
+    ``~/.lursor`` (or the catalog's own parent) would otherwise match the bare
+    ``skills`` entry and index every managed skill a second time — as a local one,
+    which then shadows the managed row it was copied from.
+    """
+    base = Path(workspace_path)
+    catalog = get_settings().skills_dir.expanduser().resolve()
+    out: list[tuple[str, Path]] = []
+    for key in local_root_keys():
+        path = base / key
+        if not path.is_dir() or path.resolve() == catalog:
+            continue
+        out.append((key, path))
+    return out
+
+
+def user_root_keys() -> list[str]:
+    """Configured personal roots as expanded absolute paths, in precedence order."""
+    keys: list[str] = []
+    for raw in get_settings().user_skill_roots:
+        raw = raw.strip()
+        if not raw:
+            continue
+        key = str(Path(raw).expanduser())
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
+def user_skill_roots() -> list[tuple[str, Path]]:
+    """``(key, path)`` for every configured personal root that exists.
+
+    ``key`` is the expanded absolute path — these are not relative to anything.
+    """
+    return [(key, Path(key)) for key in user_root_keys() if Path(key).is_dir()]
+
+
+def is_owned_root(key: str) -> bool:
+    """True when Lursor may create this root or rebuild a folder inside it.
+
+    The catalog (empty key) and ``.agents/skills`` are ours. Everything else is
+    another tool's directory: we index what is there and nothing more, so a
+    folder that disappears means the skill is gone, not that the index should
+    put it back.
+    """
+    return not key.strip() or _normalize_root_key(key) == DEFAULT_LOCAL_SKILL_ROOT
+
+
+def root_label(key: str) -> str:
+    """Short display form of a root (``.claude``, ``.cursor``, ``~/.claude``).
+
+    Empty for the catalog, which needs no badge. Computed here rather than in the
+    frontend so no client has to parse paths to say where a skill came from.
+    """
+    key = key.strip().replace("\\", "/")
+    if not key:
+        return ""
+    path = PurePosixPath(key)
+    parent = path.parent
+    label = parent.name or path.name
+    if not path.is_absolute():
+        return label
+    home = PurePosixPath(str(Path.home()))
+    if parent == home or home in parent.parents:
+        return f"~/{label}"
+    return str(parent)
 
 
 def path_for(slug: str, root: Path) -> Path:
     """Absolute path to a skill folder under ``root``.
 
-    ``slug`` is validated to stay directly under ``root`` (no traversal).
+    ``slug`` is validated to name a direct child of ``root`` (no separators, no
+    traversal). The folder itself is deliberately *not* resolved: a symlinked
+    skill folder is common in a hand-maintained ``~/.claude/skills``, and
+    resolving it would put it outside its root and make the whole root unreadable.
+    Escapes are still caught below, and files *inside* the folder are checked
+    against the resolved folder in :func:`_resource_path`.
     """
-    folder = (root / slug).resolve()
-    if folder.parent != root.resolve():
+    if not slug or slug in {".", ".."} or "/" in slug or "\\" in slug or os.sep in slug:
+        raise ValueError(f"Invalid skill slug: {slug!r}")
+    folder = root / slug
+    if folder.parent.resolve() != root.resolve():
         raise ValueError(f"Invalid skill slug: {slug!r}")
     return folder
 
@@ -143,6 +273,23 @@ def move_skill(slug: str, src_root: Path, dst_root: Path, *, taken: set[str]) ->
     dst = path_for(new_slug, dst_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dst))
+    return new_slug
+
+
+def copy_skill(slug: str, src_root: Path, dst_root: Path, *, taken: set[str]) -> str:
+    """Copy a skill folder between roots, returning the (possibly new) slug.
+
+    The non-destructive half of :func:`move_skill`, for roots Lursor doesn't own.
+    Taking a skill out of ``.claude/skills`` would mutate a git-tracked tree
+    behind the user's back; taking one out of ``~/.claude/skills`` would delete it
+    from under Claude Code. Symlinks are followed so the catalog copy is
+    self-contained.
+    """
+    src = path_for(slug, src_root)
+    new_slug = slug if slug not in taken else slugify(slug, taken=taken)
+    dst = path_for(new_slug, dst_root)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst, symlinks=False)
     return new_slug
 
 
@@ -213,22 +360,39 @@ def read_skill(slug: str, root: Path) -> ParsedSkill | None:
 def write_skill(
     slug: str, root: Path, *, name: str, description: str, content: str
 ) -> None:
-    """Create/overwrite ``<root>/<slug>/SKILL.md`` with standard frontmatter."""
+    """Create/overwrite ``<root>/<slug>/SKILL.md``, preserving unknown frontmatter.
+
+    Only ``name`` and ``description`` are modelled by the UI, but a skill written
+    for another tool routinely carries ``allowed-tools``, ``license`` or
+    ``version``. Rebuilding the frontmatter from the two known keys would delete
+    the rest — silently, and in a file inside someone's repo or home directory —
+    so existing keys are merged rather than replaced.
+    """
     folder = path_for(slug, root)
     folder.mkdir(parents=True, exist_ok=True)
+    skill_md = folder / SKILL_FILE
+    existing: dict = {}
+    if skill_md.is_file():
+        existing, _ = _split_frontmatter(skill_md.read_text(encoding="utf-8"))
+    # name/description lead (that is the standard's shape); everything else keeps
+    # its original order behind them.
+    merged = {"name": name, "description": description}
+    merged.update({k: v for k, v in existing.items() if k not in merged})
     frontmatter = yaml.safe_dump(
-        {"name": name, "description": description},
-        sort_keys=False,
-        allow_unicode=True,
+        merged, sort_keys=False, allow_unicode=True
     ).strip()
     body = content.strip()
     doc = f"---\n{frontmatter}\n---\n\n{body}\n" if body else f"---\n{frontmatter}\n---\n"
-    (folder / SKILL_FILE).write_text(doc, encoding="utf-8")
+    skill_md.write_text(doc, encoding="utf-8")
 
 
 def delete_skill(slug: str, root: Path) -> None:
     folder = path_for(slug, root)
-    if folder.is_dir():
+    # A skill folder in a hand-maintained root may be a symlink; ``rmtree``
+    # refuses those, so unlink the link and leave its target alone.
+    if folder.is_symlink():
+        folder.unlink()
+    elif folder.is_dir():
         shutil.rmtree(folder)
 
 

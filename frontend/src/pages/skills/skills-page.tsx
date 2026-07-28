@@ -1,5 +1,6 @@
 import {
   ArrowLineUp,
+  Copy,
   DotsThree,
   FileArrowUp,
   FolderOpen,
@@ -16,6 +17,7 @@ import { toast } from "sonner"
 
 import {
   type SkillTarget,
+  useCopySkill,
   useDeleteSkill,
   useImportSkills,
   usePromoteSkill,
@@ -52,8 +54,8 @@ const IMPORT_TARGET: SkillTarget = { origin: "managed", is_global: true }
 // sentence does. Deliberately unfinished — the cursor sits where you continue.
 const STUDIO_DRAFT = "Write me a skill that "
 
-/** Where a skill applies, as the four buckets the page is organised into. */
-type GroupKey = "global" | "assigned" | "local" | "unassigned"
+/** Where a skill applies, as the five buckets the page is organised into. */
+type GroupKey = "global" | "assigned" | "local" | "external" | "unassigned"
 
 const GROUPS: { key: GroupKey; title: string; hint: string }[] = [
   {
@@ -69,7 +71,12 @@ const GROUPS: { key: GroupKey; title: string; hint: string }[] = [
   {
     key: "local",
     title: "In a repo",
-    hint: "Committed under .agents/skills — travels with the code and applies only there.",
+    hint: "Committed into the repo — travels with the code and applies only there.",
+  },
+  {
+    key: "external",
+    title: "From other tools",
+    hint: "Found in your personal skills folders and read where they are. They apply everywhere, and Claude Code or Cursor still owns the files.",
   },
   {
     key: "unassigned",
@@ -79,9 +86,22 @@ const GROUPS: { key: GroupKey; title: string; hint: string }[] = [
 ]
 
 function groupOf(skill: Skill): GroupKey {
+  if (skill.origin === "external") return "external"
   if (skill.origin === "local") return "local"
   if (skill.is_global) return "global"
   return skill.workspace_ids.length > 0 ? "assigned" : "unassigned"
+}
+
+/**
+ * The skill's folder as something a person can find, for the confirmations that
+ * touch real files. Deleting `~/.claude/skills/pdf` from here removes it from
+ * Claude Code, and that should be legible before the click, not after.
+ */
+function folderHint(skill: Skill, workspaceNames: Map<string, string>): string | null {
+  if (skill.origin === "external") return `${skill.root}/${skill.slug}`
+  if (skill.origin !== "local") return null
+  const workspace = workspaceNames.get(skill.workspace_id ?? "") ?? "its workspace"
+  return `${skill.root || ".agents/skills"}/${skill.slug} in ${workspace}`
 }
 
 function matches(skill: Skill, query: string): boolean {
@@ -113,6 +133,7 @@ interface SkillRowProps {
   onEdit: (skill: Skill) => void
   onOpenInWorkspace: (skill: Skill) => void
   onPromote: (skill: Skill) => void
+  onCopy: (skill: Skill) => void
   onDelete: (skill: Skill) => void
 }
 
@@ -123,9 +144,11 @@ function SkillRow({
   onEdit,
   onOpenInWorkspace,
   onPromote,
+  onCopy,
   onDelete,
 }: SkillRowProps) {
   const isLocal = skill.origin === "local"
+  const isExternal = skill.origin === "external"
   const fileCount = skill.resources.length + skill.scripts.length
 
   return (
@@ -140,6 +163,13 @@ function SkillRow({
           <span className="truncate text-sm font-medium text-foreground">
             {skill.name}
           </span>
+          {/* Only foreign roots are badged: our own conventions are the norm, and
+              this is the one thing that tells two same-named skills apart. */}
+          {!skill.is_owned_root && skill.root_label && (
+            <Chip title={`Lives in ${skill.root}/${skill.slug} — another tool owns this folder`}>
+              {skill.root_label}
+            </Chip>
+          )}
           {fileCount > 0 && (
             <Chip
               title={[...skill.resources, ...skill.scripts].join("\n")}
@@ -158,9 +188,16 @@ function SkillRow({
         {isLocal ? (
           <span
             className="hidden max-w-[12rem] truncate rounded-md border px-2 py-1 text-xs text-muted-foreground sm:inline-block"
-            title="Lives in this workspace's .agents/skills folder. Move it to the catalog to assign it elsewhere."
+            title={`Lives in ${skill.root || ".agents/skills"} in this workspace. Bring it into the catalog to assign it elsewhere.`}
           >
             {workspaceNames.get(skill.workspace_id ?? "") ?? "Unknown workspace"}
+          </span>
+        ) : isExternal ? (
+          <span
+            className="hidden max-w-[12rem] truncate rounded-md border px-2 py-1 text-xs text-muted-foreground sm:inline-block"
+            title={`Read from ${skill.root}. Applies everywhere; copy it into the catalog to make it yours.`}
+          >
+            Everywhere
           </span>
         ) : (
           <SkillScopeMenu skill={skill} workspaces={workspaces} />
@@ -194,17 +231,29 @@ function SkillRow({
             </DropdownMenuItem>
             {/* The same files, in a workspace: an agent that can rewrite them, a
                 terminal to run the scripts, and every sibling skill to crib
-                from. Local skills open in the repo that owns them. */}
-            <DropdownMenuItem onSelect={() => onOpenInWorkspace(skill)}>
-              <Sparkle className="h-4 w-4" />
-              {isLocal ? "Open in workspace" : "Open in Skill Studio"}
-            </DropdownMenuItem>
-            {isLocal && (
-              <DropdownMenuItem onSelect={() => onPromote(skill)}>
-                <ArrowLineUp className="h-4 w-4" />
-                Move to catalog
+                from. Local skills open in the repo that owns them; skills in a
+                personal folder belong to no workspace, so they stay in the
+                editor dialog. */}
+            {!isExternal && (
+              <DropdownMenuItem onSelect={() => onOpenInWorkspace(skill)}>
+                <Sparkle className="h-4 w-4" />
+                {isLocal ? "Open in workspace" : "Open in Skill Studio"}
               </DropdownMenuItem>
             )}
+            {/* Moving is only ours to do in .agents/skills. Anywhere else the
+                folder belongs to another tool, so we take a copy. */}
+            {(isLocal || isExternal) &&
+              (skill.is_owned_root ? (
+                <DropdownMenuItem onSelect={() => onPromote(skill)}>
+                  <ArrowLineUp className="h-4 w-4" />
+                  Move to catalog
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={() => onCopy(skill)}>
+                  <Copy className="h-4 w-4" />
+                  Copy to catalog
+                </DropdownMenuItem>
+              ))}
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => onDelete(skill)}>
               <Trash className="h-4 w-4" />
@@ -223,6 +272,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const workspacesQuery = useWorkspaces()
   const deleteSkill = useDeleteSkill()
   const promoteSkill = usePromoteSkill()
+  const copySkill = useCopySkill()
   const importSkills = useImportSkills()
 
   const navigate = useNavigate()
@@ -232,6 +282,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [editingId, setEditingId] = useState<string | undefined>(undefined)
   const [toDelete, setToDelete] = useState<Skill | undefined>(undefined)
   const [toPromote, setToPromote] = useState<Skill | undefined>(undefined)
+  const [toCopy, setToCopy] = useState<Skill | undefined>(undefined)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
 
@@ -325,6 +376,19 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
       setToDelete(undefined)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete skill")
+    }
+  }
+
+  async function confirmCopy() {
+    if (!toCopy) return
+    try {
+      const copied = await copySkill.mutateAsync(toCopy.id)
+      toast.success(
+        `"${copied.name}" copied into the catalog — the original is untouched`
+      )
+      setToCopy(undefined)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to copy skill")
     }
   }
 
@@ -482,6 +546,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
                     onEdit={openEdit}
                     onOpenInWorkspace={openInWorkspace}
                     onPromote={setToPromote}
+                    onCopy={setToCopy}
                     onDelete={setToDelete}
                   />
                 ))}
@@ -510,9 +575,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
         title="Move skill to catalog"
         description={
           toPromote
-            ? `This moves the "${toPromote.name}" folder out of ${
-                workspaceNames.get(toPromote.workspace_id ?? "") ?? "the workspace"
-              }'s .agents/skills and into your skills catalog, so it can be assigned to any workspace. The files leave the repo — commit or stash first if that matters.`
+            ? `This moves ${folderHint(toPromote, workspaceNames)} into your skills catalog, so it can be assigned to any workspace. The files leave the repo — commit or stash first if that matters.`
             : undefined
         }
         confirmLabel="Move"
@@ -521,12 +584,36 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
       />
 
       <ConfirmDialog
+        open={Boolean(toCopy)}
+        onOpenChange={(open) => !open && setToCopy(undefined)}
+        title="Copy skill to catalog"
+        description={
+          toCopy
+            ? `This copies ${folderHint(toCopy, workspaceNames)} into your skills catalog, where you can edit and reassign it freely. The original stays exactly where it is — ${
+                toCopy.origin === "external"
+                  ? "the tool that owns it keeps using it"
+                  : "nothing in the repo changes"
+              }. Both copies will be in scope until you narrow the new one.`
+            : undefined
+        }
+        confirmLabel="Copy"
+        loading={copySkill.isPending}
+        onConfirm={confirmCopy}
+      />
+
+      <ConfirmDialog
         open={Boolean(toDelete)}
         onOpenChange={(open) => !open && setToDelete(undefined)}
         title="Delete skill"
         description={
           toDelete
-            ? `This will permanently delete "${toDelete.name}".`
+            ? toDelete.is_owned_root
+              ? `This will permanently delete "${toDelete.name}".`
+              : `This deletes the real folder at ${folderHint(toDelete, workspaceNames)}, which ${
+                  toDelete.origin === "external"
+                    ? "other tools read too — it will disappear from them as well"
+                    : "is part of the repo — commit or stash first if that matters"
+                }.`
             : undefined
         }
         confirmLabel="Delete"

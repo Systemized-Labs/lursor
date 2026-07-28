@@ -127,15 +127,24 @@ class SkillOrigin(StrEnum):
     :class:`SkillWorkspaceLink`), so it can be re-pointed at any set of
     workspaces without moving files.
 
-    ``local`` — discovered in ``<workspace.path>/.agents/skills/<slug>/``. It
-    travels with the workspace directory (git-shareable, the Claude Code
-    convention) and applies only there, so it has no assignment to edit;
-    ``POST /skills/{id}/promote`` moves the folder into the canonical store and
-    turns it into a managed skill.
+    ``local`` — discovered in one of the workspace's skill roots
+    (``settings.local_skill_roots``: ``.agents/skills``, ``.claude/skills``,
+    ``.cursor/skills``), recorded in ``Skill.root``. It travels with the workspace
+    directory (git-shareable, the Claude Code convention) and applies only there,
+    so it has no assignment to edit. ``POST /skills/{id}/promote`` moves the folder
+    into the canonical store, but only from ``.agents/skills`` — a root another
+    tool owns is copied (``POST /skills/{id}/copy``), never moved.
+
+    ``external`` — discovered in a personal skills directory owned by another tool
+    (``~/.claude/skills``, ``settings.user_skill_roots``). Read in place, in scope
+    everywhere at the lowest precedence, carries no assignment.
+    ``POST /skills/{id}/copy`` duplicates it into the catalog; nothing here ever
+    moves or rewrites it implicitly.
     """
 
     managed = "managed"
     local = "local"
+    external = "external"
 
 
 class SkillWorkspaceLink(SQLModel, table=True):
@@ -165,10 +174,12 @@ class Skill(TimestampMixin, table=True):
     ``name``/``description``/``content`` are a cache of the folder's contents,
     refreshed from disk on reconcile (``api/skills.py``).
 
-    Identity is ``(origin, workspace_id, slug)`` — a workspace may legitimately
-    redefine a managed skill's slug with a local one (that is the collision case,
-    resolved at build time: closest layer wins). ``workspace_id`` is the owning
-    workspace for a ``local`` skill and is null for a managed one, whose reach is
+    Identity is ``(origin, workspace_id, root, slug)`` — a workspace may
+    legitimately redefine a managed skill's slug with a local one (that is the
+    collision case, resolved at build time: closest layer wins), and with several
+    candidate roots per workspace the same slug can exist twice within the local
+    layer too. ``workspace_id`` is the owning workspace for a ``local`` skill and
+    is null for a ``managed`` or ``external`` one; a managed skill's reach is
     ``is_global`` plus its :class:`SkillWorkspaceLink` rows.
 
     The legacy ``scope`` column (``"global"``/``"workspace"``) is dormant: it is
@@ -200,8 +211,16 @@ class Skill(TimestampMixin, table=True):
     # Managed skills only: applies in every workspace. Mutually exclusive with
     # SkillWorkspaceLink rows by API normalization, not by schema.
     is_global: bool = Field(default=False, index=True)
-    # Owning workspace for a local skill; null for managed.
+    # Owning workspace for a local skill; null for managed/external.
     workspace_id: str | None = Field(default=None, foreign_key="workspaces.id", index=True)
+    # Which root the folder lives in: the workspace-relative subdir for ``local``
+    # (".claude/skills"), the absolute path for ``external``, empty for
+    # ``managed`` (the catalog is the only managed root). Stored rather than
+    # probed — with three candidate roots per workspace the same slug can exist
+    # twice, and probing in order would resolve an edit or a delete to the wrong
+    # file. ``server_default`` so a row inserted outside the ORM (and the
+    # ``ADD COLUMN`` in db/session.py) lands on the catalog rather than NULL.
+    root: str = Field(default="", index=True, sa_column_kwargs={"server_default": ""})
 
 
 class EnvVar(TimestampMixin, table=True):
