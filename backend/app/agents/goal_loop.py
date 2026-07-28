@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
 import time
 import uuid
@@ -79,6 +80,24 @@ def plan_doc_path(title: str) -> str:
     return f"{PLAN_DIR}/PLAN-{slug}.md"
 
 
+def unique_plan_doc_path(workspace_path: str | Path, title: str) -> str:
+    """A fallback plan-doc path that isn't already holding someone else's plan.
+
+    :func:`plan_doc_path` derives its name from the thread title, so two threads
+    in one workspace can land on the same name. Used where we are about to *write*
+    the fallback doc ourselves (the salvage in ``api/chat.py``), so a title clash
+    can't overwrite an earlier thread's plan: ``PLAN-<slug>-2.md`` and so on.
+    """
+    base = plan_doc_path(title)
+    if not plan_doc_has_content(workspace_path, base):
+        return base
+    stem = base.removesuffix(".md")
+    counter = 2
+    while plan_doc_has_content(workspace_path, f"{stem}-{counter}.md"):
+        counter += 1
+    return f"{stem}-{counter}.md"
+
+
 def scan_plan_dir(workspace_path: str | Path) -> dict[str, float]:
     """Map ``PLAN_DIR``'s Markdown files to their mtimes (empty if it's absent).
 
@@ -116,6 +135,73 @@ def detect_written_plan(
         return None
     changed.sort(key=lambda name: (not name.startswith("PLAN-"), -after[name]))
     return f"{PLAN_DIR}/{changed[0]}"
+
+
+# Directories that are never worth walking when hunting for a plan doc the agent
+# saved outside ``PLAN_DIR`` — dependency/build trees dwarf the workspace and
+# hold no plan. ``os.walk`` doesn't follow symlinked directories, so the
+# symlinked skill folders under ``.agents/skills`` are skipped for free.
+_PLAN_SEARCH_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".next",
+        ".nuxt",
+        ".turbo",
+        "dist",
+        "build",
+        "target",
+        "vendor",
+    }
+)
+# How deep below the workspace root to look. A plan doc the model chose to file
+# itself lands somewhere shallow (``docs/``, ``plans/``, the root); deeper than
+# this and the walk costs more than the salvage is worth.
+_PLAN_SEARCH_MAX_DEPTH = 4
+
+
+def detect_plan_doc_anywhere(
+    workspace_path: str | Path, since: float, *, max_depth: int = _PLAN_SEARCH_MAX_DEPTH
+) -> str | None:
+    """Find a non-empty ``PLAN*.md`` written since ``since``, anywhere shallow.
+
+    The safety net for a model that ignored the "write it to ``PLAN_DIR``"
+    instruction and filed its plan somewhere else — a repo's own ``docs/`` folder
+    is the usual culprit, and :func:`detect_written_plan` (which only watches
+    ``PLAN_DIR``) sees nothing. Without this the thread parks pointing at a doc
+    that was never written and "Execute plan" fails with a 409.
+
+    Prefers a doc inside ``PLAN_DIR``, then the most recently modified. Returns a
+    workspace-relative POSIX path, or ``None`` when nothing matches.
+    """
+    root = Path(workspace_path)
+    found: list[tuple[bool, float, str]] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _exc: None):
+        here = Path(dirpath)
+        depth = len(here.relative_to(root).parts)
+        dirnames[:] = (
+            []
+            if depth >= max_depth
+            else [d for d in dirnames if d not in _PLAN_SEARCH_SKIP_DIRS]
+        )
+        for name in filenames:
+            if not name.upper().startswith("PLAN") or not name.endswith(".md"):
+                continue
+            with contextlib.suppress(OSError):
+                stat = (here / name).stat()
+                if stat.st_mtime < since or stat.st_size == 0:
+                    continue
+                rel = (here / name).relative_to(root).as_posix()
+                found.append((not rel.startswith(f"{PLAN_DIR}/"), -stat.st_mtime, rel))
+    if not found:
+        return None
+    found.sort()
+    return found[0][2]
 
 
 # Run-scoped instructions for a plan-mode turn. The plan is an on-disk artifact
@@ -201,9 +287,46 @@ def extract_success_criteria(doc_text: str) -> str:
 
 def read_plan_doc(workspace_path: str | Path, plan_path: str) -> str:
     """Read a workspace-relative plan doc's text, or ``""`` if it's unreadable."""
-    with contextlib.suppress(OSError):
+    if not plan_path:
+        return ""
+    with contextlib.suppress(OSError, UnicodeDecodeError):
         return (Path(workspace_path) / plan_path).read_text(encoding="utf-8")
     return ""
+
+
+def plan_doc_has_content(workspace_path: str | Path, plan_path: str) -> bool:
+    """True when ``plan_path`` names a plan doc that exists and isn't blank.
+
+    What "Execute plan" needs to be true: the goal loop's completion condition
+    comes out of this file, so a missing or empty doc has nothing to execute.
+    Checked *before* parking a plan for review so the failure surfaces on the
+    plan turn rather than as a 409 when the user presses the button.
+    """
+    return bool(read_plan_doc(workspace_path, plan_path).strip())
+
+
+def write_plan_doc(
+    workspace_path: str | Path, plan_path: str, title: str, body: str
+) -> bool:
+    """Save ``body`` as the plan doc at ``plan_path``; ``True`` when it lands.
+
+    The salvage path for a planning turn that produced a plan in *prose* but never
+    wrote the file (local reasoning models do this — see the tool-filter note in
+    ``agents/builder.py``). Persisting the reply the user just read keeps the
+    review-and-execute flow working instead of parking a pointer to nothing. An
+    H1 is prepended when the body has none so :func:`extract_plan_title` still
+    yields a readable objective.
+    """
+    text = body.strip()
+    if not text:
+        return False
+    target = Path(workspace_path) / plan_path
+    heading = "" if text.startswith("# ") else f"# {title.strip() or 'Plan'}\n\n"
+    with contextlib.suppress(OSError):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{heading}{text}\n", encoding="utf-8")
+        return True
+    return False
 
 
 def extract_plan_title(doc_text: str) -> str:
@@ -352,11 +475,16 @@ class TurnResult:
     ``rounds_exhausted`` narrows that to the benign case: the turn simply used up
     its per-turn model-round budget. The work is real and the history intact, so
     the loop treats it as an ordinary turn boundary rather than a failure.
+
+    ``text`` is the assistant text the turn persisted (the transcript the user
+    saw). A plan turn uses it to salvage a plan doc the model described but never
+    wrote — see :func:`write_plan_doc`.
     """
 
     messages: list[ModelMessage]
     error: str = ""
     rounds_exhausted: bool = False
+    text: str = ""
 
 
 def build_goal_evaluator(

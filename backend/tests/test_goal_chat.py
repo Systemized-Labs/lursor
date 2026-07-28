@@ -722,3 +722,180 @@ async def test_compact_needs_history_and_a_real_thread(
     # Unknown thread → 404.
     r = await client.post("/threads/does-not-exist/compact")
     assert r.status_code == 404, r.text
+
+
+async def test_plan_turn_never_parks_on_a_doc_that_was_not_written(
+    client: AsyncClient, monkeypatch
+):
+    """Regression: a model that plans in *prose* and never calls its write tool used
+    to park the thread pointing at a title-derived path that did not exist. "Execute
+    plan" then failed with `HTTP 409: The plan doc is empty or unreadable` — the plan
+    was only ever chat text. The reply is now salvaged into the doc, so review and
+    execution work without the user losing the plan."""
+    import pathlib
+
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr(
+        "app.api.chat.build_goal_evaluator", lambda *a, **k: _FakeEvaluator()
+    )
+
+    agent = (await client.post("/agents", json={"name": "Prosey"})).json()
+    ws = (await client.post("/workspaces", json={"name": "SalvageWS"})).json()
+    tid = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()["id"]
+
+    def _input(mid: str, content: str, turn: str | None = None) -> str:
+        return RunAgentInput(
+            thread_id=tid,
+            run_id=mid,
+            state=None,
+            messages=[UserMessage(id=mid, role="user", content=content)],
+            tools=[],
+            context=[],
+            forwarded_props={"turn": turn} if turn else None,
+        ).model_dump_json(by_alias=True)
+
+    # The offline TestModel answers in text and writes no file — exactly the failure.
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, _input("m1", "build a CRM", "plan"))
+    )
+    parked = (await client.get(f"/threads/{tid}")).json()
+    assert parked["status"] == "awaiting_approval"
+    doc = pathlib.Path(ws["path"]) / parked["plan_path"]
+    # The parked doc is real, on disk, and holds the plan the user just read.
+    assert doc.is_file(), "parked plan doc does not exist"
+    assert doc.read_text(encoding="utf-8").strip()
+    assistant = [
+        m
+        for m in (await client.get(f"/threads/{tid}/messages")).json()
+        if m["role"] == "assistant"
+    ]
+    assert assistant[-1]["content"].strip() in doc.read_text(encoding="utf-8")
+
+    # And "Execute plan" runs instead of 409-ing, with no hand-written doc.
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, _input("m2", "Execute plan", "execute_plan"))
+    )
+    assert (await client.get(f"/threads/{tid}")).json()["status"] == "completed"
+
+
+async def test_plan_turn_finds_a_doc_written_outside_the_plan_folder(
+    client: AsyncClient, monkeypatch
+):
+    """A model that files its plan somewhere other than `.agents/plan/` (a repo's own
+    `docs/` is the usual culprit) is followed to where it actually wrote, rather than
+    parking on the folder we asked for and 409-ing on execute."""
+    import pathlib
+
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+
+    from app.api import chat as chat_mod
+
+    real_stream_turn = chat_mod._stream_turn
+    ws_holder: dict[str, str] = {}
+
+    async def stream_turn_writing_elsewhere(*args, **kwargs):
+        # Stand in for the model's own write: a plan doc under `docs/`, not PLAN_DIR.
+        doc = pathlib.Path(ws_holder["path"]) / "docs" / "PLAN-crm.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(
+            "# CRM\n\n1. Model it.\n\n## Success Criteria\n\n- It ships.\n",
+            encoding="utf-8",
+        )
+        return await real_stream_turn(*args, **kwargs)
+
+    monkeypatch.setattr("app.api.chat._stream_turn", stream_turn_writing_elsewhere)
+
+    agent = (await client.post("/agents", json={"name": "Wanderer"})).json()
+    ws = (await client.post("/workspaces", json={"name": "ElsewhereWS"})).json()
+    ws_holder["path"] = ws["path"]
+    tid = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()["id"]
+
+    _assert_valid_lifecycle(
+        await _drain_chat(
+            client,
+            tid,
+            RunAgentInput(
+                thread_id=tid,
+                run_id="m1",
+                state=None,
+                messages=[UserMessage(id="m1", role="user", content="build a CRM")],
+                tools=[],
+                context=[],
+                forwarded_props={"turn": "plan"},
+            ).model_dump_json(by_alias=True),
+        )
+    )
+    parked = (await client.get(f"/threads/{tid}")).json()
+    assert parked["status"] == "awaiting_approval"
+    assert parked["plan_path"] == "docs/PLAN-crm.md"
+
+
+async def test_execute_plan_names_the_missing_doc_and_a_message_redrafts_it(
+    client: AsyncClient, monkeypatch
+):
+    """A plan doc can go missing after review (deleted, stashed, lost to a branch
+    switch). Executing then says which file is gone and what to do about it, and a
+    plain message re-drafts the plan from scratch instead of telling the agent to
+    read a file that isn't there."""
+    import pathlib
+
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+
+    from app.api import chat as chat_mod
+
+    real_stream_turn = chat_mod._stream_turn
+    captured: list[str] = []
+
+    async def spy_stream_turn(*args, **kwargs):
+        captured.append(kwargs.get("instructions", ""))
+        return await real_stream_turn(*args, **kwargs)
+
+    monkeypatch.setattr("app.api.chat._stream_turn", spy_stream_turn)
+
+    agent = (await client.post("/agents", json={"name": "Vanisher"})).json()
+    ws = (await client.post("/workspaces", json={"name": "MissingWS"})).json()
+    tid = (
+        await client.post(
+            "/threads", json={"workspace_id": ws["id"], "agent_id": agent["id"]}
+        )
+    ).json()["id"]
+
+    def _input(mid: str, content: str, turn: str | None = None) -> str:
+        return RunAgentInput(
+            thread_id=tid,
+            run_id=mid,
+            state=None,
+            messages=[UserMessage(id=mid, role="user", content=content)],
+            tools=[],
+            context=[],
+            forwarded_props={"turn": turn} if turn else None,
+        ).model_dump_json(by_alias=True)
+
+    _assert_valid_lifecycle(
+        await _drain_chat(client, tid, _input("m1", "build a CRM", "plan"))
+    )
+    plan_path = (await client.get(f"/threads/{tid}")).json()["plan_path"]
+    pathlib.Path(ws["path"], plan_path).unlink()
+
+    # Executing a plan whose doc has vanished: 409, naming the file and the way out.
+    r = await client.post(
+        f"/threads/{tid}/chat",
+        content=_input("m2", "Execute plan", "execute_plan"),
+        headers={"accept": "text/event-stream", "content-type": "application/json"},
+    )
+    assert r.status_code == 409, r.text
+    assert plan_path in r.json()["detail"]
+
+    # A plain message re-drafts rather than asking the agent to read the missing doc.
+    _assert_valid_lifecycle(await _drain_chat(client, tid, _input("m3", "carry on")))
+    assert "do NOT execute yet" in captured[-1]
+    assert "refining the plan with the user" not in captured[-1]
+    assert pathlib.Path(ws["path"], plan_path).is_file()

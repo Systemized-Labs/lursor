@@ -96,6 +96,24 @@ function isAbortError(err: unknown): boolean {
   return false
 }
 
+/** The message to paint for a failed request, unwrapping FastAPI's error body.
+ *
+ *  The AG-UI client rejects with `HTTP 409: {"detail":"…"}` — the raw response body
+ *  spliced into the message — so a backend refusal reached the transcript as JSON
+ *  the user had to read past. The `detail` is already a written-for-humans
+ *  sentence, so surface just that; anything unexpected falls through unchanged. */
+function chatErrorMessage(err: unknown, fallback: string): string {
+  if (!(err instanceof Error)) return fallback
+  const body = err.message.match(/^HTTP \d{3}: (\{.*\})$/s)?.[1]
+  if (!body) return err.message
+  try {
+    const detail = (JSON.parse(body) as { detail?: unknown }).detail
+    return typeof detail === "string" && detail.trim() ? detail : err.message
+  } catch {
+    return err.message
+  }
+}
+
 /** Maps UI messages to AG-UI history (tool-role turns are UI-only). */
 function toAgentMessages(messages: ChatMessage[]): Message[] {
   const result: Message[] = []
@@ -507,9 +525,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
         // An aborted run is expected. Only surface the error on the conversation
         // it belongs to (the selected thread may have switched mid-send).
         if (!isAbortError(err) && store.getState().selectedThreadId === threadId) {
-          store
-            .getState()
-            .setError(err instanceof Error ? err.message : "Chat request failed")
+          store.getState().setError(chatErrorMessage(err, "Chat request failed"))
         }
       } finally {
         markRunSettled(threadId)

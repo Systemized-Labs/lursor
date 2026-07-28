@@ -7,18 +7,26 @@ streaming/persistence plumbing lives in ``api/chat.py`` closures the loop calls.
 
 from __future__ import annotations
 
+import os
+import time
+
 from pydantic_deep import GoalEvaluation
 
 from app.agents.goal_loop import (
     EVALUATOR_ERROR_REASON,
     EVALUATOR_UNAVAILABLE_REASON,
+    PLAN_DIR,
     TurnResult,
     _enqueue_interjections,
+    detect_plan_doc_anywhere,
     drain_interjections,
     drive_goal_loop,
     extract_success_criteria,
+    plan_doc_has_content,
     queue_interjection,
     turn_failed_reason,
+    unique_plan_doc_path,
+    write_plan_doc,
 )
 from app.db.models import ThreadStatus
 
@@ -46,6 +54,71 @@ def test_extract_success_criteria_is_case_insensitive_and_optional():
     """Heading match ignores case; a doc without the section returns ``""``."""
     assert "done" in extract_success_criteria("### success criteria\n\ndone\n")
     assert extract_success_criteria("# Plan\n\nNo criteria here.\n") == ""
+
+
+def test_plan_doc_has_content_rejects_missing_and_blank_docs(tmp_path):
+    """The precondition "Execute plan" needs: the doc exists and isn't blank."""
+    assert not plan_doc_has_content(tmp_path, "")
+    assert not plan_doc_has_content(tmp_path, ".agents/plan/PLAN-nope.md")
+    blank = tmp_path / PLAN_DIR / "PLAN-blank.md"
+    blank.parent.mkdir(parents=True)
+    blank.write_text("   \n\n", encoding="utf-8")
+    assert not plan_doc_has_content(tmp_path, f"{PLAN_DIR}/PLAN-blank.md")
+    (tmp_path / PLAN_DIR / "PLAN-real.md").write_text("# Plan\n", encoding="utf-8")
+    assert plan_doc_has_content(tmp_path, f"{PLAN_DIR}/PLAN-real.md")
+
+
+def test_detect_plan_doc_anywhere_finds_a_doc_filed_outside_the_plan_folder(tmp_path):
+    """A model that ignores ``PLAN_DIR`` and writes to ``docs/`` is still detected —
+    otherwise the thread parks on a doc that was never written."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "PLAN-crm.md").write_text("# CRM\n\n## Success Criteria\n\n- ok\n")
+    assert detect_plan_doc_anywhere(tmp_path, 0) == "docs/PLAN-crm.md"
+
+    # A doc inside PLAN_DIR wins over one filed elsewhere.
+    inside = tmp_path / PLAN_DIR / "PLAN-crm.md"
+    inside.parent.mkdir(parents=True)
+    inside.write_text("# CRM\n", encoding="utf-8")
+    assert detect_plan_doc_anywhere(tmp_path, 0) == f"{PLAN_DIR}/PLAN-crm.md"
+
+
+def test_detect_plan_doc_anywhere_ignores_stale_empty_and_buried_files(tmp_path):
+    """Only a non-empty ``PLAN*.md`` touched since ``since``, in a directory worth
+    walking, counts — so an older thread's plan is never picked up by mistake."""
+    old = tmp_path / "PLAN-old.md"
+    old.write_text("# Old plan\n", encoding="utf-8")
+    os.utime(old, (1_000_000, 1_000_000))
+    (tmp_path / "PLAN-empty.md").write_text("", encoding="utf-8")
+    (tmp_path / "NOTES.md").write_text("# Not a plan\n", encoding="utf-8")
+    buried = tmp_path / "node_modules" / "pkg"
+    buried.mkdir(parents=True)
+    (buried / "PLAN-vendored.md").write_text("# Vendored\n", encoding="utf-8")
+    assert detect_plan_doc_anywhere(tmp_path, time.time() - 60) is None
+
+
+def test_write_plan_doc_salvages_prose_and_keeps_a_title(tmp_path):
+    """The salvage path: a plan the model only described becomes a real doc, with an
+    H1 so the goal header reads as a title rather than a path."""
+    assert write_plan_doc(tmp_path, f"{PLAN_DIR}/PLAN-x.md", "CRM Build", "1. Step one.")
+    text = (tmp_path / PLAN_DIR / "PLAN-x.md").read_text(encoding="utf-8")
+    assert text.startswith("# CRM Build\n")
+    assert "1. Step one." in text
+    # An existing H1 in the reply is kept as-is, and an empty reply writes nothing.
+    assert write_plan_doc(tmp_path, f"{PLAN_DIR}/PLAN-y.md", "T", "# Mine\n\nbody")
+    assert (tmp_path / PLAN_DIR / "PLAN-y.md").read_text().startswith("# Mine\n")
+    assert not write_plan_doc(tmp_path, f"{PLAN_DIR}/PLAN-z.md", "T", "   \n")
+    assert not (tmp_path / PLAN_DIR / "PLAN-z.md").exists()
+
+
+def test_unique_plan_doc_path_never_clobbers_another_threads_plan(tmp_path):
+    """Two threads with the same title share a fallback name, and the fallback is a
+    path we *write*, so the second one has to step aside."""
+    assert unique_plan_doc_path(tmp_path, "Build a CRM") == f"{PLAN_DIR}/PLAN-build-a-crm.md"
+    taken = tmp_path / PLAN_DIR / "PLAN-build-a-crm.md"
+    taken.parent.mkdir(parents=True)
+    taken.write_text("# Someone else's plan\n", encoding="utf-8")
+    assert unique_plan_doc_path(tmp_path, "Build a CRM") == f"{PLAN_DIR}/PLAN-build-a-crm-2.md"
 
 
 def _scripted_evaluator(evaluations: list[GoalEvaluation]):

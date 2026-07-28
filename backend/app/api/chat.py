@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime
@@ -52,19 +53,22 @@ from app.agents.goal_loop import (
     build_continuation_adapter,
     build_goal_evaluator,
     build_steer_capability,
+    detect_plan_doc_anywhere,
     detect_written_plan,
     drive_goal_loop,
     encode_goal_status_event,
     extract_plan_title,
     extract_success_criteria,
     messages_to_history,
-    plan_doc_path,
+    plan_doc_has_content,
     plan_execute_kickoff,
     planning_instruction,
     queue_interjection,
     read_plan_doc,
     refine_instruction,
     scan_plan_dir,
+    unique_plan_doc_path,
+    write_plan_doc,
 )
 from app.agents.hindsight import resolve_hindsight_config
 from app.agents.preview_service import preview_service
@@ -739,6 +743,10 @@ async def _stream_turn(
         persisted = True
         result = captured.get("result")
         content = _turn_content("".join(text), result)
+        # Kept for the caller (a plan turn salvages its plan doc from this — see
+        # ``write_plan_doc``), so the returned text is exactly what was persisted
+        # however the turn ended.
+        captured["content"] = content
         await _persist_message(
             thread_id, "assistant", content, tool_calls=list(tool_calls.values())
         )
@@ -788,8 +796,9 @@ async def _stream_turn(
         await persist_turn()
 
     result = captured.get("result")
+    turn_text = str(captured.get("content") or "")
     if result is not None:
-        return TurnResult(messages=result.all_messages())
+        return TurnResult(messages=result.all_messages(), text=turn_text)
     # The run aborted (round cap, model/tool error). Carry forward the history the
     # run actually built — falling back to the pre-turn history only if it died
     # before its first model request, when there is genuinely nothing to keep.
@@ -801,6 +810,7 @@ async def _stream_turn(
         else list(message_history or []),
         error=error,
         rounds_exhausted=bool(error) and _hit_round_cap(probe["usage"]),
+        text=turn_text,
     )
 
 
@@ -1458,9 +1468,14 @@ async def chat(
     # `plan_driver`). The request adapter already carries the full frontend
     # transcript and any image attachments, so the planning turn has full
     # conversational context without re-seeding from the DB.
+    # Refining only makes sense against a doc that is actually there: a plan the
+    # previous turn never wrote (or one since deleted / stashed / lost to a branch
+    # switch) would send the agent to read a missing file and leave the thread
+    # parked on a pointer to nothing. Fall back to drafting from scratch.
+    has_plan_doc = plan_doc_has_content(workspace.path, thread.plan_path)
     plan_instruction = (
-        refine_instruction(thread.plan_path or plan_doc_path(thread.title))
-        if is_refine
+        refine_instruction(thread.plan_path)
+        if is_refine and has_plan_doc
         else planning_instruction()
     )
 
@@ -1475,9 +1490,15 @@ async def chat(
         # On a refinement the agent edits the doc the thread already points at; on a
         # fresh round it picks the filename itself, so we snapshot the plan folder now
         # and detect what it wrote afterwards. Bound before the try so the cancel
-        # handler can resolve a partially-written plan.
-        known_path = thread.plan_path if is_refine else ""
-        before: dict[str, float] = {} if is_refine else scan_plan_dir(workspace.path)
+        # handler can resolve a partially-written plan. The snapshot is taken on a
+        # refinement too, so a doc the agent re-filed under a new name is detected
+        # instead of leaving the thread pinned to the pre-refinement draft.
+        known_path = thread.plan_path if is_refine and has_plan_doc else ""
+        before: dict[str, float] = scan_plan_dir(workspace.path)
+        # Floor for the workspace-wide sweep (see ``detect_plan_doc_anywhere``),
+        # backed off a second so a coarse filesystem timestamp can't put a doc
+        # written moments from now *before* the turn started.
+        turn_started = time.time() - 1
         _publish_lifecycle_start(thread_id, run_id)
         try:
             # Make sure `.agents/plan/` exists so the agent's write lands (its file
@@ -1504,14 +1525,43 @@ async def chat(
                 # `awaiting_approval` pointing at a plan doc that was never
                 # written. Fail loudly instead; the handler below reports it.
                 raise RuntimeError(turn.error)
-            # Resolve the doc the agent wrote (fresh round) or reuse the known one
-            # (refinement). Falls back to a title-derived name only if the agent left
-            # no detectable plan file. Pin it so the UI + later turns open the same doc.
-            plan_doc = (
-                known_path
-                or detect_written_plan(workspace.path, before)
-                or plan_doc_path(thread.title)
+            # Resolve the doc to park on, in order of confidence: what this turn
+            # wrote into `.agents/plan/`, the doc a refinement was already pointing
+            # at, then a `PLAN*.md` the model filed elsewhere in the workspace
+            # (models do ignore the folder instruction). Each candidate has to
+            # actually hold text — parking on a missing or empty file is what made
+            # "Execute plan" fail with a 409 ("The plan doc is empty or unreadable")
+            # long after the plan turn looked successful.
+            plan_doc = next(
+                (
+                    candidate
+                    for candidate in (
+                        detect_written_plan(workspace.path, before),
+                        known_path,
+                        detect_plan_doc_anywhere(workspace.path, turn_started),
+                    )
+                    if candidate and plan_doc_has_content(workspace.path, candidate)
+                ),
+                "",
             )
+            if not plan_doc:
+                # No plan file anywhere: the model planned in prose and never called
+                # its write tool (a known failure of local reasoning models — see the
+                # tool-filter note in ``agents/builder.py``). The reply the user just
+                # read *is* the plan, so persist it under the fallback name rather
+                # than parking on a doc that doesn't exist. If even that is empty
+                # there is no plan at all, so fail the turn loudly.
+                plan_doc = known_path or unique_plan_doc_path(
+                    workspace.path, thread.title
+                )
+                if not write_plan_doc(
+                    workspace.path, plan_doc, thread.title, turn.text
+                ):
+                    raise RuntimeError(
+                        "The agent finished without writing a plan doc. Send another "
+                        "message to have it write the plan to "
+                        f"`{plan_doc}`, or try a different model."
+                    )
             await _set_thread_state(
                 thread_id,
                 status=ThreadStatus.awaiting_approval,
@@ -1522,12 +1572,20 @@ async def chat(
         except asyncio.CancelledError:
             # The turn itself was persisted by ``_stream_turn``'s finally. Stopped
             # mid-turn the agent may still have written (part of) a plan, so resolve
-            # and pin whatever doc it left rather than losing the pointer.
-            stopped_doc = (
-                known_path
-                or detect_written_plan(workspace.path, before)
-                or thread.plan_path
-                or None
+            # and pin whatever doc it left rather than losing the pointer — but only
+            # a doc that is really there, for the same reason as the parked path
+            # above (a pointer to nothing only fails later, on execute).
+            stopped_doc = next(
+                (
+                    candidate
+                    for candidate in (
+                        detect_written_plan(workspace.path, before),
+                        known_path,
+                        thread.plan_path,
+                    )
+                    if candidate and plan_doc_has_content(workspace.path, candidate)
+                ),
+                None,
             )
             await _set_thread_state(
                 thread_id,
@@ -1565,8 +1623,14 @@ async def chat(
             # back to the whole doc when a plan omits that section.
             goal_condition = extract_success_criteria(doc_text) or doc_text.strip()
             if not goal_condition:
+                # The pinned doc is gone or blank — deleted, stashed, or lost to a
+                # branch switch since the plan was parked (the plan turn itself no
+                # longer parks on a doc that isn't there). Name the file and say what
+                # gets the user moving again; another message re-drafts the plan.
                 raise HTTPException(
-                    status.HTTP_409_CONFLICT, "The plan doc is empty or unreadable"
+                    status.HTTP_409_CONFLICT,
+                    f"The plan doc `{plan_path}` is missing or empty — send a message "
+                    "to have the plan written again, then execute it.",
                 )
             # Execute is a context boundary: the plan doc is the *compiled* context,
             # so the planning back-and-forth that produced it is redundant (and
