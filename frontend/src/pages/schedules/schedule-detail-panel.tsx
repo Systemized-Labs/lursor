@@ -37,9 +37,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import { CronPreview } from "./cron-preview"
+import { CronField } from "./cron-field"
 import {
-  CRON_PRESETS,
   FIRE_STATUS_DOT,
   FIRE_STATUS_LABELS,
   fireSummary,
@@ -345,52 +344,16 @@ export function ScheduleDetailPanel({
           </Select>
         </Field>
 
-        <Field
-          label="Schedule"
-          htmlFor={`sched-cron-${schedule.id}`}
-          hint={
-            <>
-              Five fields: minute, hour, day of month, month, day of week. The
-              preview below is computed by the same code that fires it.
-            </>
-          }
-        >
-          <div className="flex w-full min-w-0 flex-col gap-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <Input
-                id={`sched-cron-${schedule.id}`}
-                value={cron}
-                onChange={(e) => setCron(e.target.value)}
-                placeholder="0 9 * * 1-5"
-                spellCheck={false}
-                className="h-8 min-w-0 flex-1 font-mono text-sm"
-              />
-              {/* A menu rather than a Select: picking a preset is an action that
-                  fills the field, not a second source of truth bound to it. */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 shrink-0 text-xs"
-                  >
-                    Presets
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  {CRON_PRESETS.map((preset) => (
-                    <DropdownMenuItem
-                      key={preset.cron}
-                      onSelect={() => setCron(preset.cron)}
-                    >
-                      {preset.label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <CronPreview cron={cron} timezone={schedule.timezone} />
-          </div>
+        {/* No hint: the `Field` puts one under the whole control, which here means
+            under the list of fires, and the picker says what it does anyway. */}
+        <Field label="Schedule" htmlFor={`sched-cron-${schedule.id}`}>
+          <CronField
+            id={`sched-cron-${schedule.id}`}
+            value={cron}
+            onChange={setCron}
+            timezone={schedule.timezone}
+            dense
+          />
         </Field>
 
         <Field

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { useCreateSchedule } from "@/api/schedules"
@@ -22,8 +22,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { CronPreview } from "./cron-preview"
-import { hostTimezone } from "./schedule-format"
+import { CronField } from "./cron-field"
+import { hostTimezone, timezoneOptions } from "./schedule-format"
 
 interface ScheduleCreateDialogProps {
   open: boolean
@@ -62,6 +62,7 @@ export function ScheduleCreateDialog({
   const [cron, setCron] = useState(DEFAULT_CRON)
   const [timezone, setTimezone] = useState(hostTimezone())
   const [prompt, setPrompt] = useState("")
+  const zones = useMemo(() => timezoneOptions(), [])
 
   // Reset on each open, and default the pickers to something valid so the form is
   // one field away from savable rather than four.
@@ -166,31 +167,38 @@ export function ScheduleCreateDialog({
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <div className="space-y-1.5">
-              <Label htmlFor="new-sched-cron">Schedule</Label>
-              <Input
-                id="new-sched-cron"
-                value={cron}
-                onChange={(e) => setCron(e.target.value)}
-                placeholder={DEFAULT_CRON}
-                spellCheck={false}
-                className="font-mono"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="new-sched-tz">Timezone</Label>
-              <Input
-                id="new-sched-tz"
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-                spellCheck={false}
-              />
-            </div>
+          {/* Timezone first: it is what "9am" means, and the occurrence preview
+              inside the schedule field below is resolved in it. */}
+          <div className="space-y-1.5">
+            <Label htmlFor="new-sched-tz">Timezone</Label>
+            <Select value={timezone} onValueChange={setTimezone}>
+              <SelectTrigger id="new-sched-tz">
+                <SelectValue placeholder="Pick a timezone" />
+              </SelectTrigger>
+              {/* Hundreds of zones; the list scrolls rather than growing the
+                  dialog. The host's own zone is first. */}
+              <SelectContent className="max-h-72">
+                {zones.map((zone) => (
+                  <SelectItem key={zone} value={zone}>
+                    {zone}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          {/* Under the fields, so an unreadable expression is checked before the
-              schedule exists rather than after it has fired at the wrong hour. */}
-          <CronPreview cron={cron} timezone={timezone} count={3} />
+
+          <div className="space-y-1.5">
+            <Label htmlFor="new-sched-cron">Schedule</Label>
+            {/* Carries its own preview, so an expression is checked before the
+                schedule exists rather than after it has fired at the wrong hour. */}
+            <CronField
+              id="new-sched-cron"
+              value={cron}
+              onChange={setCron}
+              timezone={timezone}
+              previewCount={3}
+            />
+          </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="new-sched-prompt">Prompt</Label>
