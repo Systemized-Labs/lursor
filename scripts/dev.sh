@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/dev.sh            backend + frontend (Vite) in the browser
 #   ./scripts/dev.sh --electron backend + frontend inside the Electron desktop shell
+#   ./scripts/dev.sh --electron --debug   ... and auto-open Chrome DevTools
 #
 # Env overrides:
 #   LURSOR_UV_EXTRAS   space-separated backend extras to sync (default "dev",
@@ -16,9 +17,28 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 FRONTEND_CMD="dev"
 FRONTEND_LABEL="frontend on :8888"
-if [[ "${1:-}" == "--electron" ]]; then
+ELECTRON=0
+DEBUG=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --electron) ELECTRON=1 ;;
+    --debug) DEBUG=1 ;;
+    *) echo "error: unknown option '$arg' (expected --electron and/or --debug)" >&2; exit 1 ;;
+  esac
+done
+
+if [[ "$ELECTRON" == "1" ]]; then
   FRONTEND_CMD="electron:dev"
   FRONTEND_LABEL="frontend (Electron) — Vite on :8888"
+fi
+
+# Electron's main process reads this to decide whether to auto-open DevTools.
+if [[ "$DEBUG" == "1" ]]; then
+  export LURSOR_DEVTOOLS=1
+  FRONTEND_LABEL="$FRONTEND_LABEL (DevTools)"
+else
+  export LURSOR_DEVTOOLS=0
 fi
 
 cleanup() {

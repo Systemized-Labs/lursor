@@ -100,6 +100,7 @@ Then open the Vite URL (default `http://localhost:8888`).
 ```bash
 ./scripts/dev.sh              # backend + frontend in the browser
 ./scripts/dev.sh --electron   # backend + frontend in the Electron desktop shell
+./scripts/dev.sh --electron --debug   # ... and auto-open Chrome DevTools
 ```
 
 Ctrl-C stops both processes. See [docs/ELECTRON.md](docs/ELECTRON.md) for how the

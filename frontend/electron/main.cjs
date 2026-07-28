@@ -16,6 +16,8 @@ const { app, BrowserWindow, nativeImage, shell, ipcMain, dialog } = require("ele
 
 const isDev = !app.isPackaged
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:8888"
+// DevTools only auto-open when explicitly asked for (./scripts/dev.sh --electron --debug).
+const OPEN_DEVTOOLS = process.env.LURSOR_DEVTOOLS === "1"
 const PREFERRED_PORT = 8791
 // First boot imports a large dependency tree and runs DB init/seed, so give the
 // backend generous headroom before declaring it unhealthy.
@@ -251,7 +253,7 @@ function loadApp() {
   if (!mainWindow) return
   if (isDev) {
     mainWindow.loadURL(DEV_SERVER_URL)
-    mainWindow.webContents.openDevTools({ mode: "detach" })
+    if (OPEN_DEVTOOLS) mainWindow.webContents.openDevTools({ mode: "detach" })
   } else {
     mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"))
   }
