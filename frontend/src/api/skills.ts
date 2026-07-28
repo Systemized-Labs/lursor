@@ -119,6 +119,7 @@ export const skillKeys = {
   list: (filter?: SkillListFilter) =>
     ["skills", filter?.assignment ?? "all", filter?.workspace_id ?? null] as const,
   detail: (id: string) => ["skills", id] as const,
+  file: (id: string, path: string) => ["skills", id, "file", path] as const,
   scan: (workspaceId: string, path: string) =>
     ["skills", "scan", workspaceId, path] as const,
 }
@@ -127,6 +128,24 @@ export function useSkills(filter?: SkillListFilter) {
   return useQuery({
     queryKey: skillKeys.list(filter),
     queryFn: ({ signal }) => skillsApi.list(filter, signal),
+  })
+}
+
+/**
+ * One file from inside a skill folder, as a cached query.
+ *
+ * The editor reads files imperatively through `skillsApi.readFile` because it
+ * owns dirty buffers; a read-only preview wants the opposite — a key it can be
+ * cached under, so arrowing down a list of skills doesn't refetch what it has
+ * already shown. Keyed under the skill, so any write invalidating `skillKeys.all`
+ * refreshes the preview too.
+ */
+export function useSkillFile(id: string | undefined, path: string) {
+  return useQuery({
+    queryKey: skillKeys.file(id ?? "", path),
+    queryFn: ({ signal }) => skillsApi.readFile(id ?? "", path, signal),
+    enabled: Boolean(id),
+    staleTime: 30_000,
   })
 }
 

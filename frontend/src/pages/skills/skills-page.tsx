@@ -1,18 +1,12 @@
 import {
-  ArrowLineUp,
-  Copy,
-  DotsThree,
   FileArrowUp,
   FolderOpen,
-  MagnifyingGlass,
-  Pencil,
   Plus,
   Sparkle,
-  Trash,
   UploadSimple,
 } from "@phosphor-icons/react"
-import { useEffect, useMemo, useRef, useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 
 import {
@@ -24,76 +18,49 @@ import {
   useSkills,
   useUpdateSkill,
 } from "@/api/skills"
-import type { Skill, Workspace } from "@/api/types"
+import type { Skill } from "@/api/types"
 import { useWorkspaces } from "@/api/workspaces"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
-import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
-import { Switch } from "@/components/ui/switch"
-import { cn } from "@/lib/utils"
-import { revealSkill, skillLocation } from "@/lib/skill-location"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { revealSkill, skillLocation } from "@/lib/skill-location"
+import { HeaderActions } from "@/pages/customization/header-actions"
 import { SkillCreateDialog } from "./skill-create-dialog"
+import { SkillDetailPanel } from "./skill-detail-panel"
 import { SkillEditorDialog } from "./skill-editor-dialog"
-import { SkillEnvMenu } from "./skill-env-menu"
-import { SkillScopeMenu } from "./skill-scope-menu"
-
-const DESCRIPTION =
-  "Reusable markdown instructions agents load on their own. One copy in your catalog — point it at whatever should use it, and switch any off to keep it without loading it."
+import {
+  ANYWHERE,
+  appliesInWorkspace,
+  SkillRail,
+  type SelectSource,
+} from "./skill-rail"
 
 // New skills and imports land in the catalog applying everywhere; narrowing is a
-// click on the row. Reach is an assignment, so nothing here decides a location.
+// field in the detail pane. Reach is an assignment, so nothing here decides a
+// location.
 const IMPORT_TARGET: SkillTarget = { origin: "managed", is_global: true }
 
 // Seeds the Skill Studio composer. Landing on an empty chat rooted in a
 // directory tells you nothing about what to do with it; landing on a half-typed
 // sentence does. Deliberately unfinished — the cursor sits where you continue.
 const STUDIO_DRAFT = "Write me a skill that "
-
-/** Where a skill applies, as the five buckets the page is organised into. */
-type GroupKey = "global" | "assigned" | "local" | "external" | "unassigned"
-
-const GROUPS: { key: GroupKey; title: string; hint: string }[] = [
-  {
-    key: "global",
-    title: "Everywhere",
-    hint: "Loaded by every agent, in every workspace.",
-  },
-  {
-    key: "assigned",
-    title: "Specific workspaces",
-    hint: "Loaded only by agents running in the workspaces you picked.",
-  },
-  {
-    key: "local",
-    title: "In a repo",
-    hint: "Committed into the repo — travels with the code and applies only there.",
-  },
-  {
-    key: "external",
-    title: "From other tools",
-    hint: "Found in your personal skills folders and read where they are. They apply everywhere, and Claude Code or Cursor still owns the files.",
-  },
-  {
-    key: "unassigned",
-    title: "Not assigned",
-    hint: "Kept in your catalog, loaded by nothing. Park skills here instead of deleting them.",
-  },
-]
-
-function groupOf(skill: Skill): GroupKey {
-  if (skill.origin === "external") return "external"
-  if (skill.origin === "local") return "local"
-  if (skill.is_global) return "global"
-  return skill.workspace_ids.length > 0 ? "assigned" : "unassigned"
-}
 
 /**
  * The skill's folder as something a person can find, for the confirmations that
@@ -107,6 +74,77 @@ function folderHint(skill: Skill, workspaceNames: Map<string, string>): string |
   return `${skill.root || ".agents/skills"}/${skill.slug} in ${workspace}`
 }
 
+/**
+ * Narrowest container that can hold two panes: below it the rail takes the full
+ * width and the detail side arrives as a sheet.
+ *
+ * Measured on the container rather than the viewport, because the app sidebar
+ * takes its cut before this page sees any width — a 768px window with the
+ * sidebar open leaves ~470px here, which is a phone's worth of room.
+ */
+const TWO_PANE_MIN_WIDTH = 720
+
+/** Breathing room below the browser, so it doesn't sit flush to the fold. */
+const BOTTOM_GUTTER = 24
+
+/** Floor, for a window too short to honour the measurement. */
+const MIN_HEIGHT = 280
+
+interface BrowserBox {
+  /** Pixels, so the box ends just above the fold whatever sits above it. */
+  height: number
+  narrow: boolean
+}
+
+function measureBox(el: HTMLElement): BrowserBox {
+  const rect = el.getBoundingClientRect()
+  return {
+    height: Math.max(MIN_HEIGHT, window.innerHeight - rect.top - BOTTOM_GUTTER),
+    narrow: rect.width < TWO_PANE_MIN_WIDTH,
+  }
+}
+
+/**
+ * How tall the browser should be, and whether it gets two panes.
+ *
+ * The page sits in a padded, scrolling column with no definite height, so the
+ * two panes can't just be `flex-1` — the box needs a real height to scroll its
+ * halves independently. That used to be a `calc(100svh - Nrem)` with `N`
+ * measured by hand, which breaks the moment anything above changes height: the
+ * tab strip above wraps onto a second row at some widths, moving this box 50px
+ * down. So measure the gap to the fold instead of encoding it.
+ */
+function useBrowserBox(ref: React.RefObject<HTMLDivElement | null>): BrowserBox {
+  const [box, setBox] = useState<BrowserBox>({
+    height: MIN_HEIGHT,
+    narrow: false,
+  })
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const measure = () => {
+      const next = measureBox(el)
+      // Bail on an unchanged result: this observes the element whose height it
+      // sets, so a new object every time would loop.
+      setBox((prev) =>
+        prev.height === next.height && prev.narrow === next.narrow ? prev : next
+      )
+    }
+    // Width changes reach us through the observer (the sidebar collapsing, the
+    // window resizing); `resize` also covers a height-only window change, which
+    // moves the fold without resizing anything here.
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    window.addEventListener("resize", measure)
+    measure()
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", measure)
+    }
+  }, [ref])
+  return box
+}
+
 function matches(skill: Skill, query: string): boolean {
   if (!query) return true
   const needle = query.toLowerCase()
@@ -117,182 +155,22 @@ function matches(skill: Skill, query: string): boolean {
   )
 }
 
-/** Small muted pill for a row's file counts. */
-function Chip({ children, title }: { children: React.ReactNode; title?: string }) {
-  return (
-    <span
-      title={title}
-      className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-    >
-      {children}
-    </span>
-  )
-}
-
-interface SkillRowProps {
-  skill: Skill
-  workspaces: Workspace[]
-  workspaceNames: Map<string, string>
-  onEdit: (skill: Skill) => void
-  onOpenInWorkspace: (skill: Skill) => void
-  onPromote: (skill: Skill) => void
-  onCopy: (skill: Skill) => void
-  onToggle: (skill: Skill, enabled: boolean) => void
-  onDelete: (skill: Skill) => void
-}
-
-function SkillRow({
-  skill,
-  workspaces,
-  workspaceNames,
-  onEdit,
-  onOpenInWorkspace,
-  onPromote,
-  onCopy,
-  onToggle,
-  onDelete,
-}: SkillRowProps) {
-  const isLocal = skill.origin === "local"
-  const isExternal = skill.origin === "external"
-  const fileCount = skill.resources.length + skill.scripts.length
-
-  return (
-    <div className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
-      {/* Leading, so the on/off state of a whole list reads down one column. */}
-      <Switch
-        checked={skill.enabled}
-        onCheckedChange={(enabled) => onToggle(skill, enabled)}
-        className="shrink-0"
-        aria-label={`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
-        title={
-          skill.enabled
-            ? "Loaded by agents in scope. Switch off to keep it without loading it."
-            : "Kept, but loaded by nothing."
-        }
-      />
-      <button
-        type="button"
-        onClick={() => onEdit(skill)}
-        className={cn(
-          "min-w-0 flex-1 text-left transition-opacity",
-          !skill.enabled && "opacity-50"
-        )}
-        title="Open this skill's files"
-      >
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="truncate text-sm font-medium text-foreground">
-            {skill.name}
-          </span>
-          {/* Only foreign roots are badged: our own conventions are the norm, and
-              this is the one thing that tells two same-named skills apart. */}
-          {!skill.is_owned_root && skill.root_label && (
-            <Chip title={`Lives in ${skill.root}/${skill.slug} — another tool owns this folder`}>
-              {skill.root_label}
-            </Chip>
-          )}
-          {fileCount > 0 && (
-            <Chip
-              title={[...skill.resources, ...skill.scripts].join("\n")}
-            >
-              {/* SKILL.md is always there, so only the bundled extras are news. */}
-              {fileCount + 1} files
-            </Chip>
-          )}
-        </div>
-        <p className="truncate text-xs text-muted-foreground">
-          {skill.description || "No description"}
-        </p>
-      </button>
-
-      <div
-        className={cn(
-          "flex shrink-0 items-center gap-1",
-          !skill.enabled && "opacity-50"
-        )}
-      >
-        {isLocal ? (
-          <span
-            className="hidden max-w-[12rem] truncate rounded-md border px-2 py-1 text-xs text-muted-foreground sm:inline-block"
-            title={`Lives in ${skill.root || ".agents/skills"} in this workspace. Bring it into the catalog to assign it elsewhere.`}
-          >
-            {workspaceNames.get(skill.workspace_id ?? "") ?? "Unknown workspace"}
-          </span>
-        ) : isExternal ? (
-          <span
-            className="hidden max-w-[12rem] truncate rounded-md border px-2 py-1 text-xs text-muted-foreground sm:inline-block"
-            title={`Read from ${skill.root}. Applies everywhere; copy it into the catalog to make it yours.`}
-          >
-            Everywhere
-          </span>
-        ) : (
-          <SkillScopeMenu skill={skill} workspaces={workspaces} />
-        )}
-        <SkillEnvMenu skill={skill} />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8"
-          onClick={() => onEdit(skill)}
-          aria-label="Edit skill files"
-          title="Open this skill's files"
-        >
-          <Pencil className="h-4 w-4" />
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              aria-label="Skill actions"
-            >
-              <DotsThree className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => onEdit(skill)}>
-              <Pencil className="h-4 w-4" />
-              Edit files
-            </DropdownMenuItem>
-            {/* The same files, in a workspace: an agent that can rewrite them, a
-                terminal to run the scripts, and every sibling skill to crib
-                from. Local skills open in the repo that owns them; skills in a
-                personal folder belong to no workspace, so they stay in the
-                editor dialog. */}
-            {!isExternal && (
-              <DropdownMenuItem onSelect={() => onOpenInWorkspace(skill)}>
-                <Sparkle className="h-4 w-4" />
-                {isLocal ? "Open in workspace" : "Open in Skill Studio"}
-              </DropdownMenuItem>
-            )}
-            {/* Moving is only ours to do in .agents/skills. Anywhere else the
-                folder belongs to another tool, so we take a copy. */}
-            {(isLocal || isExternal) &&
-              (skill.is_owned_root ? (
-                <DropdownMenuItem onSelect={() => onPromote(skill)}>
-                  <ArrowLineUp className="h-4 w-4" />
-                  Move to catalog
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem onSelect={() => onCopy(skill)}>
-                  <Copy className="h-4 w-4" />
-                  Copy to catalog
-                </DropdownMenuItem>
-              ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => onDelete(skill)}>
-              <Trash className="h-4 w-4" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </div>
-  )
-}
-
-export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
+/**
+ * The skills manager as a two-pane browser: a dense, filterable rail of every
+ * skill beside a detail pane that holds every control the old row crammed into
+ * one line.
+ *
+ * The rail sections by *source* rather than by reach, so re-pointing a skill from
+ * the pane never moves the row you are looking at. The selection lives in the
+ * URL (`?skill=<id>`), so a pane is deep-linkable and survives a reload.
+ */
+export function SkillsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState("")
+  const [appliesIn, setAppliesIn] = useState<string>(ANYWHERE)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const { height: browserHeight, narrow } = useBrowserBox(containerRef)
+
   const { data: skills, isLoading, isError, error } = useSkills()
   const workspacesQuery = useWorkspaces()
   const deleteSkill = useDeleteSkill()
@@ -306,6 +184,10 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
   // The skill being edited is tracked by id and re-read from the list, so saving
   // SKILL.md (which can rename the skill) updates the editor's own header.
   const [editingId, setEditingId] = useState<string | undefined>(undefined)
+  // With no room for two panes the detail side becomes a sheet, opened by tapping
+  // a row. Selection alone must not open it, or a deep link would land you on top
+  // of the rail you are trying to read.
+  const [detailOpen, setDetailOpen] = useState(false)
   const [toDelete, setToDelete] = useState<Skill | undefined>(undefined)
   const [toPromote, setToPromote] = useState<Skill | undefined>(undefined)
   const [toCopy, setToCopy] = useState<Skill | undefined>(undefined)
@@ -329,22 +211,34 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
     : null
   const editing = skills?.find((s) => s.id === editingId)
 
-  // Groups replace the old scope dropdown: every skill is visible at once, sorted
-  // by name within the bucket that says where it applies.
-  const grouped = useMemo(() => {
-    const buckets = new Map<GroupKey, Skill[]>()
-    for (const skill of skills ?? []) {
-      if (!matches(skill, search)) continue
-      const key = groupOf(skill)
-      buckets.set(key, [...(buckets.get(key) ?? []), skill])
-    }
-    return GROUPS.map((group) => ({
-      ...group,
-      items: (buckets.get(group.key) ?? []).sort((a, b) =>
-        a.name.localeCompare(b.name)
+  const selectedId = searchParams.get("skill") ?? undefined
+  const selected = skills?.find((s) => s.id === selectedId)
+
+  const filtered = useMemo(
+    () =>
+      (skills ?? []).filter(
+        (skill) =>
+          matches(skill, search) &&
+          (appliesIn === ANYWHERE || appliesInWorkspace(skill, appliesIn))
       ),
-    })).filter((group) => group.items.length > 0)
-  }, [skills, search])
+    [skills, search, appliesIn]
+  )
+
+  const selectSkill = useCallback(
+    (skill: Skill | undefined, source: SelectSource) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (skill) next.set("skill", skill.id)
+          else next.delete("skill")
+          return next
+        },
+        { replace: true }
+      )
+      if (narrow && source === "pointer" && skill) setDetailOpen(true)
+    },
+    [narrow, setSearchParams]
+  )
 
   // `webkitdirectory`/`directory` aren't in React's input types; set them on the
   // element so the picker selects a whole folder (and reports relative paths).
@@ -356,20 +250,23 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
     }
   }, [])
 
-  function openEdit(skill: Skill) {
+  const openEdit = useCallback((skill: Skill) => {
     setEditingId(skill.id)
-  }
+  }, [])
 
   /** Leave the manager for the workspace that owns this skill's files. */
-  function openInWorkspace(skill: Skill) {
-    const location = skillLocation(skill, workspaces)
-    if (!location) {
-      toast.error("No workspace can open this skill yet")
-      return
-    }
-    setEditingId(undefined) // in case we came from the editor dialog
-    navigate(revealSkill(location))
-  }
+  const openInWorkspace = useCallback(
+    (skill: Skill) => {
+      const location = skillLocation(skill, workspaces)
+      if (!location) {
+        toast.error("No workspace can open this skill yet")
+        return
+      }
+      setEditingId(undefined) // in case we came from the editor dialog
+      navigate(revealSkill(location))
+    },
+    [navigate, workspaces]
+  )
 
   async function importFiles(files: File[]) {
     if (files.length === 0) return
@@ -400,21 +297,28 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
       await deleteSkill.mutateAsync(toDelete.id)
       toast.success("Skill deleted")
       setToDelete(undefined)
+      // The rail hands the selection to whatever takes the deleted row's place.
+      setDetailOpen(false)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete skill")
     }
   }
 
   // No confirm: it changes nothing on disk and the switch itself is the undo.
-  async function toggleEnabled(skill: Skill, enabled: boolean) {
-    try {
-      await updateSkill.mutateAsync({ id: skill.id, input: { enabled } })
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : `Failed to ${enabled ? "enable" : "disable"} skill`
-      )
-    }
-  }
+  const toggleEnabled = useCallback(
+    async (skill: Skill, enabled: boolean) => {
+      try {
+        await updateSkill.mutateAsync({ id: skill.id, input: { enabled } })
+      } catch (err) {
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : `Failed to ${enabled ? "enable" : "disable"} skill`
+        )
+      }
+    },
+    [updateSkill]
+  )
 
   async function confirmCopy() {
     if (!toCopy) return
@@ -434,7 +338,7 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
     try {
       const promoted = await promoteSkill.mutateAsync(toPromote.id)
       toast.success(
-        `"${promoted.name}" moved into the catalog — assign it from its row`
+        `"${promoted.name}" moved into the catalog — assign it from the Applies in field`
       )
       setToPromote(undefined)
     } catch (err) {
@@ -442,18 +346,10 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
     }
   }
 
-  const action = (
-    <div className="flex items-center gap-2">
-      <div className="flex h-10 w-40 items-center gap-2 rounded-lg border border-transparent bg-muted/60 px-3 focus-within:border-ring/40 focus-within:bg-background sm:w-56">
-        <MagnifyingGlass className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search skills..."
-          aria-label="Search skills"
-          className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
-        />
-      </div>
+  // Rendered into the Customization header rather than a toolbar row of their
+  // own, so the browser starts directly under the tab strip.
+  const actions = (
+    <HeaderActions>
       <input
         ref={fileInputRef}
         type="file"
@@ -490,34 +386,72 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      {studioHref ? (
-        <Button variant="outline" asChild>
-          <Link
-            to={studioHref}
-            title="Open Skill Studio — an agent, a terminal and the file tree over your whole catalog"
-          >
-            <Sparkle className="h-4 w-4" />
-            Author with agent
-          </Link>
-        </Button>
-      ) : null}
       <Button onClick={() => setCreateOpen(true)}>
         <Plus className="h-4 w-4" />
         New skill
       </Button>
+    </HeaderActions>
+  )
+
+  const rail = (
+    <SkillRail
+      skills={filtered}
+      total={(skills ?? []).length}
+      workspaces={workspaces}
+      workspaceNames={workspaceNames}
+      search={search}
+      onSearchChange={setSearch}
+      appliesIn={appliesIn}
+      onAppliesInChange={setAppliesIn}
+      selectedId={selectedId}
+      onSelect={selectSkill}
+      onActivate={openEdit}
+    />
+  )
+
+  const detail = selected ? (
+    <SkillDetailPanel
+      key={selected.id}
+      skill={selected}
+      workspaces={workspaces}
+      workspaceNames={workspaceNames}
+      onEdit={openEdit}
+      onOpenInWorkspace={openInWorkspace}
+      onPromote={setToPromote}
+      onCopy={setToCopy}
+      onToggle={toggleEnabled}
+      onDelete={setToDelete}
+    />
+  ) : null
+
+  function clearFilters() {
+    setSearch("")
+    setAppliesIn(ANYWHERE)
+  }
+
+  const emptyPane = (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+      <p className="text-sm font-medium text-foreground">
+        {filtered.length === 0 ? "Nothing matches these filters" : "No skill selected"}
+      </p>
+      <p className="max-w-xs text-xs text-muted-foreground">
+        {filtered.length === 0
+          ? "Widen the search or set Applies in back to Anywhere."
+          : "Pick a skill on the left to see where it applies and what it tells the agent."}
+      </p>
+      {filtered.length === 0 ? (
+        <Button variant="outline" size="sm" onClick={clearFilters}>
+          Clear filters
+        </Button>
+      ) : null}
     </div>
   )
 
   return (
-    <div className="space-y-6">
-      {embedded ? (
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">{DESCRIPTION}</p>
-          {action}
-        </div>
-      ) : (
-        <PageHeader title="Skills" description={DESCRIPTION} actions={action} />
-      )}
+    // The ref is the two-pane measurement: this element is always mounted and
+    // always the full width the page has to work with.
+    <div ref={containerRef}>
+      {actions}
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading skills…</p>
@@ -551,48 +485,51 @@ export function SkillsPage({ embedded = false }: { embedded?: boolean } = {}) {
             </div>
           }
         />
-      ) : grouped.length === 0 ? (
-        <EmptyState
-          title={`No skills match "${search}"`}
-          action={
-            <Button variant="outline" onClick={() => setSearch("")}>
-              Clear search
-            </Button>
-          }
-        />
+      ) : narrow ? (
+        // One column: the rail owns the width, the pane arrives as a sheet.
+        <div
+          style={{ height: browserHeight }}
+          className="flex flex-col overflow-hidden rounded-lg border"
+        >
+          {rail}
+        </div>
       ) : (
-        <div className="space-y-6">
-          {grouped.map((group) => (
-            <section key={group.key} className="space-y-2">
-              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <h3 className="text-sm font-medium text-foreground">
-                  {group.title}
-                </h3>
-                <span className="text-xs text-muted-foreground">
-                  {group.items.length}
-                </span>
-                <p className="text-xs text-muted-foreground">· {group.hint}</p>
-              </div>
-              <div className="divide-y overflow-hidden rounded-md border">
-                {group.items.map((skill) => (
-                  <SkillRow
-                    key={skill.id}
-                    skill={skill}
-                    workspaces={workspaces}
-                    workspaceNames={workspaceNames}
-                    onEdit={openEdit}
-                    onOpenInWorkspace={openInWorkspace}
-                    onPromote={setToPromote}
-                    onCopy={setToCopy}
-                    onToggle={toggleEnabled}
-                    onDelete={setToDelete}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
+        <div
+          style={{ height: browserHeight }}
+          className="overflow-hidden rounded-lg border"
+        >
+          <ResizablePanelGroup direction="horizontal" autoSaveId="skills-browser">
+            <ResizablePanel
+              defaultSize={28}
+              minSize={20}
+              className="flex min-w-0 flex-col"
+            >
+              {rail}
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel minSize={40} className="flex min-w-0 flex-col">
+              {detail ?? emptyPane}
+            </ResizablePanel>
+          </ResizablePanelGroup>
         </div>
       )}
+
+      <Sheet
+        open={narrow && detailOpen && Boolean(selected)}
+        onOpenChange={setDetailOpen}
+      >
+        <SheetContent
+          side="right"
+          // The sheet's own close button sits top-right, where the pane header's
+          // actions menu lives — keep them out of each other's way.
+          className="flex w-full flex-col gap-0 p-0 sm:max-w-md [&_[data-slot=skill-detail-header]]:pr-12"
+        >
+          <SheetHeader className="sr-only">
+            <SheetTitle>{selected?.name ?? "Skill"}</SheetTitle>
+          </SheetHeader>
+          {detail}
+        </SheetContent>
+      </Sheet>
 
       <SkillCreateDialog
         open={createOpen}

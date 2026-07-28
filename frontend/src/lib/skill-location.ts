@@ -56,6 +56,25 @@ export function skillLocation(
 }
 
 /**
+ * The skill folder as a path on disk, or null when it can't be resolved.
+ *
+ * `external` roots are already absolute. The other two are relative to a
+ * workspace directory: the repo that owns a `local` skill, and the catalog
+ * workspace (`is_system`) for a `managed` one — so the location is read off the
+ * workspace list rather than assuming where the catalog lives.
+ */
+export function skillFolder(skill: Skill, workspaces: Workspace[]): string | null {
+  if (skill.origin === "external") return `${skill.root}/${skill.slug}`
+  if (skill.origin === "local") {
+    const workspace = workspaces.find((ws) => ws.id === skill.workspace_id)
+    if (!workspace) return null
+    return `${workspace.path}/${skill.root || ".agents/skills"}/${skill.slug}`
+  }
+  const catalog = workspaces.find((ws) => ws.is_system)
+  return catalog ? `${catalog.path}/${skill.slug}` : null
+}
+
+/**
  * Park an "open this skill" request and return the route to navigate to. The
  * app shell reveals the dock and mounts a file tab; the editor consumes the
  * request once mounted (see {@link requestOpenFile}).
