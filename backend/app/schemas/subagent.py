@@ -61,7 +61,6 @@ class SubagentRead(BaseModel):
     enabled: bool
     extra_config: dict[str, Any]
     tool_ids: list[str]
-    builtin_name: str | None = None
     created_at: UTCDatetime
     updated_at: UTCDatetime
 
@@ -84,7 +83,6 @@ class SubagentRead(BaseModel):
             enabled=sa.enabled,
             extra_config=sa.extra_config,
             tool_ids=[t.id for t in sa.tools],
-            builtin_name=sa.builtin_name,
             created_at=sa.created_at,
             updated_at=sa.updated_at,
         )
@@ -102,16 +100,18 @@ class ResolvedInt(BaseModel):
 
 
 class BuiltinSubagentRead(BaseModel):
-    """A pydantic-deep built-in subagent: its library default + current state."""
+    """A pydantic-deep built-in subagent: its library default + current state.
+
+    Read-only apart from ``enabled``. The UI shows the library text and offers to
+    seed a new user subagent from it; there is no editable copy of a built-in.
+    """
 
     name: str
-    # Library defaults (read-only reference the UI shows and seeds edits from).
+    # Library defaults (read-only reference the UI shows and seeds a copy from).
     default_description: str
     default_instructions: str
     # True unless the user disabled it.
     enabled: bool
-    # The user's override, if any (an editable copy that wins at build time).
-    override: SubagentRead | None = None
 
 
 class SubagentDefaultsRead(BaseModel):
@@ -129,11 +129,3 @@ class SubagentDefaultsUpdate(BaseModel):
     max_nesting_depth: int | None = None
     clear_max_nesting_depth: bool = False
     disabled_builtins: list[str] | None = None
-
-
-class BuiltinOverrideUpdate(BaseModel):
-    """Create/update an editable override of a built-in subagent."""
-
-    description: str
-    instructions: str
-    model: str | None = None

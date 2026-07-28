@@ -7,6 +7,7 @@ schema stabilizes.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import text
@@ -148,8 +149,6 @@ async def _apply_lightweight_migrations(conn) -> None:
     await conn.execute(text("DROP TABLE IF EXISTS subagent_skills"))
 
     subagent_cols = await columns("subagents")
-    if "builtin_name" not in subagent_cols:
-        await conn.execute(text("ALTER TABLE subagents ADD COLUMN builtin_name VARCHAR"))
     # Full deep-agent parity knobs on subagents. Defaults match the model so
     # existing rows keep behaving as before (skills on, everything else off).
     subagent_additions = {
@@ -173,6 +172,17 @@ async def _apply_lightweight_migrations(conn) -> None:
     for col, ddl in subagent_additions.items():
         if col not in subagent_cols:
             await conn.execute(text(ddl))
+
+    # Built-in overrides are gone: a built-in subagent is now a plain on/off toggle,
+    # and "override a built-in" is spelled "disable it + create a subagent" (which
+    # can express strictly more). Don't discard a user's edits — promote each
+    # override row to an ordinary subagent and disable the library built-in it was
+    # replacing. That preserves today's effective behaviour (the copy won at build
+    # time) with no duplicate names in the roster.
+    if "builtin_name" in subagent_cols:
+        await _retire_builtin_overrides(conn)
+        # SQLite >= 3.35. Guarded on the column being present, so idempotent.
+        await conn.execute(text("ALTER TABLE subagents DROP COLUMN builtin_name"))
 
     agent_cols = await columns("agents")
     if "tool_choice" not in agent_cols:
@@ -274,6 +284,64 @@ async def _apply_lightweight_migrations(conn) -> None:
     if "manual_models" not in provider_cols:
         await conn.execute(
             text("ALTER TABLE custom_providers ADD COLUMN manual_models VARCHAR DEFAULT ''")
+        )
+
+
+async def _retire_builtin_overrides(conn) -> None:
+    """Turn built-in override rows into ordinary subagents, disabling the built-in.
+
+    One half of dropping the ``builtin_name`` column (see the caller). Called only
+    while the column still exists, so it runs exactly once per install.
+    """
+    from app.db.models import _now, _uuid
+
+    names = [
+        row[0]
+        for row in (
+            await conn.exec_driver_sql(
+                "SELECT DISTINCT builtin_name FROM subagents "
+                "WHERE builtin_name IS NOT NULL AND builtin_name != ''"
+            )
+        ).all()
+    ]
+    if not names:
+        return
+
+    # The row becomes a plain user subagent: same name, description, instructions
+    # and model, now visible and editable in the roster like anything else.
+    await conn.execute(
+        text("UPDATE subagents SET builtin_name = NULL WHERE builtin_name IS NOT NULL")
+    )
+
+    rows = (await conn.exec_driver_sql("SELECT id, deep_defaults FROM app_config")).all()
+    if not rows:
+        # SQLite's DATETIME storage format, so the ORM can read these back.
+        now = _now().replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f")
+        # The other JSON blobs are written explicitly: readers do ``dict(...)`` on
+        # them, which a NULL would break.
+        await conn.exec_driver_sql(
+            "INSERT INTO app_config "
+            "(id, deep_defaults, hindsight_config, default_agents, "
+            "created_at, updated_at) VALUES (?, ?, '{}', '{}', ?, ?)",
+            (_uuid(), json.dumps({"disabled_builtins": names}), now, now),
+        )
+        return
+
+    for cfg_id, blob in rows:
+        try:
+            defaults = json.loads(blob) if blob else {}
+        except (TypeError, ValueError):
+            defaults = {}
+        if not isinstance(defaults, dict):
+            defaults = {}
+        disabled = defaults.get("disabled_builtins")
+        disabled = list(disabled) if isinstance(disabled, list) else []
+        defaults["disabled_builtins"] = disabled + [
+            n for n in names if n not in disabled
+        ]
+        await conn.exec_driver_sql(
+            "UPDATE app_config SET deep_defaults = ? WHERE id = ?",
+            (json.dumps(defaults), cfg_id),
         )
 
 

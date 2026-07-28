@@ -413,18 +413,13 @@ class Subagent(TimestampMixin, table=True):
 
     # When off, this subagent is kept in the roster (still shown/editable in the
     # UI) but excluded from every agent's specialist set at build time. Lets a
-    # user park a subagent without deleting it. Built-in overrides ignore this and
-    # are toggled via ``AppConfig.deep_defaults["disabled_builtins"]`` instead.
+    # user park a subagent without deleting it. The pydantic-deep built-ins are
+    # not rows at all and are toggled via
+    # ``AppConfig.deep_defaults["disabled_builtins"]`` instead.
     enabled: bool = True
 
     # Escape hatch for future kwargs without a schema change (mirrors Agent).
     extra_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
-
-    # When set, this row is not a user-authored subagent but an *override* of a
-    # pydantic-deep built-in of the same name (e.g. "general-purpose", "research").
-    # Override rows are managed in the Subagents "Defaults" area, hidden from the
-    # normal roster listing, and win over the library default at build time.
-    builtin_name: str | None = Field(default=None, index=True)
 
     # Like :class:`Agent`, subagents discover skills by scope at build time (no
     # per-subagent link); ``include_skills`` gates whether they get any.

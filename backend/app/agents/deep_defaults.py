@@ -9,11 +9,12 @@ Resolution is a two-step chain:
 
     global override (AppConfig.deep_defaults)  →  library default
 
-A key absent from the override blob means "inherit the library default". Built-in
-subagents can additionally be *overridden* (an editable copy, stored as a
-:class:`Subagent` row with ``builtin_name`` set) or *disabled* (listed in
-``disabled_builtins``). Everything here is intentionally scoped to subagents; the
-wider ``create_deep_agent`` surface is left at library defaults for now.
+A key absent from the override blob means "inherit the library default". A built-in
+subagent is otherwise take-it-or-leave-it: it can be *disabled* (listed in
+``disabled_builtins``) but not edited — to change what one does, disable it and
+create an ordinary :class:`Subagent`, which can express strictly more. Everything
+here is intentionally scoped to subagents; the wider ``create_deep_agent`` surface
+is left at library defaults for now.
 """
 
 from __future__ import annotations

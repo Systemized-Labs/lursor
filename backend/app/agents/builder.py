@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import socket
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -458,6 +458,112 @@ def _readonly_tool_filter(_ctx, tool_defs: list[ToolDefinition]) -> list[ToolDef
     return [t for t in tool_defs if t.name in _READONLY_TOOL_ALLOWLIST]
 
 
+# The exact bullet pydantic-deep hardcodes into the ``task`` tool description
+# (``subagents_pydantic_ai/prompts.py``, ``TASK_TOOL_DESCRIPTION``). It is shipped
+# to every agent verbatim and never rewritten from the live roster, so an install
+# with the ``general-purpose`` built-in disabled is still told to fall back to it.
+_TASK_GENERAL_PURPOSE_BULLET = (
+    "- **Choose the right subagent**: Match the subagent_type to the task. "
+    'Use "general-purpose" when no specialized subagent fits.'
+)
+
+
+def _task_roster_bullet(names: list[str]) -> str:
+    """The replacement bullet: only names that are actually dispatchable."""
+    if not names:
+        # The library registers ``task`` whenever ``include_subagents`` is on, even
+        # with an empty roster. Say there is nothing to delegate to rather than
+        # naming a subagent that cannot be dispatched.
+        return (
+            "- **Choose the right subagent**: no subagents are configured, so "
+            "there is nothing to delegate to — do the work yourself."
+        )
+    return (
+        "- **Choose the right subagent**: Match the subagent_type to the task. "
+        f"Use one of: {', '.join(names)}. Do not invent a subagent type."
+    )
+
+
+def _task_description_from_roster(description: str | None, bullet: str) -> str | None:
+    if not description:
+        return description
+    if _TASK_GENERAL_PURPOSE_BULLET in description:
+        return description.replace(_TASK_GENERAL_PURPOSE_BULLET, bullet)
+    # Upstream reworded the bullet (we pin a SHA, but a bump could). Append ours
+    # rather than silently leaving the stale advice as the only guidance.
+    return f"{description.rstrip()}\n{bullet}"
+
+
+def _schema_with_subagent_enum(schema: Any, names: list[str]) -> Any:
+    """Copy ``schema`` with ``subagent_type`` constrained to ``names``.
+
+    Returns a fresh dict — the toolset owns the original and shares it across every
+    run, so in-place mutation would leak one agent's roster into another's.
+    """
+    if not names or not isinstance(schema, dict):
+        return schema
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return schema
+    prop = props.get("subagent_type")
+    if not isinstance(prop, dict):
+        return schema
+    return {
+        **schema,
+        "properties": {**props, "subagent_type": {**prop, "enum": list(names)}},
+    }
+
+
+def _task_tool_roster_filter(
+    names: list[str],
+) -> Callable[[RunContext[Any], list[ToolDefinition]], list[ToolDefinition]]:
+    """A ``ToolsPrepareFunc`` that pins ``task`` to the roster we assembled.
+
+    Two things in pydantic-deep conspire to make an agent delegate to a subagent
+    that does not exist:
+
+    1. ``TASK_TOOL_DESCRIPTION`` tells it to use ``general-purpose`` when nothing
+       else fits — unconditionally, even when that built-in is disabled.
+    2. ``subagent_type`` is a bare ``str`` with no enum, so the provider cannot
+       reject an invalid name; the library validates *after* dispatch and returns
+       ``Error: Unknown subagent '...'`` as the tool result — a wasted turn and a
+       card the chat marks "Failed".
+
+    Claude models also carry a strong prior for ``general-purpose`` (it is the
+    canonical type in Claude Code's Task tool), so the three together reproduce
+    reliably. ``create_deep_agent`` exposes no passthrough to
+    ``create_subagent_toolset(descriptions=...)``, so we rewrite the prepared
+    definition here instead: swap the bullet for the live roster and inject the
+    enum for providers that honour it (Anthropic, OpenAI). The library's post-hoc
+    validation stays as the backstop for local models that ignore enums.
+
+    Runs every step, like the read-only filter, so tools surfaced later (tool-search
+    deferral) are rewritten too. Read-only mode drops ``task`` outright, so with
+    both capabilities active this one simply finds nothing — either order is safe.
+    """
+    bullet = _task_roster_bullet(names)
+
+    def prepare(
+        _ctx: RunContext[Any], tool_defs: list[ToolDefinition]
+    ) -> list[ToolDefinition]:
+        return [
+            (
+                td
+                if td.name != "task"
+                else replace(
+                    td,
+                    description=_task_description_from_roster(td.description, bullet),
+                    parameters_json_schema=_schema_with_subagent_enum(
+                        td.parameters_json_schema, names
+                    ),
+                )
+            )
+            for td in tool_defs
+        ]
+
+    return prepare
+
+
 # Plan mode has no tool allowlist on purpose. It used to run a plan-specific
 # filter (the read-only surface plus ``write_file``), but gating the toolset
 # starved the planning loop itself: without the todo board and delegation, local
@@ -733,17 +839,16 @@ def build_deep_agent(
     pydantic-deep's per-workspace ``MEMORY.md``, unchanged from before.
 
     ``subagents`` is the global roster of specialists (see ``db.models.Subagent``).
-    They are only handed to the agent when ``row.include_subagents`` is on. Rows
-    with ``builtin_name`` set are overrides of a pydantic-deep built-in and win
-    over the library default.
+    They are only handed to the agent when ``row.include_subagents`` is on, and a
+    row with ``enabled=False`` is left out.
 
     ``deep_defaults`` is the ``AppConfig.deep_defaults`` override blob (subagent
     defaults — max nesting depth, disabled built-ins). We take explicit control of
     the built-in subagent roster here (``include_builtin_subagents=False``) rather
-    than letting the library inject them, so built-ins can be viewed, overridden,
-    or disabled from the UI. This is behaviour-preserving: the library treats
-    built-ins as ordinary ``SubAgentConfig`` dicts and applies the same default
-    deep-agent factory to every config.
+    than letting the library inject them, so built-ins can be switched off from the
+    UI. This is behaviour-preserving: the library treats built-ins as ordinary
+    ``SubAgentConfig`` dicts and applies the same default deep-agent factory to
+    every config.
     """
     backend = _workspace_backend(workspace_path)
 
@@ -820,23 +925,25 @@ def build_deep_agent(
                 hindsight=hindsight,
             )
 
-        # Built-in override rows (builtin_name set) win over the library default;
-        # everything else is an ordinary user subagent. Disabled user subagents
-        # stay in the roster/UI but are excluded from the specialist set here.
-        overrides = {sa.builtin_name: sa for sa in rows if sa.builtin_name}
-        subagent_configs = [
-            _config(sa) for sa in rows if not sa.builtin_name and sa.enabled
-        ]
+        # Disabled user subagents stay in the roster/UI but are excluded from the
+        # specialist set here.
+        subagent_configs = [_config(sa) for sa in rows if sa.enabled]
 
+        # Built-ins are a plain on/off toggle: an enabled one is handed to the
+        # library as a bare config dict, so it gets pydantic-deep's own lean
+        # subagent factory. To get a built-in *with* skills, web search, or a pinned
+        # model, switch it off and create an ordinary subagent instead.
+        #
+        # A user subagent of the same name wins outright. The library keys its
+        # compiled roster by name, so without this the built-in would silently
+        # shadow the row the user actually authored.
         disabled = set(resolved_defaults["disabled_builtins"])
-        for builtin in builtin_subagent_defaults():
-            name = builtin["name"]
-            if name in disabled:
-                continue
-            override = overrides.get(name)
-            # An override row gets the full-parity factory; an un-overridden
-            # built-in stays a plain config so the library builds it as before.
-            subagent_configs.append(_config(override) if override else dict(builtin))
+        taken = {cfg["name"] for cfg in subagent_configs}
+        subagent_configs.extend(
+            dict(builtin)
+            for builtin in builtin_subagent_defaults()
+            if builtin["name"] not in disabled and builtin["name"] not in taken
+        )
 
     # Every library knob we set a non-default value for may also be supplied via
     # the extra_config escape hatch; where it is, let it win rather than passing
@@ -876,6 +983,29 @@ def build_deep_agent(
 
     if read_only:
         capabilities.append(PrepareTools(_readonly_tool_filter))
+
+    # Honest roster: the library's ``task`` description hardcodes a
+    # "use general-purpose" fallback and its ``subagent_type`` takes any string, so
+    # rewrite both from the roster this agent actually got (see
+    # ``_task_tool_roster_filter``). The names must be the ones the library will
+    # compile: whatever we pass as ``subagents`` — or the escape hatch's own list,
+    # which wins — plus the ``planner`` built-in the library appends itself when
+    # plan mode is on (``pydantic_deep/agent.py``, same ``include_plan`` condition).
+    if include_subagents:
+        passed_configs = (
+            extra_config.get("subagents")
+            if "subagents" in extra_config
+            else subagent_configs
+        )
+        roster_names = [
+            str(cfg["name"])
+            for cfg in (passed_configs or [])
+            if isinstance(cfg, dict) and cfg.get("name")
+        ]
+        if row.include_plan and "planner" not in roster_names:
+            roster_names.append("planner")
+        capabilities.append(PrepareTools(_task_tool_roster_filter(roster_names)))
+
     # Plan mode deliberately adds no filter here — a plan turn keeps the full
     # toolset and is held to planning by the planning prompt alone (see the note
     # above the ``ForceToolChoice`` class for why the plan allowlist was dropped).

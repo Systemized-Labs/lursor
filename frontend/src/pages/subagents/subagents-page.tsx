@@ -26,11 +26,7 @@ import { cn } from "@/lib/utils"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
-import {
-  BuiltinCard,
-  BuiltinOverrideDialog,
-  nextDisabledBuiltins,
-} from "./subagent-defaults-panel"
+import { BuiltinCard, nextDisabledBuiltins } from "./subagent-defaults-panel"
 import { SubagentFormDialog } from "./subagent-form-dialog"
 
 const DESCRIPTION =
@@ -45,9 +41,6 @@ export function SubagentsPage({ embedded = false }: { embedded?: boolean } = {})
 
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Subagent | undefined>(undefined)
-  const [editingBuiltin, setEditingBuiltin] = useState<BuiltinSubagent | undefined>(
-    undefined
-  )
   const [toDelete, setToDelete] = useState<Subagent | undefined>(undefined)
 
   function openCreate() {
@@ -134,7 +127,6 @@ export function SubagentsPage({ embedded = false }: { embedded?: boolean } = {})
             key={builtin.name}
             builtin={builtin}
             onToggle={(enabled) => toggleBuiltin(builtin, enabled)}
-            onEdit={() => setEditingBuiltin(builtin)}
           />
         ))}
       </div>
@@ -169,11 +161,6 @@ export function SubagentsPage({ embedded = false }: { embedded?: boolean } = {})
         open={formOpen}
         onOpenChange={setFormOpen}
         subagent={editing}
-      />
-
-      <BuiltinOverrideDialog
-        builtin={editingBuiltin}
-        onOpenChange={(open) => !open && setEditingBuiltin(undefined)}
       />
 
       <ConfirmDialog

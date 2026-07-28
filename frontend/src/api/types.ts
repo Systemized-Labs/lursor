@@ -229,8 +229,6 @@ export interface Subagent {
   enabled: boolean
   extra_config: Record<string, unknown>
   tool_ids: string[]
-  /** Set when this row overrides a pydantic-deep built-in of the same name. */
-  builtin_name: string | null
   created_at: string
   updated_at: string
 }
@@ -260,13 +258,16 @@ export interface ResolvedInt {
   effective: number
 }
 
-/** A pydantic-deep built-in subagent: its library default plus current state. */
+/** A pydantic-deep built-in subagent: its library default plus current state.
+ *
+ * Read-only apart from `enabled`. To change what a built-in does, switch it off
+ * and create an ordinary subagent seeded from these defaults.
+ */
 export interface BuiltinSubagent {
   name: string
   default_description: string
   default_instructions: string
   enabled: boolean
-  override: Subagent | null
 }
 
 export interface SubagentDefaults {
@@ -278,12 +279,6 @@ export interface SubagentDefaultsUpdate {
   max_nesting_depth?: number | null
   clear_max_nesting_depth?: boolean
   disabled_builtins?: string[]
-}
-
-export interface BuiltinOverrideInput {
-  description: string
-  instructions: string
-  model: string | null
 }
 
 export interface PromptTemplate {

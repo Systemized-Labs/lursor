@@ -1,12 +1,20 @@
-"""Tests for viewing / overriding the pydantic-deep subagent defaults."""
+"""Tests for viewing / toggling the pydantic-deep subagent defaults."""
 
 from __future__ import annotations
 
 from httpx import AsyncClient
+from pydantic_ai.capabilities import PrepareTools
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import UsageLimits
+from subagents_pydantic_ai.prompts import TASK_TOOL_DESCRIPTION
 
 from app.agents import builder
-from app.agents.builder import TURN_REQUEST_LIMIT, _subagent_config, build_deep_agent
+from app.agents.builder import (
+    TURN_REQUEST_LIMIT,
+    _subagent_config,
+    _task_tool_roster_filter,
+    build_deep_agent,
+)
 from app.db.models import Agent, Subagent, ThinkingLevel
 
 # DB / workspace isolation and the ``client`` fixture live in ``conftest.py``.
@@ -20,8 +28,9 @@ async def test_defaults_expose_library_builtins(client: AsyncClient):
     names = {b["name"] for b in body["builtins"]}
     assert names == {"general-purpose", "research"}
     assert all(b["enabled"] for b in body["builtins"])
-    assert all(b["override"] is None for b in body["builtins"])
     assert all(b["default_instructions"] for b in body["builtins"])
+    # Built-ins carry no editable copy — the concept is gone.
+    assert all("override" not in b for b in body["builtins"])
 
     assert body["max_nesting_depth"] == {
         "library_default": 1,
@@ -63,41 +72,180 @@ async def test_disable_builtin(client: AsyncClient):
     assert all(b["enabled"] for b in r.json()["builtins"])
 
 
-async def test_override_builtin_and_hidden_from_roster(client: AsyncClient):
-    r = await client.put(
-        "/subagents/builtins/general-purpose",
-        json={"description": "my gp", "instructions": "do it my way", "model": None},
-    )
-    assert r.status_code == 200, r.text
-    gp = next(b for b in r.json()["builtins"] if b["name"] == "general-purpose")
-    assert gp["override"] is not None
-    assert gp["override"]["description"] == "my gp"
-    assert gp["override"]["builtin_name"] == "general-purpose"
-
-    # The override row must not leak into the normal roster listing.
-    roster = (await client.get("/subagents")).json()
-    assert all(s.get("builtin_name") is None for s in roster)
-    assert "general-purpose" not in {s["name"] for s in roster}
-
-    # Reset reverts to the library default.
-    r = await client.delete("/subagents/builtins/general-purpose")
-    assert r.status_code == 200, r.text
-    gp = next(b for b in r.json()["builtins"] if b["name"] == "general-purpose")
-    assert gp["override"] is None
-
-    # Unknown built-in -> 404.
-    assert (
-        await client.put(
-            "/subagents/builtins/nope", json={"description": "x", "instructions": "y"}
+async def test_builtin_override_routes_are_gone(client: AsyncClient):
+    """Editing a built-in is no longer a concept: disable it and author your own."""
+    for method in ("put", "delete"):
+        r = await getattr(client, method)(
+            "/subagents/builtins/general-purpose",
+            **({"json": {"description": "x", "instructions": "y"}} if method == "put" else {}),
         )
-    ).status_code == 404
+        assert r.status_code in (404, 405), f"{method}: {r.status_code}"
 
 
 def _agent(**kw) -> Agent:
     return Agent(name="A", include_subagents=True, **kw)
 
 
-async def test_builder_roster_respects_disable_and_override(tmp_path):
+def _prepared_task_tool_for(
+    monkeypatch, row: Agent, workspace, subagents: list[Subagent], defaults
+) -> ToolDefinition:
+    """Build an agent, then run its task-roster rewrite over a real ``task`` def."""
+    seen: dict = {}
+
+    def fake_create_deep_agent(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(builder, "create_deep_agent", fake_create_deep_agent)
+    build_deep_agent(row, str(workspace), {}, subagents, defaults)
+
+    prepares = [
+        c.prepare_func
+        for c in seen["capabilities"]
+        if isinstance(c, PrepareTools) and c.prepare_func is not builder._readonly_tool_filter
+    ]
+    assert len(prepares) == 1, "expected exactly one task-roster PrepareTools"
+    return _prepare_task_tool(prepares[0])
+
+
+def _prepare_task_tool(prepare) -> ToolDefinition:
+    """Run ``prepare`` over the library's real ``task`` definition."""
+    td = ToolDefinition(
+        name="task",
+        # What ``create_subagent_toolset`` actually registers (toolset.py:331-334).
+        description=TASK_TOOL_DESCRIPTION.rstrip() + "\n\nAvailable subagent types:\n- x: y",
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "description": {"type": "string"},
+                "subagent_type": {"type": "string"},
+            },
+        },
+    )
+    out = prepare(None, [td])
+    assert len(out) == 1
+    # The toolset's own schema is shared across runs and must never be mutated.
+    assert "enum" not in td.parameters_json_schema["properties"]["subagent_type"]
+    return out[0]
+
+
+def test_task_tool_never_advertises_a_disabled_builtin(monkeypatch, tmp_path):
+    """The reported bug: with ``general-purpose`` off, the model was still told to
+    use it — and nothing at the schema layer could reject the call."""
+    user = Subagent(name="writer", description="d", instructions="i")
+    task_tool = _prepared_task_tool_for(
+        monkeypatch, _agent(), tmp_path, [user], {"disabled_builtins": ["general-purpose"]}
+    )
+
+    assert "general-purpose" not in (task_tool.description or "")
+    assert task_tool.parameters_json_schema["properties"]["subagent_type"]["enum"] == [
+        "writer",
+        "research",
+    ]
+
+
+def test_task_tool_roster_includes_the_planner_builtin(monkeypatch, tmp_path):
+    """pydantic-deep appends ``planner`` itself when plan mode is on; mirror it or
+    the enum would reject a subagent the library really does compile."""
+    task_tool = _prepared_task_tool_for(monkeypatch, _agent(include_plan=True), tmp_path, [], {})
+
+    assert task_tool.parameters_json_schema["properties"]["subagent_type"]["enum"] == [
+        "general-purpose",
+        "research",
+        "planner",
+    ]
+
+
+def test_disabled_user_subagent_is_excluded_from_the_roster(monkeypatch, tmp_path):
+    """Override rows used to bypass this check (they were never filtered on
+    ``enabled``); with overrides gone there is one loop and one rule."""
+    rows = [
+        Subagent(name="on", description="d", instructions="i"),
+        Subagent(name="parked", description="d", instructions="i", enabled=False),
+    ]
+    task_tool = _prepared_task_tool_for(monkeypatch, _agent(), tmp_path, rows, {})
+
+    enum = task_tool.parameters_json_schema["properties"]["subagent_type"]["enum"]
+    assert "on" in enum
+    assert "parked" not in enum
+
+
+def test_user_subagent_shadows_a_builtin_of_the_same_name(monkeypatch, tmp_path):
+    """The library keys its compiled roster by name, so a duplicate would silently
+    let the built-in win over the row the user authored."""
+    rows = [Subagent(name="research", description="mine", instructions="i")]
+    task_tool = _prepared_task_tool_for(monkeypatch, _agent(), tmp_path, rows, {})
+
+    assert task_tool.parameters_json_schema["properties"]["subagent_type"]["enum"] == [
+        "research",
+        "general-purpose",
+    ]
+
+
+def test_task_tool_rewrite_survives_an_upstream_reword():
+    """If the pinned SHA moves and the bullet changes, still say what is real."""
+    td = ToolDefinition(
+        name="task",
+        description="Delegate a task.\n- Use whatever subagent you like.",
+        parameters_json_schema={"type": "object", "properties": {}},
+    )
+    (out,) = _task_tool_roster_filter(["writer"])(None, [td])
+
+    assert "Use one of: writer" in (out.description or "")
+
+
+def test_task_tool_with_an_empty_roster_says_so():
+    td = ToolDefinition(name="task", description=TASK_TOOL_DESCRIPTION)
+    (out,) = _task_tool_roster_filter([])(None, [td])
+
+    assert "general-purpose" not in (out.description or "")
+    assert "no subagents are configured" in (out.description or "")
+
+
+async def test_model_sees_only_the_real_roster_end_to_end(client: AsyncClient, tmp_path):
+    """The report, reproduced against a real run: with ``general-purpose`` disabled,
+    the ``task`` definition the *model* receives must neither name it nor accept it.
+
+    The unit tests above drive the prepare hook directly; this one drives a full
+    agent through a ``FunctionModel`` so a break anywhere between capability
+    assembly and the wire is caught.
+    """
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    row = Agent(
+        name="local",
+        instructions="hi",
+        model="openrouter:qwen/qwen3.7-max",
+        include_subagents=True,
+    )
+    user = Subagent(name="writer", description="d", instructions="i")
+
+    seen: dict = {}
+
+    def _capture(_messages, info: AgentInfo):
+        seen["task"] = next(t for t in info.function_tools if t.name == "task")
+        return ModelResponse(parts=[TextPart("ok")])
+
+    agent, deps = build_deep_agent(
+        row,
+        str(tmp_path),
+        {},
+        [user],
+        {"disabled_builtins": ["general-purpose"]},
+    )
+    with agent.override(model=FunctionModel(_capture)):
+        await agent.run("hi", deps=deps)
+
+    task_tool = seen["task"]
+    assert "general-purpose" not in (task_tool.description or "")
+    assert task_tool.parameters_json_schema["properties"]["subagent_type"]["enum"] == [
+        "writer",
+        "research",
+    ]
+
+
+async def test_builder_roster_respects_disable(tmp_path):
     ws = str(tmp_path)
 
     # Baseline: both built-ins present, plus a user subagent — builds cleanly.
@@ -105,12 +253,9 @@ async def test_builder_roster_respects_disable_and_override(tmp_path):
     agent, _ = build_deep_agent(_agent(), ws, {}, [user], {})
     assert agent is not None
 
-    # Disabled built-in + override should still build without error.
-    override = Subagent(
-        name="research", builtin_name="research", description="d", instructions="i"
-    )
+    # A disabled built-in should still build without error.
     agent2, _ = build_deep_agent(
-        _agent(), ws, {}, [user, override], {"disabled_builtins": ["general-purpose"]}
+        _agent(), ws, {}, [user], {"disabled_builtins": ["general-purpose"]}
     )
     assert agent2 is not None
 

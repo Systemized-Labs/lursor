@@ -6,7 +6,6 @@ import {
 
 import { api } from "./client"
 import type {
-  BuiltinOverrideInput,
   Subagent,
   SubagentDefaults,
   SubagentDefaultsUpdate,
@@ -27,15 +26,6 @@ export const subagentsApi = {
     api.get<SubagentDefaults>("/subagents/defaults", signal),
   updateDefaults: (input: SubagentDefaultsUpdate) =>
     api.put<SubagentDefaults>("/subagents/defaults", input),
-  overrideBuiltin: (name: string, input: BuiltinOverrideInput) =>
-    api.put<SubagentDefaults>(
-      `/subagents/builtins/${encodeURIComponent(name)}`,
-      input
-    ),
-  resetBuiltin: (name: string) =>
-    api.delete<SubagentDefaults>(
-      `/subagents/builtins/${encodeURIComponent(name)}`
-    ),
 }
 
 export const subagentKeys = {
@@ -89,28 +79,5 @@ export function useUpdateSubagentDefaults() {
     mutationFn: (input: SubagentDefaultsUpdate) =>
       subagentsApi.updateDefaults(input),
     onSuccess: (data) => qc.setQueryData(subagentKeys.defaults, data),
-  })
-}
-
-export function useOverrideBuiltin() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ name, input }: { name: string; input: BuiltinOverrideInput }) =>
-      subagentsApi.overrideBuiltin(name, input),
-    onSuccess: (data) => {
-      qc.setQueryData(subagentKeys.defaults, data)
-      qc.invalidateQueries({ queryKey: subagentKeys.all })
-    },
-  })
-}
-
-export function useResetBuiltin() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (name: string) => subagentsApi.resetBuiltin(name),
-    onSuccess: (data) => {
-      qc.setQueryData(subagentKeys.defaults, data)
-      qc.invalidateQueries({ queryKey: subagentKeys.all })
-    },
   })
 }

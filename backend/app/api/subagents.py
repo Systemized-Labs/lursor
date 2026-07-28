@@ -5,12 +5,12 @@ A subagent is stored once and applies to every agent that has
 ``db/models.py`` :class:`Subagent`). The builder turns each row into a
 pydantic-deep ``SubAgentConfig`` at run time (``agents/builder.py``).
 
-The ``/defaults`` and ``/builtins`` routes expose pydantic-deep's built-in
-subagents (``general-purpose``, ``research``) plus the subagent-governing knobs,
-so they can be viewed, overridden (an editable copy), or disabled. Overrides are
-stored as ordinary :class:`Subagent` rows with ``builtin_name`` set; they are
-hidden from the normal roster listing and win over the library default at build
-time (see ``agents/deep_defaults.py``).
+The ``/defaults`` routes expose pydantic-deep's built-in subagents
+(``general-purpose``, ``research``) plus the subagent-governing knobs. A built-in
+is read-only apart from a single on/off switch (``disabled_builtins``): to change
+what one does, switch it off and create an ordinary subagent — that form can
+express everything an editable copy could and more (see
+``agents/deep_defaults.py``).
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from app.agents.deep_defaults import (
 from app.db.models import AppConfig, Subagent, Tool
 from app.db.session import get_session
 from app.schemas.subagent import (
-    BuiltinOverrideUpdate,
     BuiltinSubagentRead,
     ResolvedInt,
     SubagentCreate,
@@ -63,21 +62,12 @@ async def _get_app_config(session: AsyncSession) -> AppConfig | None:
     return (await session.execute(select(AppConfig))).scalars().first()
 
 
-async def _override_rows(session: AsyncSession) -> dict[str, Subagent]:
-    """Built-in override rows keyed by the built-in name they replace."""
-    result = await session.execute(
-        select(Subagent).where(Subagent.builtin_name.is_not(None))
-    )
-    return {sa.builtin_name: sa for sa in result.scalars().all()}
-
-
 async def _defaults_payload(session: AsyncSession) -> SubagentDefaultsRead:
     cfg = await _get_app_config(session)
     raw = dict(cfg.deep_defaults) if cfg else {}
     resolved = resolve_subagent_defaults(raw)
     depth_override = raw.get("max_nesting_depth")
     disabled = set(resolved["disabled_builtins"])
-    overrides = await _override_rows(session)
 
     builtins = [
         BuiltinSubagentRead(
@@ -85,11 +75,6 @@ async def _defaults_payload(session: AsyncSession) -> SubagentDefaultsRead:
             default_description=b["description"],
             default_instructions=b["instructions"],
             enabled=b["name"] not in disabled,
-            override=(
-                SubagentRead.from_subagent(overrides[b["name"]])
-                if b["name"] in overrides
-                else None
-            ),
         )
         for b in builtin_subagent_defaults()
     ]
@@ -146,59 +131,12 @@ async def update_defaults(
     return await _defaults_payload(session)
 
 
-def _require_builtin(name: str) -> None:
-    if name not in BUILTIN_SUBAGENT_NAMES:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, f"No built-in subagent named '{name}'"
-        )
-
-
-@router.put("/builtins/{name}", response_model=SubagentDefaultsRead)
-async def upsert_builtin_override(
-    name: str,
-    payload: BuiltinOverrideUpdate,
-    session: AsyncSession = Depends(get_session),
-):
-    """Create or update an editable override of a built-in subagent."""
-    _require_builtin(name)
-    overrides = await _override_rows(session)
-    row = overrides.get(name)
-    if row is None:
-        row = Subagent(name=name, builtin_name=name)
-    row.description = payload.description
-    row.instructions = payload.instructions
-    row.model = payload.model
-    session.add(row)
-    await session.commit()
-    return await _defaults_payload(session)
-
-
-@router.delete("/builtins/{name}", response_model=SubagentDefaultsRead)
-async def delete_builtin_override(
-    name: str, session: AsyncSession = Depends(get_session)
-):
-    """Remove a built-in's override, reverting it to the library default."""
-    _require_builtin(name)
-    overrides = await _override_rows(session)
-    row = overrides.get(name)
-    if row is not None:
-        await session.delete(row)
-        await session.commit()
-    return await _defaults_payload(session)
-
-
 # --- User subagent CRUD --------------------------------------------------------
 
 
 @router.get("", response_model=list[SubagentRead])
 async def list_subagents(session: AsyncSession = Depends(get_session)):
-    # Built-in override rows (builtin_name set) are managed under /defaults; keep
-    # them out of the user-authored roster.
-    result = await session.execute(
-        select(Subagent)
-        .where(Subagent.builtin_name.is_(None))
-        .order_by(Subagent.created_at)
-    )
+    result = await session.execute(select(Subagent).order_by(Subagent.created_at))
     return [SubagentRead.from_subagent(sa) for sa in result.scalars().all()]
 
 
