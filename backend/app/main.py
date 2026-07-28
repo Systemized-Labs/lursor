@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agents import scheduler
 from app.agents.hindsight import close_hindsight_clients
 from app.api import (
     agents,
@@ -23,6 +24,7 @@ from app.api import (
     preview,
     prompt_templates,
     providers,
+    schedules,
     skills,
     subagents,
     terminal,
@@ -62,7 +64,17 @@ async def lifespan(app: FastAPI):
     await settings_api.load_app_config()
     # Seed a "local" laios connection when running alongside a daemon.
     await laios.seed_local_laios()
+    # Report (never replay) the schedule fires this process was not alive for, then
+    # start the 30s tick. Deliberately after ``reconcile_interrupted_runs``: the
+    # skip guard asks the run registry what is live, which that pass has to have
+    # settled first. Best-effort — a scheduler that can't start must not stop the
+    # app, which is otherwise fully usable without it.
+    try:
+        await scheduler.start()
+    except Exception:  # noqa: BLE001 — schedules are a feature, not a prerequisite
+        logger.exception("scheduler failed to start; schedules will not fire")
     yield
+    await scheduler.stop()
     # Drain the shared Hindsight clients (see ``agents/hindsight.py``). Their
     # transport is aiohttp, which complains loudly about sessions left unclosed at
     # interpreter exit; a no-op when the memory provider is "file".
@@ -129,6 +141,7 @@ for module in (
     workspaces,
     threads,
     chat,
+    schedules,
     models,
     terminal,
     files,

@@ -24,6 +24,10 @@ Built on:
 - **Plan → refine → execute** and **goal mode** — a self-continuing loop that drafts
   a plan, (optionally) waits for approval, then works turn after turn until an
   independent evaluator judges the objective met.
+- **Schedules** — give an agent standing work on a cron expression (in its own
+  timezone, so 9am survives DST). Each fire opens a fresh conversation as either a
+  single turn or a goal run. In-process, so schedules fire only while Lursor is
+  running; anything due while it was closed is reported, never replayed.
 - **Live terminal** — a real PTY per workspace over a WebSocket (job control,
   full-screen apps; POSIX only).
 - **File browser** — inspect and upload files in a workspace.

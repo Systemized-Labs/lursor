@@ -11,6 +11,7 @@ import {
   threadKeys,
   threadsApi,
   useActiveRuns,
+  useThread,
   useThreads,
   useUpdateThread,
 } from "@/api/threads"
@@ -118,6 +119,18 @@ export function WorkspaceChatPage() {
   const queue = useStore(store, (s) => s.queue)
   const queuePaused = useStore(store, (s) => s.queuePaused)
 
+  // The open conversation. Normally it is in this workspace's list, but the list is
+  // filterable (``list_threads`` can exclude scheduled runs), so fall back to
+  // fetching it by id — that route is never filtered. Without this, a thread absent
+  // from the list rendered the "New conversation" placeholder instead of its title,
+  // offered no rename, and — worse — left the composer's agent picker on the
+  // default rather than the agent that actually ran it.
+  const listedThread = threads.find((t) => t.id === selectedThreadId)
+  const unlistedThread = useThread(
+    selectedThreadId && !listedThread ? selectedThreadId : undefined
+  ).data
+  const currentThread = listedThread ?? unlistedThread
+
   // Scroll instance owned here so send/interject can re-pin to the bottom.
   const stick = useStickToBottom({ resize: "smooth", initial: "instant" })
 
@@ -154,8 +167,7 @@ export function WorkspaceChatPage() {
   // Keep the agent picker in sync with the open thread (or defaults for a new one).
   useEffect(() => {
     if (selectedThreadId) {
-      const t = threads.find((x) => x.id === selectedThreadId)
-      if (t) setSelectedAgentId(t.agent_id)
+      if (currentThread) setSelectedAgentId(currentThread.agent_id)
     } else {
       const chatDefault = defaultAgents?.chat
       const seedable =
@@ -164,7 +176,7 @@ export function WorkspaceChatPage() {
           : agents[0]?.id
       setSelectedAgentId((prev) => prev || seedable || "")
     }
-  }, [selectedThreadId, threads, agents, defaultAgents])
+  }, [selectedThreadId, currentThread, agents, defaultAgents])
 
   // Auto-launch the first turn when we arrive from the New Agent home surface.
   const launchedRef = useRef(false)
@@ -407,7 +419,6 @@ export function WorkspaceChatPage() {
     }
   }
 
-  const currentThread = threads.find((t) => t.id === selectedThreadId)
   const noAgents = agents.length === 0
 
   const runView = goalStatus

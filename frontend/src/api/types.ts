@@ -379,7 +379,15 @@ export type MessageRole = "user" | "assistant" | "system" | "tool"
 /** How a user turn was sent, surfaced as a history badge on the bubble. The
  *  assistant-authored `summary` marks a `/compact` digest that stands in for the
  *  messages it condensed (rendered as a distinct card, not a normal reply). */
-export type MessageKind = "chat" | "ask" | "plan" | "goal" | "summary"
+/** How a turn was sent. `cron` is a turn a {@link Schedule} fire synthesized, so
+ *  it renders as machine-originated rather than as something the user typed. */
+export type MessageKind =
+  | "chat"
+  | "ask"
+  | "plan"
+  | "goal"
+  | "cron"
+  | "summary"
 
 export interface ThreadMessageToolCall {
   id: string
@@ -439,6 +447,10 @@ export interface Thread {
   workspace_id: string
   agent_id: string
   title: string
+  /** Set when a {@link Schedule} fire opened this conversation. Scheduled threads
+   *  are left out of a workspace's conversation list by default — pass
+   *  `include_scheduled` to see them. */
+  schedule_id?: string | null
   // Plan/goal mode (a plain chat thread leaves these at their defaults).
   mode: ThreadMode
   goal: string
@@ -473,6 +485,83 @@ export interface ThreadUpdate {
   goal?: string
   success_criteria?: string
   max_iterations?: number
+}
+
+// --- Scheduled jobs -----------------------------------------------------------
+
+/** What a fire runs. `chat` is one turn (cheap, bounded, the default); `goal` runs
+ *  the autonomous loop until its success criteria are met or `max_iterations` is
+ *  spent. Plan mode isn't offered — a schedule that parks a doc awaiting approval
+ *  nobody gives is a trap. */
+export type ScheduleRunType = "chat" | "goal"
+
+/** Outcome of one attempted fire. `missed` means the app wasn't running when it
+ *  came due (fires are reported, never replayed); `skipped` means the previous
+ *  fire was still going; `error` means the launch itself failed. */
+export type ScheduleFireStatus = "launched" | "skipped" | "missed" | "error"
+
+/** One attempted fire, including the ones that didn't run. */
+export interface ScheduleRun {
+  id: string
+  schedule_id: string
+  /** The conversation it opened — null for a fire that never got that far. */
+  thread_id: string | null
+  fired_at: string
+  status: ScheduleFireStatus
+  /** For `missed`: how many occurrences elapsed while the app was closed. */
+  missed_count: number
+  detail: string
+}
+
+export interface Schedule {
+  id: string
+  name: string
+  description: string
+  enabled: boolean
+  workspace_id: string
+  agent_id: string
+  /** Standard 5-field cron ("30 9 * * 1-5"). */
+  cron: string
+  /** IANA zone name — what makes "every day at 9am" survive DST. */
+  timezone: string
+  prompt: string
+  run_type: ScheduleRunType
+  success_criteria: string
+  max_iterations: number
+  /** When it next fires; null while disabled (nothing is ever due). */
+  next_fire_at: string | null
+  last_fired_at: string | null
+  /** Newest attempted fire, inlined so a list can flag a bad last outcome. */
+  last_run: ScheduleRun | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ScheduleInput {
+  name?: string
+  description?: string
+  enabled?: boolean
+  workspace_id: string
+  agent_id: string
+  cron: string
+  timezone: string
+  prompt: string
+  run_type?: ScheduleRunType
+  success_criteria?: string
+  max_iterations?: number
+}
+
+/** Partial update. `next_fire_at` is scheduler state and isn't settable — the
+ *  backend recomputes it when `cron`, `timezone` or `enabled` changes. */
+export type ScheduleUpdateInput = Partial<Omit<ScheduleInput, "workspace_id">> & {
+  workspace_id?: string
+}
+
+export interface CronPreview {
+  cron: string
+  timezone: string
+  /** ISO instants, ascending. */
+  occurrences: string[]
 }
 
 export interface HealthResponse {

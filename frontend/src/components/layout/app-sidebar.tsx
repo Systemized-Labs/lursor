@@ -1,6 +1,7 @@
 import {
   ChartBar,
   ChatCentered,
+  Clock,
   Cpu,
   Folder,
   FolderOpen,
@@ -111,6 +112,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { to: "/analytics", label: "Usage", icon: ChartBar },
+  { to: "/schedules", label: "Schedules", icon: Clock },
   { to: "/laios", label: "LAIOS", icon: Cpu },
   { to: "/customization", label: "Customization", icon: SlidersHorizontal },
 ]
@@ -1171,6 +1173,15 @@ function SessionRow({
               >
                 {thread.title || "Untitled"}
               </span>
+              {/* Nobody started this one — a schedule did. Sits beside the
+                  timestamp rather than replacing the leading icon, which is the
+                  running/unread slot and carries the more urgent signal. */}
+              {thread.schedule_id ? (
+                <Clock
+                  className="size-3 shrink-0 text-muted-foreground/70"
+                  aria-label="Started by a schedule"
+                />
+              ) : null}
               <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
                 {timeAgo(thread.updated_at)}
               </span>

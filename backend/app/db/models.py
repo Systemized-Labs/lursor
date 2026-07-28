@@ -601,6 +601,13 @@ class Thread(TimestampMixin, table=True):
     title: str = "New conversation"
     workspace_id: str = Field(foreign_key="workspaces.id", index=True)
     agent_id: str = Field(foreign_key="agents.id", index=True)
+    # The :class:`Schedule` whose fire opened this conversation, or null for one a
+    # human started. Every fire gets a fresh thread (see ``agents/scheduler.py``),
+    # so this is what keeps a daily job's month of runs out of the workspace's
+    # conversation list — ``GET /threads`` excludes them unless asked. Deliberately
+    # *not* a cascading relationship: deleting a schedule leaves its transcripts
+    # readable, with this id dangling harmlessly.
+    schedule_id: str | None = Field(default=None, index=True)
 
     # --- Plan / goal mode ----------------------------------------------------
     # A ``chat`` thread ignores every field below. ``plan`` mode drafts a plan
@@ -641,7 +648,9 @@ class Message(TimestampMixin, table=True):
     role: str  # "user" | "assistant" | "system" | "tool"
     content: str = ""
     # How a user turn was sent, for a history badge: "chat" (plain) | "ask"
-    # (read-only) | "plan" (a plan-mode turn) | "goal" (a one-off goal run).
+    # (read-only) | "plan" (a plan-mode turn) | "goal" (a one-off goal run) |
+    # "cron" (synthesized by a :class:`Schedule` fire, so the turn reads as
+    # machine-originated rather than as something the user typed).
     # Assistant/tool rows keep the default and render no badge.
     kind: str = Field(default="chat")
     # The agent that ran this turn, snapshotted at write time so the transcript
@@ -669,6 +678,102 @@ class Message(TimestampMixin, table=True):
     thread: Thread | None = Relationship(back_populates="messages")
 
 
+class ScheduleRunType(StrEnum):
+    """What a fire runs. Mirrors the per-turn intents in ``api/chat.py``.
+
+    ``chat`` is one turn — cheap, bounded, predictable — and is the default.
+    ``goal`` runs the autonomous loop against its own success criteria until the
+    evaluator is satisfied or ``max_iterations`` is spent. Plan mode is
+    deliberately not offered: a schedule that parks a doc in
+    ``awaiting_approval`` and is never approved is a trap, and the plan path
+    mutates thread status in ways that assume a human is present.
+    """
+
+    chat = "chat"
+    goal = "goal"
+
+
+class ScheduleFireStatus(StrEnum):
+    """Outcome of one attempted fire.
+
+    ``launched`` — a run started; the thread carries its own status from there.
+    ``skipped`` — the schedule's previous fire was still running.
+    ``missed`` — the app was not running when it came due (fires are reported,
+    never replayed; see ``agents/scheduler.py``). ``error`` — the launch itself
+    failed, e.g. the agent or workspace has since been deleted.
+    """
+
+    launched = "launched"
+    skipped = "skipped"
+    missed = "missed"
+    error = "error"
+
+
+class Schedule(TimestampMixin, table=True):
+    """A prompt that fires at a cron expression, in one workspace, on one agent.
+
+    Every fire opens a *fresh* :class:`Thread` (stamped with ``schedule_id``) and
+    sends ``prompt`` as a synthetic ``kind="cron"`` user turn, so each run's
+    transcript, todos, diff and usage stand alone and context can't grow without
+    bound. An in-process asyncio loop drives it, which means schedules only fire
+    while Lursor is running.
+
+    ``next_fire_at`` is the single source of truth for "due": it is recomputed on
+    create, on update, after every fire, and at startup. Storing it (rather than
+    deriving it from ``cron`` on every tick) is what lets one indexed query answer
+    "what is due now", and what lets startup tell a fire that was missed from one
+    that has not come round yet.
+    """
+
+    __tablename__ = "schedules"
+
+    name: str = Field(index=True)
+    description: str = ""
+    enabled: bool = True
+
+    workspace_id: str = Field(foreign_key="workspaces.id", index=True)
+    agent_id: str = Field(foreign_key="agents.id", index=True)
+
+    # Standard 5-field cron ("30 9 * * 1-5"), validated on write (see
+    # ``app/cron.py``) so a malformed expression is a 422 and never a wedged loop.
+    cron: str = ""
+    # IANA zone name; ``zoneinfo`` does the arithmetic. "Every day at 9am" has to
+    # mean 9am local across DST, which a naive or UTC-only schedule can't do —
+    # it silently drifts by an hour twice a year.
+    timezone: str = "UTC"
+
+    prompt: str = ""  # the synthetic user turn each fire sends
+    run_type: ScheduleRunType = Field(default=ScheduleRunType.chat)
+    # Goal runs only: what "done" means and the hard turn cap. Mirror
+    # ``Thread.success_criteria`` / ``Thread.max_iterations``, and are stamped onto
+    # each fire's thread so the existing goal machinery reads them unchanged.
+    success_criteria: str = ""
+    max_iterations: int = 25
+
+    next_fire_at: datetime | None = Field(default=None, index=True)
+    last_fired_at: datetime | None = None
+
+
+class ScheduleRun(TimestampMixin, table=True):
+    """History: one row per *attempted* fire, including the ones that did not run.
+
+    Recording skips and misses is the point — "nothing happened last night" is
+    only debuggable if the reason was written down.
+    """
+
+    __tablename__ = "schedule_runs"
+
+    schedule_id: str = Field(foreign_key="schedules.id", index=True)
+    # The conversation the fire opened. Null for skipped/missed/error rows, which
+    # never got as far as a thread.
+    thread_id: str | None = Field(default=None, index=True)
+    fired_at: datetime = Field(default_factory=_now)
+    status: ScheduleFireStatus = Field(default=ScheduleFireStatus.launched)
+    # For ``missed``: how many occurrences elapsed while the app was closed.
+    missed_count: int = 0
+    detail: str = ""  # skip reason or launch error
+
+
 class UsageRecord(TimestampMixin, table=True):
     """Token consumption + cost for a single agent turn.
 
@@ -686,7 +791,8 @@ class UsageRecord(TimestampMixin, table=True):
     agent_id: str = Field(foreign_key="agents.id", index=True)
     # Raw model string as stored on the agent (e.g. ``openrouter:qwen/qwen3-max``).
     model: str = Field(default="", index=True)
-    # Which kind of turn produced this: chat | goal | plan | vision.
+    # Which kind of turn produced this: chat | goal | plan | vision | cron (a
+    # :class:`Schedule` fire, so unattended spend can be broken out in Analytics).
     kind: str = Field(default="chat", index=True)
 
     input_tokens: int = 0

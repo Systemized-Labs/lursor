@@ -18,7 +18,7 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -77,6 +77,7 @@ from app.db.models import (
     AppConfig,
     CustomProvider,
     Message,
+    ScheduleRunType,
     Subagent,
     Thread,
     ThreadMode,
@@ -139,6 +140,12 @@ def _schedule_auto_title(thread_id: str, user_text: str, placeholder: str) -> No
         task.add_done_callback(_auto_title_tasks.discard)
 
 _KEEPALIVE_TIMEOUT = 25.0  # seconds between ": keepalive" comments on an idle stream
+# The ``Accept`` a headless run encodes for. A request-driven run forwards the
+# browser's header; a scheduled fire has no request, and the encoder falls back to
+# SSE for ``None`` anyway — but state it, because SSE is not a fallback here: the
+# events go into the same ``chat_run_manager`` buffer that ``readActiveStream``
+# (frontend ``agui/stream-reader.ts``) later replays as ``data:``-framed lines.
+_HEADLESS_ACCEPT = "text/event-stream"
 # ``TURN_REQUEST_LIMIT`` (the per-turn model-round cap) is defined in
 # ``agents/builder.py``, which also hands the same budget to delegated subagents.
 _TEXT_DELTA_TYPES = {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_CHUNK}
@@ -934,12 +941,17 @@ async def _run_goal_execution(
     initial_history: list[ModelMessage],
     workspace_id: str,
     kickoff: str = AUTONOMOUS_KICKOFF,
+    kind: str = "goal",
 ) -> None:
     """Drive the autonomous goal loop (``/goal``).
 
     Many agent turns stream through one AG-UI lifecycle: work a step, evaluate
     against the goal, continue — until met / impossible / capped. The whole run is
     wrapped in a single RUN_STARTED…RUN_FINISHED.
+
+    ``kind`` tags every turn's usage row. It is ``"goal"`` for a run the user
+    started and ``"cron"`` for one a :class:`Schedule` fired, so unattended spend
+    can be broken out in Analytics — the loop itself is identical either way.
     """
     todos_state: dict = {"json": None}
     run_id = uuid.uuid4().hex
@@ -969,7 +981,7 @@ async def _run_goal_execution(
                 instructions=media_instructions,
                 todos_state=todos_state,
                 strip_lifecycle=True,
-                kind="goal",
+                kind=kind,
                 capabilities=[steer],
             )
             # Carry the turn's history forward even when it aborted — it holds the
@@ -1048,6 +1060,155 @@ async def _run_goal_execution(
         raise
     _publish_lifecycle_finish(thread_id, run_id)
     chat_run_manager.finish(thread_id, "finished")
+
+
+async def run_chat_turn(
+    thread_id: str,
+    adapter: AGUIAdapter,
+    deps,
+    *,
+    instructions: str | None,
+    todos_state: dict,
+    kind: str = "chat",
+) -> None:
+    """One plain agent turn, with the natural AG-UI lifecycle left intact.
+
+    The body of what used to be the endpoint's ``chat_driver`` closure, lifted to
+    module level so a headless fire (:func:`start_scheduled_run`) runs the *same*
+    code rather than a parallel copy that can drift from it. ``_stream_turn``
+    persists the turn — including a partial on stop or error — from its own
+    ``finally``, so a stop just propagates the ``CancelledError``.
+    """
+    await _stream_turn(
+        thread_id,
+        adapter,
+        deps,
+        message_history=None,
+        instructions=instructions,
+        todos_state=todos_state,
+        kind=kind,
+    )
+    chat_run_manager.finish(thread_id, "finished")
+
+
+def launch_run(
+    thread_id: str, workspace_id: str, backend, driver: Callable[[], Awaitable[None]]
+) -> bool:
+    """Register the run's backend for preview, then spawn ``driver`` detached.
+
+    The single launch path: the chat endpoint and the scheduler both come through
+    here, so a scheduled run can't diverge from a manual one in the two things that
+    happen around every run.
+
+    Registering the backend is what makes a dev server the agent starts show up in
+    the Preview panel (and reachable by the goal loop's visual evaluator) — it
+    outlives the turn, and the service keeps watching the retained backend. It
+    matters just as much for a scheduled run, whose workspace nobody is looking at
+    while it works; this is also why the one-backend-per-workspace invariant holds.
+
+    Returns ``False`` when a run is already active for the thread (the HTTP caller
+    answers 409, the scheduler records a ``skipped`` fire).
+    """
+    preview_service.register(workspace_id, backend)
+    return chat_run_manager.start_run(thread_id, driver)
+
+
+async def start_scheduled_run(
+    session: AsyncSession,
+    *,
+    thread: Thread,
+    prompt: str,
+    run_type: ScheduleRunType,
+) -> None:
+    """Start a run with no HTTP request behind it (see ``agents/scheduler.py``).
+
+    Persists ``prompt`` as a ``kind="cron"`` user turn, builds the agent from the
+    thread's own workspace/agent exactly as the endpoint does, wraps the prompt in a
+    request-free adapter, and launches through :func:`launch_run`.
+
+    Nothing here is request-shaped, which is why so little of it is new: a run is
+    already detached from its HTTP response (:mod:`chat_run_manager` owns the task,
+    the SSE response is only a subscriber), a synthetic user turn is already what
+    ``build_continuation_adapter`` makes, and ``_build_agent_and_context`` takes a
+    plain session. The thread arrives fresh — the caller creates one per fire — so
+    there is no history to seed, no media to list, and no auto-titling to do
+    (``_schedule_auto_title`` only ever overwrites the placeholder title, and a
+    scheduled thread is named deterministically up front).
+
+    Raises on a schedule that can no longer run (deleted agent or workspace, a
+    thread that already has a live run, a build failure); the scheduler catches
+    that and records it as an ``error`` fire rather than letting it stop the loop.
+    """
+    agent_row = await session.get(Agent, thread.agent_id)
+    workspace = await session.get(Workspace, thread.workspace_id)
+    if agent_row is None or workspace is None:
+        raise RuntimeError("The schedule's agent or workspace no longer exists")
+
+    # Persist the synthetic turn before the build, mirroring the endpoint: the run
+    # may error or be stopped mid-stream, and the prompt that caused it has to
+    # survive that. Unlike the endpoint we do *not* withdraw it on a build failure —
+    # a scheduled thread exists only for this fire, so the message is the record of
+    # what was attempted, and there is no composer for a retry to duplicate it from.
+    session.add(
+        Message(
+            thread_id=thread.id,
+            role="user",
+            content=prompt,
+            kind="cron",
+            agent_id=agent_row.id,
+            agent_name=agent_row.name,
+        )
+    )
+    await session.commit()
+
+    agent, deps, custom_providers, app_config, _skills = await _build_agent_and_context(
+        session, agent_row, workspace
+    )
+
+    todos_state: dict = {"json": None}
+    thread_id = thread.id
+    workspace_id = workspace.id
+
+    if run_type is ScheduleRunType.goal:
+        # The goal machinery reads its objective and cap off the thread row, which
+        # the caller stamped from the schedule — so this is the same loop a `/goal`
+        # turn drives, seeded with no history because the thread is brand new.
+        evaluator = build_goal_evaluator(
+            _resolve_evaluator_model(app_config, thread, agent_row), custom_providers
+        )
+        condition = (thread.success_criteria or thread.goal or prompt).strip()
+        max_turns = thread.max_iterations
+
+        async def driver() -> None:
+            await _run_goal_execution(
+                thread_id,
+                agent,
+                deps,
+                accept=_HEADLESS_ACCEPT,
+                evaluator=evaluator,
+                condition=condition,
+                max_turns=max_turns,
+                media_instructions=None,
+                initial_history=[],
+                workspace_id=workspace_id,
+                kickoff=AUTONOMOUS_KICKOFF,
+                kind="cron",
+            )
+    else:
+        adapter = build_continuation_adapter(agent, prompt, thread_id, _HEADLESS_ACCEPT)
+
+        async def driver() -> None:
+            await run_chat_turn(
+                thread_id,
+                adapter,
+                deps,
+                instructions=None,
+                todos_state=todos_state,
+                kind="cron",
+            )
+
+    if not launch_run(thread_id, workspace_id, deps.backend, driver):
+        raise RuntimeError("A run is already active for this conversation")
 
 
 def subscribe_chat_sse(thread_id: str) -> StreamingResponse:
@@ -1280,18 +1441,15 @@ async def chat(
         # Plain chat (or /ask): one turn, natural AG-UI lifecycle intact. A plain
         # turn on a *parked* plan is handled by the plan driver (refinement), so
         # this path only runs for non-parked chat/`ask` turns and never needs to
-        # touch a parked plan's state.
-        # ``_stream_turn`` persists the turn (including any partial on stop/error)
-        # from its own ``finally``, so a stop just propagates the CancelledError.
-        await _stream_turn(
+        # touch a parked plan's state. The turn itself lives in ``run_chat_turn``,
+        # shared with the headless scheduled path so the two can't drift.
+        await run_chat_turn(
             thread_id,
             adapter,
             deps,
-            message_history=None,
             instructions=media_instructions,
             todos_state=todos_state,
         )
-        chat_run_manager.finish(thread_id, "finished")
 
     # A plain message on a thread parked in `awaiting_approval` is a *refinement*:
     # the user is giving feedback on the plan already written, so we reuse that
@@ -1476,12 +1634,10 @@ async def chat(
     else:
         driver = chat_driver
 
-    # Hand the run's backend to the preview service so a dev server the agent
-    # starts surfaces in the Preview panel — even after this turn ends (the
-    # server outlives the run; the service keeps watching the retained backend).
-    preview_service.register(workspace.id, deps.backend)
-
-    if not chat_run_manager.start_run(thread_id, driver):
+    # Register the run's backend for preview and spawn the driver detached. Shared
+    # with the scheduler so both paths do these two things in the same order (see
+    # ``launch_run``).
+    if not launch_run(thread_id, workspace.id, deps.backend, driver):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "A chat run is already active for this conversation"
         )

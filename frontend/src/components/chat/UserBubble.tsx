@@ -1,4 +1,11 @@
-import { NotePencil, Question, Robot, Target, type Icon } from "@phosphor-icons/react"
+import {
+  Clock,
+  NotePencil,
+  Question,
+  Robot,
+  Target,
+  type Icon,
+} from "@phosphor-icons/react"
 
 import { cn } from "@/lib/utils"
 import { renderWithIcons } from "@/lib/emoji-icons"
@@ -10,10 +17,14 @@ const KIND_BADGE: Partial<Record<MessageKind, { label: string; Icon: Icon }>> = 
   ask: { label: "Ask", Icon: Question },
   plan: { label: "Plan", Icon: NotePencil },
   goal: { label: "Goal", Icon: Target },
+  // Nobody typed this one — a schedule fire synthesized it. Worth saying, because
+  // otherwise the transcript reads as if the user asked for it at 3am.
+  cron: { label: "Scheduled", Icon: Clock },
 }
 
 /** A small pill on a user bubble recording how the turn was sent (/ask, /plan,
- *  /goal). Renders nothing for a plain chat turn. */
+ *  /goal) — or that a schedule sent it rather than a person. Renders nothing for a
+ *  plain chat turn. */
 function MessageKindBadge({ kind }: { kind?: MessageKind }) {
   const meta = kind ? KIND_BADGE[kind] : undefined
   if (!meta) return null

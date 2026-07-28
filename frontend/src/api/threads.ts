@@ -14,6 +14,14 @@ export const threadsApi = {
       `/threads?workspace_id=${encodeURIComponent(workspaceId)}`,
       signal
     ),
+  /** Conversations one schedule's fires opened, newest activity first. These are
+   *  excluded from `listByWorkspace` so a daily job doesn't bury a workspace's
+   *  human-started threads. */
+  listBySchedule: (scheduleId: string, signal?: AbortSignal) =>
+    api.get<Thread[]>(
+      `/threads?schedule_id=${encodeURIComponent(scheduleId)}`,
+      signal
+    ),
   get: (id: string, signal?: AbortSignal) =>
     api.get<Thread>(`/threads/${id}`, signal),
   messages: (id: string, signal?: AbortSignal) =>
@@ -42,6 +50,8 @@ export const threadsApi = {
 export const threadKeys = {
   byWorkspace: (workspaceId: string) =>
     ["threads", "workspace", workspaceId] as const,
+  bySchedule: (scheduleId: string) =>
+    ["threads", "schedule", scheduleId] as const,
   detail: (id: string) => ["threads", id] as const,
   messages: (id: string) => ["threads", id, "messages"] as const,
   activeRuns: () => ["threads", "active-runs"] as const,

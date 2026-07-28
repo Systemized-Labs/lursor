@@ -6,6 +6,7 @@ import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
 import { LaiosPage } from "@/pages/laios/laios-page"
 import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
+import { SchedulesPage } from "@/pages/schedules/schedules-page"
 import { SettingsPage } from "@/pages/settings/settings-page"
 
 /**
@@ -39,6 +40,7 @@ function App() {
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="customization" element={<CustomizationPage />} />
         <Route path="laios" element={<LaiosPage />} />
+        <Route path="schedules" element={<SchedulesPage />} />
         <Route path="settings" element={<SettingsPage />} />
         {/* Back-compat: LAIOS graduated from a Providers sub-tab to a top-level
             destination; the old deep link still lands on the page. */}

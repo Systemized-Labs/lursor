@@ -46,10 +46,27 @@ app/
     models.py      SQLModel tables (Agent, Skill, Tool, Workspace, Thread, Message)
   schemas/         Request/response models
   api/             CRUD routers + the AG-UI chat endpoint (chat.py)
+  cron.py          Cron/timezone arithmetic (pure; no DB, no clock of its own)
   agents/
     builder.py     DB Agent row -> create_deep_agent(...)
+    scheduler.py   The 30s tick that fires Schedule rows
 tests/
 ```
+
+## How schedules work
+
+A `Schedule` row is a prompt, a cron expression, a timezone, one workspace and one
+agent. `agents/scheduler.py` runs a single 30s `asyncio` tick (started from
+`lifespan`): it selects enabled schedules whose `next_fire_at` has passed, opens a
+fresh `Thread` per fire, and calls `chat.start_scheduled_run` — the headless
+counterpart to the chat endpoint, converging on the same drivers so a scheduled run
+can't drift from a manual one. The synthetic turn is persisted with `kind="cron"`,
+and usage rows are tagged the same way so unattended spend is visible in Analytics.
+
+Because the scheduler lives in this process, schedules fire only while the app is
+up. On startup, an enabled schedule whose `next_fire_at` is in the past gets one
+`missed` history row recording how many occurrences elapsed, and its clock rolls
+forward — nothing is replayed. See `docs/PLAN-scheduled-jobs.md`.
 
 ## How chat works
 

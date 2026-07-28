@@ -38,6 +38,9 @@ class ThreadRead(BaseModel):
     title: str
     workspace_id: str
     agent_id: str
+    # Set when a Schedule fire opened this conversation (null for a human-started
+    # one). Lets the UI badge it as a scheduled run rather than a typed message.
+    schedule_id: str | None = None
     mode: ThreadMode
     goal: str
     success_criteria: str

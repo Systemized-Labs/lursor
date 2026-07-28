@@ -18,13 +18,33 @@ router = APIRouter(prefix="/threads", tags=["threads"])
 
 @router.get("", response_model=list[ThreadRead])
 async def list_threads(
-    workspace_id: str | None = None, session: AsyncSession = Depends(get_session)
+    workspace_id: str | None = None,
+    include_scheduled: bool = True,
+    schedule_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
 ):
+    """Conversations, newest activity first.
+
+    Scheduled runs are **included** by default. They are ordinary threads, and
+    leaving them out of the sidebar (the original plan) meant a finished overnight
+    run had nowhere to surface: the sidebar's running badge and unread affordance
+    *are* this list, so hiding the thread hid the only signal that it had run. The
+    sidebar marks them with a clock instead.
+
+    ``include_scheduled=false`` keeps the escape hatch for when the volume becomes
+    the problem — a daily schedule is ~30 conversations a month — and
+    ``schedule_id`` narrows to one schedule's runs.
+    """
     # Order by recency of activity (updated_at is bumped whenever a turn lands,
     # see api/chat.py) so the conversation you were last in floats to the top.
     query = select(Thread).order_by(Thread.updated_at.desc())
     if workspace_id:
         query = query.where(Thread.workspace_id == workspace_id)
+    if schedule_id:
+        # One schedule's runs. Implies scheduled threads, so it wins over the flag.
+        query = query.where(Thread.schedule_id == schedule_id)
+    elif not include_scheduled:
+        query = query.where(Thread.schedule_id == None)  # noqa: E711
     result = await session.execute(query)
     return result.scalars().all()
 

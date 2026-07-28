@@ -15,6 +15,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
   SquaresFour,
   ArrowElbowDownLeft,
+  Clock,
   Cpu,
   GitBranch,
   ChatCentered,
@@ -343,6 +344,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
             },
           ]
         : []),
+      { label: "Schedules", icon: Clock, to: "/schedules", meta: "cron jobs" },
       { label: "LAIOS", icon: Cpu, to: "/laios" },
       { label: "Customization", icon: SlidersHorizontal, to: "/customization" },
       { label: "Agents", icon: ShootingStar, to: "/customization?tab=agents" },

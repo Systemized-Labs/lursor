@@ -244,10 +244,18 @@ async def _apply_lightweight_migrations(conn) -> None:
         "max_iterations": "ALTER TABLE threads ADD COLUMN max_iterations INTEGER DEFAULT 25",
         "last_reason": "ALTER TABLE threads ADD COLUMN last_reason VARCHAR DEFAULT ''",
         "todos_snapshot": "ALTER TABLE threads ADD COLUMN todos_snapshot JSON DEFAULT '[]'",
+        # The schedule whose fire opened this conversation (see ``Schedule``).
+        # Existing rows stay NULL and behave exactly as today: human-started.
+        "schedule_id": "ALTER TABLE threads ADD COLUMN schedule_id VARCHAR",
     }
     for col, ddl in thread_additions.items():
         if col not in thread_cols:
             await conn.execute(text(ddl))
+    # ``create_all`` builds this index for a fresh DB but never retrofits it onto
+    # an existing table, and the sidebar's conversation list filters on it.
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_threads_schedule_id ON threads (schedule_id)")
+    )
     # Carry old goal-mode state onto the renamed ``status`` column, then drop the
     # legacy NOT NULL columns. Leaving them in place breaks INSERTs: the ORM no
     # longer writes ``goal_status`` / ``require_plan_approval``, and SQLite rejects
