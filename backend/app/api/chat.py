@@ -1111,6 +1111,9 @@ async def chat(
     # bodies are force-loaded into the turn below. Client-supplied, so validated
     # when resolved (see _referenced_skill_instructions).
     referenced_skill_slugs: list[str] = []
+    # The row persisted for this turn, kept so it can be taken back out again if
+    # the run never starts (see the build below).
+    user_message: Message | None = None
     with contextlib.suppress(Exception):
         body = await request.json()
         forwarded = body.get("forwardedProps") or {}
@@ -1161,18 +1164,17 @@ async def chat(
                 msg_kind = "plan"
             else:
                 msg_kind = "chat"
-            session.add(
-                Message(
-                    thread_id=thread_id,
-                    role="user",
-                    content=user_text,
-                    attachments=attachments,
-                    kind=msg_kind,
-                    # Snapshot the agent that ran this turn so the bubble can show it.
-                    agent_id=agent_row.id,
-                    agent_name=agent_row.name,
-                )
+            user_message = Message(
+                thread_id=thread_id,
+                role="user",
+                content=user_text,
+                attachments=attachments,
+                kind=msg_kind,
+                # Snapshot the agent that ran this turn so the bubble can show it.
+                agent_id=agent_row.id,
+                agent_name=agent_row.name,
             )
+            session.add(user_message)
             if thread.title == "New conversation":
                 # Set the truncated first message inline so the sidebar shows
                 # something instantly, then upgrade it to an LLM-generated title
@@ -1197,11 +1199,33 @@ async def chat(
     plan_mode = turn == "plan" or (
         thread.status == ThreadStatus.awaiting_approval and turn == "chat"
     )
-    agent, deps, custom_providers, app_config, skill_runtime = (
-        await _build_agent_and_context(
-            session, agent_row, workspace, read_only=read_only, plan_mode=plan_mode
+    # Assembling the agent touches a lot of the user's own configuration — the
+    # model string, custom providers, subagent overrides, and every skill folder
+    # in scope — so it is the step most likely to fail on something the user can
+    # fix. Report it as one: a bare 500 escapes past ``CORSMiddleware`` and the
+    # browser can only report "Failed to fetch", which says nothing about the
+    # SKILL.md or provider that actually broke.
+    #
+    # The user's turn was persisted a few lines up so it would survive a run that
+    # errors *mid-stream*. This is the other case: the run never started, so the
+    # message is withdrawn rather than left dangling at the end of the thread,
+    # where a retry would duplicate it.
+    try:
+        agent, deps, custom_providers, app_config, skill_runtime = (
+            await _build_agent_and_context(
+                session, agent_row, workspace, read_only=read_only, plan_mode=plan_mode
+            )
         )
-    )
+    except Exception as exc:
+        logger.exception("Failed to build the agent for thread %s", thread_id)
+        if user_message is not None:
+            with contextlib.suppress(Exception):
+                await session.delete(user_message)
+                await session.commit()
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Could not start the run — {type(exc).__name__}: {exc}",
+        ) from exc
 
     # Fold any @-referenced skills into the per-turn instruction blocks so every
     # driver (chat, /ask, plan, goal) force-loads them. Resolved against the run's

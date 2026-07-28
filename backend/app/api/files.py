@@ -8,8 +8,10 @@ the open editor.
 
 Every path is confined to the workspace root: a client-supplied relative path is
 joined onto the root and rejected if it escapes (``..`` traversal, absolute
-paths, symlinks pointing outside). POSIX and Windows alike, resolution is done
-with :meth:`Path.resolve` and an ``is_relative_to`` guard.
+paths, symlinks pointing outside). POSIX and Windows alike, the check is an
+``is_relative_to`` guard applied twice — lexically, then against
+:meth:`Path.resolve` — with exactly one admitted escape, a linked skill folder in
+the skills catalog (see :func:`_follows_catalog_link`).
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import contextlib
 import mimetypes
 import os
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import (
     APIRouter,
@@ -39,6 +41,8 @@ from watchfiles import Change, awatch
 
 from app.db.models import Workspace
 from app.db.session import async_session_factory, get_session
+from app.skills import store as skill_store
+from app.workspace_paths import is_skills_catalog
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/files", tags=["files"])
 
@@ -76,6 +80,30 @@ _IGNORED_DIRS = frozenset(
 _PLAN_SUBDIR = ".agents/plan"
 
 
+# What a skill that really lives in the catalog is called, next to the ``~/.claude``
+# and ``~/.hermes`` of the links around it.
+OWN_SOURCE_LABEL = "Lursor"
+
+
+def _source_of(child: Path) -> tuple[str, str]:
+    """``(link target, short label)`` for a directory entry, or ``("", "")``.
+
+    The label names the *tool* rather than the directory: a link to
+    ``~/.claude/skills/pdf`` reads "~/.claude", not "~/.claude/skills", because that
+    is the distinction a person is making when they scan the tree. That is one
+    segment above the containing root, which is exactly what ``root_label`` returns
+    when handed the root — so the badge here and the badge on the Skills page are
+    produced by the same function.
+    """
+    if not child.is_symlink():
+        return "", ""
+    try:
+        target = child.resolve()
+    except OSError:
+        return "", ""
+    return str(target), skill_store.root_label(str(target.parent)) or str(target.parent)
+
+
 def _tree_hidden(rel: str, name: str) -> bool:
     """Whether a child should be omitted from the file tree.
 
@@ -104,6 +132,17 @@ class DirEntry(BaseModel):
     name: str
     path: str  # POSIX-style path relative to the workspace root
     is_dir: bool
+    # Where a symlinked entry actually points (absolute), empty for a real file or
+    # folder. The tree needs this because a linked skill is indistinguishable from a
+    # real one otherwise, and which tool owns it decides what editing it affects.
+    link_target: str = ""
+    # Short, human form of the above for a badge: "~/.claude", "~/.hermes". Set for
+    # any symlink, and additionally for a *real* top-level entry of the skills
+    # catalog, which gets :data:`OWN_SOURCE_LABEL` — with most of that directory
+    # being links into other tools, "no badge" is a worse answer than saying whose
+    # it is. Computed server-side, and with the same helper the skills API uses, so
+    # the two surfaces can't disagree about what to call a directory.
+    source_label: str = ""
 
 
 class FileContent(BaseModel):
@@ -165,16 +204,57 @@ async def _workspace_root(workspace_id: str, session: AsyncSession) -> Path:
     return root
 
 
+def _follows_catalog_link(root: Path, rel: str, real: Path) -> bool:
+    """Is this escape one of our own linked skill folders?
+
+    The skills catalog is registered as a workspace so the file tree, chat and
+    terminal all work over it, and an entry in it may be a symlink into another
+    tool's directory (``POST /skills/{id}/link``) — the whole point being to edit
+    the original rather than a copy. Such a path escapes the root by design, so it
+    is admitted, but only on the two conditions that make it *ours*: the workspace
+    is the catalog, and the escape goes through a symlink at the first segment,
+    which in a directory only Lursor writes to is a link Lursor made.
+
+    Everything else — a symlinked ``node_modules`` in a repo, a link inside a skill
+    folder, a link one level down in the catalog — still fails the guard.
+    """
+    if not is_skills_catalog(root):
+        return False
+    first = PurePosixPath(rel.replace("\\", "/")).parts
+    if not first:
+        return False
+    link = root / first[0]
+    if not link.is_symlink():
+        return False
+    with contextlib.suppress(OSError):
+        resolved = link.resolve()
+        return real == resolved or real.is_relative_to(resolved)
+    return False
+
+
 def _safe_join(root: Path, rel: str) -> Path:
     """Join ``rel`` onto ``root``, rejecting anything that escapes the root.
 
     Guards against ``..`` traversal, absolute paths, and symlinks that resolve
-    outside the workspace.
+    outside the workspace. The one admitted escape is a linked skill folder in the
+    catalog; see :func:`_follows_catalog_link`.
+
+    Returns the **logical** path — joined and lexically normalized, not resolved —
+    so that a path which legitimately points outside the root stays expressible as
+    something under it, which is what :func:`_rel` needs to name it back to the
+    client. Filesystem calls follow the link on their own; nothing downstream wants
+    the resolved form.
     """
-    target = (root / rel).resolve()
-    if target != root and not target.is_relative_to(root):
+    logical = Path(os.path.normpath(root / rel))
+    # Lexical containment catches ``..`` and absolute paths before touching disk.
+    if logical != root and not logical.is_relative_to(root):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Path escapes workspace root")
-    return target
+    real = logical.resolve()
+    if real == root or real.is_relative_to(root):
+        return logical
+    if _follows_catalog_link(root, rel, real):
+        return logical
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, "Path escapes workspace root")
 
 
 def _rel(root: Path, path: Path) -> str:
@@ -198,6 +278,10 @@ async def list_directory(
     if not target.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Directory not found")
 
+    # Only the catalog's own top level names itself: deeper rows sit *inside* a
+    # skill whose source the row above already gave, so repeating it is noise.
+    own_label = OWN_SOURCE_LABEL if is_skills_catalog(root) else ""
+
     entries: list[DirEntry] = []
     with contextlib.suppress(OSError):
         for child in target.iterdir():
@@ -205,7 +289,16 @@ async def list_directory(
             if _tree_hidden(rel, child.name):
                 continue
             is_dir = child.is_dir()
-            entries.append(DirEntry(name=child.name, path=rel, is_dir=is_dir))
+            link, label = _source_of(child)
+            entries.append(
+                DirEntry(
+                    name=child.name,
+                    path=rel,
+                    is_dir=is_dir,
+                    link_target=link,
+                    source_label=label or (own_label if "/" not in rel else ""),
+                )
+            )
 
     entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
     return entries
@@ -497,7 +590,13 @@ async def delete_entry(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
 
     try:
-        if target.is_dir():
+        # A symlink is removed as a link, never followed. ``rmtree`` refuses one
+        # outright, and the case that matters is a linked skill folder in the
+        # catalog, where following it would delete somebody else's real skill
+        # instead of the pointer the user asked to remove.
+        if target.is_symlink():
+            target.unlink()
+        elif target.is_dir():
             shutil.rmtree(target)
         else:
             target.unlink()

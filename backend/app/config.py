@@ -109,6 +109,21 @@ class Settings(BaseSettings):
         "~/.copilot/skills",
     ]
 
+    # Symlink every skill discovered in a personal root into the catalog, so it
+    # shows up in the Skill Studio's file tree (and terminal, and chat) alongside
+    # the ones written here — without copying anything, so the file an agent edits
+    # is still the file Claude Code reads.
+    #
+    # This is what makes discovery *managed* rather than merely visible: nothing
+    # has to be ingested first. Turning it off leaves personal skills readable and
+    # assignable exactly as before, just not present in the catalog directory —
+    # ``POST /skills/{id}/link`` then does it one at a time.
+    #
+    # A folder whose slug the catalog already holds is deliberately left alone:
+    # it is currently shadowed by that skill (closest layer wins), and linking it
+    # under a suffixed slug would quietly turn one active skill into two.
+    auto_link_user_skills: bool = True
+
     # --- Agents ---
     # Default model used when an agent row does not specify one.
     # Models are served through OpenRouter (prefix "openrouter:").

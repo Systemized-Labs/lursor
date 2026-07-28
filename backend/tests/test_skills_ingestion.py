@@ -40,19 +40,6 @@ def write_skill_folder(root: Path, slug: str, *, name: str, description: str, bo
     return folder
 
 
-@pytest.fixture
-def user_root(tmp_path, monkeypatch):
-    """A stand-in for ``~/.claude/skills``, pointed at by the settings object.
-
-    ``get_settings`` is ``lru_cache``d, so the live instance is patched in place
-    rather than rebuilt — that is the same object every request reads.
-    """
-    root = tmp_path / "home-claude" / "skills"
-    root.mkdir(parents=True)
-    monkeypatch.setattr(settings, "user_skill_roots", [str(root)], raising=False)
-    return root
-
-
 async def make_workspace(client: AsyncClient, name: str, tmp_path: Path) -> dict:
     path = tmp_path / name
     path.mkdir(parents=True, exist_ok=True)
@@ -366,22 +353,35 @@ async def test_unconfigured_user_root_drops_its_rows(
 # --- Guards ---------------------------------------------------------------------
 
 
-async def test_assignment_and_promote_are_refused_on_a_user_skill(
+async def test_promote_is_refused_on_a_user_skill(
     client: AsyncClient, tmp_path, user_root
 ) -> None:
+    """Reach is ours to set, but the folder is not ours to take."""
     write_skill_folder(user_root, "guarded", name="Guarded", description="d", body="b")
     skill = find((await client.get("/skills")).json(), "guarded", "external")
+
+    promoted = await client.post(f"/skills/{skill['id']}/promote", json={})
+    assert promoted.status_code == 409
+    assert "copy" in promoted.json()["detail"].lower()
+    assert (user_root / "guarded").is_dir()
+
+
+async def test_assignment_is_refused_on_a_repo_skill(
+    client: AsyncClient, tmp_path
+) -> None:
+    """A committed skill applies where its files are; there is nothing to re-point."""
+    ws = await make_workspace(client, "pinned", tmp_path)
+    write_skill_folder(
+        Path(ws["path"]) / ".claude/skills", "pin", name="Pin", description="d", body="b"
+    )
+    skill = find((await client.get("/skills")).json(), "pin", "local")
 
     assigned = await client.put(
         f"/skills/{skill['id']}/assignment",
         json={"is_global": True, "workspace_ids": []},
     )
     assert assigned.status_code == 409
-
-    promoted = await client.post(f"/skills/{skill['id']}/promote", json={})
-    assert promoted.status_code == 409
-    assert "copy" in promoted.json()["detail"].lower()
-    assert (user_root / "guarded").is_dir()
+    assert "catalog" in assigned.json()["detail"].lower()
 
 
 async def test_promote_is_refused_from_a_foreign_repo_root(

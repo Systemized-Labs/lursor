@@ -73,16 +73,22 @@ export const skillsApi = {
   update: (id: string, input: Partial<SkillInput>) =>
     api.patch<Skill>(`/skills/${id}`, input),
   remove: (id: string) => api.delete<void>(`/skills/${id}`),
-  /** Re-point a managed skill: global, a set of workspaces, or nowhere. */
+  /** Re-point a skill: global, a set of workspaces, or nowhere. Works on a catalog
+   *  skill and on a personal one (whose files stay where they are); only a
+   *  repo-committed skill has no assignment to change. */
   setAssignment: (id: string, input: SkillAssignmentInput) =>
     api.put<Skill>(`/skills/${id}/assignment`, input),
   /** Move a repo-local skill's folder into the catalog so it can be reassigned.
    *  Only for a root Lursor owns (`.agents/skills`) — see `copy`. */
   promote: (id: string) => api.post<Skill>(`/skills/${id}/promote`, {}),
   /** Duplicate a discovered skill into the catalog, leaving the source in place.
-   *  The only way in from a root another tool owns, where moving the folder would
-   *  mutate a git tree or delete the skill from under that tool. */
+   *  Takes a snapshot, which then drifts from the original — see `link` for the
+   *  version that doesn't. */
   copy: (id: string) => api.post<Skill>(`/skills/${id}/copy`, {}),
+  /** Symlink a personal skill into the catalog, still reading the original file.
+   *  The skill keeps its id and its reach; it just becomes editable from the Skill
+   *  Studio — and an edit there is an edit to the other tool's copy. */
+  link: (id: string) => api.post<Skill>(`/skills/${id}/link`, {}),
   // Files inside the skill folder, including SKILL.md itself — the editor works
   // on the real files, so frontmatter the UI doesn't model survives a save.
   readFile: (id: string, path: string, signal?: AbortSignal) =>
@@ -195,6 +201,14 @@ export function useCopySkill() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => skillsApi.copy(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: skillKeys.all }),
+  })
+}
+
+export function useLinkSkill() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => skillsApi.link(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: skillKeys.all }),
   })
 }

@@ -8,8 +8,9 @@ because a managed skill's reach is an *assignment* (``Skill.is_global`` plus
 Four layers, lowest precedence first:
 
 1. **user** — folders found in a personal root owned by another tool
-   (``~/.agents/skills``, ``settings.user_skill_roots``). No owning workspace, so
-   they are in scope everywhere;
+   (``~/.agents/skills``, ``settings.user_skill_roots``), carrying an assignment
+   just like a managed skill: global (the default a newly discovered one gets, so
+   discovery still means "available everywhere") or a set of workspaces;
 2. **global** — managed skills with ``is_global`` (every workspace);
 3. **workspace** — managed skills linked to *this* workspace;
 4. **local** — folders found in one of the workspace's own skill roots
@@ -21,17 +22,26 @@ of ``pdf-tools`` overrides one assigned to the workspace, which overrides a
 global one — which in turn overrides one that merely happens to sit in
 ``~/.claude/skills``. Your Lursor catalog is a deliberate choice; a directory
 another tool populates is not, so the catalog wins that tie. Within a layer,
-earlier-configured roots win. A managed skill that is neither global nor linked
-anywhere is in the catalog but in scope for nothing — the deliberate "parked"
-state.
+earlier-configured roots win. A skill that is neither global nor linked anywhere
+is indexed but in scope for nothing — the deliberate "parked" state.
+
+Assigning a personal skill does *not* promote it out of the ``user`` layer. The
+layer is about whose files these are, not how the reach was chosen: pointing
+``~/.claude/skills/pdf-tools`` at one workspace says where it should load, and it
+still loses to a ``pdf-tools`` you wrote yourself, because that one is yours to
+edit and this one can change under you at any time.
 
 Disk stays authoritative for *content*: a row whose folder has vanished is
 skipped rather than injected, so a stale index can never hand the agent a
-directory that isn't there.
+directory that isn't there. A folder whose ``SKILL.md`` frontmatter doesn't parse
+is skipped for the same reason — it is indexed, and shown, but it cannot be
+loaded, and handing it over would abort the entire agent build rather than lose
+one skill.
 
 A skill with ``enabled`` off is excluded here, before any of that. It is the only
-off switch a ``local`` or ``external`` skill has — neither carries an assignment,
-so turning one off is not a question of *where* it applies but *whether* — and it
+off switch a ``local`` skill has — pinned to its repo, it carries no assignment,
+so turning it off is not a question of *where* it applies but *whether* — and for
+everything else it is the second axis: "parked" says where, this says whether. It
 is deliberately checked in this one place, so nothing downstream (env vars,
 mentions, the agent's own skill directories) can disagree about what is loaded.
 """
@@ -39,6 +49,7 @@ mentions, the agent's own skill directories) can disagree about what is loaded.
 from __future__ import annotations
 
 import contextlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +58,8 @@ from sqlmodel import select
 
 from app.db.models import Skill, SkillOrigin, SkillWorkspaceLink
 from app.skills import store
+
+logger = logging.getLogger(__name__)
 
 # Lowest → highest precedence. Also the order a caller may rely on for
 # deterministic merging.
@@ -121,7 +134,11 @@ async def skills_in_scope(
                 if row.origin == SkillOrigin.managed and row.is_global:
                     out.append((row, catalog, 0))
             else:  # user
-                if row.origin == SkillOrigin.external and row.root:
+                if (
+                    row.origin == SkillOrigin.external
+                    and row.root
+                    and (row.is_global or row.id in linked_ids)
+                ):
                     out.append((row, Path(row.root), rank(user_keys, row.root)))
         return [(row, root) for row, root, _ in sorted(out, key=lambda c: (c[2], c[0].slug))]
 
@@ -140,6 +157,25 @@ async def skills_in_scope(
             with contextlib.suppress(ValueError):
                 if not store.exists(row.slug, root):
                     continue  # folder gone; reconcile will clean the row up
+                broken = store.frontmatter_error(row.slug, root)
+                if broken:
+                    # Unloadable, so out of scope: ``pydantic_deep`` parses
+                    # SKILL.md with strict YAML and raises on a bad one, which
+                    # would fail the *whole* agent build — every skill lost, and
+                    # the run with them — over one file the user may not even have
+                    # written. Dropping it here keeps the blast radius at the one
+                    # skill; the folder stays indexed and the UI shows why it
+                    # can't load (``SkillRead.error``).
+                    #
+                    # Skipping (rather than claiming the slug) also lets a
+                    # lower-precedence copy of the same skill stand in for it.
+                    logger.warning(
+                        "Skill %r in %s is excluded from runs: %s",
+                        row.slug,
+                        root,
+                        broken,
+                    )
+                    continue
                 won[row.slug] = ScopedSkill(
                     skill_id=row.id,
                     slug=row.slug,

@@ -62,9 +62,11 @@ export interface Skill {
   description: string
   content: string
   origin: SkillOrigin
-  /** Managed skills: applies in every workspace. */
+  /** Applies in every workspace. Set for `managed` and `external` skills — a
+   *  personal skill's reach is editable in place, and defaults to global when it
+   *  is first discovered. */
   is_global: boolean
-  /** Managed skills: the workspaces it is assigned to (empty if global/parked). */
+  /** The workspaces it is assigned to (empty if global or parked). */
   workspace_ids: string[]
   /** Local skills: the workspace whose folder holds it. */
   workspace_id: string | null
@@ -78,9 +80,22 @@ export interface Skill {
    *  rather than moving it, and a delete removes a real file in the user's repo
    *  or home directory. */
   is_owned_root: boolean
+  /** Set when this catalog entry is a *symlink* into another tool's directory: the
+   *  absolute folder it points at. Managed in every other respect, but the files
+   *  are the original — editing writes through, and deleting only unlinks. */
+  link_target: string
+  /** Display form of the root `link_target` lives in ("~/.claude"), for a badge
+   *  saying whose files these really are. Empty when this is not a link. */
+  link_label: string
   /** Off excludes the skill from every run, whatever its layer or assignment.
-   *  The only off switch a repo-local or personal skill has. */
+   *  The only off switch a repo-local skill has; for everything else it is the
+   *  second axis — parked says where, this says whether. */
   enabled: boolean
+  /** Why this skill's SKILL.md can't be loaded; empty when it parses. Set means
+   *  the folder is still indexed and editable but is excluded from every run
+   *  whatever its assignment, because the agent library parses frontmatter
+   *  strictly and one bad file would fail the whole build. */
+  error: string
   /** Set only in a per-workspace listing; null in catalog-wide ones. */
   layer: SkillLayer | null
   /** Env vars attached to this skill (ids only — values never leave the server). */

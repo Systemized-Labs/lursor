@@ -38,6 +38,7 @@ import { requestOpenFile } from "@/lib/open-file"
 import {
   revealSkill,
   skillLocation,
+  skillSourceLabel,
   type SkillLocation,
 } from "@/lib/skill-location"
 import { cn } from "@/lib/utils"
@@ -317,7 +318,10 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         id: `skill:${skill.id}`,
         label: skill.name,
         sublabel: skill.description || undefined,
-        meta: skill.origin === "local" ? "in repo" : undefined,
+        // Whose files these are, not merely whether they're in a repo — now that
+        // most of the catalog is linked from other tools, "not in a repo" stopped
+        // narrowing anything down.
+        meta: skillSourceLabel(skill),
         icon: Sparkle,
         onSelect: () => openSkill(location),
       }))

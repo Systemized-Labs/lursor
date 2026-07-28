@@ -11,6 +11,7 @@ import {
   CaretRight,
   Folder,
   FolderOpen,
+  FolderSimpleDashed,
   FilePlus,
   FolderPlus,
   Pencil,
@@ -306,12 +307,98 @@ function DirectoryChildren({ path, depth }: ChildrenProps) {
     return a.name.localeCompare(b.name)
   })
 
+  // The skills catalog is a flat directory of folders from several different
+  // places — most of them symlinks into ~/.claude or ~/.hermes — and which one a
+  // skill came from decides what editing it affects. The server labels those rows;
+  // grouping under that label answers it once per group instead of spending width
+  // on every row, which a ~160px tree does not have.
+  const groups = groupBySource(sorted)
+  if (groups) {
+    return (
+      <>
+        {groups.map(([label, entries]) => (
+          <div key={label}>
+            <SourceHeading label={label} count={entries.length} depth={depth} />
+            {entries.map((entry) => (
+              <TreeNode key={entry.path} entry={entry} depth={depth} />
+            ))}
+          </div>
+        ))}
+      </>
+    )
+  }
+
   return (
     <>
       {sorted.map((entry) => (
         <TreeNode key={entry.path} entry={entry} depth={depth} />
       ))}
     </>
+  )
+}
+
+/**
+ * Bucket a listing by `source_label`, or null when there is nothing to group.
+ *
+ * Null is the answer for every ordinary directory — one bucket, or none labelled —
+ * so the plain tree is what an ordinary workspace still renders. Ours sorts first:
+ * they are the ones you wrote and the ones you come here to edit, and on a machine
+ * that has used Claude Code for a while they would otherwise sit below twenty rows
+ * of somebody else's.
+ */
+function groupBySource(entries: DirEntry[]): [string, DirEntry[]][] | null {
+  if (!entries.some((entry) => entry.source_label)) return null
+  const buckets = new Map<string, DirEntry[]>()
+  for (const entry of entries) {
+    const key = entry.source_label || OTHER_SOURCE
+    const bucket = buckets.get(key)
+    if (bucket) bucket.push(entry)
+    else buckets.set(key, [entry])
+  }
+  if (buckets.size < 2) return null
+  return [...buckets].sort(([a], [b]) => rankSource(a) - rankSource(b) || a.localeCompare(b))
+}
+
+/** Ours first, then the borrowed sources alphabetically, then the leftovers. */
+function rankSource(label: string): number {
+  if (label === OWN_SOURCE) return 0
+  if (label === OTHER_SOURCE) return 2
+  return 1
+}
+
+/** Matches `OWN_SOURCE_LABEL` in the files API — a skill that really lives here. */
+const OWN_SOURCE = "Lursor"
+
+/** Bucket for rows the server had nothing to say about (loose files, say). */
+const OTHER_SOURCE = "Other"
+
+function SourceHeading({
+  label,
+  count,
+  depth,
+}: {
+  label: string
+  count: number
+  depth: number
+}) {
+  return (
+    <div
+      style={{ paddingLeft: BASE_INDENT + depth * INDENT_STEP }}
+      className="flex items-center gap-1.5 pr-2 pt-2 pb-0.5"
+    >
+      {/* Not uppercased, unlike the section headings elsewhere: most of these are
+          real directory paths and "~/.CLAUDE" is not one. */}
+      <span
+        className="min-w-0 truncate text-[10px] font-medium tracking-wide text-muted-foreground"
+        title={label === OWN_SOURCE ? "Skills stored in your Lursor catalog" : label}
+      >
+        {label}
+      </span>
+      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
+        {count}
+      </span>
+      <span className="ml-1 h-px min-w-2 flex-1 bg-border/60" />
+    </div>
   )
 }
 
@@ -341,6 +428,13 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
   const paddingLeft = BASE_INDENT + depth * INDENT_STEP
   // New items land inside a folder, or alongside a file (in its parent).
   const createParent = entry.is_dir ? entry.path : parentOf(entry.path)
+  // A linked entry is a pointer into another tool's directory. Editing under it
+  // writes there, so the row says whose it is rather than looking like every other
+  // folder — and the tooltip carries the path the badge has no room for.
+  const linked = Boolean(entry.link_target)
+  const rowTitle = linked
+    ? `${entry.name} — linked from ${entry.link_target}`
+    : entry.name
 
   return (
     <div>
@@ -353,7 +447,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
             }
             style={{ paddingLeft }}
             aria-expanded={entry.is_dir ? expanded : undefined}
-            title={entry.name}
+            title={rowTitle}
             className={cn(
               "group relative flex w-full items-center gap-1.5 py-1 pr-2 text-left outline-none",
               "focus-visible:bg-accent/60 focus-visible:text-foreground",
@@ -375,7 +469,11 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
                     expanded && "rotate-90"
                   )}
                 />
-                {expanded ? (
+                {/* A link gets its own glyph, so the rows are separable at a
+                    glance before you read a single label. */}
+                {linked ? (
+                  <FolderSimpleDashed className="h-3.5 w-3.5 shrink-0" />
+                ) : expanded ? (
                   <FolderOpen className="h-3.5 w-3.5 shrink-0" />
                 ) : (
                   <Folder className="h-3.5 w-3.5 shrink-0" />
@@ -389,7 +487,10 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
                 )}
               />
             )}
-            <span className="truncate">{entry.name}</span>
+            {/* The name gets the width. The source is on the group heading above,
+                which costs one row instead of a slice of every row — in a tree
+                this narrow a badge here truncated names to a single letter. */}
+            <span className="min-w-0 flex-1 truncate">{entry.name}</span>
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent className="w-44">

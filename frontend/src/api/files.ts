@@ -8,6 +8,14 @@ export interface DirEntry {
   /** POSIX-style path relative to the workspace root ("" is the root). */
   path: string
   is_dir: boolean
+  /** Where a symlinked entry actually points (absolute); empty for a real one.
+   *  A linked skill looks exactly like a real folder without this, and which tool
+   *  owns it decides what editing it affects. */
+  link_target?: string
+  /** Short form of the source for a badge: "~/.claude", "~/.hermes", or "Lursor"
+   *  for a skill that really lives in the catalog. Empty when there is nothing to
+   *  say — which is every row outside the catalog's top level that isn't a link. */
+  source_label?: string
 }
 
 /** A file's contents, with markers for the cases we don't render inline. */

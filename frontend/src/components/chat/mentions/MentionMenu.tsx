@@ -86,7 +86,15 @@ export function MentionMenu({
                 )}
               >
                 <Icon className="h-3.5 w-3.5 flex-shrink-0" />
-                <span className="flex-1 truncate">{label}</span>
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {/* Provenance sits next to the name rather than out at the edge:
+                    it qualifies *which* thing this is, so it belongs with the
+                    label, and the description can go on losing width first. */}
+                {row.kind === "item" && row.item.meta ? (
+                  <span className="flex-shrink-0 rounded bg-muted px-1 py-px text-[10px] font-medium text-muted-foreground">
+                    {row.item.meta}
+                  </span>
+                ) : null}
                 {sublabel && (
                   <span
                     className={cn(

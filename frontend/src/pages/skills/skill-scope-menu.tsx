@@ -45,8 +45,9 @@ function sameIds(a: string[], b: string[]): boolean {
 }
 
 /**
- * Re-point a managed skill straight from its row: everywhere, a set of
- * workspaces, or nowhere. The files never move — assignment is a DB write.
+ * Re-point a skill straight from its row: everywhere, a set of workspaces, or
+ * nowhere. The files never move — assignment is a DB write, which is what lets
+ * this serve a skill in `~/.claude/skills` as readily as one in the catalog.
  *
  * Picks are held as a draft and saved once, when the menu closes. Saving per
  * click would refetch the list, move the row into another group and tear the open

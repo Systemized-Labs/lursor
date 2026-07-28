@@ -1,4 +1,9 @@
-import { CaretDown, CaretRight, MagnifyingGlass } from "@phosphor-icons/react"
+import {
+  CaretDown,
+  CaretRight,
+  MagnifyingGlass,
+  WarningCircle,
+} from "@phosphor-icons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { Skill, SkillOrigin, Workspace } from "@/api/types"
@@ -15,15 +20,26 @@ import { cn } from "@/lib/utils"
 export const ANYWHERE = "anywhere"
 
 /**
- * Would an agent started in this workspace load this skill? The question the
- * page could not previously ask, answered from the list data alone: global
- * skills, skills assigned to the workspace, the repo's own skills, and every
- * personal-folder skill (which apply everywhere by definition).
+ * Would an agent started in this workspace load this skill? Answered from the list
+ * data alone: a repo's own skills apply in that repo, and everything else — the
+ * catalog and your personal folders alike — applies wherever it is assigned.
  */
 export function appliesInWorkspace(skill: Skill, workspaceId: string): boolean {
-  if (skill.origin === "external") return true
   if (skill.origin === "local") return skill.workspace_id === workspaceId
   return skill.is_global || skill.workspace_ids.includes(workspaceId)
+}
+
+/**
+ * Which section a skill belongs to: where its **files** are, not which origin the
+ * row happens to carry.
+ *
+ * A personal skill is linked into the catalog on discovery, so its row reads
+ * `managed` — but the files are still Claude Code's, it is still the thing you
+ * think of as "from another tool", and filing it under Catalog would both empty
+ * that section and swamp this one. The link is plumbing; this is the mental model.
+ */
+export function skillSource(skill: Skill): SkillOrigin {
+  return skill.link_target ? "external" : skill.origin
 }
 
 /**
@@ -46,14 +62,15 @@ const SECTIONS: { key: SkillOrigin; title: string; hint: string }[] = [
   {
     key: "external",
     title: "Other tools",
-    hint: "Found in your personal skills folders and read where they are. Claude Code or Cursor still owns the files.",
+    hint: "Found in your personal skills folders, linked into the catalog so you can edit and point them wherever — but the files are still Claude Code's or Cursor's, so edits land there too.",
   },
 ]
 
 const STORAGE_KEY = "lursor.skills-rail.collapsed"
 
-// "Other tools" is the biggest section and the least actionable — those files
-// belong to another tool. The count on the header says it is still there.
+// "Other tools" is the biggest section by far, and on a machine that has used
+// Claude Code for a while it would bury the rest of the page. The count on the
+// header says it is still there.
 const DEFAULT_COLLAPSED: SkillOrigin[] = ["external"]
 
 function loadCollapsed(): SkillOrigin[] {
@@ -70,7 +87,6 @@ function loadCollapsed(): SkillOrigin[] {
 
 /** Where a skill applies, in the space of a rail row. */
 function reachLabel(skill: Skill, workspaceNames: Map<string, string>): string {
-  if (skill.origin === "external") return skill.root_label || "Other tool"
   if (skill.origin === "local")
     return workspaceNames.get(skill.workspace_id ?? "") ?? "Unknown workspace"
   if (skill.is_global) return "Everywhere"
@@ -154,7 +170,7 @@ export function SkillRail({
       SECTIONS.map((section) => ({
         ...section,
         items: skills
-          .filter((skill) => skill.origin === section.key)
+          .filter((skill) => skillSource(skill) === section.key)
           .sort((a, b) => a.name.localeCompare(b.name)),
       })).filter((section) => section.items.length > 0),
     [skills]
@@ -343,9 +359,15 @@ function SkillRailRow({
   onSelect,
   onActivate,
 }: SkillRailRowProps) {
-  const stateLabel = skill.enabled
-    ? "On — loaded by agents in scope"
-    : "Off — kept, but loaded by nothing"
+  // A skill whose SKILL.md doesn't parse can't be loaded by anything, whatever
+  // its switch says, so the rail reports that instead of its on/off state — the
+  // alternative is a row that looks live and silently isn't.
+  const broken = Boolean(skill.error)
+  const stateLabel = broken
+    ? `Can't load — ${skill.error}`
+    : skill.enabled
+      ? "On — loaded by agents in scope"
+      : "Off — kept, but loaded by nothing"
 
   return (
     <button
@@ -364,22 +386,33 @@ function SkillRailRow({
     >
       {/* The same "you are here" marker as the workspace file tree. */}
       {selected && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
-      {/* Filled vs hollow, not colour: the only cue for on/off in the rail. */}
-      <span
-        role="img"
-        aria-label={stateLabel}
-        title={stateLabel}
-        className={cn(
-          "h-2 w-2 shrink-0 rounded-full border",
-          skill.enabled
-            ? "border-primary bg-primary"
-            : "border-muted-foreground/50 bg-transparent"
-        )}
-      />
+      {/* Filled vs hollow, not colour: the only cue for on/off in the rail. A
+          broken skill takes the slot with a different *shape*, so it reads as a
+          third state rather than a differently-coloured second one. */}
+      {broken ? (
+        <WarningCircle
+          weight="fill"
+          role="img"
+          aria-label={stateLabel}
+          className="h-3 w-3 shrink-0 text-destructive"
+        />
+      ) : (
+        <span
+          role="img"
+          aria-label={stateLabel}
+          title={stateLabel}
+          className={cn(
+            "h-2 w-2 shrink-0 rounded-full border",
+            skill.enabled
+              ? "border-primary bg-primary"
+              : "border-muted-foreground/50 bg-transparent"
+          )}
+        />
+      )}
       <span
         className={cn(
           "min-w-0 flex-1 truncate text-xs",
-          skill.enabled ? "text-foreground" : "text-muted-foreground"
+          skill.enabled && !broken ? "text-foreground" : "text-muted-foreground"
         )}
       >
         {skill.name}

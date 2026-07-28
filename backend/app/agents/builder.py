@@ -134,27 +134,40 @@ def _workspace_backend(workspace_path: str | Path) -> LocalBackend:
 def _skill_directories(runtime: SkillRuntime | None) -> list[Any]:
     """The ``skill_directories`` value for ``create_deep_agent``.
 
-    Plain folder paths when no skill carries env vars. Otherwise a
-    ``SkillsDirectory`` per folder, wired to :class:`SkillEnvScriptExecutor` so
-    ``run_skill_script`` spawns with the env of the skill that owns the script —
-    the precision the shell path can't offer.
+    One ``SkillsDirectory`` per in-scope folder, always constructed here rather
+    than left to the library, for two reasons.
+
+    ``validate=False`` is the load-bearing one: with the default (``True``),
+    ``_discover_skills`` **re-raises** a malformed ``SKILL.md`` as
+    ``SkillValidationError``, which propagates out of ``create_deep_agent`` and
+    fails the whole build — no agent, no run, an HTTP 500 on every message —
+    because of one file in a directory another tool owns. Off, the library warns
+    and skips the offender. ``app.skills.resolve`` already filters those folders
+    out, so this is the second line: the resolver can only judge what was on disk
+    when the run started, and it is not the only caller pointing the library at a
+    directory.
+
+    The other is ``SkillEnvScriptExecutor``, wired in whenever any in-scope skill
+    carries env vars, so ``run_skill_script`` spawns with the env of the skill
+    that owns the script — the precision the shell path can't offer.
 
     pydantic-deep's ``skill_directories`` parameter is typed for strings, dicts, or
     ``BackendSkillsDirectory``, but its implementation forwards anything else
     untouched (``pydantic_deep/agent.py``, ``directories.append(sd)``) and
     ``SkillsToolset`` accepts a ``SkillsDirectory`` instance directly
     (``features/skills/toolset.py``, the ``isinstance`` branch in
-    ``_load_directory_skills``). That is what makes a custom executor reachable
-    from here; the type ignore at the call site is for the annotation, not the
-    behaviour.
+    ``_load_directory_skills``). That is what makes both reachable from here; the
+    type ignore at the call site is for the annotation, not the behaviour.
     """
     if runtime is None:
         return []
-    if not runtime.env_by_folder:
-        return runtime.skill_dirs
-    executor = SkillEnvScriptExecutor(runtime.env_by_folder, runtime.secrets)
+    executor = (
+        SkillEnvScriptExecutor(runtime.env_by_folder, runtime.secrets)
+        if runtime.env_by_folder
+        else None
+    )
     return [
-        SkillsDirectory(path=folder, script_executor=executor)  # type: ignore[arg-type]
+        SkillsDirectory(path=folder, validate=False, script_executor=executor)  # type: ignore[arg-type]
         for folder in runtime.skill_dirs
     ]
 

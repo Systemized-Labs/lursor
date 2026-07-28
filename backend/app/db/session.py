@@ -123,6 +123,23 @@ async def _apply_lightweight_migrations(conn) -> None:
             text("ALTER TABLE skills ADD COLUMN enabled BOOLEAN DEFAULT 1")
         )
 
+    # Linked catalog entries: ``<catalog>/<slug>`` is a symlink into another tool's
+    # directory and ``link_target`` records where it points.
+    #
+    # Adding it is also the one-shot gate for globalizing existing ``external``
+    # rows. Those were in scope everywhere *regardless* of ``is_global``, which the
+    # indexer had left at 0; now that the user layer honours the assignment, an
+    # un-backfilled row would silently stop loading on upgrade. Gated on the column
+    # having just been added so a user who later narrows or parks a personal skill
+    # doesn't get it re-globalized on the next boot.
+    if "link_target" not in skill_cols:
+        await conn.execute(
+            text("ALTER TABLE skills ADD COLUMN link_target VARCHAR DEFAULT ''")
+        )
+        await conn.execute(
+            text("UPDATE skills SET is_global = 1 WHERE origin = 'external'")
+        )
+
     # Skills are no longer linked per-agent/subagent — membership is derived from
     # scope. Drop the join tables; existing links are intentionally discarded (the
     # global scope now applies to every agent). SQLite ignores DROP on a missing

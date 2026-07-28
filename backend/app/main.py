@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api import (
     agents,
@@ -17,8 +19,8 @@ from app.api import (
     github,
     laios,
     models,
-    prompt_templates,
     preview,
+    prompt_templates,
     providers,
     skills,
     subagents,
@@ -35,6 +37,7 @@ from app.db.prompt_seed import seed_prompt_templates
 from app.db.session import async_session_factory, init_db
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -73,6 +76,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Turn an unhandled error into a JSON 500 the browser is allowed to read.
+
+    Without this, Starlette answers with a bare ``text/plain`` 500 from
+    ``ServerErrorMiddleware`` — which sits *outside* ``CORSMiddleware``, so the
+    response carries no ``access-control-allow-origin``. The browser then rejects
+    it before the app sees it and ``fetch`` throws ``TypeError: Failed to fetch``,
+    which is indistinguishable from the backend being down. Every server-side bug
+    reads as a network outage, and the actual error only exists in a terminal.
+
+    The CORS headers are therefore set by hand, mirroring the middleware config
+    above (reflect the origin, allow credentials), because that middleware never
+    gets to run on this path. The traceback is logged here too, since the
+    exception is re-raised past the logging FastAPI would otherwise do.
+    """
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    headers = {"access-control-allow-credentials": "true"}
+    origin = request.headers.get("origin")
+    if origin:
+        headers["access-control-allow-origin"] = origin
+        headers["vary"] = "Origin"
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+        headers=headers,
+    )
 
 
 @app.get("/api/health", tags=["health"])

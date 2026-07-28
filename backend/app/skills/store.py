@@ -10,9 +10,11 @@ the agent actually loads.
 
 Skill folders live in one of three kinds of root:
 
-- the **catalog** — ``~/.lursor/skills/`` (``settings.skills_dir``): one copy of
-  every UI-managed skill, wherever it applies. Which workspaces a catalog skill
-  reaches is an *assignment* held in the database, not a location on disk.
+- the **catalog** — ``~/.lursor/skills/`` (``settings.skills_dir``): one entry per
+  UI-managed skill, wherever it applies. Which workspaces a catalog skill reaches
+  is an *assignment* held in the database, not a location on disk. An entry is
+  usually a real folder, but may be a **symlink** into another tool's directory
+  (:func:`link_skill`) — managed identity over files someone else owns.
 - a **local** root — ``<workspace.path>/<subdir>/`` for each entry in
   ``settings.local_skill_roots`` (``.agents/skills`` and the other tools'
   in-repo conventions): travels with the workspace directory (git-shareable) and
@@ -38,6 +40,7 @@ table is a rebuildable index reconciled against this store in ``app/api/skills.p
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import re
@@ -76,6 +79,11 @@ class ParsedSkill:
     content: str
     resources: list[str] = field(default_factory=list)
     scripts: list[str] = field(default_factory=list)
+    # Why the YAML frontmatter could not be read, empty when it parsed. A skill
+    # with this set is still indexed and still shown — but it is *unloadable*
+    # (see :func:`frontmatter_error`), so it is reported rather than silently
+    # carrying a folder-name title and no description.
+    error: str = ""
 
 
 def catalog_root() -> Path:
@@ -300,18 +308,108 @@ def copy_skill(slug: str, src_root: Path, dst_root: Path, *, taken: set[str]) ->
     return new_slug
 
 
-def _split_frontmatter(text: str) -> tuple[dict, str]:
-    """Return ``(frontmatter_dict, body)`` for a SKILL.md string."""
+def link_skill(src: Path, dst_root: Path, *, taken: set[str]) -> str:
+    """Symlink a skill folder into ``dst_root``, returning the (possibly new) slug.
+
+    The third way into the catalog, and the only one that doesn't duplicate
+    anything: :func:`move_skill` takes the folder (ours only), :func:`copy_skill`
+    takes a snapshot that then drifts, this points at the original. The row that
+    results is an ordinary managed skill — assignable, env-vars, editable — while
+    the bytes stay where Claude Code or Hermes put them.
+
+    The link is absolute, so it survives the catalog being moved and reads as its
+    own documentation in a terminal. ``src`` is resolved first: linking to a link
+    would leave the catalog dependent on an intermediate the other tool may drop.
+    """
+    if not (src / SKILL_FILE).is_file():
+        raise ValueError(f"Not a skill folder: {src}")
+    target = src.resolve()
+    new_slug = slugify(src.name, taken=taken)
+    dst = path_for(new_slug, dst_root)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink() or dst.exists():
+        raise ValueError(f"Already present in the destination: {new_slug}")
+    os.symlink(target, dst, target_is_directory=True)
+    return new_slug
+
+
+def link_target(slug: str, root: Path) -> str:
+    """Where ``<root>/<slug>`` points, or ``""`` when it is a real folder.
+
+    Absolute and unresolved-on-failure: a dangling link still reports its target,
+    which is what lets a caller say *what* went missing rather than only that
+    something did.
+    """
+    folder = path_for(slug, root)
+    if not folder.is_symlink():
+        return ""
+    with contextlib.suppress(OSError):
+        return str(Path(os.readlink(folder)))
+    return ""
+
+
+def _split_frontmatter(text: str) -> tuple[dict, str, str]:
+    """Return ``(frontmatter_dict, body, error)`` for a SKILL.md string.
+
+    Malformed frontmatter degrades to an empty dict rather than raising, so one
+    bad file can never abort a scan — but the reason comes back with it. Callers
+    that only want the content can ignore it; :func:`frontmatter_error` exists so
+    the ones that must not hand the file to the agent don't have to.
+    """
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.DOTALL)
     if not match:
-        return {}, text.strip()
+        return {}, text.strip(), ""
+    error = ""
     try:
         data = yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError:
+    except yaml.YAMLError as exc:
         data = {}
+        # The block was handed to the parser without its opening ``---``, so
+        # PyYAML counts from the line after it. Report the line the user would
+        # jump to in SKILL.md, not the one in a string they never see.
+        error = _yaml_error_message(exc, line_offset=2)
     if not isinstance(data, dict):
         data = {}
-    return data, match.group(2).strip()
+        error = error or "Frontmatter is not a mapping of keys to values."
+    return data, match.group(2).strip(), error
+
+
+def _yaml_error_message(exc: yaml.YAMLError, *, line_offset: int = 1) -> str:
+    """A one-line, actionable rendering of a YAML failure.
+
+    PyYAML's ``str(exc)`` is four lines of parser context. The part a user can act
+    on is the problem plus where it is, so those are joined and the rest dropped —
+    this ends up in a badge in the UI, not a log. ``line_offset`` converts the
+    parser's 0-based line within the text it was given into a 1-based line in the
+    file the user will open.
+    """
+    problem = getattr(exc, "problem", None)
+    mark = getattr(exc, "problem_mark", None)
+    if not problem:
+        return str(exc).strip().splitlines()[0] if str(exc).strip() else "Invalid YAML."
+    where = f" (line {mark.line + line_offset}, column {mark.column + 1})" if mark else ""
+    return f"{problem}{where}"
+
+
+def frontmatter_error(slug: str, root: Path) -> str:
+    """Why ``<root>/<slug>/SKILL.md`` can't be loaded, or ``""`` when it can.
+
+    The one check that decides whether a skill folder is fit to hand to the deep
+    agent, and deliberately cheaper than :func:`read_skill`: no resource/script
+    globbing, just the frontmatter. ``pydantic_deep`` parses SKILL.md with strict
+    YAML and *raises* on a bad one, so a single malformed file would otherwise
+    take down the whole run — see :func:`app.skills.resolve.skills_in_scope`,
+    which drops the skill instead.
+
+    A missing or unreadable file reports the same way: whatever the reason, the
+    folder is not loadable, and the caller wants one answer to that question.
+    """
+    try:
+        skill_md = path_for(slug, root) / SKILL_FILE
+        text = skill_md.read_text(encoding="utf-8")
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        return f"SKILL.md could not be read: {exc}"
+    return _split_frontmatter(text)[2]
 
 
 def _discover_resources(folder: Path) -> list[str]:
@@ -353,7 +451,7 @@ def read_skill(slug: str, root: Path) -> ParsedSkill | None:
     skill_md = folder / SKILL_FILE
     if not skill_md.is_file():
         return None
-    frontmatter, body = _split_frontmatter(skill_md.read_text(encoding="utf-8"))
+    frontmatter, body, error = _split_frontmatter(skill_md.read_text(encoding="utf-8"))
     return ParsedSkill(
         slug=slug,
         name=str(frontmatter.get("name") or slug),
@@ -361,6 +459,7 @@ def read_skill(slug: str, root: Path) -> ParsedSkill | None:
         content=body,
         resources=_discover_resources(folder),
         scripts=_discover_scripts(folder),
+        error=error,
     )
 
 
@@ -380,7 +479,10 @@ def write_skill(
     skill_md = folder / SKILL_FILE
     existing: dict = {}
     if skill_md.is_file():
-        existing, _ = _split_frontmatter(skill_md.read_text(encoding="utf-8"))
+        # Unparseable frontmatter merges as ``{}``: there are no keys to keep, so
+        # writing rebuilds the block from name/description — which is also how a
+        # skill broken by hand gets repaired from the editor.
+        existing, _, _ = _split_frontmatter(skill_md.read_text(encoding="utf-8"))
     # name/description lead (that is the standard's shape); everything else keeps
     # its original order behind them.
     merged = {"name": name, "description": description}
@@ -393,11 +495,26 @@ def write_skill(
     skill_md.write_text(doc, encoding="utf-8")
 
 
-def delete_skill(slug: str, root: Path) -> None:
+def delete_skill(slug: str, root: Path, *, follow_link: bool = False) -> None:
+    """Remove a skill folder under ``root``.
+
+    A symlinked entry is unlinked with its target left alone: the link is ours, the
+    folder it names is not, and ``rmtree`` refuses a symlink anyway. That is the
+    right default for cleaning up a link whose target has already gone.
+
+    ``follow_link`` removes the target too, which is what deleting a linked
+    *personal* skill has to mean once every discovered skill is linked
+    automatically: the link is merely how it reached the catalog, so unlinking
+    alone would be undone by the next reconcile. Deleting it therefore means the
+    same as it always did for a skill in ``~/.claude/skills`` — it goes, there as
+    well as here — and the UI names the absolute path before the click.
+    """
     folder = path_for(slug, root)
-    # A skill folder in a hand-maintained root may be a symlink; ``rmtree``
-    # refuses those, so unlink the link and leave its target alone.
     if folder.is_symlink():
+        if follow_link:
+            target = folder.resolve()
+            if target.is_dir():
+                shutil.rmtree(target)
         folder.unlink()
     elif folder.is_dir():
         shutil.rmtree(folder)
@@ -564,7 +681,7 @@ def scan_skill_folders(
 
 def import_folder(src: Path, root: Path, *, taken: set[str]) -> str:
     """Copy an on-disk skill folder into ``root`` under a fresh slug."""
-    frontmatter, _ = _split_frontmatter((src / SKILL_FILE).read_text(encoding="utf-8"))
+    frontmatter, _, _ = _split_frontmatter((src / SKILL_FILE).read_text(encoding="utf-8"))
     base = str(frontmatter.get("name") or src.name)
     slug = slugify(base, taken=taken)
     taken.add(slug)
@@ -576,7 +693,9 @@ def import_markdown(
     text: str, root: Path, *, fallback_name: str, taken: set[str]
 ) -> str:
     """Create a skill in ``root`` from a single SKILL.md/markdown document."""
-    frontmatter, body = _split_frontmatter(text)
+    # A document whose frontmatter doesn't parse imports as ``{}`` and takes the
+    # rebuild branch below, so what lands in the catalog is always loadable.
+    frontmatter, body, _ = _split_frontmatter(text)
     name = str(frontmatter.get("name") or fallback_name)
     slug = slugify(name, taken=taken)
     taken.add(slug)

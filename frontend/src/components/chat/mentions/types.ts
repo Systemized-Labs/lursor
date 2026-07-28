@@ -10,6 +10,12 @@ export interface MentionItem {
   slug: string
   /** Secondary text shown dimmed beside the label (status, kind, …). */
   sublabel?: string
+  /** Short provenance badge, rendered between the label and the sublabel: where a
+   *  skill's files actually live (`~/.claude`, `Lursor`), a file's kind, and so on.
+   *  Separate from {@link sublabel} because the two answer different questions —
+   *  what this *is* versus whose it is — and in a list of similarly-named skills
+   *  from four different tools, dropping either one loses something. */
+  meta?: string
   /** Per-item icon, overriding the source's icon (e.g. a folder vs a file). */
   icon?: Icon
   /** When true, selecting drills deeper (e.g. a directory) instead of

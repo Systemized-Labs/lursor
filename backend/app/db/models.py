@@ -136,10 +136,14 @@ class SkillOrigin(StrEnum):
     tool owns is copied (``POST /skills/{id}/copy``), never moved.
 
     ``external`` — discovered in a personal skills directory owned by another tool
-    (``~/.agents/skills``, ``settings.user_skill_roots``). Read in place, in scope
-    everywhere at the lowest precedence, carries no assignment.
-    ``POST /skills/{id}/copy`` duplicates it into the catalog; nothing here ever
-    moves or rewrites it implicitly.
+    (``~/.agents/skills``, ``settings.user_skill_roots``). Read in place and always
+    at the lowest precedence, but *assigned* like a managed skill: newly discovered
+    ones default to ``is_global`` (in scope everywhere, which is what discovery
+    used to mean unconditionally) and can then be narrowed to a set of workspaces
+    or parked, without the files moving. ``POST /skills/{id}/link`` symlinks it
+    into the catalog so it also shows up in the Skill Studio;
+    ``POST /skills/{id}/copy`` takes a private duplicate instead. Nothing here ever
+    moves or rewrites the original implicitly.
     """
 
     managed = "managed"
@@ -228,6 +232,17 @@ class Skill(TimestampMixin, table=True):
     # folder. For a managed skill it is a second axis alongside assignment:
     # "parked" (assigned nowhere) says where, this says whether.
     enabled: bool = Field(default=True, sa_column_kwargs={"server_default": "1"})
+    # Absolute path of the folder a *linked* catalog entry points at. Set only for
+    # ``managed`` rows whose ``<catalog>/<slug>`` is a symlink into a directory
+    # another tool owns (``POST /skills/{id}/link``): the row is managed — it
+    # carries an assignment and env vars like any other — but the files are the
+    # original, so an edit made here is an edit made there.
+    #
+    # Recorded rather than probed off the symlink because it is what tells
+    # reconcile the folder is not ours to rebuild: a link whose target the other
+    # tool has deleted means the skill is gone, exactly as for a foreign root, so
+    # the dead link is cleaned up instead of being materialized over.
+    link_target: str = Field(default="", sa_column_kwargs={"server_default": ""})
 
 
 class EnvVar(TimestampMixin, table=True):

@@ -32,6 +32,12 @@ os.environ["SKILLS_DIR"] = f"{_TMP}/skills"
 # every scope assertion would depend on whose machine ran the tests. Tests that
 # need a personal root point the setting at a tmp_path themselves.
 os.environ["USER_SKILL_ROOTS"] = "[]"
+# Auto-linking is on in production, where it is what puts every personal skill in
+# the Skill Studio. Off by default here because it *rewrites* the state most of
+# these tests are about: a suite asserting that a discovered skill stays
+# ``external`` in the root that owns it would instead find a linked catalog row.
+# The tests that cover auto-linking turn it on with the ``auto_link`` fixture.
+os.environ["AUTO_LINK_USER_SKILLS"] = "false"
 # Dummy key so provider construction succeeds offline (no network call is made).
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-used")
 # No LAIOS daemon in tests: drop any connection config the prod supervisor may
@@ -64,3 +70,43 @@ async def client() -> AsyncClient:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test/api") as c:
         yield c
+
+
+@pytest.fixture
+async def raising_client() -> AsyncClient:
+    """Like ``client``, but returns the app's error *response* on a 500.
+
+    ``ASGITransport`` re-raises an unhandled exception to the caller by default,
+    which is what you want almost everywhere — and exactly wrong when the response
+    to that exception is the thing under test. What the browser receives is the
+    only thing that matters for those, so this hands it back unchanged.
+    """
+    await init_db()
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test/api") as c:
+        yield c
+
+
+@pytest.fixture
+def user_root(tmp_path, monkeypatch):
+    """A stand-in for ``~/.claude/skills``, pointed at by the settings object.
+
+    Lives here rather than in one test module because several now need it, and a
+    fixture imported across modules shadows itself on every use. ``get_settings``
+    is ``lru_cache``d, so the live instance is patched in place rather than
+    rebuilt — that is the same object every request reads.
+    """
+    root = tmp_path / "home-claude" / "skills"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(
+        get_settings(), "user_skill_roots", [str(root)], raising=False
+    )
+    return root
+
+
+@pytest.fixture
+def auto_link(monkeypatch):
+    """Turn on production's auto-linking of personal skills into the catalog."""
+    monkeypatch.setattr(
+        get_settings(), "auto_link_user_skills", True, raising=False
+    )

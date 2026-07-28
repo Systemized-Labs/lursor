@@ -225,7 +225,9 @@ function SkillEditor({
               ? `Lives in this workspace's ${skill.root || ".agents/skills"} folder.`
               : skill.origin === "external"
                 ? `Read in place from ${skill.root} — another tool owns this folder.`
-                : "Lives in your skills catalog."}{" "}
+                : skill.link_target
+                  ? `Linked from ${skill.link_target} — saving writes to that file, which ${skill.link_label} reads too.`
+                  : "Lives in your skills catalog."}{" "}
             Editing SKILL.md updates the name and description too — they are its
             frontmatter.
           </DialogDescription>

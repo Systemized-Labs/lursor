@@ -114,8 +114,22 @@ class SkillRead(BaseModel):
     # tool: it can be copied into the catalog but never moved out of, and a
     # delete removes a real file in the user's repo or home directory.
     is_owned_root: bool = True
+    # Set when this catalog entry is a *symlink* into another tool's directory:
+    # the absolute folder it points at. A managed skill in every other respect —
+    # assignable, env vars, editable — but the files are the original, so an edit
+    # here is an edit there and deleting it only removes the link.
+    link_target: str = ""
+    # Display form of the root ``link_target`` lives in ("~/.claude"), for a badge
+    # saying whose files these really are. Empty when this is not a link.
+    link_label: str = ""
     # Off excludes the skill from every run, whatever its layer or assignment.
     enabled: bool = True
+    # Why this skill's SKILL.md can't be loaded ("mapping values are not allowed
+    # here (line 3, column 358)"), empty when it parses. Set means the folder is
+    # indexed and editable but excluded from every run whatever its assignment:
+    # the agent library parses frontmatter strictly and one bad file would fail
+    # the whole build. Surfaced so a skill that silently stopped applying says so.
+    error: str = ""
     # Which layer this row won at, set only when listing for one workspace
     # ("user" | "global" | "workspace" | "local"). Null in catalog-wide listings.
     layer: str | None = None

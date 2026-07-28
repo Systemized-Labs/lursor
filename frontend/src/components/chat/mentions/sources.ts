@@ -4,9 +4,16 @@ import { FileCode, Folder, ListChecks, Sparkle } from "@phosphor-icons/react"
 import { filesApi } from "@/api/files"
 import { useSkills } from "@/api/skills"
 import type { Skill } from "@/api/types"
+import { OWN_SOURCE_LABEL, skillSourceLabel } from "@/lib/skill-location"
 import type { MentionItem, MentionSource } from "./types"
 
 const SEARCH_LIMIT = 50
+
+/** Ours first, then the borrowed sources, then a repo's own. */
+function sourceRank(skill: Skill): number {
+  if (skillSourceLabel(skill) === OWN_SOURCE_LABEL) return 0
+  return skill.origin === "local" ? 2 : 1
+}
 
 /** Workspace-relative folder holding plan docs. Kept out of `@files` search
  *  (see backend `_IGNORED_DIRS`), so plans get their own mention category. */
@@ -36,13 +43,24 @@ export function useWorkspaceChatMentionSources(
   return useMemo<MentionSource[]>(() => {
     if (!workspaceId) return []
 
+    // Yours first, then everyone else's alphabetically — the same order the Skill
+    // Studio's file tree uses, and for the same reason: on a machine with a
+    // populated ~/.claude, the skills you actually wrote would otherwise be buried.
     const skillItems = [...(skillsQuery.data ?? [])]
-      .sort((a: Skill, b: Skill) => a.name.localeCompare(b.name))
+      .sort(
+        (a: Skill, b: Skill) =>
+          sourceRank(a) - sourceRank(b) ||
+          skillSourceLabel(a).localeCompare(skillSourceLabel(b)) ||
+          a.name.localeCompare(b.name)
+      )
       .map<MentionItem>((s) => ({
         id: s.id,
         label: s.name,
         slug: s.slug,
         sublabel: s.description || undefined,
+        // Two tools can ship a `pdf` skill, and the one that wins is decided by
+        // precedence you can't see from a name. Say whose this one is.
+        meta: skillSourceLabel(s),
       }))
 
     return [

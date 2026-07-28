@@ -12,6 +12,7 @@ import { toast } from "sonner"
 import {
   type SkillTarget,
   useCopySkill,
+  useLinkSkill,
   useDeleteSkill,
   useImportSkills,
   usePromoteSkill,
@@ -68,6 +69,7 @@ const STUDIO_DRAFT = "Write me a skill that "
  * Claude Code, and that should be legible before the click, not after.
  */
 function folderHint(skill: Skill, workspaceNames: Map<string, string>): string | null {
+  if (skill.link_target) return skill.link_target
   if (skill.origin === "external") return `${skill.root}/${skill.slug}`
   if (skill.origin !== "local") return null
   const workspace = workspaceNames.get(skill.workspace_id ?? "") ?? "its workspace"
@@ -176,6 +178,7 @@ export function SkillsPage() {
   const deleteSkill = useDeleteSkill()
   const promoteSkill = usePromoteSkill()
   const copySkill = useCopySkill()
+  const linkSkill = useLinkSkill()
   const updateSkill = useUpdateSkill()
   const importSkills = useImportSkills()
 
@@ -320,6 +323,22 @@ export function SkillsPage() {
     [updateSkill]
   )
 
+  // No confirm: nothing is copied, moved or overwritten — a pointer is added, and
+  // Unlink in the same menu removes it again.
+  const link = useCallback(
+    async (skill: Skill) => {
+      try {
+        const linked = await linkSkill.mutateAsync(skill.id)
+        toast.success(
+          `"${linked.name}" linked into the catalog — still reading ${linked.link_label}`
+        )
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to link skill")
+      }
+    },
+    [linkSkill]
+  )
+
   async function confirmCopy() {
     if (!toCopy) return
     try {
@@ -419,6 +438,7 @@ export function SkillsPage() {
       onOpenInWorkspace={openInWorkspace}
       onPromote={setToPromote}
       onCopy={setToCopy}
+      onLink={link}
       onToggle={toggleEnabled}
       onDelete={setToDelete}
     />
@@ -576,19 +596,25 @@ export function SkillsPage() {
         onConfirm={confirmCopy}
       />
 
+      {/* A linked skill's files are somebody else's, and deleting it removes them
+          there too — so it gets the same warning a discovered skill has always
+          had, naming the path, rather than the softer copy its catalog origin
+          would otherwise earn it. */}
       <ConfirmDialog
         open={Boolean(toDelete)}
         onOpenChange={(open) => !open && setToDelete(undefined)}
         title="Delete skill"
         description={
           toDelete
-            ? toDelete.is_owned_root
-              ? `This will permanently delete "${toDelete.name}".`
-              : `This deletes the real folder at ${folderHint(toDelete, workspaceNames)}, which ${
-                  toDelete.origin === "external"
-                    ? "other tools read too — it will disappear from them as well"
-                    : "is part of the repo — commit or stash first if that matters"
-                }.`
+            ? toDelete.link_target
+              ? `This deletes the real folder at ${toDelete.link_target}. It is linked, not copied, so "${toDelete.name}" will disappear from ${toDelete.link_label} as well. Switch it off instead to keep the files and stop loading it.`
+              : toDelete.is_owned_root
+                ? `This will permanently delete "${toDelete.name}".`
+                : `This deletes the real folder at ${folderHint(toDelete, workspaceNames)}, which ${
+                    toDelete.origin === "external"
+                      ? "other tools read too — it will disappear from them as well"
+                      : "is part of the repo — commit or stash first if that matters"
+                  }.`
             : undefined
         }
         confirmLabel="Delete"

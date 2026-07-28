@@ -122,11 +122,21 @@ def _runtime(folders: list[Path], env_by_folder: dict[str, dict[str, str]]):
     )
 
 
-def test_builder_passes_plain_paths_when_no_env(tmp_path):
-    """No env anywhere → plain strings, i.e. the library's own default behaviour."""
+def test_builder_builds_non_validating_directories_when_no_env(tmp_path):
+    """No env anywhere → still our own ``SkillsDirectory``, just no custom executor.
+
+    Handing the library a plain path would have it construct the directory itself,
+    with ``validate=True`` — under which one malformed ``SKILL.md`` raises out of
+    ``create_deep_agent`` and fails the whole build. See
+    ``test_skill_malformed.py``.
+    """
     folder = _skill_folder(tmp_path, "nodep", PRINT_ENV)
     dirs = _skill_directories(_runtime([folder], {}))
-    assert dirs == [str(folder)]
+    assert len(dirs) == 1
+    assert isinstance(dirs[0], SkillsDirectory)
+    assert dirs[0]._validate is False
+    assert not isinstance(dirs[0]._script_executor, SkillEnvScriptExecutor)
+    assert list(dirs[0].get_skills()) == [str(folder)]
 
 
 def test_builder_wires_the_env_executor_when_env_exists(tmp_path):

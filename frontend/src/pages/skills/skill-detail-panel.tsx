@@ -2,9 +2,11 @@ import {
   ArrowLineUp,
   Copy,
   DotsThree,
+  LinkSimple,
   Pencil,
   Sparkle,
   Trash,
+  WarningCircle,
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
@@ -72,6 +74,8 @@ interface SkillDetailPanelProps {
   onOpenInWorkspace: (skill: Skill) => void
   onPromote: (skill: Skill) => void
   onCopy: (skill: Skill) => void
+  /** Symlink a personal skill into the catalog — no copy, no confirmation. */
+  onLink: (skill: Skill) => void
   onToggle: (skill: Skill, enabled: boolean) => void
   onDelete: (skill: Skill) => void
 }
@@ -92,11 +96,13 @@ export function SkillDetailPanel({
   onOpenInWorkspace,
   onPromote,
   onCopy,
+  onLink,
   onToggle,
   onDelete,
 }: SkillDetailPanelProps) {
   const isLocal = skill.origin === "local"
   const isExternal = skill.origin === "external"
+  const isLinked = Boolean(skill.link_target)
   const bundled = [...skill.resources, ...skill.scripts]
   const folder = skillFolder(skill, workspaces)
   const preview = useSkillFile(skill.id, SKILL_FILE)
@@ -133,10 +139,19 @@ export function SkillDetailPanel({
               {skill.name}
             </h3>
             {/* Only foreign roots are badged: our own conventions are the norm,
-                and this is what tells two same-named skills apart. */}
-            {!skill.is_owned_root && skill.root_label ? (
-              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                {skill.root_label}
+                and this is what tells two same-named skills apart. A linked entry
+                sits in the catalog but its files don't, so it is badged with where
+                they actually are. */}
+            {(isLinked ? skill.link_label : !skill.is_owned_root && skill.root_label) ? (
+              <span
+                className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                title={
+                  isLinked
+                    ? `Linked from ${skill.link_target} — edits here change that file`
+                    : undefined
+                }
+              >
+                {isLinked ? `↳ ${skill.link_label}` : skill.root_label}
               </span>
             ) : null}
           </div>
@@ -171,6 +186,14 @@ export function SkillDetailPanel({
                 {isLocal ? "Open in workspace" : "Open in Skill Studio"}
               </DropdownMenuItem>
             )}
+            {/* Linking is the way in for a personal skill: it needs no copy, so
+                the Studio ends up editing the file Claude Code actually reads. */}
+            {isExternal && (
+              <DropdownMenuItem onSelect={() => onLink(skill)}>
+                <LinkSimple className="h-4 w-4" />
+                Link into catalog
+              </DropdownMenuItem>
+            )}
             {/* Moving is only ours to do in .agents/skills. Anywhere else the
                 folder belongs to another tool, so we take a copy. */}
             {(isLocal || isExternal) &&
@@ -186,6 +209,11 @@ export function SkillDetailPanel({
                 </DropdownMenuItem>
               ))}
             <DropdownMenuSeparator />
+            {/* Delete has one meaning throughout, linked or not: the folder goes.
+                Removing only the link would be undone by the next reconcile, since
+                discovery links automatically — a safe-looking click that silently
+                did nothing is worse than a loud one that does what it says. The
+                confirmation names the absolute path. */}
             <DropdownMenuItem onSelect={() => onDelete(skill)}>
               <Trash className="h-4 w-4" />
               Delete
@@ -199,13 +227,48 @@ export function SkillDetailPanel({
           arbitrary SKILL.md (a long URL, an inline path) and drags the property
           list out with it. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* Frontmatter that doesn't parse overrides everything below it: the
+            assignment, the switch and the layer all still say where this skill
+            would apply, and none of them are true while it can't be read. Said
+            once, at the top, with the reason and the fix — not as a badge that
+            leaves the user to work out why nothing loads. */}
+        {skill.error ? (
+          <div className="flex items-start gap-2 border-b border-border/60 bg-destructive/10 px-4 py-3">
+            <WarningCircle
+              weight="fill"
+              className="mt-px h-4 w-4 shrink-0 text-destructive"
+            />
+            <div className="min-w-0 space-y-1">
+              <p className="text-xs font-medium text-foreground">
+                Excluded from every run — SKILL.md can't be read
+              </p>
+              <p className="text-xs text-muted-foreground">{skill.error}</p>
+              <p className="text-xs text-muted-foreground">
+                The frontmatter between the <code>---</code> lines has to be valid
+                YAML. A <code>name</code> or <code>description</code> containing a
+                colon needs quoting.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-1"
+                onClick={() => onEdit(skill)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Fix in editor
+              </Button>
+            </div>
+          </div>
+        ) : null}
         <div className="divide-y divide-border/40 py-1">
           <Field
             label="Enabled"
             hint={
-              skill.enabled
-                ? "Loaded by agents in scope. Switch off to keep it without loading it."
-                : "Kept, but loaded by nothing."
+              skill.error
+                ? "Overridden while SKILL.md can't be read — nothing loads it either way."
+                : skill.enabled
+                  ? "Loaded by agents in scope. Switch off to keep it without loading it."
+                  : "Kept, but loaded by nothing."
             }
           >
             <Switch
@@ -215,16 +278,17 @@ export function SkillDetailPanel({
             />
           </Field>
 
-          {/* Reach is editable only where we own the folder. Where we don't, the
-              limitation is stated with its escape hatch next to it, rather than
-              leaving a dead label and no route out. */}
+          {/* Reach is editable everywhere except a repo, whose skills apply where
+              their files are. For a repo skill the limitation is stated with its
+              escape hatch next to it, rather than leaving a dead label and no
+              route out. */}
           <Field
             label="Applies in"
             hint={
               isLocal
                 ? `Lives in ${skill.root || ".agents/skills"} in this repo, so it applies there and nowhere else. Bring it into the catalog to assign it elsewhere.`
                 : isExternal
-                  ? `Read in place from ${skill.root}, which another tool owns — it applies everywhere. Copy it into the catalog to narrow it.`
+                  ? `Read in place from ${skill.root}, which another tool owns — pointing it somewhere moves no files.`
                   : undefined
             }
           >
@@ -234,11 +298,6 @@ export function SkillDetailPanel({
                   {workspaceNames.get(skill.workspace_id ?? "") ??
                     "Unknown workspace"}
                 </span>
-                {moveOrCopy}
-              </>
-            ) : isExternal ? (
-              <>
-                <span className="text-xs text-foreground">Everywhere</span>
                 {moveOrCopy}
               </>
             ) : (
@@ -253,7 +312,18 @@ export function SkillDetailPanel({
             <SkillEnvMenu skill={skill} />
           </Field>
 
-          <Field label="Files">
+          {/* Editing a linked or discovered skill writes to the real file in
+              someone else's directory. That is the point, and it is also the one
+              thing about it that could surprise you, so it is said in advance
+              rather than discovered afterwards. */}
+          <Field
+            label="Files"
+            hint={
+              isLinked
+                ? `Linked, not copied: saving writes to ${skill.link_target}, which ${skill.link_label} reads too.`
+                : undefined
+            }
+          >
             <span
               className="text-xs text-foreground"
               title={[SKILL_FILE, ...bundled].join("\n")}

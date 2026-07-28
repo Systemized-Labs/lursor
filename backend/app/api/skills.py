@@ -6,22 +6,28 @@ one of three kinds of root, which is what :class:`SkillOrigin` records, narrowed
 to the exact directory by ``Skill.root``:
 
 - **managed** — the catalog, ``settings.skills_dir`` (``~/.lursor/skills/``). One
-  copy, wherever it applies: reach is an *assignment* in the database
+  entry, wherever it applies: reach is an *assignment* in the database
   (``is_global``, or ``skill_workspaces`` rows), so re-pointing a skill at other
-  workspaces is a DB write and never moves files.
+  workspaces is a DB write and never moves files. An entry is normally a real
+  folder but may be a **symlink** into another tool's directory (``Skill.link_target``,
+  ``POST /skills/{id}/link``) — a managed identity over files someone else owns.
 - **local** — one of the workspace's own roots (``settings.local_skill_roots``:
   ``.agents/skills`` and the other tools' in-repo conventions), committed into a
   repo. It applies only in that workspace and has no assignment to edit.
 - **external** — a personal directory owned by another tool
   (``settings.user_skill_roots``: ``~/.agents/skills``, ``~/.claude/skills``, one
-  per tool beyond that). In scope everywhere, lowest precedence, no assignment.
+  per tool beyond that). Read in place at the lowest precedence, and assigned like
+  a managed skill: global on discovery, then narrowable to a set of workspaces or
+  parked, with no copy anywhere. Nothing has to be ingested to be managed.
 
 Only ``.agents/skills`` and the catalog are Lursor's to create or rebuild; every
-other root is *discovered*. That distinction is load-bearing in two places:
+other root is *discovered*. That distinction is load-bearing in three places:
 ``POST /skills/{id}/promote`` (which moves a folder) is refused for a root we
-don't own, in favour of ``POST /skills/{id}/copy``; and ``reconcile`` never
-materializes a missing folder there — for a foreign root, disk is authoritative
-for existence, not just content.
+don't own, in favour of ``POST /skills/{id}/copy`` or ``/link``; ``reconcile``
+never materializes a missing folder there — for a foreign root, disk is
+authoritative for existence, not just content; and a linked catalog entry gets
+that same foreign-root rule per row, because the folder it names is not ours
+however much the directory holding the link is.
 
 The ``skills`` DB table is a rebuildable index over those roots so listing stays
 cheap and the UI has a stable id per skill — which is also what assignments and
@@ -47,6 +53,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import delete, select
 
+from app.config import get_settings
 from app.db.models import (
     EnvVarSkillLink,
     Skill,
@@ -171,7 +178,17 @@ def _to_read(
         root=row.root,
         root_label=store.root_label(row.root),
         is_owned_root=store.is_owned_root(row.root),
+        link_target=row.link_target,
+        # The *root* the link points into ("~/.claude"), not the folder itself —
+        # what a badge needs to say whose files these really are. ``root_label``
+        # takes a root key, so hand it the target's parent.
+        link_label=(
+            store.root_label(str(Path(row.link_target).parent))
+            if row.link_target
+            else ""
+        ),
         enabled=row.enabled,
+        error=parsed.error if parsed else "",
         layer=layer,
         env_var_ids=env_var_ids or [],
         resources=parsed.resources if parsed else [],
@@ -199,6 +216,25 @@ async def _env_links(session: AsyncSession) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for link in rows:
         out.setdefault(link.skill_id, []).append(link.env_var_id)
+    return out
+
+
+async def _link_targets(session: AsyncSession) -> set[Path]:
+    """Resolved folders some catalog entry already points at through a symlink.
+
+    Those folders still sit in the root that owns them, so discovery would index
+    them again — one ``SKILL.md`` showing up as two skills, with two enable
+    switches and two assignments over it.
+    """
+    out: set[Path] = set()
+    rows = (
+        (await session.execute(select(Skill).where(Skill.link_target != "")))
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        with contextlib.suppress(OSError):
+            out.add(Path(row.link_target).expanduser().resolve())
     return out
 
 
@@ -237,6 +273,8 @@ async def _reconcile_root(
     root_key: str,
     materialize: bool,
     dropped: set[str],
+    default_global: bool = False,
+    skip: set[Path] | None = None,
 ) -> bool:
     """Sync one root's DB rows against its on-disk folders. Returns whether dirty.
 
@@ -247,6 +285,15 @@ async def _reconcile_root(
     ``.claude/`` directory in a repo that never had one and resurrect skills the
     user deleted in another tool, so for a foreign root disk is authoritative for
     existence, not merely for content.
+
+    A *linked* entry opts out of ``materialize`` row by row: the catalog is ours,
+    but that particular folder is a symlink into a directory that is not, so it
+    gets the foreign-root rule.
+
+    ``default_global`` is the reach a newly indexed folder is given — on for
+    personal roots, where being discovered has always meant being available. ``skip``
+    holds resolved folder paths to leave alone, which is how a folder already
+    linked into the catalog avoids being indexed a second time as itself.
     """
     taken = set(store.list_slugs(root)) | {r.slug for r in rows if r.slug}
     indexed: set[str] = set()
@@ -265,8 +312,25 @@ async def _reconcile_root(
             session.add(row)
             dirty = True
 
-        if not store.exists(row.slug, root):
-            if not materialize:
+        exists = store.exists(row.slug, root)
+        # Keep ``link_target`` in step with the folder, so a link dropped into the
+        # catalog by hand is treated as one and a link since replaced by a real
+        # folder stops claiming to be one. Absence is deliberately *not* a signal:
+        # a link whose target has gone must stay recorded long enough for the
+        # branch below to drop the row rather than materialize over it.
+        actual_link = store.link_target(row.slug, root)
+        if actual_link != row.link_target and (actual_link or exists):
+            row.link_target = actual_link
+            session.add(row)
+            dirty = True
+
+        if not exists:
+            if not materialize or row.link_target:
+                if row.link_target:
+                    # The target is gone from the other tool, so the skill is
+                    # gone. Take the dead link with the row — leaving it would
+                    # have the next pass re-index a folder with no SKILL.md.
+                    store.delete_skill(row.slug, root)
                 await session.delete(row)
                 dropped.add(row.id)
                 dirty = True
@@ -303,6 +367,13 @@ async def _reconcile_root(
     for slug in store.list_slugs(root):
         if slug in indexed:
             continue
+        # Already in the catalog under a link: indexing it here as well would put
+        # the same folder in the UI twice, with two enable switches and two
+        # assignments over one SKILL.md.
+        if skip:
+            with contextlib.suppress(OSError, ValueError):
+                if store.path_for(slug, root).resolve() in skip:
+                    continue
         parsed = store.read_skill(slug, root)
         if parsed is None:
             continue
@@ -313,11 +384,73 @@ async def _reconcile_root(
                 description=parsed.description,
                 content=parsed.content,
                 origin=origin,
-                is_global=False,
+                is_global=default_global,
                 workspace_id=workspace_id,
                 root=root_key,
+                link_target=store.link_target(slug, root),
             )
         )
+        dirty = True
+
+    return dirty
+
+
+async def _auto_link_user_skills(session: AsyncSession, dropped: set[str]) -> bool:
+    """Symlink every discovered personal skill into the catalog. Returns dirty.
+
+    This is what makes a ``~/.claude/skills`` folder *managed* rather than merely
+    visible: the catalog ends up holding an entry for every skill the app knows
+    about, so the Skill Studio's file tree, terminal and chat reach all of them —
+    while the bytes stay where the other tool put them, so nothing is duplicated
+    and nothing drifts.
+
+    The row is re-pointed rather than replaced, exactly as ``POST /link`` does, so
+    reach, env vars, enable state and id all survive being linked.
+
+    Two folders are left as plain ``external`` rows. One whose slug the catalog
+    already holds is currently *shadowed* by that skill — the closest layer wins —
+    and linking it under ``foo-2`` would quietly promote one active skill into two.
+    One whose link can't be created (a permission error, a filesystem with no
+    symlink support) simply stays discovered, which is the behaviour that predates
+    this and is still correct, just less convenient.
+    """
+    catalog = store.catalog_root()
+    rows = (
+        (
+            await session.execute(
+                select(Skill).where(
+                    Skill.origin == SkillOrigin.external, Skill.link_target == ""
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return False
+    taken = await _taken_slugs(session, catalog, SkillOrigin.managed, None, root_key="")
+    dirty = False
+
+    for row in rows:
+        if row.id in dropped or not row.slug or not row.root:
+            continue
+        if row.slug in taken:
+            continue  # shadowed by a catalog skill of the same name; leave it be
+        source = Path(row.root).expanduser() / row.slug
+        if not (source / store.SKILL_FILE).is_file():
+            continue
+        try:
+            target = source.resolve()
+            slug = store.link_skill(source, catalog, taken=taken)
+        except (OSError, ValueError):
+            continue
+        taken.add(slug)
+        row.slug = slug
+        row.origin = SkillOrigin.managed
+        row.workspace_id = None
+        row.root = ""
+        row.link_target = str(target)
+        session.add(row)
         dirty = True
 
     return dirty
@@ -351,6 +484,11 @@ async def reconcile(session: AsyncSession) -> None:
         dropped=dropped,
     )
 
+    # Folders the catalog already points at through a symlink, so the passes below
+    # don't index them a second time under the root they physically live in. Read
+    # after the catalog pass, which is what drops the rows whose links have died.
+    linked = await _link_targets(session)
+
     # Every configured local root of every existing workspace. Skip a workspace
     # whose directory is gone so we don't resurrect a deleted workspace folder by
     # materializing skills into it.
@@ -379,6 +517,7 @@ async def reconcile(session: AsyncSession) -> None:
                 root_key=key,
                 materialize=store.is_owned_root(key),
                 dropped=dropped,
+                skip=linked,
             )
         # Rows in a root that has been un-configured or has vanished from disk.
         # Nothing is deleted on disk — the directory is simply no longer indexed.
@@ -388,7 +527,9 @@ async def reconcile(session: AsyncSession) -> None:
                 dropped.add(row.id)
                 dirty = True
 
-    # Personal roots owned by another tool. No workspace, never materialized.
+    # Personal roots owned by another tool. No workspace, never materialized, and
+    # global on discovery: being in ``~/.claude/skills`` has always meant "loads
+    # everywhere", and that stays the default now the reach is editable.
     pending_user = _by_root([r for r in rows if r.origin == SkillOrigin.external])
     for key, root in store.user_skill_roots():
         dirty |= await _reconcile_root(
@@ -400,12 +541,19 @@ async def reconcile(session: AsyncSession) -> None:
             root_key=key,
             materialize=False,
             dropped=dropped,
+            default_global=True,
+            skip=linked,
         )
     for orphans in pending_user.values():
         for row in orphans:
             await session.delete(row)
             dropped.add(row.id)
             dirty = True
+
+    # Pull every personal skill into the catalog by reference, so the Skill Studio
+    # holds all of them and none had to be ingested to get there.
+    if get_settings().auto_link_user_skills:
+        dirty |= await _auto_link_user_skills(session, dropped)
 
     # Drop local rows whose workspace no longer exists at all.
     live_ids = {r.id for r in rows} - dropped
@@ -605,15 +753,20 @@ async def set_assignment(
     payload: SkillAssignment,
     session: AsyncSession = Depends(get_session),
 ):
-    """Re-point a managed skill: global, a set of workspaces, or nowhere."""
+    """Re-point a skill: global, a set of workspaces, or nowhere.
+
+    Works on a ``managed`` skill and on an ``external`` one — a personal skill's
+    reach is ours to decide even though its files are not, and deciding it needs no
+    copy. Only ``local`` is refused: it is pinned to the repo holding it, so where
+    it applies is where its files are and there is nothing to re-point.
+    """
     skill = await _get_or_404(skill_id, session)
-    if skill.origin != SkillOrigin.managed:
-        verb = "Promote" if store.is_owned_root(skill.root) else "Copy"
-        where = store.root_label(skill.root) or "another tool's directory"
+    if skill.origin == SkillOrigin.local:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"This skill lives in {where}, so it has no assignment to change. "
-            f"{verb} it into the catalog first to assign it elsewhere.",
+            f"This skill is committed into {store.root_label(skill.root) or 'a repo'} "
+            "in one workspace, so it applies there and nowhere else. Bring it into "
+            "the catalog to assign it elsewhere.",
         )
     await _set_assignment(
         session,
@@ -627,7 +780,7 @@ async def set_assignment(
     env_links = await _env_links(session)
     return _to_read(
         skill,
-        store.catalog_root(),
+        await _row_root(session, skill),
         workspace_ids=assigned.get(skill.id, []),
         env_var_ids=env_links.get(skill.id, []),
     )
@@ -763,6 +916,85 @@ async def copy_skill(
     await session.refresh(copy)
     assigned = await _assignments(session)
     return _to_read(copy, catalog, workspace_ids=assigned.get(copy.id, []))
+
+
+@router.post("/{skill_id}/link", response_model=SkillRead)
+async def link_skill(
+    skill_id: str,
+    payload: SkillPromote | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Symlink a personal skill into the catalog, still reading the original.
+
+    The third way in, and the only one that doesn't duplicate anything: ``promote``
+    takes the folder (ours only), ``copy`` takes a snapshot that then drifts from
+    whatever Claude Code does to it next, this points at it. Afterwards the skill is
+    a managed one in every respect the UI cares about — it shows in the Skill
+    Studio, it can be edited, it carries env vars — while the bytes stay where the
+    other tool put them, which also means **an edit here is an edit there**.
+
+    The row is re-pointed rather than duplicated, so the skill keeps its id, its
+    env vars, its enable state and (with no body) its reach: linking changes where
+    a skill can be *managed from*, not where it applies.
+
+    Only a personal (``external``) skill can be linked. A repo's skill is already
+    scoped by living in that repo, and a catalog entry pointing into a working tree
+    would die the moment the repo moved — ``promote`` or ``copy`` it instead.
+    """
+    skill = await _get_or_404(skill_id, session)
+    if skill.origin == SkillOrigin.managed:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This skill is already linked into the catalog"
+            if skill.link_target
+            else "This skill is already in the catalog",
+        )
+    if skill.origin != SkillOrigin.external:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This skill is committed into a repo, so a link from the catalog would "
+            "break as soon as that repo moved. Move or copy it into the catalog "
+            "instead.",
+        )
+    src_root = await _row_root_or_404(session, skill)
+    catalog = store.catalog_root()
+    taken = await _taken_slugs(session, catalog, SkillOrigin.managed, None, root_key="")
+
+    try:
+        source = store.path_for(skill.slug, src_root)
+        target = source.resolve()
+        slug = store.link_skill(source, catalog, taken=taken)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Could not link skill folder: {exc}"
+        ) from exc
+
+    skill.slug = slug
+    skill.origin = SkillOrigin.managed
+    skill.workspace_id = None
+    skill.root = ""
+    skill.link_target = str(target)
+
+    payload = payload or SkillPromote()
+    if payload.is_global is not None or payload.workspace_ids is not None:
+        await _set_assignment(
+            session,
+            skill,
+            is_global=bool(payload.is_global),
+            workspace_ids=payload.workspace_ids or [],
+        )
+    else:
+        session.add(skill)
+    await session.commit()
+    await session.refresh(skill)
+    assigned = await _assignments(session)
+    env_links = await _env_links(session)
+    return _to_read(
+        skill,
+        catalog,
+        workspace_ids=assigned.get(skill.id, []),
+        env_var_ids=env_links.get(skill.id, []),
+    )
 
 
 async def _import_zip(raw: bytes, root: Path, taken: set[str]) -> list[str]:
@@ -1166,9 +1398,16 @@ async def delete_skill(skill_id: str, session: AsyncSession = Depends(get_sessio
     # Allowed on a foreign root: deleting a discovered skill has always meant
     # deleting the real folder, and the UI names the absolute path before the
     # click. A root that has already vanished just drops the row.
+    #
+    # A *linked* entry deletes its target as well as the link. The link is only how
+    # the skill reached the catalog — with discovery linking automatically, removing
+    # it alone would be undone on the next reconcile — so delete keeps the one
+    # meaning it has everywhere else: the folder goes, in the other tool too.
     root = await _row_root(session, skill)
     if root is not None:
-        store.delete_skill(skill.slug, root)
+        store.delete_skill(
+            skill.slug, root, follow_link=bool(skill.link_target)
+        )
     # Links don't cascade in SQLite; drop them with the row so a recycled id can
     # never inherit another skill's assignment or secrets.
     await session.execute(
