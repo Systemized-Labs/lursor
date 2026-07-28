@@ -2,7 +2,6 @@ import {
   Broom,
   CaretDown,
   CheckCircle,
-  Cpu,
   Lightning,
   MagnifyingGlass,
   Square,
@@ -35,6 +34,17 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
+import {
+  nodeTargets,
+  placementInput,
+  placementLabel,
+  placementNodes,
+  recipeConstraints,
+  resolvePlacement,
+  type Placement,
+  type RecipeConstraints,
+} from "./placement"
+import { PlacementPicker } from "./placement-picker"
 
 interface ModelLibraryProps {
   connectionId: string
@@ -79,51 +89,92 @@ function fmtAgo(iso?: string | null): string | null {
   return `${Math.round(months / 12)}y ago`
 }
 
-type Fit = "ok" | "tight" | "cluster" | "too-big" | "no-fit" | "unknown"
+type Fit =
+  | "ok"
+  | "tight"
+  | "cluster"
+  | "solo-only"
+  | "needs-nodes"
+  | "too-big"
+  | "no-fit"
+  | "unknown"
 
 interface Compat {
   fit: Fit
-  /** Hard, permanent incompatibility for the current mode. */
+  /** Hard, permanent incompatibility for the current placement. */
   unavailable: boolean
   /** Whether the model can be served right now. */
   canServe: boolean
   reason: string
 }
 
-// Normalized VRAM pool the serve targets: `usable` is the most a single model
-// could ever get; `available` is what's free right now.
+// Normalized VRAM pool the chosen placement can draw on: `usable` is the most a
+// single model could ever get there; `available` is what's free right now.
+// `label` names the destination so every verdict says where it applies.
 interface VramPool {
   usable: number
   available: number
-  scope: "machine" | "cluster"
+  label: string
 }
 
-// Classify a model's VRAM estimate against the pool for the chosen mode.
+// Classify a model against the chosen placement: first the topology rules the
+// daemon enforces on `/v1/serve`, then whether it fits in that placement's VRAM.
 function classify(
   est: number | null,
-  clusterOnly: boolean,
-  solo: boolean,
+  constraints: RecipeConstraints,
+  placement: Placement,
+  nodeCount: number,
+  shardAvailable: boolean,
   pool: VramPool | undefined
 ): Compat {
-  if (solo && clusterOnly) {
+  const sharding = placement.kind === "shard"
+  const { clusterOnly, soloOnly, minNodes, maxNodes } = constraints
+
+  if (!sharding && clusterOnly) {
     return {
       fit: "cluster",
       unavailable: true,
       canServe: false,
-      reason: "Requires a multi-node cluster — switch to Cluster to serve it.",
+      reason: shardAvailable
+        ? `Needs ${minNodes} nodes together — switch to Multiple to serve it.`
+        : `Requires a multi-node cluster (${minNodes} nodes).`,
     }
   }
+  if (sharding && soloOnly) {
+    return {
+      fit: "solo-only",
+      unavailable: true,
+      canServe: false,
+      reason: "Runs on one node only — switch to One node to serve it.",
+    }
+  }
+  if (sharding && nodeCount < minNodes) {
+    return {
+      fit: "needs-nodes",
+      unavailable: false,
+      canServe: false,
+      reason: `Needs at least ${minNodes} nodes — ${nodeCount} selected.`,
+    }
+  }
+  if (sharding && maxNodes != null && nodeCount > maxNodes) {
+    return {
+      fit: "needs-nodes",
+      unavailable: false,
+      canServe: false,
+      reason: `Runs on at most ${maxNodes} nodes — ${nodeCount} selected.`,
+    }
+  }
+
   if (est == null || !pool) {
     return { fit: "unknown", unavailable: false, canServe: true, reason: "" }
   }
-  const { usable, available, scope } = pool
-  const where = scope === "cluster" ? "the cluster" : "this machine"
+  const { usable, available, label } = pool
   if (est > usable) {
     return {
       fit: "too-big",
       unavailable: true,
       canServe: false,
-      reason: `Too large for ${where} — needs ${gb(est)}, only ${gb(usable)} usable.`,
+      reason: `Too large for ${label} — needs ${gb(est)}, only ${gb(usable)} usable.`,
     }
   }
   if (est > available) {
@@ -131,14 +182,14 @@ function classify(
       fit: "no-fit",
       unavailable: false,
       canServe: false,
-      reason: `Not enough free VRAM — needs ${gb(est)}, ${gb(available)} free. Stop a running model first.`,
+      reason: `Not enough free VRAM on ${label} — needs ${gb(est)}, ${gb(available)} free. Stop a running model or pick another node.`,
     }
   }
   return {
     fit: est > available * 0.85 ? "tight" : "ok",
     unavailable: false,
     canServe: true,
-    reason: `Fits — ${gb(est)} of ${gb(available)} free.`,
+    reason: `Fits on ${label} — ${gb(est)} of ${gb(available)} free.`,
   }
 }
 
@@ -152,7 +203,7 @@ interface ModelEntry {
   engine: string
   description: string | null
   vramEstimateMb: number | null
-  clusterOnly: boolean
+  constraints: RecipeConstraints
   installed: boolean
   recipePresent: boolean
   model?: LaiosModel
@@ -204,6 +255,16 @@ function fitPill(entry: ModelEntry): { label: string; className: string } | null
         label: "cluster only",
         className: "border-destructive/40 bg-destructive/10 text-destructive",
       }
+    case "solo-only":
+      return {
+        label: "single node",
+        className: "border-destructive/40 bg-destructive/10 text-destructive",
+      }
+    case "needs-nodes":
+      return {
+        label: "more nodes",
+        className: "border-warning/40 bg-warning/10 text-warning",
+      }
     default:
       return null
   }
@@ -227,7 +288,7 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
   const deleteModel = useDeleteModel(connectionId)
   const stopInstance = useStopInstance(connectionId)
 
-  const [solo, setSolo] = useState(true)
+  const [placement, setPlacement] = useState<Placement>({ kind: "head" })
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<FilterKey>("all")
   const [expandedKey, setExpandedKey] = useState<string | undefined>()
@@ -240,30 +301,45 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
   >()
   const [toStop, setToStop] = useState<ModelEntry | undefined>()
 
-  const soloPool = useMemo<VramPool | undefined>(() => {
-    if (!budget) return undefined
-    const usable = Math.max(0, budget.total_mb - budget.reserved_mb)
-    return {
-      usable,
-      available: Math.max(0, usable - budget.allocated_mb),
-      scope: "machine",
-    }
-  }, [budget])
+  // Every node this daemon can place on, head first. Empty when the daemon has
+  // no cluster, which is what hides the picker.
+  const targets = useMemo(() => nodeTargets(cluster), [cluster])
+  const isCluster = (cluster?.resources?.total_nodes_known ?? 0) > 1
+  const shardAvailable =
+    isCluster && targets.some((t) => t.role === "worker" && t.shardable)
 
-  const clusterPool = useMemo<VramPool | undefined>(() => {
-    const res = cluster?.resources
-    if (!res || res.total_nodes_known <= 1) return undefined
-    return {
-      usable: res.total_vram_mb,
-      available: res.free_vram_mb,
-      scope: "cluster",
-    }
-  }, [cluster])
+  // A worker can drop out (or the whole cluster can) while it's selected, so
+  // the placement actually used is always re-derived from live membership.
+  const active = useMemo<Placement>(
+    () => (isCluster ? resolvePlacement(placement, targets) : { kind: "head" }),
+    [isCluster, placement, targets]
+  )
+  const activeNodes = useMemo(
+    () => placementNodes(active, targets),
+    [active, targets]
+  )
 
-  // With no real cluster there's only one mode; coerce to solo so the fit math
-  // and the (hidden) toggle stay consistent.
-  const effectiveSolo = solo || !clusterPool
-  const activePool = effectiveSolo ? soloPool : clusterPool
+  // VRAM the placement can draw on. Standalone daemons keep using /v1/budget
+  // (it accounts for the scheduler's reserve); once there's a cluster, every
+  // node — including the head — is measured the same way off the rollup, so
+  // the numbers in the picker and the verdicts agree.
+  const activePool = useMemo<VramPool | undefined>(() => {
+    if (!isCluster) {
+      if (!budget) return undefined
+      const usable = Math.max(0, budget.total_mb - budget.reserved_mb)
+      return {
+        usable,
+        available: Math.max(0, usable - budget.allocated_mb),
+        label: "this machine",
+      }
+    }
+    if (activeNodes.length === 0) return undefined
+    return {
+      usable: activeNodes.reduce((sum, n) => sum + n.totalVramMb, 0),
+      available: activeNodes.reduce((sum, n) => sum + n.freeVramMb, 0),
+      label: placementLabel(active, targets),
+    }
+  }, [isCluster, budget, activeNodes, active, targets])
 
   // Build the merged entries: index installed weights by every recipe id they
   // can serve (solo/cluster variants share weights), then fold them into the
@@ -294,6 +370,7 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
 
     const fromCatalog: ModelEntry[] = (catalog ?? []).map((r) => {
       const model = modelByRecipe.get(r.id)
+      const constraints = recipeConstraints(r)
       return {
         key: r.id,
         recipeId: r.id,
@@ -301,12 +378,19 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
         engine: r.engine,
         description: r.description,
         vramEstimateMb: r.vram_estimate_mb,
-        clusterOnly: r.cluster_only,
+        constraints,
         installed: Boolean(model?.installed),
         recipePresent: true,
         model,
         running: runningByRecipe.get(r.id),
-        fit: classify(r.vram_estimate_mb, r.cluster_only, effectiveSolo, activePool),
+        fit: classify(
+          r.vram_estimate_mb,
+          constraints,
+          active,
+          activeNodes.length,
+          shardAvailable,
+          activePool
+        ),
       }
     })
 
@@ -325,7 +409,7 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
         engine: m.engine,
         description: null,
         vramEstimateMb: null,
-        clusterOnly: false,
+        constraints: { clusterOnly: false, soloOnly: false, minNodes: 1 },
         installed: true,
         recipePresent: false,
         model: m,
@@ -339,7 +423,15 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
       }))
 
     return [...fromCatalog, ...orphanModels]
-  }, [catalog, models, instances, effectiveSolo, activePool])
+  }, [
+    catalog,
+    models,
+    instances,
+    active,
+    activeNodes.length,
+    shardAvailable,
+    activePool,
+  ])
 
   // Search + filter, then sort: running first, then servable, then installed,
   // unavailable last; smallest first within a group so the easiest pick is up top.
@@ -378,7 +470,17 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
 
   function handleServe(entry: ModelEntry) {
     if (!entry.recipeId || !entry.fit.canServe) return
-    const input: LaiosServeInput = { recipe: entry.recipeId, solo: effectiveSolo }
+    const target = placementInput(active, targets)
+    // A shard is addressed by fabric IP, and the head's has to be routable —
+    // a daemon still advertising loopback can't be rank 0, so say that here
+    // rather than letting the serve fail deep in the cluster resolver.
+    if (active.kind === "shard" && (target.nodes?.length ?? 0) < 2) {
+      toast.error(
+        "Multi-node serve needs every node's fabric address — set node.advertise on the head to its CX-7 IP."
+      )
+      return
+    }
+    const input: LaiosServeInput = { recipe: entry.recipeId, ...target }
     if (maxLen.trim()) {
       const n = Number(maxLen.trim())
       if (!Number.isFinite(n) || n <= 0) {
@@ -429,7 +531,7 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
 
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-card">
-      {/* Header: identity, the (cluster-only) mode toggle, search, and filters. */}
+      {/* Header: identity, the (cluster-only) placement picker, search, filters. */}
       <div className="space-y-3 border-b border-border p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -438,10 +540,18 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
               Library
             </h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Browse every model against your VRAM and serve one inline.
+              {isCluster
+                ? "Pick where models land, then browse them against that node's VRAM."
+                : "Browse every model against your VRAM and serve one inline."}
             </p>
           </div>
-          {clusterPool ? <ModeToggle solo={effectiveSolo} onChange={setSolo} /> : null}
+          {isCluster ? (
+            <PlacementPicker
+              placement={active}
+              targets={targets}
+              onChange={setPlacement}
+            />
+          ) : null}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -499,6 +609,9 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
               onMaxLen={setMaxLen}
               servedName={servedName}
               onServedName={setServedName}
+              targetLabel={
+                isCluster ? placementLabel(active, targets) : undefined
+              }
               onServe={() => handleServe(e)}
               onDelete={() => setToDelete(e)}
               onStop={() => setToStop(e)}
@@ -582,42 +695,6 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
   )
 }
 
-// Solo / Cluster segmented control. Shown only when a real cluster exists.
-function ModeToggle({
-  solo,
-  onChange,
-}: {
-  solo: boolean
-  onChange: (solo: boolean) => void
-}) {
-  return (
-    <div className="flex shrink-0 items-center rounded-lg border border-border bg-muted/40 p-0.5 text-xs font-medium">
-      {[
-        { label: "Solo", value: true, icon: Cpu },
-        { label: "Cluster", value: false, icon: Stack },
-      ].map((opt) => {
-        const active = solo === opt.value
-        return (
-          <button
-            key={opt.label}
-            type="button"
-            onClick={() => onChange(opt.value)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-colors",
-              active
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <opt.icon className="h-3.5 w-3.5" />
-            {opt.label}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
 function FilterChip({
   active,
   onClick,
@@ -686,6 +763,7 @@ function ModelRow({
   onMaxLen,
   servedName,
   onServedName,
+  targetLabel,
   onServe,
   onDelete,
   onStop,
@@ -699,6 +777,8 @@ function ModelRow({
   onMaxLen: (v: string) => void
   servedName: string
   onServedName: (v: string) => void
+  /** Where this serve would land; undefined on a standalone daemon. */
+  targetLabel?: string
   onServe: () => void
   onDelete: () => void
   onStop: () => void
@@ -890,6 +970,7 @@ function ModelRow({
               <Button size="sm" onClick={onServe} disabled={!fit.canServe}>
                 <Lightning className="h-4 w-4" />
                 {installed ? "Serve" : "Download & serve"}
+                {targetLabel ? ` on ${targetLabel}` : ""}
               </Button>
             ) : null}
             {installed && !running ? (

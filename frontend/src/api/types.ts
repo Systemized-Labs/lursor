@@ -841,6 +841,22 @@ export interface LaiosInstance {
   updated_at: string
 }
 
+/**
+ * Placement constraints a recipe declares. Mirrors the daemon's
+ * `RecipeClusterSummary`: which topologies it accepts and, for multi-node, how
+ * many nodes it needs and how ranks are wired.
+ */
+export interface LaiosRecipeCluster {
+  /** Refuses single-node serve — needs `nodes[]`. */
+  cluster_only: boolean
+  /** Refuses `nodes[]` — one node only (but may be placed on a worker). */
+  solo_only: boolean
+  /** "ray" | "mp" — how a multi-node serve joins ranks. */
+  distributed: string
+  min_nodes?: number
+  max_nodes?: number
+}
+
 /** A curated recipe summary from the catalog. */
 export interface LaiosRecipeSummary {
   id: string
@@ -850,6 +866,8 @@ export interface LaiosRecipeSummary {
   cluster_only: boolean
   description: string | null
   vram_estimate_mb: number | null
+  /** Absent on daemons older than the cluster summary — treat as unconstrained. */
+  cluster?: LaiosRecipeCluster
 }
 
 /** The live instance (if any) serving a model, embedded in a model summary. */
@@ -1023,12 +1041,26 @@ export interface LaiosDoctorReport {
 }
 
 /** Serve knobs POSTed to the daemon (all optional except recipe). */
+/**
+ * Serve knobs posted to the daemon's `/v1/serve`. Placement is a choice of
+ * exactly one of three shapes — the daemon rejects `worker` + `nodes` together:
+ *
+ * - `solo: true` — one engine on the head.
+ * - `worker` — one engine on that peer (id, name, fabric IP, or `"auto"` for
+ *   the Ready worker with the most free VRAM). The head's gateway still fronts it.
+ * - `nodes` — one model sharded across ranks; `nodes[0]` **must** be the head's
+ *   fabric IP, the rest must be Ready workers' fabric IPs.
+ */
 export interface LaiosServeInput {
   recipe: string
   max_model_len?: number
   port?: number
   served_name?: string
   solo?: boolean
+  worker?: string
+  nodes?: string[]
+  gpu_memory_utilization?: number
+  extra_args?: string[]
 }
 
 export interface LaiosInstanceLogs {
