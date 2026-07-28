@@ -209,6 +209,19 @@ async def _apply_lightweight_migrations(conn) -> None:
         ),
         "tavily_api_key": "ALTER TABLE app_config ADD COLUMN tavily_api_key VARCHAR",
         "exa_api_key": "ALTER TABLE app_config ADD COLUMN exa_api_key VARCHAR",
+        # Memory provider + Hindsight connection. A NULL ``memory_provider``
+        # means "file", so an existing install upgrades to exactly its current
+        # behaviour and no backfill is needed.
+        "memory_provider": "ALTER TABLE app_config ADD COLUMN memory_provider VARCHAR",
+        "hindsight_base_url": (
+            "ALTER TABLE app_config ADD COLUMN hindsight_base_url VARCHAR"
+        ),
+        "hindsight_api_key": (
+            "ALTER TABLE app_config ADD COLUMN hindsight_api_key VARCHAR"
+        ),
+        "hindsight_config": (
+            "ALTER TABLE app_config ADD COLUMN hindsight_config JSON DEFAULT '{}'"
+        ),
     }
     for col, ddl in app_config_additions.items():
         if col not in app_config_cols:

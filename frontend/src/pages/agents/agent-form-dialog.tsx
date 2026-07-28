@@ -43,6 +43,7 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { MultiSelect } from "@/components/multi-select"
 import { ModelPicker } from "@/components/model-picker"
+import { useMemoryHint } from "@/pages/settings/memory-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
 
@@ -65,7 +66,10 @@ const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
   { key: "include_todo", label: "Include todo" },
   { key: "include_subagents", label: "Include subagents" },
   { key: "include_skills", label: "Include skills" },
-  { key: "include_memory", label: "Include memory" },
+  // "Memory", not "Include memory": the toggle decides whether this agent
+  // remembers across runs, while where that memory lives is an app-wide provider
+  // choice named in the hint below it (see ``useMemoryHint``).
+  { key: "include_memory", label: "Memory" },
   { key: "include_plan", label: "Include plan" },
   { key: "web_search", label: "Web search" },
   { key: "browser_qa", label: "Browser QA" },
@@ -154,6 +158,9 @@ export function AgentFormDialog({
   const updateAgent = useUpdateAgent()
   const generatePrompt = useGeneratePrompt()
   const improvePrompt = useImprovePrompt()
+  // Where memory goes if the toggle below is on — an app-wide provider choice, so
+  // it's read here rather than being part of the agent's own config.
+  const memoryHint = useMemoryHint()
 
   // Prompt-authoring UI state: an inline brief box, and a pending destructive
   // replace guarded by a confirm dialog when the field already has content.
@@ -530,9 +537,14 @@ export function AgentFormDialog({
               {BOOLEAN_FIELDS.map((field) => (
                 <div
                   key={field.key}
-                  className="flex items-center justify-between gap-2"
+                  className="flex items-start justify-between gap-2"
                 >
-                  <Label htmlFor={`agent-${field.key}`}>{field.label}</Label>
+                  <div className="grid gap-0.5">
+                    <Label htmlFor={`agent-${field.key}`}>{field.label}</Label>
+                    {field.key === "include_memory" && memoryHint ? (
+                      <p className="text-xs text-muted-foreground">{memoryHint}</p>
+                    ) : null}
+                  </div>
                   <Switch
                     id={`agent-${field.key}`}
                     checked={form[field.key]}

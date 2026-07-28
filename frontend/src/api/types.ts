@@ -618,6 +618,65 @@ export interface WebSearchSettingsInput {
 }
 
 /**
+ * App-wide memory backend for every agent with memory enabled. "file" is the
+ * per-workspace `MEMORY.md` the agent library ships; "hindsight" replaces it with
+ * retain/recall/reflect against a Hindsight memory bank the user owns.
+ */
+export type MemoryProvider = "file" | "hindsight"
+
+/**
+ * How much of the Hindsight bank a workspace can see. "workspace" partitions it
+ * by tag; "shared" puts the whole bank in scope everywhere — the mode for a bank
+ * already filled by the user's other tools.
+ */
+export type MemoryIsolation = "workspace" | "shared"
+
+/** Server-side retrieval effort for recall (and reflect). */
+export type RecallBudget = "low" | "mid" | "high"
+
+/** Memory configuration status (the raw Hindsight key is never returned). */
+export interface MemorySettings {
+  provider: MemoryProvider
+  // False when the backend process lacks the optional `hindsight` extra: the
+  // provider can be selected but silently degrades to file memory.
+  hindsight_installed: boolean
+  hindsight_base_url: string | null
+  hindsight_configured: boolean
+  hindsight_key_hint: string | null
+  hindsight_source: "database" | "env" | "none"
+  bank_id: string
+  isolation: MemoryIsolation
+  budget: RecallBudget
+  max_tokens: number
+  inject_memories: boolean
+  include_reflect: boolean
+  extra_recall_tags: string[]
+  recall_query: string
+}
+
+export interface MemorySettingsInput {
+  provider?: MemoryProvider
+  hindsight_base_url?: string | null
+  hindsight_api_key?: string | null
+  bank_id?: string | null
+  isolation?: MemoryIsolation
+  budget?: RecallBudget
+  max_tokens?: number
+  inject_memories?: boolean
+  include_reflect?: boolean
+  extra_recall_tags?: string[]
+  recall_query?: string | null
+}
+
+export interface MemoryTestResult {
+  status: "ok" | "error"
+  version: string | null
+  bank_exists: boolean | null
+  memory_count: number | null
+  error: string | null
+}
+
+/**
  * Default agent per slash command — a command name mapped to an agent id. A key
  * is absent when the command has no default agent. `/plan` reassigns the open
  * thread to its agent (sticky); `/ask` and `/goal` run one-off under their agent;

@@ -506,6 +506,37 @@ class AppConfig(TimestampMixin, table=True):
     tavily_api_key: str | None = None
     exa_api_key: str | None = None
 
+    # App-wide memory backend used by every agent that has ``include_memory``
+    # on. "file" (or null, the default) keeps pydantic-deep's per-workspace
+    # ``MEMORY.md``; "hindsight" replaces it with retain/recall/reflect against a
+    # Hindsight memory bank (see ``agents/hindsight.py``). The per-agent
+    # ``include_memory`` flag stays the master on/off switch — this only decides
+    # *where* memory lives, exactly like ``web_search_provider`` above.
+    memory_provider: str | None = None
+
+    # Hindsight connection. ``base_url`` may be the hosted API
+    # (https://api.hindsight.vectorize.io) or a self-hosted instance (the Docker
+    # image exposes the API on :8888). The key is stored in plaintext like every
+    # other secret this app holds, and is never returned by the API.
+    hindsight_base_url: str | None = None
+    hindsight_api_key: str | None = None
+
+    # Hindsight tuning knobs. A free-form JSON blob so new ones need no
+    # migration (same rationale as ``deep_defaults``). Recognized keys, all
+    # optional — see ``agents/hindsight.resolve_hindsight_config`` for defaults:
+    #   bank_id: str                    the bank every agent reads/writes
+    #   isolation: "workspace"|"shared" recall scoped to this workspace, or the
+    #                                   whole bank (the bring-your-own-bank mode)
+    #   budget: "low"|"mid"|"high"      server-side retrieval effort
+    #   max_tokens: int                 cap on recalled context
+    #   inject_memories: bool           auto-recall into the prompt each turn
+    #   include_reflect: bool           offer the (LLM-backed) reflect tool
+    #   recall_query: str               blank => the default probe query
+    #   extra_recall_tags: list[str]    extra tags that also come back in
+    #                                   "workspace" isolation (the escape hatch
+    #                                   for memory shared across workspaces)
+    hindsight_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
     # Model that judges goal-mode completion (see ``agents/goal_loop.py``). The
     # pydantic-deep default is an ``anthropic:`` model that needs a key Lursor
     # may not have, so this overrides it with something on the OpenRouter/custom

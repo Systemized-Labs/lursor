@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OpenRouterSettingsRead(BaseModel):
@@ -56,6 +56,70 @@ class WebSearchSettingsUpdate(BaseModel):
     provider: WebSearchProvider | None = None
     tavily_api_key: str | None = None
     exa_api_key: str | None = None
+
+
+# App-wide memory backend for every agent with ``include_memory`` on: "file" is
+# pydantic-deep's per-workspace MEMORY.md (the default), "hindsight" is a
+# tag-scoped Hindsight memory bank. See ``agents/hindsight.py``.
+MemoryProvider = Literal["file", "hindsight"]
+# "workspace" partitions the bank by workspace tag; "shared" puts the whole bank
+# in scope for every workspace (the bring-your-own-bank mode).
+MemoryIsolation = Literal["workspace", "shared"]
+RecallBudget = Literal["low", "mid", "high"]
+
+
+class MemorySettingsRead(BaseModel):
+    """Current memory configuration. The raw Hindsight key is never returned."""
+
+    provider: MemoryProvider
+    # False when the optional ``hindsight`` extra isn't installed in the backend
+    # process — the provider can be selected but silently degrades to file
+    # memory, so the UI needs to say so.
+    hindsight_installed: bool = True
+    hindsight_base_url: str | None = None
+    # Key status, mirroring the OpenRouter/Tavily shape: a UI-saved key
+    # ("database"), the environment/.env ("env"), or nothing ("none"). Only a
+    # "database" key can be edited or cleared from the UI. A key is optional —
+    # a self-hosted instance usually needs none.
+    hindsight_configured: bool = False
+    hindsight_key_hint: str | None = None
+    hindsight_source: Literal["database", "env", "none"] = "none"
+    bank_id: str
+    isolation: MemoryIsolation
+    budget: RecallBudget
+    max_tokens: int
+    inject_memories: bool
+    include_reflect: bool
+    extra_recall_tags: list[str] = []
+    recall_query: str = ""
+
+
+class MemorySettingsUpdate(BaseModel):
+    # Partial, like ``WebSearchSettingsUpdate``: only fields present in the
+    # request body are applied, so the provider, the connection, and each tuning
+    # knob save independently. A present-but-blank ``hindsight_api_key`` clears
+    # the stored key and reverts to the environment value (if any).
+    provider: MemoryProvider | None = None
+    hindsight_base_url: str | None = None
+    hindsight_api_key: str | None = None
+    bank_id: str | None = None
+    isolation: MemoryIsolation | None = None
+    budget: RecallBudget | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
+    inject_memories: bool | None = None
+    include_reflect: bool | None = None
+    extra_recall_tags: list[str] | None = None
+    recall_query: str | None = None
+
+
+class MemoryTestResult(BaseModel):
+    """Result of probing a Hindsight instance with unsaved values."""
+
+    status: Literal["ok", "error"]
+    version: str | None = None  # api_version reported by the instance
+    bank_exists: bool | None = None
+    memory_count: int | None = None  # facts in the bank, when the instance reports it
+    error: str | None = None
 
 
 # Per-command default agent is an open ``dict[str, str]`` map (command name ->

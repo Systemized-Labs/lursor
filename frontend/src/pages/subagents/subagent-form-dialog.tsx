@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { useMemoryHint } from "@/pages/settings/memory-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
 
@@ -57,7 +58,10 @@ const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
   { key: "include_todo", label: "Include todo" },
   { key: "include_subagents", label: "Include subagents" },
   { key: "include_skills", label: "Include skills" },
-  { key: "include_memory", label: "Include memory" },
+  // "Memory", not "Include memory": the toggle decides whether this subagent
+  // remembers across runs; where that memory lives is an app-wide provider
+  // choice named in the hint below it (see ``useMemoryHint``).
+  { key: "include_memory", label: "Memory" },
   { key: "include_plan", label: "Include plan" },
   { key: "web_search", label: "Web search" },
 ]
@@ -138,6 +142,9 @@ export function SubagentFormDialog({
   const updateSubagent = useUpdateSubagent()
   const toolsQuery = useTools()
   const templatesQuery = usePromptTemplates()
+  // Where memory goes if the toggle below is on. A subagent shares its parent's
+  // bank and workspace, so this is the same app-wide provider.
+  const memoryHint = useMemoryHint()
   const isEdit = Boolean(subagent)
   const isSaving = createSubagent.isPending || updateSubagent.isPending
 
@@ -378,9 +385,14 @@ export function SubagentFormDialog({
               {BOOLEAN_FIELDS.map((field) => (
                 <div
                   key={field.key}
-                  className="flex items-center justify-between gap-2"
+                  className="flex items-start justify-between gap-2"
                 >
-                  <Label htmlFor={`subagent-${field.key}`}>{field.label}</Label>
+                  <div className="grid gap-0.5">
+                    <Label htmlFor={`subagent-${field.key}`}>{field.label}</Label>
+                    {field.key === "include_memory" && memoryHint ? (
+                      <p className="text-xs text-muted-foreground">{memoryHint}</p>
+                    ) : null}
+                  </div>
                   <Switch
                     id={`subagent-${field.key}`}
                     checked={form[field.key]}

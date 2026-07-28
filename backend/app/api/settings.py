@@ -10,6 +10,7 @@ OpenRouter provider during runs) — so it takes effect without a restart.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 
@@ -18,11 +19,15 @@ from fastapi import APIRouter, Body, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.agents import hindsight
 from app.agents.web_search import DEFAULT_WEB_SEARCH_PROVIDER
 from app.config import get_settings
 from app.db.models import AppConfig
 from app.db.session import async_session_factory, get_session
 from app.schemas.settings import (
+    MemorySettingsRead,
+    MemorySettingsUpdate,
+    MemoryTestResult,
     OpenRouterSettingsRead,
     OpenRouterSettingsUpdate,
     OpenRouterTestResult,
@@ -200,6 +205,188 @@ async def set_web_search(
     session.add(cfg)
     await session.commit()
     return await get_web_search(session)
+
+
+# --- Memory -------------------------------------------------------------------
+# Which backend an agent with ``include_memory=True`` gets: the library's
+# per-workspace MEMORY.md ("file", the default) or a Hindsight memory bank
+# ("hindsight"). Like web search, the provider is read at agent-build time, so
+# there is nothing to push into the running process here — a save takes effect on
+# the next message.
+#
+# The tuning knobs live in the ``hindsight_config`` JSON blob rather than in
+# columns, so adding one needs no migration. Reads and writes both go through
+# ``hindsight.resolve_knobs``, the same function the builder uses, so the values
+# this endpoint reports are the values a run would actually apply — and an absent
+# key means "the default" on both sides.
+
+
+def _memory_knobs(cfg: AppConfig | None) -> dict:
+    """The effective Hindsight tuning knobs — the same resolution a run uses.
+
+    Shared with the builder via ``hindsight.resolve_knobs`` so the values shown
+    here can't drift from the values a turn would actually apply. Deliberately
+    independent of whether the provider is currently selected: the settings form
+    has to render real values before the user switches over.
+    """
+    return hindsight.resolve_knobs(
+        cfg.hindsight_config if cfg else None, get_settings()
+    )
+
+
+@router.get("/memory", response_model=MemorySettingsRead)
+async def get_memory(session: AsyncSession = Depends(get_session)):
+    cfg = await _get_config(session)
+    app_settings = get_settings()
+
+    key_db = cfg.hindsight_api_key if cfg else None
+    key_env = app_settings.hindsight_api_key
+    key_eff = key_db or key_env
+
+    return MemorySettingsRead(
+        provider=hindsight.resolve_provider(cfg),
+        hindsight_installed=hindsight.hindsight_installed(),
+        hindsight_base_url=(cfg.hindsight_base_url if cfg else None)
+        or app_settings.hindsight_base_url,
+        hindsight_configured=bool(key_eff),
+        hindsight_key_hint=_hint(key_eff),
+        hindsight_source="database" if key_db else ("env" if key_env else "none"),
+        **_memory_knobs(cfg),
+    )
+
+
+@router.put("/memory", response_model=MemorySettingsRead)
+async def set_memory(
+    payload: MemorySettingsUpdate, session: AsyncSession = Depends(get_session)
+):
+    cfg = await _get_config(session)
+    if cfg is None:
+        cfg = AppConfig()
+
+    # Only touch fields the caller actually sent, so the provider, the connection
+    # and each knob can be saved independently without clobbering the others.
+    fields = payload.model_fields_set
+    if "provider" in fields:
+        cfg.memory_provider = payload.provider
+    if "hindsight_base_url" in fields:
+        cfg.hindsight_base_url = (
+            (payload.hindsight_base_url or "").strip().rstrip("/") or None
+        )
+    if "hindsight_api_key" in fields:
+        cfg.hindsight_api_key = (payload.hindsight_api_key or "").strip() or None
+
+    # JSON columns don't track in-place mutation; rebuild and reassign.
+    blob = dict(cfg.hindsight_config or {})
+    for name in (
+        "bank_id",
+        "isolation",
+        "budget",
+        "max_tokens",
+        "inject_memories",
+        "include_reflect",
+        "recall_query",
+    ):
+        if name in fields:
+            value = getattr(payload, name)
+            # A blank string means "back to the default", which is what an absent
+            # key already encodes — so drop it rather than storing "".
+            if isinstance(value, str) and not value.strip():
+                blob.pop(name, None)
+            else:
+                blob[name] = value.strip() if isinstance(value, str) else value
+    if "extra_recall_tags" in fields:
+        blob["extra_recall_tags"] = [
+            t.strip() for t in (payload.extra_recall_tags or []) if t.strip()
+        ]
+    cfg.hindsight_config = blob
+
+    session.add(cfg)
+    await session.commit()
+    return await get_memory(session)
+
+
+@router.post("/memory/test", response_model=MemoryTestResult)
+async def test_memory(
+    payload: MemorySettingsUpdate, session: AsyncSession = Depends(get_session)
+):
+    """Probe a Hindsight instance with the submitted values without saving them.
+
+    Falls back to the currently-effective connection for any field the caller
+    omits, so the button works both while editing and after a save. Reads the
+    instance version, then looks for the bank in its listing — one extra request,
+    and it reports the fact count the UI shows without ever writing to a bank the
+    user may already own.
+    """
+    if not hindsight.hindsight_installed():
+        return MemoryTestResult(
+            status="error",
+            error=(
+                "The 'hindsight' extra is not installed in the backend. Install it "
+                "with `uv sync --extra hindsight` and restart."
+            ),
+        )
+
+    cfg = await _get_config(session)
+    app_settings = get_settings()
+    knobs = _memory_knobs(cfg)
+
+    base_url = (
+        payload.hindsight_base_url
+        if "hindsight_base_url" in payload.model_fields_set
+        else None
+    ) or (cfg.hindsight_base_url if cfg else None) or app_settings.hindsight_base_url
+    base_url = (base_url or "").strip().rstrip("/")
+    if not base_url:
+        return MemoryTestResult(status="error", error="Enter a Hindsight base URL first.")
+
+    api_key = (
+        payload.hindsight_api_key
+        if "hindsight_api_key" in payload.model_fields_set
+        else None
+    ) or (cfg.hindsight_api_key if cfg else None) or app_settings.hindsight_api_key
+    bank_id = (payload.bank_id or "").strip() or knobs["bank_id"]
+
+    from hindsight_client import Hindsight
+
+    client = Hindsight(
+        base_url=base_url,
+        api_key=(api_key or "").strip() or None,
+        timeout=10.0,
+        user_agent=hindsight.user_agent(),
+    )
+    try:
+        version = (await client.aget_version()).api_version
+    except Exception as exc:  # noqa: BLE001 - every failure is a readable message
+        logger.warning("hindsight: %s unreachable: %s", base_url, exc)
+        return MemoryTestResult(status="error", error=_memory_error(exc, base_url))
+    else:
+        # A reachable instance whose bank listing fails is still usable — report
+        # the connection as OK and leave the bank fields unknown.
+        try:
+            banks = (await client.banks.list_banks()).banks
+            match = next((b for b in banks if b.bank_id == bank_id), None)
+            return MemoryTestResult(
+                status="ok",
+                version=version,
+                bank_exists=match is not None,
+                memory_count=(match.fact_count if match else None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("hindsight: bank listing failed on %s: %s", base_url, exc)
+            return MemoryTestResult(status="ok", version=version)
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
+def _memory_error(exc: Exception, base_url: str) -> str:
+    """Map a client failure onto something a user can act on."""
+    status_code = getattr(exc, "status", None)
+    if status_code in (401, 403):
+        return "Hindsight rejected the API key."
+    if isinstance(status_code, int) and status_code >= 400:
+        return f"Hindsight returned HTTP {status_code}."
+    return f"Could not reach Hindsight at {base_url}. Check the URL and that it is running."
 
 
 # --- Default agent per command ------------------------------------------------

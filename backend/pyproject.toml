@@ -25,6 +25,13 @@ dev = [
     "httpx>=0.27",
     "ruff>=0.6",
 ]
+# Bring-your-own memory layer: the Hindsight memory provider (see
+# ``app/agents/hindsight.py``). Optional because it pulls an aiohttp transport
+# this backend does not otherwise use, and because the default "file" provider
+# (pydantic-deep's MEMORY.md) needs nothing. Install with
+# ``uv sync --extra dev --extra hindsight``; without it the provider degrades to
+# file memory with a logged warning and a UI-visible notice.
+hindsight = ["hindsight-pydantic-ai>=0.4.20"]
 
 [build-system]
 requires = ["hatchling"]

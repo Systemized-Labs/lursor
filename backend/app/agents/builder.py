@@ -40,6 +40,11 @@ from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
 )
+from app.agents.hindsight import (
+    HINDSIGHT_MEMORY_DIRECTIVE,
+    HindsightConfig,
+    build_hindsight_capability,
+)
 from app.agents.skill_runtime import SkillRuntime
 from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.agents.tool_errors import ToolErrorsAsText
@@ -424,6 +429,12 @@ _READONLY_TOOL_ALLOWLIST = frozenset(
         # conversation utilities (touch history/state, not the workspace)
         "search_conversation_history",
         "compact_conversation",
+        # long-term memory: read paths only. ``hindsight_retain`` writes, so it
+        # is absent here *and* never built in read-only mode (see
+        # ``build_hindsight_capability(read_only=...)``). ``read_memory`` (the
+        # file provider) is likewise absent — it was never in this allowlist.
+        "hindsight_recall",
+        "hindsight_reflect",
         # todo planning is internal agent state, not files
         "read_todos",
         "write_todos",
@@ -599,6 +610,7 @@ def _subagent_config(
     exa_api_key: str | None,
     child_depth: int,
     skill_runtime: SkillRuntime | None,
+    hindsight: HindsightConfig | None = None,
 ) -> dict:
     """Turn a stored subagent row into a pydantic-deep ``SubAgentConfig`` dict.
 
@@ -635,6 +647,10 @@ def _subagent_config(
             # they carry; a subagent works in the same workspace, so it inherits
             # both rather than re-resolving (it has no session anyway).
             skill_runtime=skill_runtime,
+            # Same reasoning for memory: a subagent works in the parent's
+            # workspace, so it shares the parent's bank, connection, and scope
+            # tags rather than resolving its own.
+            hindsight=hindsight,
             _subagent_depth=child_depth,
         )
         return sub_agent
@@ -663,6 +679,7 @@ def build_deep_agent(
     workspace_description: str | None = None,
     workspace_id: str | None = None,
     skill_runtime: SkillRuntime | None = None,
+    hindsight: HindsightConfig | None = None,
     _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
@@ -707,6 +724,13 @@ def build_deep_agent(
     default (DuckDuckGo) is handled by the library's own ``web_search=`` flag; any
     other provider is built here as an explicit ``WebSearch`` capability and the
     library flag is suppressed so there is no duplicate ``web_search`` tool.
+
+    ``hindsight`` is the resolved app-wide memory configuration (see
+    ``AppConfig.memory_provider`` and ``agents/hindsight.py``), passed as one
+    dataclass rather than four more keyword arguments. It only matters when
+    ``row.include_memory`` is on. ``None`` — the default, and what a
+    misconfigured or unselected provider resolves to — means the file provider:
+    pydantic-deep's per-workspace ``MEMORY.md``, unchanged from before.
 
     ``subagents`` is the global roster of specialists (see ``db.models.Subagent``).
     They are only handed to the agent when ``row.include_subagents`` is on. Rows
@@ -793,6 +817,7 @@ def build_deep_agent(
                 exa_api_key=exa_api_key,
                 child_depth=child_depth,
                 skill_runtime=skill_runtime,
+                hindsight=hindsight,
             )
 
         # Built-in override rows (builtin_name set) win over the library default;
@@ -914,6 +939,28 @@ def build_deep_agent(
             )
         )
 
+    # Memory: the per-agent ``include_memory`` flag is the master switch; the
+    # app-wide provider decides where memory lives. On the "hindsight" provider we
+    # suppress the library's MEMORY.md toolset (``include_memory=False``) and
+    # attach our own capability instead, so the model is never offered two
+    # overlapping sets of memory tools. A fresh capability per build keeps its
+    # per-turn recall cache from being shared across concurrent runs. Existing
+    # MEMORY.md files are left on disk untouched, so flipping back is lossless.
+    use_hindsight = row.include_memory and hindsight is not None
+    if use_hindsight:
+        assert hindsight is not None  # narrowed by use_hindsight
+        capabilities.append(
+            build_hindsight_capability(
+                hindsight,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                workspace_path=workspace_path,
+                agent_name=row.name,
+                read_only=read_only,
+            )
+        )
+    library_memory = row.include_memory and not use_hindsight
+
     model = resolve_model(
         model_override or row.model or settings.default_model, custom_providers or {}
     )
@@ -947,6 +994,8 @@ def build_deep_agent(
         instructions = f"{instructions}\n\n{DEV_SERVER_DIRECTIVE}"
     if browser_qa_on:
         instructions = f"{instructions}\n\n{BROWSER_QA_DIRECTIVE}"
+    if use_hindsight:
+        instructions = f"{instructions}\n\n{HINDSIGHT_MEMORY_DIRECTIVE}"
 
     agent = create_deep_agent(
         model=model,
@@ -957,7 +1006,7 @@ def build_deep_agent(
         include_todo=row.include_todo,
         include_subagents=include_subagents,
         include_skills=row.include_skills,
-        include_memory=row.include_memory,
+        include_memory=library_memory,
         include_plan=row.include_plan,
         web_search=library_web_search,
         thinking=thinking,

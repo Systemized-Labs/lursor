@@ -162,6 +162,22 @@ class Settings(BaseSettings):
     tavily_api_key: str | None = None
     exa_api_key: str | None = None
 
+    # --- Memory (Hindsight provider) ---
+    # Connection fallbacks for the "hindsight" memory provider (see
+    # ``agents/hindsight.py``). A value saved on the Settings page (stored on
+    # ``AppConfig``) takes precedence over these, exactly like the search keys
+    # above. The provider itself is chosen in the UI, not here — so setting only
+    # these changes nothing until the provider is switched to "hindsight".
+    #
+    # ``hindsight_base_url`` may be the hosted API or a self-hosted instance; the
+    # Docker image serves the API on :8888 and its own UI on :9999.
+    hindsight_base_url: str | None = None
+    hindsight_api_key: str | None = None
+    # Bank every agent reads and writes. One shared bank for the whole app;
+    # isolation between workspaces comes from Hindsight tags, not from separate
+    # banks, so pointing this at a bank another tool already fills works as-is.
+    hindsight_bank_id: str = "lursor"
+
     # --- Media / vision ---
     # Where user-attached chat media (images) are stored, one subfolder per
     # thread. Kept out of the DB so message rows stay small.

@@ -66,6 +66,7 @@ from app.agents.goal_loop import (
     refine_instruction,
     scan_plan_dir,
 )
+from app.agents.hindsight import resolve_hindsight_config
 from app.agents.preview_service import preview_service
 from app.agents.skill_runtime import load_skill_runtime
 from app.agents.titler import generate_title
@@ -849,6 +850,9 @@ async def _build_agent_and_context(
         or settings.tavily_api_key,
         exa_api_key=(app_config.exa_api_key if app_config else None)
         or settings.exa_api_key,
+        # Where memory lives for this run: ``None`` (an unselected or unusable
+        # provider) means the library's per-workspace MEMORY.md, unchanged.
+        hindsight=resolve_hindsight_config(app_config, settings),
     )
     return agent, deps, custom_providers, app_config, skill_runtime
 
