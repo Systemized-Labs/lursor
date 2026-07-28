@@ -117,6 +117,14 @@ const navItems: NavItem[] = [
   { to: "/customization", label: "Customization", icon: SlidersHorizontal },
 ]
 
+/**
+ * The studio's nav label is fixed, like every other entry in Platform — it's a
+ * destination, not a folder you named. Reading it off the workspace record would
+ * let the row retitle itself (or, before the list loads, not exist), which is
+ * not how a nav item behaves. Mirrors `SKILLS_WORKSPACE_NAME` on the backend.
+ */
+const SKILL_STUDIO_LABEL = "Skill Studio"
+
 /** Compact relative time ("3s" / "5m" / "2h" / "4d"). */
 function timeAgo(iso?: string): string {
   if (!iso) return ""
@@ -379,7 +387,7 @@ export function AppSidebar() {
   // Platform above the Workspaces group. Still rendered as a workspace row
   // there, so conversations about skills nest under it and stay resumable.
   const allWorkspaces = workspacesQuery.data ?? []
-  const skillStudio = allWorkspaces.find((ws) => ws.is_system)
+  const studioId = allWorkspaces.find((ws) => ws.is_system)?.id
   const workspaces = allWorkspaces.filter((ws) => !ws.is_system)
   const orderedWorkspaceIds = workspaces.map((ws) => ws.id)
 
@@ -388,7 +396,6 @@ export function AppSidebar() {
   // land inside a workspace whose sidebar row still looks shut. Only on the way
   // *in*: collapsing it by hand while you're already there has to stick, which a
   // plain `activeWorkspaceId === id` effect would undo on the next render.
-  const studioId = skillStudio?.id
   const prevActiveWorkspace = useRef(activeWorkspaceId)
   useEffect(() => {
     const entered = prevActiveWorkspace.current !== activeWorkspaceId
@@ -495,52 +502,52 @@ export function AppSidebar() {
               ))}
               {/* A destination like the rest of this group, but a real
                   workspace underneath — so it keeps the folder's expandable
-                  conversation list. Not selectable: it can't be bulk-deleted
-                  (the API refuses), so it stays out of range selection too. */}
-              {skillStudio ? (
-                <WorkspaceRow
-                  workspaceId={skillStudio.id}
-                  name={skillStudio.name}
-                  isSystem
-                  isOpen={openWorkspaces.has(skillStudio.id)}
-                  isActive={activeWorkspaceId === skillStudio.id}
-                  isSelected={false}
-                  selection={selection}
-                  onSelect={() => {}}
-                  activeThreadId={activeThreadId}
-                  activeRuns={activeRuns}
-                  // A nav item should navigate. Coming from outside, clicking
-                  // only travels — the effect above does the expanding, so an
-                  // already-open studio can't get collapsed by the click that
-                  // enters it. Once inside, it's a plain folder toggle;
-                  // navigating again would drop the `?c=` and reset the open
-                  // conversation.
-                  onToggle={() => {
-                    if (activeWorkspaceId === skillStudio.id) {
-                      toggleWorkspace(skillStudio.id)
-                      return
-                    }
-                    navigate(`/workspaces/${skillStudio.id}/chat`)
-                    closeMobile()
-                  }}
-                  onNewConversation={() => newConversation(skillStudio.id)}
-                  onNavigate={closeMobile}
-                  onRename={(t) => {
-                    setRenameTarget(t)
-                    setRenameValue(t.title)
-                  }}
-                  onDelete={setDeleteTarget}
-                  onRenameWorkspace={() => {
-                    setRenameWsTarget({
-                      id: skillStudio.id,
-                      name: skillStudio.name,
-                    })
-                    setRenameWsValue(skillStudio.name)
-                  }}
-                  onDeleteWorkspace={() => {}}
-                  onCloneWorkspace={() => {}}
-                />
-              ) : null}
+                  conversation list. Always rendered, label and all: the backing
+                  workspace only decides where the row *goes*, never whether it
+                  shows up, so the nav doesn't reshuffle as the list loads. Not
+                  selectable either: it can't be bulk-deleted (the API refuses),
+                  so it stays out of range selection too. */}
+              <WorkspaceRow
+                workspaceId={studioId}
+                name={SKILL_STUDIO_LABEL}
+                isSystem
+                isOpen={studioId ? openWorkspaces.has(studioId) : false}
+                isActive={studioId ? activeWorkspaceId === studioId : false}
+                isSelected={false}
+                selection={selection}
+                onSelect={() => {}}
+                activeThreadId={activeThreadId}
+                activeRuns={activeRuns}
+                // A nav item should navigate. Coming from outside, clicking
+                // only travels — the effect above does the expanding, so an
+                // already-open studio can't get collapsed by the click that
+                // enters it. Once inside, it's a plain folder toggle;
+                // navigating again would drop the `?c=` and reset the open
+                // conversation.
+                onToggle={() => {
+                  if (!studioId) return
+                  if (activeWorkspaceId === studioId) {
+                    toggleWorkspace(studioId)
+                    return
+                  }
+                  navigate(`/workspaces/${studioId}/chat`)
+                  closeMobile()
+                }}
+                onNewConversation={() => {
+                  if (studioId) newConversation(studioId)
+                }}
+                onNavigate={closeMobile}
+                onRename={(t) => {
+                  setRenameTarget(t)
+                  setRenameValue(t.title)
+                }}
+                onDelete={setDeleteTarget}
+                // Fixed label, so there's nothing to rename — and the row's
+                // context menu is suppressed for the studio anyway.
+                onRenameWorkspace={() => {}}
+                onDeleteWorkspace={() => {}}
+                onCloneWorkspace={() => {}}
+              />
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -856,9 +863,14 @@ interface WorkspaceTarget {
 }
 
 interface WorkspaceRowProps {
-  workspaceId: string
+  /** Undefined only for the studio row before the workspace list has loaded: the
+   *  row still renders, it just has nowhere to travel to yet. */
+  workspaceId: string | undefined
   name: string
-  /** App-owned (the skills catalog): distinct glyph, no delete, no clone. */
+  /**
+   * App-owned (the skills catalog): distinct glyph, and none of the workspace
+   * management — no rename (the nav label is fixed), no delete, no clone.
+   */
   isSystem: boolean
   isOpen: boolean
   isActive: boolean
@@ -917,56 +929,59 @@ function WorkspaceRow({
     }
   }
 
+  const button = (
+    <SidebarMenuButton
+      isActive={isActive}
+      tooltip={name}
+      onClick={handleClick}
+      className={cn(
+        "select-none",
+        isSelected &&
+          "bg-primary/15 text-foreground hover:bg-primary/20 data-[active=true]:bg-primary/25"
+      )}
+    >
+      {/* The skills catalog keeps one glyph open or closed — it reads as
+          a destination rather than a folder you filed things into. */}
+      {isSystem ? (
+        <Sparkle className="size-4" />
+      ) : isOpen ? (
+        <FolderOpen className="size-4" />
+      ) : (
+        <Folder className="size-4" />
+      )}
+      <span className="flex-1 truncate">{name}</span>
+    </SidebarMenuButton>
+  )
+
   return (
     <SidebarMenuItem className="group/workspace relative">
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <SidebarMenuButton
-            isActive={isActive}
-            tooltip={name}
-            onClick={handleClick}
-            className={cn(
-              "select-none",
-              isSelected &&
-                "bg-primary/15 text-foreground hover:bg-primary/20 data-[active=true]:bg-primary/25"
-            )}
-          >
-            {/* The skills catalog keeps one glyph open or closed — it reads as
-                a destination rather than a folder you filed things into. */}
-            {isSystem ? (
-              <Sparkle className="size-4" />
-            ) : isOpen ? (
-              <FolderOpen className="size-4" />
-            ) : (
-              <Folder className="size-4" />
-            )}
-            <span className="flex-1 truncate">{name}</span>
-          </SidebarMenuButton>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem onSelect={onRenameWorkspace}>
-            <Pencil className="size-4" />
-            Rename
-          </ContextMenuItem>
-          {/* Delete is refused by the API; cloning a repo into the catalog
-              would strew a checkout through your skills. Offer neither. */}
-          {isSystem ? null : (
-            <>
-              <ContextMenuItem onSelect={onCloneWorkspace}>
-                <GitBranch className="size-4" />
-                Clone repo
-              </ContextMenuItem>
-              <ContextMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={onDeleteWorkspace}
-              >
-                <Trash className="size-4" />
-                Delete
-              </ContextMenuItem>
-            </>
-          )}
-        </ContextMenuContent>
-      </ContextMenu>
+      {/* Nothing to manage on the catalog row: its label is a fixed nav label,
+          delete is refused by the API, and cloning a repo into the catalog would
+          strew a checkout through your skills. No menu at all, then. */}
+      {isSystem ? (
+        button
+      ) : (
+        <ContextMenu>
+          <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={onRenameWorkspace}>
+              <Pencil className="size-4" />
+              Rename
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={onCloneWorkspace}>
+              <GitBranch className="size-4" />
+              Clone repo
+            </ContextMenuItem>
+            <ContextMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={onDeleteWorkspace}
+            >
+              <Trash className="size-4" />
+              Delete
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      )}
 
       <button
         type="button"
@@ -996,7 +1011,8 @@ function WorkspaceRow({
 }
 
 interface WorkspaceThreadsProps {
-  workspaceId: string
+  /** Undefined until the owning workspace is known; the query stays idle. */
+  workspaceId: string | undefined
   isOpen: boolean
   activeThreadId: string | null
   activeRuns: Set<string>
