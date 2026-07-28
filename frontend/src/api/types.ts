@@ -45,10 +45,11 @@ export interface AgentInput {
  *
  *  `managed` — the catalog (`~/.lursor/skills`): one copy, re-pointable at any
  *  set of workspaces. `local` — one of the repo's own skill roots
- *  (`.agents/skills`, `.claude/skills`, `.cursor/skills`): applies only there and
- *  must be brought into the catalog before it can be reassigned. `external` — a
- *  personal directory owned by another tool (`~/.claude/skills`): read in place
- *  and in scope everywhere. */
+ *  (`.agents/skills` and the other tools' in-repo conventions): applies only
+ *  there and must be brought into the catalog before it can be reassigned.
+ *  `external` — a personal directory owned by another tool (`~/.agents/skills`,
+ *  `~/.claude/skills`, one per tool beyond that): read in place and in scope
+ *  everywhere. */
 export type SkillOrigin = "managed" | "local" | "external"
 
 /** Which layer a skill won at when listing for one workspace. */
@@ -70,7 +71,8 @@ export interface Skill {
   /** Which root the folder lives in: workspace-relative for `local`
    *  (".claude/skills"), absolute for `external`, empty for the catalog. */
   root: string
-  /** Display form of `root` (".claude", "~/.claude"); empty for the catalog. */
+  /** Display form of `root` (".claude", "~/.claude", "~/.config/agents"); empty
+   *  for the catalog. */
   root_label: string
   /** False when the folder belongs to another tool: copy it into the catalog
    *  rather than moving it, and a delete removes a real file in the user's repo
@@ -108,6 +110,33 @@ export interface SkillInput {
 export interface SkillAssignmentInput {
   is_global: boolean
   workspace_ids: string[]
+}
+
+/** One skill folder found in a workspace directory. */
+export interface SkillScanEntry {
+  /** Workspace-relative path of the folder (not its SKILL.md). */
+  path: string
+  slug: string
+  name: string
+  description: string
+  /** Already managed — it lives in a discovered root, or was ingested before. */
+  indexed: boolean
+}
+
+export interface SkillScanResult {
+  skills: SkillScanEntry[]
+}
+
+/** Ingest skill folders already on disk inside a workspace. */
+export interface SkillIngestInput {
+  /** Workspace whose tree holds the folder. */
+  workspace_id: string
+  /** Workspace-relative folder: a skill folder, or one holding several. */
+  path: string
+  /** "managed" copies into the catalog, "local" into the repo's .agents/skills. */
+  origin?: SkillOrigin
+  /** Managed only. Omitted means "assign it to the workspace it came from". */
+  is_global?: boolean
 }
 
 /** An environment variable Lursor injects into agent runs. */

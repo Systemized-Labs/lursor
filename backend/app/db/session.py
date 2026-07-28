@@ -106,8 +106,8 @@ async def _apply_lightweight_migrations(conn) -> None:
         )
 
     # Which root a skill folder lives in, now that a workspace has several
-    # candidates (``.agents/skills``, ``.claude/skills``, ``.cursor/skills``) and
-    # personal roots (``~/.claude/skills``) are indexed too. Runs after the origin
+    # candidates (``.agents/skills`` plus the other tools' conventions) and
+    # personal roots (``~/.agents/skills`` …) are indexed too. Runs after the origin
     # backfill above so ``origin`` is guaranteed to exist: every pre-existing local
     # row came from the one root there was.
     if "root" not in skill_cols:

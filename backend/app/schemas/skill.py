@@ -57,6 +57,40 @@ class SkillPromote(BaseModel):
     workspace_ids: list[str] | None = None
 
 
+class SkillIngest(BaseModel):
+    """Ingest skill folders that are already on disk inside a workspace.
+
+    ``path`` is workspace-relative and may name a skill folder itself or a
+    directory holding several. ``origin`` picks the destination: ``managed``
+    copies into the catalog, ``local`` into the workspace's own
+    ``.agents/skills``. ``is_global`` is for a managed ingest only, and unset
+    means "assign it to the workspace it was found in" — a skill folder sitting
+    in a repo is evidence about that repo, not about every workspace.
+    """
+
+    workspace_id: str
+    path: str = ""
+    origin: SkillOrigin = SkillOrigin.managed
+    is_global: bool | None = None
+
+
+class SkillScanEntry(BaseModel):
+    """One skill folder found in a workspace directory, not yet ingested."""
+
+    # Workspace-relative path of the folder (not its SKILL.md).
+    path: str
+    slug: str
+    name: str
+    description: str = ""
+    # Already in the index — it sits in a discovered root (``.claude/skills``) or
+    # has been ingested before. Ingesting it again would only duplicate it.
+    indexed: bool = False
+
+
+class SkillScanResult(BaseModel):
+    skills: list[SkillScanEntry] = []
+
+
 class SkillRead(BaseModel):
     id: str
     slug: str

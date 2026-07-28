@@ -8,12 +8,12 @@ because a managed skill's reach is an *assignment* (``Skill.is_global`` plus
 Four layers, lowest precedence first:
 
 1. **user** — folders found in a personal root owned by another tool
-   (``~/.claude/skills``, ``settings.user_skill_roots``). No owning workspace, so
+   (``~/.agents/skills``, ``settings.user_skill_roots``). No owning workspace, so
    they are in scope everywhere;
 2. **global** — managed skills with ``is_global`` (every workspace);
 3. **workspace** — managed skills linked to *this* workspace;
 4. **local** — folders found in one of the workspace's own skill roots
-   (``.agents/skills``, ``.claude/skills``, ``.cursor/skills``), committed into
+   (``.agents/skills`` and the other tools' in-repo conventions), committed into
    the repo.
 
 On a slug collision the closest layer wins, exactly as before: a repo's own copy

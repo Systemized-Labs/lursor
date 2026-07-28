@@ -14,12 +14,12 @@ Skill folders live in one of three kinds of root:
   every UI-managed skill, wherever it applies. Which workspaces a catalog skill
   reaches is an *assignment* held in the database, not a location on disk.
 - a **local** root — ``<workspace.path>/<subdir>/`` for each entry in
-  ``settings.local_skill_roots`` (``.agents/skills``, ``.claude/skills``,
-  ``.cursor/skills``): travels with the workspace directory (git-shareable) and
+  ``settings.local_skill_roots`` (``.agents/skills`` and the other tools'
+  in-repo conventions): travels with the workspace directory (git-shareable) and
   applies only there.
-- a **user** root — ``~/.claude/skills``, ``~/.cursor/skills`` and anything else
-  in ``settings.user_skill_roots``: personal skills owned by another tool, in
-  scope everywhere.
+- a **user** root — every entry in ``settings.user_skill_roots``
+  (``~/.agents/skills``, ``~/.claude/skills``, and one per tool beyond that):
+  personal skills owned by another tool, in scope everywhere.
 
 Only the first two are Lursor's to write into structurally, and only
 ``.agents/skills`` among the local ones — see :func:`is_owned_root`. A root we
@@ -189,22 +189,29 @@ def is_owned_root(key: str) -> bool:
 
 
 def root_label(key: str) -> str:
-    """Short display form of a root (``.claude``, ``.cursor``, ``~/.claude``).
+    """Short display form of a root (``.claude``, ``~/.claude``, ``~/.config/agents``).
 
     Empty for the catalog, which needs no badge. Computed here rather than in the
     frontend so no client has to parse paths to say where a skill came from.
+
+    A personal root keeps its whole ``~``-relative path (minus the trailing
+    ``skills`` segment), because the tail alone stopped being unique once nested
+    conventions were configured: ``~/.agents/skills`` and
+    ``~/.config/agents/skills`` are two different tools' directories that would
+    both shorten to ``agents``, and ``~/.gemini/config/skills`` would shorten to a
+    bare ``config``.
     """
     key = key.strip().replace("\\", "/")
     if not key:
         return ""
     path = PurePosixPath(key)
     parent = path.parent
-    label = parent.name or path.name
     if not path.is_absolute():
-        return label
+        return parent.name or path.name
     home = PurePosixPath(str(Path.home()))
     if parent == home or home in parent.parents:
-        return f"~/{label}"
+        rel = parent.relative_to(home)
+        return f"~/{rel}" if rel.parts else "~"
     return str(parent)
 
 
@@ -494,6 +501,65 @@ def find_skill_folders(root: Path) -> list[Path]:
             continue
         chosen.append(folder)
     return chosen
+
+
+# Directories a scan of a real project never walks into: generated, vendored or
+# enormous, and not anywhere a skill is authored. Dot-directories in general are
+# *not* pruned — ``.claude/skills`` and ``.cursor/skills`` are exactly what a scan
+# is looking for.
+SCAN_IGNORED_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+        ".next",
+        ".turbo",
+        "target",
+    }
+)
+
+
+def scan_skill_folders(
+    root: Path, *, max_depth: int = 5, limit: int = 200
+) -> list[Path]:
+    """Skill folders under an arbitrary directory of a user's project.
+
+    The counterpart to :func:`find_skill_folders`, which walks a freshly
+    extracted upload and can afford an unbounded ``rglob``. This one is pointed
+    at whatever folder someone right-clicked, so the walk is bounded three ways:
+    generated/vendored directories are pruned, depth is capped, and a folder
+    holding a ``SKILL.md`` is never descended into — a nested skill's files
+    travel with the outer folder when it is copied.
+
+    ``root`` itself counts, so pointing this at a single skill folder returns
+    just that folder.
+    """
+    if not root.is_dir():
+        return []
+    found: list[Path] = []
+    base_depth = len(root.resolve().parts)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        if SKILL_FILE in filenames:
+            found.append(current)
+            dirnames[:] = []
+            if len(found) >= limit:
+                break
+            continue
+        if len(current.resolve().parts) - base_depth >= max_depth:
+            dirnames[:] = []
+            continue
+        dirnames[:] = [d for d in dirnames if d not in SCAN_IGNORED_DIRS]
+    return sorted(found)
 
 
 def import_folder(src: Path, root: Path, *, taken: set[str]) -> str:

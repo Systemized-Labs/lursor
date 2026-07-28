@@ -10,11 +10,11 @@ to the exact directory by ``Skill.root``:
   (``is_global``, or ``skill_workspaces`` rows), so re-pointing a skill at other
   workspaces is a DB write and never moves files.
 - **local** — one of the workspace's own roots (``settings.local_skill_roots``:
-  ``.agents/skills``, ``.claude/skills``, ``.cursor/skills``), committed into a
+  ``.agents/skills`` and the other tools' in-repo conventions), committed into a
   repo. It applies only in that workspace and has no assignment to edit.
 - **external** — a personal directory owned by another tool
-  (``settings.user_skill_roots``: ``~/.claude/skills``, ``~/.cursor/skills``). In
-  scope everywhere, at the lowest precedence, with no assignment.
+  (``settings.user_skill_roots``: ``~/.agents/skills``, ``~/.claude/skills``, one
+  per tool beyond that). In scope everywhere, lowest precedence, no assignment.
 
 Only ``.agents/skills`` and the catalog are Lursor's to create or rebuild; every
 other root is *discovered*. That distinction is load-bearing in two places:
@@ -39,6 +39,7 @@ env-var link pointing at a workspace/skill that no longer exists.
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 from pathlib import Path
 
@@ -57,9 +58,12 @@ from app.db.session import get_session
 from app.schemas.skill import (
     SkillAssignment,
     SkillCreate,
+    SkillIngest,
     SkillPromote,
     SkillRead,
     SkillResourceContent,
+    SkillScanEntry,
+    SkillScanResult,
     SkillUpdate,
 )
 from app.skills import store
@@ -793,6 +797,56 @@ async def _import_tree(
         return [store.import_folder(src, root, taken=taken) for src in folders]
 
 
+async def _index_imported(
+    session: AsyncSession,
+    imported: list[str],
+    root: Path,
+    *,
+    origin: SkillOrigin,
+    row_workspace_id: str | None,
+    root_key: str,
+    is_global: bool,
+    workspace_ids: list[str],
+) -> list[SkillRead]:
+    """Index folders just written into ``root`` and apply their assignment.
+
+    Reconcile is what indexes them — one code path for "a folder appeared in a
+    root", however it got there — and it indexes a fresh catalog folder
+    *unassigned*, so the requested assignment is applied here or an import lands
+    somewhere the user can't see it working. A workspace-local import carries no
+    assignment at all: where it applies is where its files are.
+    """
+    await reconcile(session)
+    rows = (
+        (
+            await session.execute(
+                select(Skill).where(
+                    Skill.slug.in_(imported),
+                    Skill.origin == origin,
+                    Skill.root == root_key,
+                    Skill.workspace_id == row_workspace_id
+                    if row_workspace_id
+                    else Skill.workspace_id.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if origin != SkillOrigin.local:
+        for row in rows:
+            await _set_assignment(
+                session, row, is_global=is_global, workspace_ids=workspace_ids
+            )
+        await session.commit()
+
+    assigned = await _assignments(session)
+    return [
+        _to_read(row, root, workspace_ids=assigned.get(row.id, [])) for row in rows
+    ]
+
+
 @router.post("/import", response_model=list[SkillRead], status_code=status.HTTP_201_CREATED)
 async def import_skills(
     files: list[UploadFile] = File(...),
@@ -858,41 +912,198 @@ async def import_skills(
                 "SKILL.md / .md file",
             )
 
-    await reconcile(session)
-    rows = (
-        (
-            await session.execute(
-                select(Skill).where(
-                    Skill.slug.in_(imported),
-                    Skill.origin == origin,
-                    Skill.root == root_key,
-                    Skill.workspace_id == row_workspace_id
-                    if row_workspace_id
-                    else Skill.workspace_id.is_(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    resolved_global = is_global if is_global is not None else workspace_id is None
+    return await _index_imported(
+        session,
+        imported,
+        root,
+        origin=origin,
+        row_workspace_id=row_workspace_id,
+        root_key=root_key,
+        is_global=resolved_global,
+        workspace_ids=[workspace_id] if workspace_id and not resolved_global else [],
     )
 
-    # Reconcile indexes a fresh catalog folder unassigned; apply the requested
-    # assignment so an import lands somewhere useful straight away.
-    if not is_local:
-        resolved_global = is_global if is_global is not None else workspace_id is None
-        for row in rows:
-            await _set_assignment(
-                session,
-                row,
-                is_global=resolved_global,
-                workspace_ids=[workspace_id] if workspace_id and not resolved_global else [],
-            )
-        await session.commit()
 
-    assigned = await _assignments(session)
-    return [
-        _to_read(row, root, workspace_ids=assigned.get(row.id, [])) for row in rows
-    ]
+# --- Ingest a folder already on disk in a workspace -----------------------------
+
+
+async def _workspace_dir(session: AsyncSession, workspace_id: str, rel: str) -> tuple[Path, Path]:
+    """``(workspace root, target directory)`` for a workspace-relative folder.
+
+    The path comes from a client, so it is joined onto the resolved root and
+    rejected if it escapes it — ``..`` traversal, an absolute path, or a symlink
+    pointing outside the workspace. Same guard as the files API, which is where
+    these paths come from.
+    """
+    ws = await _workspace_or_404(session, workspace_id)
+    root = Path(ws.path).expanduser()
+    if not root.is_dir():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Workspace has no accessible directory"
+        )
+    root = root.resolve()
+    target = (root / rel).resolve()
+    if target != root and not target.is_relative_to(root):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Path escapes workspace root")
+    if not target.is_dir():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Folder not found")
+    return root, target
+
+
+def _fingerprint(name: str, description: str, content: str) -> tuple[str, str, str]:
+    """Identity of a skill by what it *says*, independent of where it lives."""
+    return (name.strip(), description.strip(), content.strip())
+
+
+class _Known:
+    """What the index already holds, as the two ways a folder can already be in it.
+
+    ``folders`` catches a folder that is itself indexed — anything in a discovered
+    root like ``.claude/skills``, where ingesting would add a second copy of a
+    skill that already works. ``fingerprints`` catches the one the *source* folder
+    can't know about: ingest copies a folder and leaves the original in place, so
+    the original stays unindexed forever and would otherwise offer to be ingested
+    again, and again, each time landing as ``foo-2``, ``foo-3``.
+    """
+
+    def __init__(self) -> None:
+        self.folders: set[Path] = set()
+        self.fingerprints: set[tuple[str, str, str]] = set()
+
+    def holds(self, folder: Path, parsed: store.ParsedSkill) -> bool:
+        with contextlib.suppress(OSError):
+            if folder.resolve() in self.folders:
+                return True
+        return (
+            _fingerprint(parsed.name, parsed.description, parsed.content)
+            in self.fingerprints
+        )
+
+
+async def _known_skills(session: AsyncSession) -> _Known:
+    """Everything the index already knows, by folder and by content."""
+    workspaces = (await session.execute(select(Workspace))).scalars().all()
+    ws_by_id = {w.id: w for w in workspaces}
+    known = _Known()
+    for row in (await session.execute(select(Skill))).scalars().all():
+        known.fingerprints.add(_fingerprint(row.name, row.description, row.content))
+        root = _root_for_row(row, ws_by_id)
+        if root is None or not row.slug:
+            continue
+        with contextlib.suppress(OSError, ValueError):
+            known.folders.add((root / row.slug).resolve())
+    return known
+
+
+@router.get("/scan", response_model=SkillScanResult)
+async def scan_folder(
+    workspace_id: str = Query(..., description="Workspace whose tree to look in"),
+    path: str = Query("", description="Workspace-relative folder to scan"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Skill folders sitting in a workspace directory, managed or not.
+
+    Read-only, and the question the file explorer asks before offering to ingest
+    a folder: a directory with no ``SKILL.md`` under it offers nothing, so the
+    action only appears where it means something. ``indexed`` marks a folder the
+    manager already holds — the folder itself is in a discovered root, or the same
+    skill has been ingested from it before — which is not worth ingesting again.
+    The walk is bounded; see ``store.scan_skill_folders``.
+    """
+    root, target = await _workspace_dir(session, workspace_id, path)
+    # Discovery is what decides ``indexed``, so reconcile first — same as every
+    # other read path here. Without it a folder cloned in a moment ago reads as
+    # unmanaged right up until something else lists skills.
+    await reconcile(session)
+    known = await _known_skills(session)
+    out: list[SkillScanEntry] = []
+    for folder in store.scan_skill_folders(target):
+        parsed = store.read_skill(folder.name, folder.parent)
+        if parsed is None:  # pragma: no cover — scan only returns SKILL.md folders
+            continue
+        out.append(
+            SkillScanEntry(
+                path=folder.relative_to(root).as_posix(),
+                slug=folder.name,
+                name=parsed.name,
+                description=parsed.description,
+                indexed=known.holds(folder, parsed),
+            )
+        )
+    return SkillScanResult(skills=out)
+
+
+@router.post("/ingest", response_model=list[SkillRead], status_code=status.HTTP_201_CREATED)
+async def ingest_folder(
+    payload: SkillIngest, session: AsyncSession = Depends(get_session)
+):
+    """Ingest skill folders the server can already see, without an upload.
+
+    The sibling of ``POST /skills/import`` for a folder that is *in* a workspace:
+    a vendored ``skills/`` directory, a cloned collection, anything sitting
+    somewhere no configured root would ever discover. Every skill folder under
+    ``path`` is **copied** into the destination — the source is left exactly as
+    the repo put it, so nothing in a git tree moves or disappears.
+
+    Two kinds of folder under ``path`` are skipped rather than copied: one already
+    inside the destination root (which would be a copy onto itself, and is what
+    makes ingesting a whole tree safe when the destination lives inside it), and
+    one the index already holds — by folder or by content, so ingesting the same
+    folder twice can't quietly leave ``foo`` and ``foo-2`` behind. Both are what
+    the file explorer's menu filters on, so hitting either means there was nothing
+    left to do.
+    """
+    _, src = await _workspace_dir(session, payload.workspace_id, payload.path)
+    is_local = payload.origin == SkillOrigin.local
+    root_key = store.DEFAULT_LOCAL_SKILL_ROOT if is_local else ""
+    row_workspace_id = payload.workspace_id if is_local else None
+    root = await _root_for(session, payload.origin, payload.workspace_id)
+
+    await reconcile(session)
+    known = await _known_skills(session)
+    dest = root.resolve() if root.exists() else root
+    found = store.scan_skill_folders(src)
+    fresh: list[Path] = []
+    for folder in found:
+        if folder.resolve().is_relative_to(dest):
+            continue
+        parsed = store.read_skill(folder.name, folder.parent)
+        if parsed is None or known.holds(folder, parsed):
+            continue
+        fresh.append(folder)
+    if not fresh:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Already in your skills" if found else "No SKILL.md found in this folder",
+        )
+
+    taken = await _taken_slugs(
+        session, root, payload.origin, row_workspace_id, root_key=root_key
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    imported: list[str] = []
+    try:
+        for folder in fresh:
+            imported.append(store.import_folder(folder, root, taken=taken))
+    except OSError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Could not copy skill folder: {exc}"
+        ) from exc
+
+    # A skill found in a repo is about that repo, so a managed ingest defaults to
+    # being assigned there rather than everywhere.
+    resolved_global = bool(payload.is_global)
+    return await _index_imported(
+        session,
+        imported,
+        root,
+        origin=payload.origin,
+        row_workspace_id=row_workspace_id,
+        root_key=root_key,
+        is_global=resolved_global,
+        workspace_ids=[] if resolved_global else [payload.workspace_id],
+    )
 
 
 @router.get("/{skill_id}", response_model=SkillRead)

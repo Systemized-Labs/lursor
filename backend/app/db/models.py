@@ -128,15 +128,15 @@ class SkillOrigin(StrEnum):
     workspaces without moving files.
 
     ``local`` — discovered in one of the workspace's skill roots
-    (``settings.local_skill_roots``: ``.agents/skills``, ``.claude/skills``,
-    ``.cursor/skills``), recorded in ``Skill.root``. It travels with the workspace
+    (``settings.local_skill_roots``: ``.agents/skills`` and the other tools' in-repo
+    conventions), recorded in ``Skill.root``. It travels with the workspace
     directory (git-shareable, the Claude Code convention) and applies only there,
     so it has no assignment to edit. ``POST /skills/{id}/promote`` moves the folder
     into the canonical store, but only from ``.agents/skills`` — a root another
     tool owns is copied (``POST /skills/{id}/copy``), never moved.
 
     ``external`` — discovered in a personal skills directory owned by another tool
-    (``~/.claude/skills``, ``settings.user_skill_roots``). Read in place, in scope
+    (``~/.agents/skills``, ``settings.user_skill_roots``). Read in place, in scope
     everywhere at the lowest precedence, carries no assignment.
     ``POST /skills/{id}/copy`` duplicates it into the catalog; nothing here ever
     moves or rewrites it implicitly.

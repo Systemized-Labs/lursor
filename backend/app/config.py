@@ -63,23 +63,51 @@ class Settings(BaseSettings):
     # Workspace-relative directories scanned for repo-committed skills, in
     # precedence order (later roots lose a slug collision). The first is Lursor's
     # own convention and the only one it will create; the rest are read in place
-    # because other tools own them. Adding a fifth convention is a config line.
+    # because other tools own them. Adding another convention is a config line.
+    #
+    # ``.agents/skills`` is the tool-agnostic standard (Cursor, opencode, Copilot,
+    # Amp and OpenClaw all read it); the rest are each tool's own dotfolder, kept
+    # so a repo that predates the standard still lights up.
     #
     # A bare ``skills/`` is included because plenty of repos keep them at the top
-    # level rather than under a tool's dotfolder. It costs nothing when wrong: a
-    # folder is only a skill if it holds a ``SKILL.md``, so a ``skills/`` full of
-    # anything else stays invisible.
+    # level rather than under a tool's dotfolder (it is also OpenClaw's workspace
+    # convention). It costs nothing when wrong: a folder is only a skill if it
+    # holds a ``SKILL.md``, so a ``skills/`` full of anything else stays invisible.
     local_skill_roots: list[str] = [
         ".agents/skills",
         ".claude/skills",
         ".cursor/skills",
+        ".codex/skills",
+        ".github/skills",
+        ".opencode/skills",
         "skills",
     ]
 
     # Absolute (``~``-expanded) directories of personal skills owned by other
     # tools. In scope for every workspace, at the lowest precedence. Read-only:
     # Lursor never creates these or rebuilds a folder inside one.
-    user_skill_roots: list[str] = ["~/.claude/skills", "~/.cursor/skills"]
+    #
+    # ``~/.agents/skills`` leads because it is the cross-tool standard — the same
+    # convention as our own ``.agents/skills`` — and is therefore the one place a
+    # user would expect every agent, Lursor included, to look. The rest are the
+    # per-tool homes: Claude Code, Cursor, Codex, Amp (XDG), opencode, OpenClaw,
+    # Hermes, Gemini CLI, Antigravity (``~/.gemini/config``) and Copilot CLI.
+    #
+    # Listing a root a user doesn't have is free: non-existent roots are skipped
+    # by ``store.user_skill_roots()``, so this is a menu, not a requirement.
+    user_skill_roots: list[str] = [
+        "~/.agents/skills",
+        "~/.claude/skills",
+        "~/.cursor/skills",
+        "~/.codex/skills",
+        "~/.config/agents/skills",
+        "~/.config/opencode/skills",
+        "~/.openclaw/skills",
+        "~/.hermes/skills",
+        "~/.gemini/skills",
+        "~/.gemini/config/skills",
+        "~/.copilot/skills",
+    ]
 
     # --- Agents ---
     # Default model used when an agent row does not specify one.

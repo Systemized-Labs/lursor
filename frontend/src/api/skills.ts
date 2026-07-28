@@ -8,8 +8,10 @@ import { api } from "./client"
 import type {
   Skill,
   SkillAssignmentInput,
+  SkillIngestInput,
   SkillInput,
   SkillOrigin,
+  SkillScanResult,
 } from "./types"
 
 /** Which slice of the catalog to list.
@@ -100,6 +102,16 @@ export const skillsApi = {
     }
     return api.upload<Skill[]>(`/skills/import${targetQuery(target)}`, form)
   },
+  /** Skill folders sitting in a workspace directory — what the file explorer asks
+   *  before offering to ingest a folder. Read-only. */
+  scan: (workspaceId: string, path: string, signal?: AbortSignal) =>
+    api.get<SkillScanResult>(
+      `/skills/scan?workspace_id=${encodeURIComponent(workspaceId)}&path=${encodeURIComponent(path)}`,
+      signal
+    ),
+  /** Ingest skill folders already on disk in a workspace, no upload. The source
+   *  folder is copied, never moved — nothing in the repo changes. */
+  ingest: (input: SkillIngestInput) => api.post<Skill[]>("/skills/ingest", input),
 }
 
 export const skillKeys = {
@@ -107,6 +119,8 @@ export const skillKeys = {
   list: (filter?: SkillListFilter) =>
     ["skills", filter?.assignment ?? "all", filter?.workspace_id ?? null] as const,
   detail: (id: string) => ["skills", id] as const,
+  scan: (workspaceId: string, path: string) =>
+    ["skills", "scan", workspaceId, path] as const,
 }
 
 export function useSkills(filter?: SkillListFilter) {
@@ -180,6 +194,32 @@ export function useImportSkills() {
   return useMutation({
     mutationFn: ({ files, target }: { files: File[]; target?: SkillTarget }) =>
       skillsApi.import(files, target),
+    onSuccess: () => qc.invalidateQueries({ queryKey: skillKeys.all }),
+  })
+}
+
+/**
+ * Look for skill folders in a workspace directory. Deliberately lazy: `enabled`
+ * is what a context menu flips when it opens, so nothing is scanned until the
+ * user actually asks about a folder.
+ */
+export function useSkillScan(
+  workspaceId: string,
+  path: string,
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: skillKeys.scan(workspaceId, path),
+    queryFn: ({ signal }) => skillsApi.scan(workspaceId, path, signal),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
+export function useIngestSkills() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: SkillIngestInput) => skillsApi.ingest(input),
     onSuccess: () => qc.invalidateQueries({ queryKey: skillKeys.all }),
   })
 }

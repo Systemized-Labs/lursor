@@ -20,7 +20,7 @@ import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models import Skill
 from app.db.session import async_session_factory
 from app.skills import store
@@ -508,11 +508,54 @@ def test_root_label_and_ownership() -> None:
     assert store.root_label(str(Path.home() / ".claude" / "skills")) == "~/.claude"
     assert store.root_label("/opt/shared/skills") == "/opt/shared"
 
+    # A personal root keeps its whole ``~``-relative path: the tail alone is not
+    # unique across the configured tools, and two roots sharing a badge would read
+    # as one place in the UI.
+    assert store.root_label(str(Path.home() / ".agents" / "skills")) == "~/.agents"
+    assert (
+        store.root_label(str(Path.home() / ".config" / "agents" / "skills"))
+        == "~/.config/agents"
+    )
+    assert (
+        store.root_label(str(Path.home() / ".gemini" / "config" / "skills"))
+        == "~/.gemini/config"
+    )
+    # A root sitting directly in the home directory has no dotfolder to name it.
+    assert store.root_label(str(Path.home() / "skills")) == "~"
+
     assert store.is_owned_root("") is True
     assert store.is_owned_root(".agents/skills") is True
     assert store.is_owned_root(".agents/skills/") is True
     assert store.is_owned_root(".claude/skills") is False
     assert store.is_owned_root(str(Path.home() / ".claude" / "skills")) is False
+    # ``~/.agents/skills`` is our own convention but still someone else's copy of
+    # it: personal roots are read in place, never created or rebuilt from the index.
+    assert store.is_owned_root(str(Path.home() / ".agents" / "skills")) is False
+
+
+def test_shipped_roots_are_labelled_uniquely() -> None:
+    """Every root we ship is distinguishable in the UI, and none is a duplicate.
+
+    The badge is the only thing telling a user which tool a discovered skill came
+    from, so two roots collapsing to one label would read as one place. Asserted
+    against the field defaults rather than the live settings because ``conftest``
+    blanks ``user_skill_roots`` to keep the developer's own machine out of the
+    other tests.
+    """
+    fields = Settings.model_fields
+    local = [str(r) for r in fields["local_skill_roots"].default]
+    user = [str(Path(r).expanduser()) for r in fields["user_skill_roots"].default]
+
+    for keys in (local, user):
+        assert len(set(keys)) == len(keys), f"duplicate root in {keys}"
+        labels = [store.root_label(k) for k in keys]
+        assert all(labels), f"unlabelled root in {keys}"
+        assert len(set(labels)) == len(labels), f"duplicate label in {labels}"
+
+    # The cross-tool standard leads both layers, so it wins a slug collision
+    # against any single tool's own directory.
+    assert local[0] == store.DEFAULT_LOCAL_SKILL_ROOT
+    assert user[0] == str(Path.home() / ".agents" / "skills")
 
 
 def test_path_for_still_rejects_traversal(tmp_path) -> None:

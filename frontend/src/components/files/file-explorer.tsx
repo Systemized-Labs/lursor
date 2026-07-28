@@ -43,6 +43,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
 import { fileKind } from "./file-icon"
+import { SkillIngestMenu } from "./skill-ingest-menu"
 
 /** Left indent per tree level; row text starts one step in from the panel edge. */
 const INDENT_STEP = 12
@@ -99,8 +100,10 @@ type Pending =
  * the file watcher. Files open in the editor on click.
  *
  * Right-clicking a row (or the empty area, for root-level actions) opens a
- * context menu to create, rename, or delete files and folders. Depth is drawn
- * with hairline indent guides, and the active file carries a left accent rail.
+ * context menu to create, rename, or delete files and folders — and, on a folder
+ * holding a `SKILL.md`, to ingest it as a skill (see {@link SkillIngestMenu}).
+ * Depth is drawn with hairline indent guides, and the active file carries a left
+ * accent rail.
  */
 export function FileExplorer({
   workspaceId,
@@ -319,6 +322,7 @@ interface TreeNodeProps {
 
 function TreeNode({ entry, depth }: TreeNodeProps) {
   const {
+    workspaceId,
     activePath,
     onOpenFile,
     isExpanded,
@@ -328,6 +332,9 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
     requestRename,
     requestDelete,
   } = useExplorer()
+  // Open state is tracked so the skill scan only runs for a folder someone has
+  // actually right-clicked, not for every row in the tree.
+  const [menuOpen, setMenuOpen] = useState(false)
   const expanded = entry.is_dir && isExpanded(entry.path)
   const isActive = !entry.is_dir && entry.path === activePath
   const { Icon: FileGlyph } = fileKind(entry.name)
@@ -337,7 +344,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
 
   return (
     <div>
-      <ContextMenu>
+      <ContextMenu onOpenChange={setMenuOpen}>
         <ContextMenuTrigger asChild>
           <button
             type="button"
@@ -399,6 +406,14 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
               <UploadSimple className="mr-2 h-4 w-4" />
               Upload files
             </ContextMenuItem>
+          )}
+          {/* Only for folders, and only when one actually holds a SKILL.md. */}
+          {entry.is_dir && (
+            <SkillIngestMenu
+              workspaceId={workspaceId}
+              path={entry.path}
+              open={menuOpen}
+            />
           )}
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => requestRename(entry)}>
