@@ -168,6 +168,12 @@ async def _apply_lightweight_migrations(conn) -> None:
         "tool_choice": "ALTER TABLE subagents ADD COLUMN tool_choice VARCHAR DEFAULT 'auto'",
         "extra_config": "ALTER TABLE subagents ADD COLUMN extra_config JSON DEFAULT '{}'",
         "enabled": "ALTER TABLE subagents ADD COLUMN enabled BOOLEAN DEFAULT 1",
+        # Per-row context-compaction overrides. Left NULL, so every existing
+        # subagent keeps running on the app-wide defaults.
+        "compaction_threshold": (
+            "ALTER TABLE subagents ADD COLUMN compaction_threshold FLOAT"
+        ),
+        "compaction_ratio": "ALTER TABLE subagents ADD COLUMN compaction_ratio FLOAT",
     }
     for col, ddl in subagent_additions.items():
         if col not in subagent_cols:
@@ -195,6 +201,17 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE agents ADD COLUMN browser_qa BOOLEAN DEFAULT 1")
         )
+    # Per-agent context-compaction overrides (see ``agents/context_budget.py``).
+    # NULL means "use the app-wide default", so an upgrade changes nothing.
+    agent_additions = {
+        "compaction_threshold": (
+            "ALTER TABLE agents ADD COLUMN compaction_threshold FLOAT"
+        ),
+        "compaction_ratio": "ALTER TABLE agents ADD COLUMN compaction_ratio FLOAT",
+    }
+    for col, ddl in agent_additions.items():
+        if col not in agent_cols:
+            await conn.execute(text(ddl))
 
     app_config_cols = await columns("app_config")
     if "deep_defaults" not in app_config_cols:
@@ -232,6 +249,12 @@ async def _apply_lightweight_migrations(conn) -> None:
         "hindsight_config": (
             "ALTER TABLE app_config ADD COLUMN hindsight_config JSON DEFAULT '{}'"
         ),
+        # App-wide compaction defaults set from the Settings page. NULL means "use
+        # the process settings", which is what every existing install already did.
+        "compaction_threshold": (
+            "ALTER TABLE app_config ADD COLUMN compaction_threshold FLOAT"
+        ),
+        "compaction_ratio": "ALTER TABLE app_config ADD COLUMN compaction_ratio FLOAT",
     }
     for col, ddl in app_config_additions.items():
         if col not in app_config_cols:

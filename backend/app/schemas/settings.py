@@ -122,6 +122,37 @@ class MemoryTestResult(BaseModel):
     error: str | None = None
 
 
+class CompactionDefaultsRead(BaseModel):
+    """The app-wide compaction defaults every agent falls back to.
+
+    Read by the Settings page (where they are edited) *and* by the agent/subagent
+    forms, so a row with no override of its own can show the value it actually
+    resolves to. Per-agent overrides live on the agent/subagent rows.
+    """
+
+    # The effective values: fraction of the context window at which compaction
+    # fires, and fraction of the history it folds into the summary (1.0 = all).
+    threshold: float
+    ratio: float
+    # Where each effective value comes from — a value saved here ("database") or
+    # the process environment / .env ("env"), mirroring the OpenRouter and memory
+    # sections. Only a "database" value can be reset.
+    threshold_source: Literal["database", "env"] = "env"
+    ratio_source: Literal["database", "env"] = "env"
+    # What resetting reverts to, so the UI can name it before the user commits.
+    env_threshold: float
+    env_ratio: float
+
+
+class CompactionDefaultsUpdate(BaseModel):
+    # Partial, like ``WebSearchSettingsUpdate``: only fields present in the request
+    # body are applied (tracked via ``model_fields_set``), so each knob saves
+    # independently. A present-but-null value clears the saved value and reverts
+    # that knob to the environment default.
+    threshold: float | None = Field(default=None, gt=0, le=1)
+    ratio: float | None = Field(default=None, gt=0, le=1)
+
+
 # Per-command default agent is an open ``dict[str, str]`` map (command name ->
 # agent id), handled directly in ``api/settings.py`` — no fixed schema, so a new
 # slash command needs no backend change (the frontend registry defines commands).

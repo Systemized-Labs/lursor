@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agents.prompt_author import AgentPromptContext
 from app.db.models import Agent, ThinkingLevel, ToolChoice
 from app.schemas._types import UTCDatetime
+
+# Compaction overrides are fractions of the model's context window, so both are
+# constrained to (0, 1]. ``None`` clears the override and reverts the agent to the
+# app-wide default (see ``agents/context_budget.py``).
+CompactionFraction = Annotated[float | None, Field(gt=0, le=1)]
 
 __all__ = [
     "AgentCreate",
@@ -33,6 +38,8 @@ class AgentCreate(BaseModel):
     browser_qa: bool = True
     thinking: ThinkingLevel = ThinkingLevel.off
     tool_choice: ToolChoice = ToolChoice.auto
+    compaction_threshold: CompactionFraction = None
+    compaction_ratio: CompactionFraction = None
     extra_config: dict[str, Any] = {}
     tool_ids: list[str] = []
 
@@ -51,6 +58,11 @@ class AgentUpdate(BaseModel):
     browser_qa: bool | None = None
     thinking: ThinkingLevel | None = None
     tool_choice: ToolChoice | None = None
+    # Unlike the other fields here, ``None`` is a meaningful *value* rather than
+    # "leave alone": the route applies only what the request actually sent
+    # (``exclude_unset``), so sending null clears the override.
+    compaction_threshold: CompactionFraction = None
+    compaction_ratio: CompactionFraction = None
     extra_config: dict[str, Any] | None = None
     tool_ids: list[str] | None = None
 
@@ -84,6 +96,8 @@ class AgentRead(BaseModel):
     browser_qa: bool
     thinking: ThinkingLevel
     tool_choice: ToolChoice
+    compaction_threshold: float | None
+    compaction_ratio: float | None
     extra_config: dict[str, Any]
     tool_ids: list[str]
     created_at: UTCDatetime
@@ -106,6 +120,8 @@ class AgentRead(BaseModel):
             browser_qa=agent.browser_qa,
             thinking=agent.thinking,
             tool_choice=agent.tool_choice,
+            compaction_threshold=agent.compaction_threshold,
+            compaction_ratio=agent.compaction_ratio,
             extra_config=agent.extra_config,
             tool_ids=[t.id for t in agent.tools],
             created_at=agent.created_at,

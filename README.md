@@ -21,6 +21,9 @@ Built on:
   root. Group the agents available in a workspace and open chat threads against them.
 - **Streaming chat** — assistant tokens and tool calls stream live over AG-UI SSE.
   Threads are auto-named by a fast model; `/compact` summarizes long conversations.
+- **Context compaction** — long runs summarize their own history before the window
+  fills. Every agent and subagent can override how full the window gets first, and
+  how much of the history goes into the summary versus stays verbatim.
 - **Plan → refine → execute** and **goal mode** — a self-continuing loop that drafts
   a plan, (optionally) waits for approval, then works turn after turn until an
   independent evaluator judges the objective met.

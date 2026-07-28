@@ -43,6 +43,11 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { MultiSelect } from "@/components/multi-select"
 import { ModelPicker } from "@/components/model-picker"
+import {
+  CompactionFields,
+  fractionToPercentText,
+  parsePercentText,
+} from "@/components/compaction-fields"
 import { useMemoryHint } from "@/pages/settings/memory-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
@@ -89,6 +94,10 @@ interface FormState {
   browser_qa: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  // Compaction overrides are edited as whole-percent text; "" means "no override,
+  // use the app default" (see ``CompactionFields``).
+  compactionThresholdText: string
+  compactionRatioText: string
   extraConfigText: string
   tool_ids: string[]
 }
@@ -110,6 +119,8 @@ function emptyState(): FormState {
     browser_qa: true,
     thinking: "off",
     tool_choice: "auto",
+    compactionThresholdText: "",
+    compactionRatioText: "",
     extraConfigText: "{}",
     tool_ids: [],
   }
@@ -130,6 +141,8 @@ function fromAgent(agent: Agent): FormState {
     browser_qa: agent.browser_qa,
     thinking: agent.thinking,
     tool_choice: agent.tool_choice ?? "auto",
+    compactionThresholdText: fractionToPercentText(agent.compaction_threshold),
+    compactionRatioText: fractionToPercentText(agent.compaction_ratio),
     extraConfigText: JSON.stringify(agent.extra_config ?? {}, null, 2),
     tool_ids: agent.tool_ids,
   }
@@ -311,6 +324,17 @@ export function AgentFormDialog({
       return
     }
 
+    const threshold = parsePercentText(form.compactionThresholdText, "Compact at")
+    if (!threshold.ok) {
+      toast.error(threshold.error)
+      return
+    }
+    const ratio = parsePercentText(form.compactionRatioText, "Compact")
+    if (!ratio.ok) {
+      toast.error(ratio.error)
+      return
+    }
+
     const input: AgentInput = {
       name: form.name.trim(),
       description: form.description.trim(),
@@ -325,6 +349,8 @@ export function AgentFormDialog({
       browser_qa: form.browser_qa,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
+      compaction_threshold: threshold.value,
+      compaction_ratio: ratio.value,
       extra_config: extraConfig,
       tool_ids: form.tool_ids,
     }
@@ -554,6 +580,20 @@ export function AgentFormDialog({
               ))}
             </div>
           </div>
+
+          <CompactionFields
+            idPrefix="agent"
+            threshold={form.compactionThresholdText}
+            ratio={form.compactionRatioText}
+            onChange={(field, value) =>
+              update(
+                field === "threshold"
+                  ? "compactionThresholdText"
+                  : "compactionRatioText",
+                value
+              )
+            }
+          />
 
           <div className="grid gap-2">
             <Label>Tools</Label>

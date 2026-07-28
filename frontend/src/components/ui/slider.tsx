@@ -36,12 +36,24 @@ const Slider = React.forwardRef<HTMLInputElement, SliderProps>(
               return (
                 <div
                   key={tick.value}
-                  className="absolute flex -translate-x-1/2 flex-col items-center"
+                  className="absolute flex flex-col"
                   style={{ left: `${pct}%` }}
                 >
-                  <span className="h-1 w-px bg-border" />
+                  {/* The mark itself always sits exactly on the value; only the
+                      label below it is pulled inward near the ends, so a tick at
+                      0% or 100% doesn't spill its text out of the track. */}
+                  <span className="h-1 w-px -translate-x-1/2 bg-border" />
                   {tick.label && (
-                    <span className="mt-0.5 text-[10px] leading-none text-muted-foreground">
+                    <span
+                      className={cn(
+                        "mt-0.5 whitespace-nowrap text-[10px] leading-none text-muted-foreground",
+                        pct <= 10
+                          ? "translate-x-0"
+                          : pct >= 90
+                            ? "-translate-x-full"
+                            : "-translate-x-1/2"
+                      )}
+                    >
                       {tick.label}
                     </span>
                   )}

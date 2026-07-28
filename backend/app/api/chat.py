@@ -20,7 +20,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ag_ui.core import (
@@ -45,7 +45,8 @@ from starlette.responses import StreamingResponse
 from app.agents.browser_qa import wrap_evaluate_with_visual_qa
 from app.agents.builder import TURN_REQUEST_LIMIT, build_deep_agent
 from app.agents.chat_run_manager import chat_run_manager
-from app.agents.compaction import summarize_thread
+from app.agents.compaction import split_for_compaction, summarize_thread
+from app.agents.context_budget import resolve_compaction_ratio
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     PLAN_DIR,
@@ -1781,14 +1782,19 @@ async def interject_goal(
 @router.post("/{thread_id}/compact", status_code=status.HTTP_200_OK)
 async def compact_thread(
     thread_id: str, session: AsyncSession = Depends(get_session)
-) -> dict[str, bool | str]:
+) -> dict[str, bool | str | int]:
     """Condense a conversation into a single carry-forward summary (``/compact``).
 
-    Summarizes every currently-visible message with the compaction model (an app
-    config override, else the thread agent's model), marks those messages
-    ``compacted`` (hidden, not deleted), and inserts a ``kind="summary"`` assistant
-    message in their place. Later turns then send only the summary plus new
-    messages, cutting token cost while keeping the thread's context.
+    Summarizes the currently-visible messages with the compaction model (an app
+    config override, else the global default), marks those messages ``compacted``
+    (hidden, not deleted), and inserts a ``kind="summary"`` assistant message in
+    their place. Later turns then send only the summary plus what came after it,
+    cutting token cost while keeping the thread's context.
+
+    How much of the transcript is condensed is the thread agent's
+    ``compaction_ratio``: the default folds in everything, while a lower ratio
+    leaves the newest turns verbatim behind the summary (see
+    ``agents/compaction.split_for_compaction``).
     """
     thread = await session.get(Thread, thread_id)
     if thread is None:
@@ -1807,9 +1813,18 @@ async def compact_thread(
             .order_by(Message.created_at)
         )
     ).scalars().all()
+    # The thread's own agent owns the ratio; a missing row (deleted agent) falls
+    # back to the app-wide default like any other unset override.
+    agent_row = await session.get(Agent, thread.agent_id)
+    ratio = (
+        resolve_compaction_ratio(agent_row)
+        if agent_row is not None
+        else settings.default_compaction_ratio
+    )
+    to_summarize, kept = split_for_compaction(rows, ratio)
     # Nothing meaningful to condense — a single message (or an existing lone
     # summary) already is the compact form.
-    if len(rows) < 2:
+    if not to_summarize:
         return {"compacted": False, "reason": "Not enough history to compact"}
 
     app_config = (await session.execute(select(AppConfig))).scalars().first()
@@ -1823,7 +1838,7 @@ async def compact_thread(
     ) or settings.default_compaction_model
 
     try:
-        summary = await summarize_thread(list(rows), model_str, custom_providers)
+        summary = await summarize_thread(to_summarize, model_str, custom_providers)
     except Exception as exc:  # noqa: BLE001 — surface any model/provider failure cleanly
         # The summarizer model may be unreachable or unknown to its provider (e.g.
         # a local proxy that no longer serves it). Return a clean 502 so the UI can
@@ -1836,18 +1851,26 @@ async def compact_thread(
     if not summary:
         return {"compacted": False, "reason": "Summarizer produced no output"}
 
-    for row in rows:
+    for row in to_summarize:
         row.compacted = True
         session.add(row)
+    # The transcript is ordered by ``created_at``, so a summary standing in for the
+    # *oldest* messages has to be stamped ahead of the turns it doesn't cover —
+    # otherwise a partial compaction would file the digest after the very messages
+    # it precedes, in the thread and in the history the next turn sends.
+    summary_at = (
+        kept[0].created_at - timedelta(microseconds=1) if kept else datetime.now(UTC)
+    )
     session.add(
         Message(
             thread_id=thread_id,
             role="assistant",
             content=summary,
             kind="summary",
+            created_at=summary_at,
         )
     )
     thread.updated_at = datetime.now(UTC)
     session.add(thread)
     await session.commit()
-    return {"compacted": True}
+    return {"compacted": True, "summarized": len(to_summarize), "kept": len(kept)}

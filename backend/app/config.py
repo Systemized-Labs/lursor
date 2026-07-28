@@ -133,6 +133,22 @@ class Settings(BaseSettings):
     # than the (possibly heavy or offline) thread agent's model. An explicit
     # ``AppConfig.compaction_model`` override still wins over this.
     default_compaction_model: str = "openrouter:google/gemini-2.5-flash"
+    # How full the context window gets before compaction fires, as a fraction of
+    # the model's token budget. This is the *default*; an agent (or subagent) row
+    # with ``compaction_threshold`` set overrides it for its own runs. See
+    # ``agents/context_budget.py``.
+    #
+    # Deliberately below pydantic-deep's own 0.9: models degrade well before their
+    # stated window is full, and compaction itself needs headroom — at 0.9 a single
+    # large tool result can carry the next request past the limit before the
+    # summarizer ever gets to run. Raise it per agent for a model that holds up.
+    default_compaction_threshold: float = 0.7
+    # How much of the history compaction folds into the summary, as a fraction of
+    # the token budget: 1.0 summarizes everything (the library's own default and
+    # what ``/compact`` has always done), 0.7 summarizes the oldest share and
+    # leaves the newest 30% of the budget's worth of messages verbatim. Overridden
+    # per row by ``compaction_ratio``.
+    default_compaction_ratio: float = 1.0
     # Model used to auto-name a conversation from its first user message. Naming
     # is a tiny, one-shot task fired in the background, so it runs on the smallest
     # fast model rather than the thread agent's (possibly heavy or offline) model.

@@ -367,6 +367,16 @@ class Agent(TimestampMixin, table=True):
     # Force or forbid tool calls (see ToolChoice); "auto" leaves it to the model.
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
 
+    # Per-agent overrides for in-run context compaction (see
+    # ``agents/context_budget.py``). ``compaction_threshold`` is how full the
+    # context window gets before compaction fires; ``compaction_ratio`` is how much
+    # of the history is folded into the summary (1.0 = all of it, 0.7 = leave the
+    # newest 30% of the budget verbatim). Null on either means "use the app-wide
+    # default" (``settings.default_compaction_threshold`` / ``_ratio``), so an
+    # untouched agent behaves exactly as before. Both are fractions in (0, 1].
+    compaction_threshold: float | None = None
+    compaction_ratio: float | None = None
+
     # Escape hatch for future kwargs without a schema change.
     extra_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
@@ -410,6 +420,14 @@ class Subagent(TimestampMixin, table=True):
     web_search: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
+
+    # Compaction overrides, same meaning as on :class:`Agent`. A subagent runs its
+    # own agent with its own history, so it gets its own budget: a specialist that
+    # reads whole files can be told to compact earlier than its parent. Null falls
+    # back to the app-wide default, never to the parent's value — the parent's
+    # override governs the parent's context only.
+    compaction_threshold: float | None = None
+    compaction_ratio: float | None = None
 
     # When off, this subagent is kept in the roster (still shown/editable in the
     # UI) but excluded from every agent's specialist set at build time. Lets a
@@ -543,6 +561,20 @@ class AppConfig(TimestampMixin, table=True):
     # ``settings.default_compaction_model`` — a small/fast cloud model — rather
     # than the (possibly heavy or offline) thread agent's model.
     compaction_model: str | None = None
+
+    # App-wide compaction defaults, editable from the Settings page: how full the
+    # context window gets before compaction fires, and how much of the history it
+    # folds into the summary (see ``agents/context_budget.py``). These are the
+    # values an agent with no override of its own runs on. When null the process
+    # settings apply (``settings.default_compaction_threshold`` / ``_ratio``, from
+    # the environment or their built-in defaults), so an install that never opens
+    # the section behaves exactly as before.
+    #
+    # Saved values are applied to the running process at startup and on save (see
+    # ``api/settings.load_app_config``), which is why nothing downstream reads this
+    # row directly — the resolver reads the live settings object.
+    compaction_threshold: float | None = None
+    compaction_ratio: float | None = None
 
     # Default agent per slash command, keyed by command ("chat" | "ask" | "plan"
     # | "goal") → agent id. When a command has an entry, using it in the composer

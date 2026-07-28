@@ -26,6 +26,11 @@ import { Label } from "@/components/ui/label"
 import { ModelPicker } from "@/components/model-picker"
 import { MultiSelect } from "@/components/multi-select"
 import {
+  CompactionFields,
+  fractionToPercentText,
+  parsePercentText,
+} from "@/components/compaction-fields"
+import {
   Select,
   SelectContent,
   SelectGroup,
@@ -79,6 +84,9 @@ interface FormState {
   web_search: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  // Whole-percent text; "" means no override (see ``CompactionFields``).
+  compactionThresholdText: string
+  compactionRatioText: string
   extraConfigText: string
   tool_ids: string[]
 }
@@ -97,6 +105,8 @@ function emptyState(): FormState {
     web_search: false,
     thinking: "off",
     tool_choice: "auto",
+    compactionThresholdText: "",
+    compactionRatioText: "",
     extraConfigText: "{}",
     tool_ids: [],
   }
@@ -116,6 +126,8 @@ function fromSubagent(subagent: Subagent): FormState {
     web_search: subagent.web_search,
     thinking: subagent.thinking,
     tool_choice: subagent.tool_choice ?? "auto",
+    compactionThresholdText: fractionToPercentText(subagent.compaction_threshold),
+    compactionRatioText: fractionToPercentText(subagent.compaction_ratio),
     extraConfigText: JSON.stringify(subagent.extra_config ?? {}, null, 2),
     tool_ids: subagent.tool_ids,
   }
@@ -215,6 +227,17 @@ export function SubagentFormDialog({
       return
     }
 
+    const threshold = parsePercentText(form.compactionThresholdText, "Compact at")
+    if (!threshold.ok) {
+      toast.error(threshold.error)
+      return
+    }
+    const ratio = parsePercentText(form.compactionRatioText, "Compact")
+    if (!ratio.ok) {
+      toast.error(ratio.error)
+      return
+    }
+
     const input: SubagentInput = {
       name: form.name.trim(),
       description: form.description.trim(),
@@ -228,6 +251,8 @@ export function SubagentFormDialog({
       web_search: form.web_search,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
+      compaction_threshold: threshold.value,
+      compaction_ratio: ratio.value,
       // Enabled state is toggled from the card, not this form; preserve it.
       enabled: subagent?.enabled ?? true,
       extra_config: extraConfig,
@@ -402,6 +427,20 @@ export function SubagentFormDialog({
               ))}
             </div>
           </div>
+
+          <CompactionFields
+            idPrefix="subagent"
+            threshold={form.compactionThresholdText}
+            ratio={form.compactionRatioText}
+            onChange={(field, value) =>
+              update(
+                field === "threshold"
+                  ? "compactionThresholdText"
+                  : "compactionRatioText",
+                value
+              )
+            }
+          />
 
           <div className="grid gap-2">
             <Label>Tools</Label>

@@ -17,6 +17,12 @@ export interface Agent {
   browser_qa: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  /** Fraction of the context window at which this agent compacts, or null to use
+   *  the app-wide default (see `useCompactionDefaults`). */
+  compaction_threshold: number | null
+  /** Fraction of the history compaction folds into the summary (1 = all of it),
+   *  or null for the app-wide default. */
+  compaction_ratio: number | null
   extra_config: Record<string, unknown>
   tool_ids: string[]
   created_at: string
@@ -37,6 +43,9 @@ export interface AgentInput {
   browser_qa: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  // Null clears the override and reverts to the app-wide default.
+  compaction_threshold: number | null
+  compaction_ratio: number | null
   extra_config: Record<string, unknown>
   tool_ids: string[]
 }
@@ -225,6 +234,10 @@ export interface Subagent {
   web_search: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  /** Compaction overrides for this subagent's own context; null uses the app-wide
+   *  default (never the parent agent's override). */
+  compaction_threshold: number | null
+  compaction_ratio: number | null
   /** When off, the subagent is kept but excluded from every agent at build time. */
   enabled: boolean
   extra_config: Record<string, unknown>
@@ -246,6 +259,8 @@ export interface SubagentInput {
   web_search: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
+  compaction_threshold: number | null
+  compaction_ratio: number | null
   enabled: boolean
   extra_config: Record<string, unknown>
   tool_ids: string[]
@@ -775,6 +790,32 @@ export interface DefaultAgentsSettings {
 }
 
 export type DefaultAgentsInput = DefaultAgentsSettings
+
+/**
+ * The app-wide compaction defaults an agent with no override of its own runs on.
+ * Editable on the Settings page; each agent and subagent can still override them
+ * with its own `compaction_threshold` / `compaction_ratio`.
+ */
+export interface CompactionDefaults {
+  /** Effective fraction of the context window at which compaction fires. */
+  threshold: number
+  /** Effective fraction of the history folded into the summary (1 = all of it). */
+  ratio: number
+  /** Whether each effective value was saved here or came from the backend's
+   *  environment. Only a `database` value can be reset. */
+  threshold_source: "database" | "env"
+  ratio_source: "database" | "env"
+  /** What a reset restores. */
+  env_threshold: number
+  env_ratio: number
+}
+
+/** Partial save: an omitted knob is left alone, an explicit `null` clears it back
+ *  to the backend's environment value. */
+export interface CompactionDefaultsInput {
+  threshold?: number | null
+  ratio?: number | null
+}
 
 // --- laios control plane --------------------------------------------------------
 

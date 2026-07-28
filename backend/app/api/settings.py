@@ -25,6 +25,8 @@ from app.config import get_settings
 from app.db.models import AppConfig
 from app.db.session import async_session_factory, get_session
 from app.schemas.settings import (
+    CompactionDefaultsRead,
+    CompactionDefaultsUpdate,
     MemorySettingsRead,
     MemorySettingsUpdate,
     MemoryTestResult,
@@ -39,16 +41,29 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
-# The key provided via the environment / .env, captured once before any UI
-# override is applied. Used as the fallback when the user clears their key.
+# The values provided via the environment / .env, captured once before any UI
+# override is applied. Used as the fallback when the user clears a saved value.
 _env_key: str | None = None
+_env_compaction: tuple[float, float] | None = None
 _env_captured = False
 
 
 def _capture_env_baseline() -> None:
-    global _env_key, _env_captured
+    """Snapshot the environment's own values, once, before any override lands.
+
+    Covers every setting the UI can override *in the running process* — the
+    OpenRouter key and the compaction defaults — so clearing one has something
+    truthful to revert to. Called from each endpoint that reads or writes them as
+    well as from startup, so whichever runs first captures a clean baseline.
+    """
+    global _env_key, _env_compaction, _env_captured
     if not _env_captured:
-        _env_key = get_settings().openrouter_api_key
+        current = get_settings()
+        _env_key = current.openrouter_api_key
+        _env_compaction = (
+            current.default_compaction_threshold,
+            current.default_compaction_ratio,
+        )
         _env_captured = True
 
 
@@ -62,13 +77,37 @@ def _apply_key(key: str | None) -> None:
         os.environ.pop("OPENROUTER_API_KEY", None)
 
 
+def _apply_compaction(threshold: float | None, ratio: float | None) -> None:
+    """Point the running process at the saved compaction defaults.
+
+    Mutating the cached :class:`Settings` is what makes a save take effect without
+    a restart: every consumer resolves through that one object (see
+    ``agents/context_budget.py``), so nothing else has to be plumbed. ``None`` for
+    either knob restores the environment's value.
+    """
+    settings = get_settings()
+    env_threshold, env_ratio = _env_compaction or (
+        settings.default_compaction_threshold,
+        settings.default_compaction_ratio,
+    )
+    settings.default_compaction_threshold = (
+        threshold if threshold is not None else env_threshold
+    )
+    settings.default_compaction_ratio = ratio if ratio is not None else env_ratio
+
+
 async def load_app_config() -> None:
-    """Apply the persisted key at startup (called from the app lifespan)."""
+    """Apply the persisted settings at startup (called from the app lifespan)."""
     _capture_env_baseline()
     async with async_session_factory() as session:
         cfg = (await session.execute(select(AppConfig))).scalars().first()
-    if cfg and cfg.openrouter_api_key:
+    if cfg is None:
+        return
+    if cfg.openrouter_api_key:
         _apply_key(cfg.openrouter_api_key)
+    # Unconditional (unlike the key): a NULL knob has to reinstate the environment
+    # value, since a stale value from a previous save must not survive a clear.
+    _apply_compaction(cfg.compaction_threshold, cfg.compaction_ratio)
 
 
 def _hint(key: str | None) -> str | None:
@@ -387,6 +426,66 @@ def _memory_error(exc: Exception, base_url: str) -> str:
     if isinstance(status_code, int) and status_code >= 400:
         return f"Hindsight returned HTTP {status_code}."
     return f"Could not reach Hindsight at {base_url}. Check the URL and that it is running."
+
+
+# --- Compaction defaults ------------------------------------------------------
+
+
+@router.get("/compaction", response_model=CompactionDefaultsRead)
+async def get_compaction_defaults(
+    session: AsyncSession = Depends(get_session),
+) -> CompactionDefaultsRead:
+    """The compaction settings an agent with no override of its own runs on.
+
+    Reads the *effective* values off the running process (a saved value was
+    applied there on startup or on save), plus where each came from and what a
+    reset would restore. Read by the Settings section that edits them and by the
+    agent/subagent forms, which show them as the value an unset field resolves to.
+    """
+    _capture_env_baseline()
+    cfg = await _get_config(session)
+    current = get_settings()
+    env_threshold, env_ratio = _env_compaction or (
+        current.default_compaction_threshold,
+        current.default_compaction_ratio,
+    )
+    return CompactionDefaultsRead(
+        threshold=current.default_compaction_threshold,
+        ratio=current.default_compaction_ratio,
+        threshold_source=(
+            "database" if cfg and cfg.compaction_threshold is not None else "env"
+        ),
+        ratio_source="database" if cfg and cfg.compaction_ratio is not None else "env",
+        env_threshold=env_threshold,
+        env_ratio=env_ratio,
+    )
+
+
+@router.put("/compaction", response_model=CompactionDefaultsRead)
+async def set_compaction_defaults(
+    payload: CompactionDefaultsUpdate, session: AsyncSession = Depends(get_session)
+) -> CompactionDefaultsRead:
+    """Save the app-wide compaction defaults, effective immediately.
+
+    Partial: each knob is only touched when the request actually carries it, and a
+    present-but-null value clears that knob back to the environment default. The
+    saved values are pushed into the running process, so the next run compacts on
+    them without a restart — agents with their own override are unaffected.
+    """
+    _capture_env_baseline()
+    cfg = await _get_config(session)
+    if cfg is None:
+        cfg = AppConfig()
+    sent = payload.model_fields_set
+    if "threshold" in sent:
+        cfg.compaction_threshold = payload.threshold
+    if "ratio" in sent:
+        cfg.compaction_ratio = payload.ratio
+    session.add(cfg)
+    await session.commit()
+
+    _apply_compaction(cfg.compaction_threshold, cfg.compaction_ratio)
+    return await get_compaction_defaults(session)
 
 
 # --- Default agent per command ------------------------------------------------

@@ -35,6 +35,7 @@ from pydantic_deep.prompts import BASE_PROMPT
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.agents.browser_qa import BrowserQACapability
+from app.agents.context_budget import apply_compaction_settings
 from app.agents.deduping_backend import DedupingLocalBackend, set_run_env
 from app.agents.deep_defaults import (
     builtin_subagent_defaults,
@@ -1145,5 +1146,10 @@ def build_deep_agent(
         **subagents_kwarg,
         **extra_config,
     )
+    # Retune the context manager the library just built to this row's compaction
+    # settings (when the window fills up, and how much of it gets summarized).
+    # Applies to subagents too: each one comes back through here via its own
+    # factory, so a specialist compacts on its own budget, not its parent's.
+    apply_compaction_settings(agent, row)
     deps = create_default_deps(backend)
     return agent, deps

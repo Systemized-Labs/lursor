@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "./client"
 import { modelKeys } from "./models"
 import type {
+  CompactionDefaults,
+  CompactionDefaultsInput,
   DefaultAgentsInput,
   DefaultAgentsSettings,
   MemorySettings,
@@ -37,6 +39,10 @@ export const settingsApi = {
     api.get<DefaultAgentsSettings>("/settings/default-agents", signal),
   setDefaultAgents: (input: DefaultAgentsInput) =>
     api.put<DefaultAgentsSettings>("/settings/default-agents", input),
+  getCompaction: (signal?: AbortSignal) =>
+    api.get<CompactionDefaults>("/settings/compaction", signal),
+  setCompaction: (input: CompactionDefaultsInput) =>
+    api.put<CompactionDefaults>("/settings/compaction", input),
 }
 
 export const settingsKeys = {
@@ -44,6 +50,29 @@ export const settingsKeys = {
   webSearch: ["settings", "web-search"] as const,
   memory: ["settings", "memory"] as const,
   defaultAgents: ["settings", "default-agents"] as const,
+  compaction: ["settings", "compaction"] as const,
+}
+
+/**
+ * The compaction defaults an agent falls back to when it sets no override of its
+ * own. Read by the Settings section that edits them *and* by the agent/subagent
+ * forms, where they label the value an un-overridden slider resolves to.
+ */
+export function useCompactionDefaults() {
+  return useQuery({
+    queryKey: settingsKeys.compaction,
+    queryFn: ({ signal }) => settingsApi.getCompaction(signal),
+  })
+}
+
+export function useSaveCompactionDefaults() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CompactionDefaultsInput) => settingsApi.setCompaction(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: settingsKeys.compaction })
+    },
+  })
 }
 
 export function useOpenRouterSettings() {

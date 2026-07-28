@@ -39,12 +39,16 @@ export const threadsApi = {
   interjectGoal: (id: string, content: string) =>
     api.post<{ queued: boolean }>(`/threads/${id}/goal/interject`, { content }),
   // Condense the conversation into a single carry-forward summary (/compact).
-  // `compacted` is false when there wasn't enough history to condense.
+  // `compacted` is false when there wasn't enough history to condense. How much
+  // is folded in is the agent's `compaction_ratio`, so the counts report what the
+  // summary covers (`summarized`) and what was left verbatim behind it (`kept`).
   compact: (id: string) =>
-    api.post<{ compacted: boolean; reason?: string }>(
-      `/threads/${id}/compact`,
-      {}
-    ),
+    api.post<{
+      compacted: boolean
+      reason?: string
+      summarized?: number
+      kept?: number
+    }>(`/threads/${id}/compact`, {}),
 }
 
 export const threadKeys = {

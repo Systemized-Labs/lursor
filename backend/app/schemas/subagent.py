@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.db.models import Subagent, ThinkingLevel, ToolChoice
 from app.schemas._types import UTCDatetime
+from app.schemas.agent import CompactionFraction
 
 
 class SubagentCreate(BaseModel):
@@ -21,6 +22,8 @@ class SubagentCreate(BaseModel):
     web_search: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     tool_choice: ToolChoice = ToolChoice.auto
+    compaction_threshold: CompactionFraction = None
+    compaction_ratio: CompactionFraction = None
     enabled: bool = True
     extra_config: dict[str, Any] = {}
     tool_ids: list[str] = []
@@ -39,6 +42,9 @@ class SubagentUpdate(BaseModel):
     web_search: bool | None = None
     thinking: ThinkingLevel | None = None
     tool_choice: ToolChoice | None = None
+    # Null clears the override (see ``AgentUpdate``), not "leave alone".
+    compaction_threshold: CompactionFraction = None
+    compaction_ratio: CompactionFraction = None
     enabled: bool | None = None
     extra_config: dict[str, Any] | None = None
     tool_ids: list[str] | None = None
@@ -58,6 +64,8 @@ class SubagentRead(BaseModel):
     web_search: bool
     thinking: ThinkingLevel
     tool_choice: ToolChoice
+    compaction_threshold: float | None
+    compaction_ratio: float | None
     enabled: bool
     extra_config: dict[str, Any]
     tool_ids: list[str]
@@ -80,6 +88,8 @@ class SubagentRead(BaseModel):
             web_search=sa.web_search,
             thinking=sa.thinking,
             tool_choice=sa.tool_choice,
+            compaction_threshold=sa.compaction_threshold,
+            compaction_ratio=sa.compaction_ratio,
             enabled=sa.enabled,
             extra_config=sa.extra_config,
             tool_ids=[t.id for t in sa.tools],

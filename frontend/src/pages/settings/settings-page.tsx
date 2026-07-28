@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GitHubPage } from "@/pages/github/github-page"
 import { AgentDefaultsSection } from "./agent-defaults-section"
 import { AppearanceSection } from "./appearance-section"
+import { CompactionSection } from "./compaction-section"
 import { DefaultAgentsSection } from "./default-agents-section"
 import {
   PROVIDER_TABS,
@@ -23,7 +24,8 @@ function isTab(value: string | null): value is Tab {
 
 /**
  * App-level settings. "General" holds the GitHub connection and agent runtime
- * defaults; "Providers" groups the model sources (OpenRouter key, custom
+ * defaults (per-command agents, delegation depth, context compaction);
+ * "Providers" groups the model sources (OpenRouter key, custom
  * endpoints), picked via a segmented control that sits inline on the tab row so
  * the section keeps the full page width. LAIOS is its own top-level
  * destination in the sidebar. The active tab is mirrored to `?tab=` so it
@@ -87,6 +89,7 @@ export function SettingsPage() {
           <GitHubPage embedded />
           <DefaultAgentsSection />
           <AgentDefaultsSection />
+          <CompactionSection />
         </TabsContent>
         <TabsContent value="appearance" className="space-y-6">
           <AppearanceSection />

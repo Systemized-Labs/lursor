@@ -9,9 +9,16 @@ summarization runs on the same OpenRouter / custom-provider plumbing as chat.
 The output is stored as a ``kind="summary"`` assistant message and shown in the
 UI as a distinct "conversation summarized" card; the messages it subsumes are
 marked ``compacted`` (hidden, not deleted). See ``api/chat.py`` for the endpoint.
+
+How much of the transcript gets condensed is the thread agent's
+``compaction_ratio`` (:func:`split_for_compaction`) — the same knob that governs
+the in-run compaction pydantic-deep does on its own; see
+``agents/context_budget.py``.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from pydantic_ai import Agent as PydanticAgent
 
@@ -20,6 +27,18 @@ from app.config import get_settings
 from app.db.models import CustomProvider, Message
 
 settings = get_settings()
+
+# The smallest number of messages worth condensing: a single message (or an
+# existing lone summary) already *is* the compact form, so a split that would
+# leave fewer than this to summarize condenses nothing at all.
+_MIN_MESSAGES_TO_COMPACT = 2
+
+# Flat per-message cost added when weighting the transcript for the ratio split
+# below, in characters. Every turn carries overhead the body doesn't show (role
+# label, tool-call names), so weighting purely by content length would treat a
+# run of one-line turns as free and hand almost the whole transcript to the
+# "kept" tail.
+_MESSAGE_WEIGHT_FLOOR = 100
 
 # Per-message character cap when rendering the transcript, so one runaway tool
 # dump or pasted blob can't blow past the summarizer's context window. The point
@@ -50,6 +69,54 @@ meta-commentary about the summary itself.
 - Do not invent anything not present in the transcript.
 - Return ONLY the summary text. No preamble, no surrounding code fences.
 """
+
+
+def _message_weight(message: Message) -> int:
+    """Roughly how much context ``message`` occupies, in characters."""
+    return len(message.content or "") + _MESSAGE_WEIGHT_FLOOR
+
+
+def split_for_compaction(
+    messages: Sequence[Message], ratio: float
+) -> tuple[list[Message], list[Message]]:
+    """Split a transcript into ``(to_summarize, kept_verbatim)`` for ``ratio``.
+
+    ``ratio`` is the share of the transcript to fold into the summary: ``1.0``
+    (the default) summarizes everything, ``0.7`` summarizes the oldest ~70% and
+    leaves the newest ~30% untouched, so the turns the user just had survive
+    word-for-word while the long tail behind them collapses.
+
+    The share is measured in characters (see :func:`_message_weight`) rather than
+    tokens — the exact boundary doesn't matter, only that it lands in roughly the
+    right place, and a character count needs no model round-trip. Message
+    boundaries are never split, and at least :data:`_MIN_MESSAGES_TO_COMPACT`
+    messages are always condensed; when the tail budget would swallow that many,
+    the oldest ones are condensed anyway rather than making the call a no-op.
+
+    Returns ``([], list(messages))`` when there is too little history to condense,
+    which the caller reports as "not enough history".
+    """
+    rows = list(messages)
+    if len(rows) < _MIN_MESSAGES_TO_COMPACT:
+        return [], rows
+    if ratio >= 1:
+        return rows, []
+
+    keep_budget = sum(_message_weight(m) for m in rows) * (1 - ratio)
+    kept: list[Message] = []
+    used = 0
+    # Newest → oldest: keep turns verbatim while they fit the tail budget, always
+    # leaving enough behind to be worth summarizing.
+    for message in reversed(rows):
+        if len(rows) - len(kept) <= _MIN_MESSAGES_TO_COMPACT:
+            break
+        weight = _message_weight(message)
+        if used + weight > keep_budget:
+            break
+        used += weight
+        kept.append(message)
+    kept.reverse()
+    return rows[: len(rows) - len(kept)], kept
 
 
 def _render_transcript(messages: list[Message]) -> str:

@@ -294,7 +294,15 @@ export function WorkspaceChatPage() {
       const res = await threadsApi.compact(threadId)
       if (res.compacted) {
         await reloadMessages()
-        toast.success("Conversation compacted", { id: toastId })
+        // A partial compaction (the agent's ratio is below 100%) leaves the newest
+        // turns in place, so say what it actually did rather than implying the
+        // whole thread collapsed.
+        toast.success(
+          res.kept
+            ? `Compacted ${res.summarized} messages, kept the last ${res.kept}`
+            : "Conversation compacted",
+          { id: toastId }
+        )
       } else {
         toast.info(res.reason ?? "Nothing to compact", { id: toastId })
       }
