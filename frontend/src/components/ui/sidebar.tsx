@@ -35,7 +35,12 @@ const SIDEBAR_WIDTH_MOBILE = "min(23rem, 92vw)"
 // panel and leaves this — a better collapsed state than a 3rem icon strip,
 // because the rail's labels stay readable at this width.
 const SIDEBAR_GUTTER_WIDTH = 68
-const SIDEBAR_WIDTH_ICON = `${SIDEBAR_GUTTER_WIDTH}px`
+// The rail's other width, where a tile shows its name beside its icon. Wide
+// enough for ~20 characters of the shell font, which is what it takes for names
+// like `cat-adoption` and `cat-landing` to be told apart by reading rather than
+// by hovering — the thing 68px cannot do at any font size.
+const SIDEBAR_RAIL_WIDTH_EXPANDED = 232
+const SIDEBAR_RAIL_STORAGE_KEY = "sidebar:rail"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
 // Drag-to-resize bounds (px) for the *panel*; the rail is fixed. The default
@@ -57,6 +62,11 @@ type SidebarContextProps = {
   setWidth: (width: number) => void
   isResizing: boolean
   setIsResizing: (resizing: boolean) => void
+  /** Whether the rail is showing names beside its icons. */
+  railExpanded: boolean
+  toggleRail: () => void
+  /** The rail's current width in px — what `--sidebar-width-icon` resolves to. */
+  railWidth: number
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -110,6 +120,30 @@ const SidebarProvider = React.forwardRef<
       window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped))
     }, [])
 
+    // The rail's width is a second, independent axis: ⌘B decides whether the
+    // *panel* is there, ⇧⌘B decides whether the rail carries names. Two toggles
+    // because they answer different questions — "do I need the conversation
+    // list" and "can I read my workspaces" — and collapsing one to the other
+    // would mean you cannot have a labelled rail without a panel beside it.
+    const [railExpanded, setRailExpanded] = React.useState(() => {
+      if (typeof window === "undefined") return false
+      return window.localStorage.getItem(SIDEBAR_RAIL_STORAGE_KEY) === "expanded"
+    })
+    const toggleRail = React.useCallback(() => {
+      setRailExpanded((expanded) => {
+        const next = !expanded
+        try {
+          window.localStorage.setItem(
+            SIDEBAR_RAIL_STORAGE_KEY,
+            next ? "expanded" : "icons"
+          )
+        } catch {
+          // Ignore quota / disabled-storage errors — this is a preference.
+        }
+        return next
+      })
+    }, [])
+
     // Internal open state; `openProp`/`setOpenProp` allow external control.
     const [_open, _setOpen] = React.useState(defaultOpen)
     const open = openProp ?? _open
@@ -135,19 +169,31 @@ const SidebarProvider = React.forwardRef<
 
     React.useEffect(() => {
       const handleKeyDown = (event: KeyboardEvent) => {
+        // `event.key` is case-folded by shift, so the chord is matched on the
+        // unshifted letter — otherwise ⇧⌘B looks for "b" and finds "B".
         if (
-          event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-          (event.metaKey || event.ctrlKey)
+          event.key.toLowerCase() !== SIDEBAR_KEYBOARD_SHORTCUT ||
+          !(event.metaKey || event.ctrlKey)
         ) {
-          event.preventDefault()
-          toggleSidebar()
+          return
         }
+        event.preventDefault()
+        if (event.shiftKey) toggleRail()
+        else toggleSidebar()
       }
       window.addEventListener("keydown", handleKeyDown)
       return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [toggleSidebar])
+    }, [toggleSidebar, toggleRail])
 
     const state = open ? "expanded" : "collapsed"
+    // Names cost the panel width it does not have on a phone: the drawer holds
+    // the rail *and* the list in ~368px, so an expanded rail would leave the
+    // conversations about 130px. The preference is remembered either way and
+    // takes effect on a wider screen.
+    const railWidth =
+      railExpanded && !isMobile
+        ? SIDEBAR_RAIL_WIDTH_EXPANDED
+        : SIDEBAR_GUTTER_WIDTH
 
     const contextValue = React.useMemo<SidebarContextProps>(
       () => ({
@@ -162,6 +208,9 @@ const SidebarProvider = React.forwardRef<
         setWidth,
         isResizing,
         setIsResizing,
+        railExpanded,
+        toggleRail,
+        railWidth,
       }),
       [
         state,
@@ -174,6 +223,9 @@ const SidebarProvider = React.forwardRef<
         width,
         setWidth,
         isResizing,
+        railExpanded,
+        toggleRail,
+        railWidth,
       ]
     )
 
@@ -185,9 +237,13 @@ const SidebarProvider = React.forwardRef<
             style={
               {
                 // The panel; `--sidebar-width-total` adds the rail beside it.
+                // Both are live values: the rail widens to carry names, and
+                // everything sized off these tokens — the collapsed sidebar, the
+                // content inset, the fixed overlay — follows without a second
+                // definition of how wide the rail is.
                 "--sidebar-width": `${width}px`,
-                "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
-                "--sidebar-width-total": `${width + SIDEBAR_GUTTER_WIDTH}px`,
+                "--sidebar-width-icon": `${railWidth}px`,
+                "--sidebar-width-total": `${width + railWidth}px`,
                 ...style,
               } as React.CSSProperties
             }
@@ -322,7 +378,8 @@ const SidebarRail = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button">
 >(({ className, ...props }, ref) => {
-  const { toggleSidebar, state, setWidth, setIsResizing } = useSidebar()
+  const { toggleSidebar, state, setWidth, setIsResizing, railWidth } =
+    useSidebar()
 
   // The rail doubles as a drag handle: dragging resizes (when expanded), while
   // a plain click (no meaningful movement) still toggles the sidebar.
@@ -341,11 +398,14 @@ const SidebarRail = React.forwardRef<
         if (Math.abs(e.clientX - startX) > 3) moved = true
         if (!resizable) return
         // The sidebar is anchored to the viewport edge, so the pointer's
-        // distance from that edge is the total width — less the fixed rail,
-        // which sits between the edge and the resizable panel.
+        // distance from that edge is the total width — less the rail, which
+        // sits between the edge and the resizable panel. Read from context
+        // rather than the collapsed constant: with a labelled rail the panel
+        // starts 232px in, and subtracting 68 there made the panel jump wider
+        // than the cursor by the difference the moment you grabbed the handle.
         setWidth(
           (side === "left" ? e.clientX : window.innerWidth - e.clientX) -
-            SIDEBAR_GUTTER_WIDTH
+            railWidth
         )
       }
       const onUp = () => {
@@ -365,7 +425,7 @@ const SidebarRail = React.forwardRef<
       document.addEventListener("mousemove", onMove)
       document.addEventListener("mouseup", onUp)
     },
-    [state, setWidth, setIsResizing, toggleSidebar]
+    [state, setWidth, setIsResizing, toggleSidebar, railWidth]
   )
 
   return (

@@ -1,9 +1,18 @@
-import { Bell, DotsThree, FolderPlus, Gear, Palette } from "@phosphor-icons/react"
-import { useState, type DragEvent } from "react"
+import {
+  Bell,
+  CaretLeft,
+  CaretRight,
+  DotsThree,
+  FolderPlus,
+  Gear,
+  Palette,
+  Plus,
+} from "@phosphor-icons/react"
+import { useState, type DragEvent, type ReactNode } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 
 import { useGitHubConfig } from "@/api/github"
-import type { Workspace } from "@/api/types"
+import type { Workspace, WorkspaceFolder } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -23,9 +32,15 @@ import {
   isDestinationRoute,
   matchesRoute,
 } from "@/components/layout/rail-items"
+import { RailFolder } from "@/components/layout/rail-folder"
 import { WorkspaceTile } from "@/components/layout/workspace-tile"
 import type { WorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import type { WorkspaceStatus } from "@/components/layout/use-workspace-status"
+import type {
+  RailDragged,
+  RailDrop,
+  WorkspaceTree,
+} from "@/components/layout/use-workspace-tree"
 import type { PanelMode } from "@/components/layout/use-panel-mode"
 import { cn } from "@/lib/utils"
 
@@ -33,9 +48,19 @@ import { cn } from "@/lib/utils"
 const FOOTER_TILE =
   "size-9 text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
 
+/** Do two drop targets name the same slot? */
+function sameDrop(a: RailDrop | null, b: RailDrop): boolean {
+  if (a === null || a.kind !== b.kind) return false
+  if (a.kind === "root" && b.kind === "root") return a.index === b.index
+  if (a.kind === "folder" && b.kind === "folder") {
+    return a.folderId === b.folderId && a.index === b.index
+  }
+  return false
+}
+
 interface NavRailProps {
-  /** User workspaces in rail order — the tiles ⌘1…⌘9 address. */
-  workspaces: Workspace[]
+  /** The rail's rows — groups and workspaces — plus the moves that rearrange them. */
+  tree: WorkspaceTree
   /** The Skill Studio, pinned below them; it is a workspace with an icon. */
   studio: Workspace | undefined
   activeWorkspaceId: string | undefined
@@ -43,7 +68,6 @@ interface NavRailProps {
   icons: WorkspaceIcons
   hrefFor: (workspaceId: string) => string
   onOpenWorkspace: (workspaceId: string) => void
-  onReorder: (from: number, to: number) => void
   panelMode: PanelMode
   onPanelMode: (mode: PanelMode) => void
   /** Whether the panel is showing, so the Activity tile can toggle it off. */
@@ -52,6 +76,9 @@ interface NavRailProps {
   unreadCount: number
   onNavigate: () => void
   onNewWorkspace: () => void
+  onNewFolder: () => void
+  onRenameFolder: (folder: WorkspaceFolder) => void
+  onDeleteFolder: (folder: WorkspaceFolder) => void
   onNewConversation: (workspaceId: string) => void
   onRenameWorkspace: (workspace: Workspace) => void
   onCloneWorkspace: (workspace: Workspace) => void
@@ -59,7 +86,8 @@ interface NavRailProps {
 }
 
 /**
- * The 68px rail: your workspaces, then the few controls that aren't one.
+ * The workspace rail: your workspaces, the groups they're filed in, then the few
+ * controls that aren't either.
  *
  * The rail holds workspaces because that is what gets switched. Reaching a
  * workspace used to mean expanding a folder in the panel and picking a
@@ -72,6 +100,12 @@ interface NavRailProps {
  * could never do: agents keep working in the workspaces you aren't looking at,
  * and a rail you can see is a status board for them.
  *
+ * It has two widths (⇧⌘B). At 68px a tile is a glyph and a slot number; at 232px
+ * it is a labelled row. Both are the same list in the same order — widening adds
+ * names, it doesn't rearrange anything — so the muscle memory survives the
+ * toggle. Groups get the same treatment: a caret and a count when narrow, a
+ * section heading when wide.
+ *
  * No new theme tokens — `index.css` carries 87 theme blocks, so a `--rail`
  * variable would be 87 edits and a standing obligation. Deriving the surface
  * from `--sidebar-accent` reads as a darker rail on dark themes and a lighter
@@ -81,20 +115,22 @@ interface NavRailProps {
  * position already tell them apart.
  */
 export function NavRail({
-  workspaces,
+  tree,
   studio,
   activeWorkspaceId,
   status,
   icons,
   hrefFor,
   onOpenWorkspace,
-  onReorder,
   panelMode,
   onPanelMode,
   panelVisible,
   unreadCount,
   onNavigate,
   onNewWorkspace,
+  onNewFolder,
+  onRenameFolder,
+  onDeleteFolder,
   onNewConversation,
   onRenameWorkspace,
   onCloneWorkspace,
@@ -103,39 +139,62 @@ export function NavRail({
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const githubConfig = useGitHubConfig().data
-  const { isMobile, setOpen } = useSidebar()
+  const { isMobile, setOpen, railExpanded, toggleRail } = useSidebar()
 
-  // Drag-to-reorder. Held here rather than per tile so a tile can tell whether
-  // *it* is the current drop target.
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [overIndex, setOverIndex] = useState<number | null>(null)
+  // Drag-to-rearrange. Held here rather than per row so a row can tell whether
+  // *it* is the current drop target — and, for a group, whether the drop means
+  // "before me" or "into me".
+  const [dragged, setDragged] = useState<RailDragged | null>(null)
+  const [dropTarget, setDropTarget] = useState<RailDrop | null>(null)
+  const [fileInto, setFileInto] = useState<string | null>(null)
 
-  const dragFor = (index: number) => ({
-    onDragStart: (e: DragEvent) => {
-      setDragIndex(index)
-      e.dataTransfer.effectAllowed = "move"
-      // Firefox ignores a drag with no payload; the index itself is carried in
-      // component state, so the data is a formality.
-      e.dataTransfer.setData("text/plain", String(index))
-    },
-    onDragOver: (e: DragEvent) => {
-      if (dragIndex === null) return
-      e.preventDefault()
-      setOverIndex(index)
-    },
-    onDrop: (e: DragEvent) => {
-      e.preventDefault()
-      if (dragIndex !== null) onReorder(dragIndex, index)
-      setDragIndex(null)
-      setOverIndex(null)
-    },
-    onDragEnd: () => {
-      setDragIndex(null)
-      setOverIndex(null)
-    },
-    isDragging: dragIndex === index,
-    isDropTarget: overIndex === index && dragIndex !== index,
-  })
+  const endDrag = () => {
+    setDragged(null)
+    setDropTarget(null)
+    setFileInto(null)
+  }
+
+  /** Drag handlers for a row that a drop would land *before*. */
+  const rowDrag = (item: RailDragged, target: RailDrop) => {
+    // Groups don't nest, so a slot inside one is not somewhere a group can go.
+    // Refusing the dragover — rather than quietly redirecting the drop to the
+    // group's own row — is what keeps the highlight honest: nothing lights up,
+    // so nothing promised a landing spot it wasn't going to use.
+    const rejects = dragged?.kind === "folder" && target.kind === "folder"
+    return {
+      onDragStart: (e: DragEvent) => {
+        setDragged(item)
+        e.dataTransfer.effectAllowed = "move"
+        // Firefox ignores a drag with no payload; the row itself is carried in
+        // component state, so the data is a formality.
+        e.dataTransfer.setData("text/plain", item.id)
+      },
+      onDragOver: (e: DragEvent) => {
+        if (!dragged || rejects) return
+        e.preventDefault()
+        setDropTarget(target)
+        setFileInto(null)
+      },
+      onDrop: (e: DragEvent) => {
+        e.preventDefault()
+        if (!rejects && dragged && dragged.id !== item.id) {
+          tree.move(dragged, target)
+        }
+        endDrag()
+      },
+      onDragEnd: endDrag,
+      isDragging: dragged?.id === item.id,
+      isDropTarget:
+        !rejects && sameDrop(dropTarget, target) && dragged?.id !== item.id,
+    }
+  }
+
+  const activeDrag = dragged !== null
+
+  const folderTargets = tree.folders.map((folder) => ({
+    id: folder.id,
+    name: folder.name,
+  }))
 
   // Activity owns the panel rather than a route, so its tile is filled while the
   // panel is showing it — and a second click puts the panel away. Desktop only:
@@ -173,6 +232,40 @@ export function NavRail({
 
   const destinationActive = isDestinationRoute(pathname)
 
+  /** One member or loose workspace, with everything both widths need. */
+  const tile = (
+    workspace: Workspace,
+    slot: number,
+    target: RailDrop,
+    nested: boolean
+  ) => {
+    const { running, unread } = status(workspace.id)
+    return (
+      <WorkspaceTile
+        key={workspace.id}
+        workspace={workspace}
+        index={slot - 1}
+        href={hrefFor(workspace.id)}
+        icon={icons.iconFor(workspace)}
+        hasIconOverride={icons.hasOverride(workspace.id)}
+        isActive={activeWorkspaceId === workspace.id}
+        running={running}
+        unreadCount={unread}
+        expanded={railExpanded && !isMobile}
+        nested={nested}
+        folders={folderTargets}
+        onMoveToFolder={(folderId) => tree.moveToFolder(workspace.id, folderId)}
+        onOpen={() => openTile(workspace.id)}
+        onSetIcon={(next) => icons.setIcon(workspace.id, next)}
+        onNewConversation={() => onNewConversation(workspace.id)}
+        onRename={() => onRenameWorkspace(workspace)}
+        onClone={() => onCloneWorkspace(workspace)}
+        onDelete={() => onDeleteWorkspace(workspace)}
+        drag={rowDrag({ kind: "workspace", id: workspace.id }, target)}
+      />
+    )
+  }
+
   return (
     <nav
       aria-label="Primary"
@@ -185,7 +278,7 @@ export function NavRail({
       // left of the rail's visible middle. On a 2× display that is a whole device
       // pixel of consistent leftward lean. Out of flow, the column is the full
       // 68px and its centre is the rail's centre.
-      className="relative flex w-(--sidebar-width-icon) shrink-0 flex-col bg-sidebar-accent/40 after:pointer-events-none after:absolute after:inset-y-0 after:right-0 after:w-px after:bg-sidebar-border after:content-['']"
+      className="relative flex w-(--sidebar-width-icon) shrink-0 flex-col bg-sidebar-accent/40 transition-[width] duration-200 ease-linear after:pointer-events-none after:absolute after:inset-y-0 after:right-0 after:w-px after:bg-sidebar-border after:content-['']"
     >
       {/* The macOS traffic lights are cleared by the one chrome strip above both
           columns (see AppSidebar), not by a reservation here — a strip inside the
@@ -198,16 +291,27 @@ export function NavRail({
               onClick={onNavigate}
               aria-label="New chat"
               aria-current={matchesRoute(pathname, "/") ? "page" : undefined}
-              className="my-1.5 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
+              className={cn(
+                "my-1.5 flex items-center rounded-md outline-none ring-sidebar-ring focus-visible:ring-2",
+                railExpanded && !isMobile ? "mx-1.5 gap-2 self-stretch px-1" : ""
+              )}
             >
               <img
                 src="/lursor_icon.png"
                 alt="Lursor"
-                className="size-9 rounded-md object-contain"
+                className="size-9 shrink-0 rounded-md object-contain"
               />
+              {railExpanded && !isMobile ? (
+                <span className="truncate text-[13px] font-medium text-sidebar-foreground/80">
+                  New chat
+                </span>
+              ) : null}
             </Link>
           </TooltipTrigger>
-          <TooltipContent side="right" hidden={isMobile}>
+          <TooltipContent
+            side="right"
+            hidden={isMobile || (railExpanded && !isMobile)}
+          >
             New chat
           </TooltipContent>
         </Tooltip>
@@ -226,37 +330,162 @@ export function NavRail({
           in a scroll container) stayed put. A 68px icon column has no room to
           spend on a bar nobody needs, and the fade mask below already says there
           is more. */}
-      <div
-        className="no-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 py-1 [mask-image:linear-gradient(to_bottom,transparent,black_10px,black_calc(100%-14px),transparent)]"
-      >
-        {workspaces.map((ws, index) => {
-          const { running, unread } = status(ws.id)
+      <div className="no-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 py-1 [mask-image:linear-gradient(to_bottom,transparent,black_10px,black_calc(100%-14px),transparent)]">
+        {tree.nodes.map((node, rootIndex) => {
+          if (node.kind === "workspace") {
+            return tile(
+              node.workspace,
+              node.slot,
+              { kind: "root", index: rootIndex },
+              false
+            )
+          }
+
+          const { folder, children, collapsed } = node
+          // A shut group still shows the workspace you are *in*: the rail's job
+          // is to say where you are, and a tile that disappears because you
+          // tidied it away would take that answer with it.
+          const visible = collapsed
+            ? children.filter((c) => c.workspace.id === activeWorkspaceId)
+            : children
+          const rollup = children.reduce(
+            (acc, { workspace }) => {
+              const { running, unread } = status(workspace.id)
+              return {
+                running: acc.running || running,
+                unread: acc.unread + unread,
+              }
+            },
+            { running: false, unread: 0 }
+          )
+
           return (
-            <WorkspaceTile
-              key={ws.id}
-              workspace={ws}
-              index={index}
-              href={hrefFor(ws.id)}
-              icon={icons.iconFor(ws)}
-              hasIconOverride={icons.hasOverride(ws.id)}
-              isActive={activeWorkspaceId === ws.id}
-              running={running}
-              unreadCount={unread}
-              onOpen={() => openTile(ws.id)}
-              onSetIcon={(next) => icons.setIcon(ws.id, next)}
-              onNewConversation={() => onNewConversation(ws.id)}
-              onRename={() => onRenameWorkspace(ws)}
-              onClone={() => onCloneWorkspace(ws)}
-              onDelete={() => onDeleteWorkspace(ws)}
-              drag={dragFor(index)}
-            />
+            <RailFolder
+              key={folder.id}
+              folder={folder}
+              collapsed={collapsed}
+              expanded={railExpanded && !isMobile}
+              childCount={children.length}
+              previewIcons={children
+                .slice(0, 4)
+                .map((c) => icons.iconFor(c.workspace))}
+              containsActive={children.some(
+                (c) => c.workspace.id === activeWorkspaceId
+              )}
+              running={rollup.running}
+              unreadCount={rollup.unread}
+              hideTooltip={isMobile}
+              onToggle={() => tree.toggleFolder(folder.id)}
+              onRename={() => onRenameFolder(folder)}
+              onDelete={() => onDeleteFolder(folder)}
+              isFileTarget={fileInto === folder.id}
+              drag={{
+                ...rowDrag({ kind: "folder", id: folder.id }, {
+                  kind: "root",
+                  index: rootIndex,
+                }),
+                // A workspace dropped on the header goes *inside*; only another
+                // group reorders against it. Same gesture, different meaning,
+                // decided by what is in your hand.
+                onDragOver: (e: DragEvent) => {
+                  if (!dragged) return
+                  e.preventDefault()
+                  if (dragged.kind === "workspace") {
+                    setFileInto(folder.id)
+                    setDropTarget(null)
+                  } else {
+                    setDropTarget({ kind: "root", index: rootIndex })
+                    setFileInto(null)
+                  }
+                },
+                onDrop: (e: DragEvent) => {
+                  e.preventDefault()
+                  if (dragged?.kind === "workspace") {
+                    tree.move(dragged, {
+                      kind: "folder",
+                      folderId: folder.id,
+                      index: children.length,
+                    })
+                  } else if (dragged && dragged.id !== folder.id) {
+                    tree.move(dragged, { kind: "root", index: rootIndex })
+                  }
+                  endDrag()
+                },
+              }}
+            >
+              {visible.map(({ workspace, slot }) =>
+                tile(
+                  workspace,
+                  slot,
+                  {
+                    kind: "folder",
+                    folderId: folder.id,
+                    index: children.findIndex(
+                      (c) => c.workspace.id === workspace.id
+                    ),
+                  },
+                  true
+                )
+              )}
+              {/* An open group needs a floor to drop onto, or its last slot is
+                  unreachable: every row above hands you the space *before* it. */}
+              {activeDrag && !collapsed && dragged?.kind === "workspace" ? (
+                <DropFloor
+                  active={sameDrop(dropTarget, {
+                    kind: "folder",
+                    folderId: folder.id,
+                    index: children.length,
+                  })}
+                  onOver={() => {
+                    setDropTarget({
+                      kind: "folder",
+                      folderId: folder.id,
+                      index: children.length,
+                    })
+                    setFileInto(null)
+                  }}
+                  onDrop={() => {
+                    if (dragged) {
+                      tree.move(dragged, {
+                        kind: "folder",
+                        folderId: folder.id,
+                        index: children.length,
+                      })
+                    }
+                    endDrag()
+                  }}
+                />
+              ) : null}
+            </RailFolder>
           )
         })}
 
-        {/* The studio is app-owned and can't be deleted or reordered, so it sits
-            below the ones that can, behind a divider. It is a real workspace, and
-            being a tile here is what let the old "Skills" destination — a nav row
-            that was secretly a workspace, with its own panel mode — go away. */}
+        {/* The same floor for the top level, which is also how a workspace gets
+            back out of a group when every root row is above it. */}
+        {activeDrag ? (
+          <DropFloor
+            active={sameDrop(dropTarget, {
+              kind: "root",
+              index: tree.nodes.length,
+            })}
+            onOver={() => {
+              setDropTarget({ kind: "root", index: tree.nodes.length })
+              setFileInto(null)
+            }}
+            onDrop={() => {
+              if (dragged) {
+                tree.move(dragged, { kind: "root", index: tree.nodes.length })
+              }
+              endDrag()
+            }}
+          />
+        ) : null}
+
+        {/* The studio is app-owned and can't be deleted, reordered or filed, so
+            it sits below the ones that can, behind a divider. It is a real
+            workspace, and being a tile here is what let the old "Skills"
+            destination — a nav row that was secretly a workspace, with its own
+            panel mode — go away. */}
         {studio ? (
           <>
             <span
@@ -266,13 +495,14 @@ export function NavRail({
             <WorkspaceTile
               key={studio.id}
               workspace={studio}
-              index={workspaces.length}
+              index={tree.ordered.length}
               href={hrefFor(studio.id)}
               icon={icons.iconFor(studio)}
               hasIconOverride={icons.hasOverride(studio.id)}
               isActive={activeWorkspaceId === studio.id}
               running={status(studio.id).running}
               unreadCount={status(studio.id).unread}
+              expanded={railExpanded && !isMobile}
               onOpen={() => openTile(studio.id)}
               onSetIcon={(next) => icons.setIcon(studio.id, next)}
               onNewConversation={() => onNewConversation(studio.id)}
@@ -283,24 +513,35 @@ export function NavRail({
           </>
         ) : null}
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={onNewWorkspace}
-              aria-label="New workspace"
-              className="mt-0.5 flex h-10 w-full shrink-0 items-center justify-center rounded-md text-sidebar-foreground/40 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2"
-            >
-              <FolderPlus className="size-[17px]" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right" hidden={isMobile}>
-            New workspace
-          </TooltipContent>
-        </Tooltip>
+        <div className="mt-0.5 flex shrink-0 flex-col gap-0.5">
+          <RailAction
+            label="New workspace"
+            icon={<Plus className="size-[17px]" />}
+            expanded={railExpanded && !isMobile}
+            hideTooltip={isMobile}
+            onClick={onNewWorkspace}
+          />
+          <RailAction
+            label="New folder"
+            icon={<FolderPlus className="size-[17px]" />}
+            expanded={railExpanded && !isMobile}
+            hideTooltip={isMobile}
+            onClick={onNewFolder}
+          />
+        </div>
       </div>
 
-      <div className="flex shrink-0 flex-col items-center gap-1 border-t border-sidebar-border py-2">
+      <div
+        className={cn(
+          "flex shrink-0 border-t border-sidebar-border py-2",
+          // Five controls stack in a 68px column and fit on one line at 232px,
+          // which is the point of the extra width: spending five rows of a
+          // labelled rail on settings would push the workspaces off the screen.
+          railExpanded && !isMobile
+            ? "flex-row flex-wrap items-center justify-center gap-1 px-1.5"
+            : "flex-col items-center gap-1"
+        )}
+      >
         {/* Cross-workspace attention. The per-tile marks say *where* something
             happened; this is the list of what. */}
         <Tooltip>
@@ -428,7 +669,114 @@ export function NavRail({
               : "Settings"}
           </TooltipContent>
         </Tooltip>
+
       </div>
+
+      {/* The width toggle, moved onto the rail's own edge — a collapse handle
+          where the eye already is when it wants more or less rail, rather than a
+          glyph buried in the footer. Straddles the separator and points the way
+          it will move: ‹ shrinks back to icons, › reveals names. Desktop only;
+          the mobile drawer has no width to trade. */}
+      {isMobile ? null : (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={toggleRail}
+              aria-expanded={railExpanded}
+              aria-label={
+                railExpanded ? "Show icons only" : "Show workspace names"
+              }
+              className="absolute right-0 top-1/2 z-30 flex h-8 w-4 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-md border border-sidebar-border bg-sidebar text-sidebar-foreground/60 shadow-sm outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2"
+            >
+              {railExpanded ? (
+                <CaretLeft weight="bold" className="size-3" />
+              ) : (
+                <CaretRight weight="bold" className="size-3" />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {railExpanded ? "Show icons only" : "Show workspace names"}
+            <span className="ml-2 font-mono text-muted-foreground">⇧⌘B</span>
+          </TooltipContent>
+        </Tooltip>
+      )}
     </nav>
+  )
+}
+
+/**
+ * The strip of empty space at the end of a list that makes its last slot
+ * reachable. Only rendered mid-drag: a permanent gap would be dead space in a
+ * column this narrow, and an invisible drop zone under the tiles would swallow
+ * clicks meant for them.
+ */
+function DropFloor({
+  active,
+  onOver,
+  onDrop,
+}: {
+  active: boolean
+  onOver: () => void
+  onDrop: () => void
+}) {
+  return (
+    <div
+      aria-hidden
+      onDragOver={(e) => {
+        e.preventDefault()
+        onOver()
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        onDrop()
+      }}
+      className={cn(
+        "h-3 shrink-0 rounded",
+        active && "bg-sidebar-primary/20 ring-1 ring-sidebar-primary ring-inset"
+      )}
+    />
+  )
+}
+
+/** "New workspace" / "New folder": an icon button narrow, a labelled row wide. */
+function RailAction({
+  label,
+  icon,
+  expanded,
+  hideTooltip,
+  onClick,
+}: {
+  label: string
+  icon: ReactNode
+  expanded: boolean
+  hideTooltip: boolean
+  onClick: () => void
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          className={cn(
+            "flex h-9 w-full shrink-0 items-center rounded-md text-sidebar-foreground/40 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2",
+            expanded ? "gap-2.5 px-2" : "justify-center"
+          )}
+        >
+          <span className="flex size-[22px] shrink-0 items-center justify-center">
+            {icon}
+          </span>
+          {expanded ? (
+            <span className="truncate text-[13px]">{label}</span>
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" hidden={hideTooltip || expanded}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
   )
 }

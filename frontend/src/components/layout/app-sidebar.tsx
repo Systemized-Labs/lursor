@@ -11,8 +11,8 @@ import { SidebarPanel } from "@/components/layout/sidebar-panel"
 import { usePanelMode } from "@/components/layout/use-panel-mode"
 import { useSidebarSelection } from "@/components/layout/use-sidebar-selection"
 import { useWorkspaceIcons } from "@/components/layout/use-workspace-icons"
-import { useWorkspaceOrder } from "@/components/layout/use-workspace-order"
 import { useWorkspaceStatus } from "@/components/layout/use-workspace-status"
+import { useWorkspaceTree } from "@/components/layout/use-workspace-tree"
 import { useWorkspaceSwitch } from "@/components/layout/use-workspace-switch"
 import { useWorkspaceDialogs } from "@/components/layout/workspace-dialogs"
 import { useAllThreads } from "@/hooks/use-all-threads"
@@ -24,8 +24,7 @@ import { isMacElectron } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 
 /**
- * The left navigation: a fixed 68px workspace rail and a contextual panel beside
- * it.
+ * The left navigation: a workspace rail and a contextual panel beside it.
  *
  * The rail holds workspaces, which is the change everything else follows from.
  * It used to hold destinations — eight of them, including four pages you open
@@ -36,14 +35,19 @@ import { cn } from "@/lib/utils"
  * workload, so it gets the always-visible column, ⌘1…⌘9, and a double-⌘ MRU
  * toggle; the pages that were there before collapse into one ⋯ menu.
  *
+ * The rail has two widths — icons at 68px, icons and names at 232px (⇧⌘B) — and
+ * its workspaces can be filed into folders, which are groups in the list and
+ * nothing on disk. Both are in `use-workspace-tree` and `nav-rail`.
+ *
  * This component wires them together: shared state (panel mode, visit memory,
- * tile order, selection, the run set) lives here, everything else is delegated.
+ * the workspace tree, selection, the run set) lives here, everything else is
+ * delegated.
  */
 export function AppSidebar() {
   const { pathname } = useLocation()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const { isMobile, setOpenMobile, open } = useSidebar()
+  const { isMobile, setOpenMobile, open, railWidth } = useSidebar()
   const { open: openCommandPalette } = useCommandPalette()
   const qc = useQueryClient()
 
@@ -69,7 +73,7 @@ export function AppSidebar() {
   const [panelMode, setPanelMode] = usePanelMode()
   const selection = useSidebarSelection()
   const visits = useWorkspaceVisits(threads.workspaceIds)
-  const order = useWorkspaceOrder(threads.workspaces)
+  const tree = useWorkspaceTree(threads.workspaces)
   const icons = useWorkspaceIcons(threads.workspaceIds)
 
   // Remember where you are, so switching back here later resumes it. Recorded
@@ -100,14 +104,14 @@ export function AppSidebar() {
   }
 
   const { switchTo, hrefFor } = useWorkspaceSwitch({
-    // Rail order, then the studio — so ⌘N matches what you see, including the
-    // studio's tile at the end.
+    // Tree order — groups' members counted where they sit — then the studio, so
+    // ⌘N matches the numbers on the tiles, including the studio's at the end.
     orderedIds: useMemo(
       () => [
-        ...order.ordered.map((ws) => ws.id),
+        ...tree.ordered.map((ws) => ws.id),
         ...(threads.studio ? [threads.studio.id] : []),
       ],
-      [order.ordered, threads.studio]
+      [tree.ordered, threads.studio]
     ),
     visits,
     byWorkspace: threads.byWorkspace,
@@ -141,13 +145,13 @@ export function AppSidebar() {
       const recent = byId.get(id)
       if (recent) return recent
     }
-    return order.ordered[0] ?? threads.studio
+    return tree.ordered[0] ?? threads.studio
   }, [
     threads.allWorkspaces,
     threads.studio,
     activeWorkspaceId,
     visits.mru,
-    order.ordered,
+    tree.ordered,
   ])
 
   const scopedThreads = useMemo(
@@ -258,13 +262,25 @@ export function AppSidebar() {
           than flush with them, which is the trade those buttons force: the
           alternative is pulling them into the window's corner radius.
 
+          Once the rail carries names it is 232px, and 88 would leave the heading
+          floating over the rail instead of over the column it belongs to — so the
+          slot becomes the rail's own width, which clears the buttons anyway and
+          puts the heading flush with the panel beneath it. The 88px floor only
+          exists for the width where the buttons are wider than the rail.
+
           `h-11` is sized to the lights, which are taller than the 12px of older
           macOS releases: ~15px buttons at a 15px top inset (electron/main.cjs)
           centre in 44px, so the heading beside them shares their centre line.
           Drag-anywhere, except the header's own buttons (see PanelHeader). */}
       {isMacElectron ? (
         <div className="flex h-11 shrink-0 items-center [-webkit-app-region:drag]">
-          <div aria-hidden className="w-[88px] shrink-0" />
+          <div
+            aria-hidden
+            className={cn(
+              "shrink-0",
+              railWidth > 88 ? "w-(--sidebar-width-icon)" : "w-[88px]"
+            )}
+          />
           {panelVisible ? (
             <PanelHeader
               panelMode={panelMode}
@@ -285,20 +301,22 @@ export function AppSidebar() {
 
       <div className="flex min-h-0 w-full flex-1">
         <NavRail
-          workspaces={order.ordered}
+          tree={tree}
           studio={threads.studio}
           activeWorkspaceId={activeWorkspaceId}
           status={status}
           icons={icons}
           hrefFor={hrefFor}
           onOpenWorkspace={switchTo}
-          onReorder={order.move}
           panelMode={panelMode}
           onPanelMode={setPanelMode}
           panelVisible={panelVisible}
           unreadCount={unreadCount}
           onNavigate={closeMobile}
           onNewWorkspace={dialogs.openNewWorkspace}
+          onNewFolder={dialogs.openNewFolder}
+          onRenameFolder={dialogs.openRenameFolder}
+          onDeleteFolder={dialogs.openDeleteFolder}
           onNewConversation={newConversation}
           onRenameWorkspace={dialogs.openRenameWorkspace}
           onCloneWorkspace={dialogs.openCloneWorkspace}
