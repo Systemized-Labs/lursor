@@ -187,6 +187,10 @@ async def _apply_lightweight_migrations(conn) -> None:
     # time) with no duplicate names in the roster.
     if "builtin_name" in subagent_cols:
         await _retire_builtin_overrides(conn)
+        # Drop the index first: SQLite's DROP COLUMN doesn't always clean up an
+        # index defined on the dropped column, which leaves a dangling index
+        # that breaks every later statement touching this table.
+        await conn.execute(text("DROP INDEX IF EXISTS ix_subagents_builtin_name"))
         # SQLite >= 3.35. Guarded on the column being present, so idempotent.
         await conn.execute(text("ALTER TABLE subagents DROP COLUMN builtin_name"))
 
