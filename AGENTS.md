@@ -469,6 +469,32 @@ restart/update logic lives in the daemon — Lursor stays a pure proxy. Restart 
 special: the daemon dies mid-request, so a dropped connection shortly after a
 `202` is expected, surfaced as `202 {restarting: true}`.
 
+### The right dock
+
+`hooks/use-dock-state.ts` owns the tab list (persisted per workspace in
+`localStorage`); `components/shell/right-dock.tsx` renders it. **Any kind can be
+open more than once** — two previews on different ports, two editors, two shells
+— which forces three rules:
+
+- **Tab ids are persisted and globally unique** (not per-session counters).
+  Panel state that used to hang off the workspace id has to be keyed per tab or
+  duplicates fight over one value: `lib/tab-storage.ts` namespaces it under
+  `lursor:tab:<id>:*`, and `closeTab` purges that namespace. A preview also
+  writes the workspace-wide key as the *default* a newly opened preview starts
+  on; an explicit clear stores `""`, so a cleared tab doesn't re-inherit it.
+- **Only the visible panel takes app-wide open requests** (`lib/open-file`,
+  `lib/open-preview`). Hidden dock tabs stay mounted, so an unguarded panel
+  would swallow the request and open the file where nobody can see it — the
+  original single-tab bug, back in a new shape.
+- **`ensureTab` targets active → most recently used → leftmost.** The request
+  displaces whatever that tab held, so picking the leftmost would navigate a
+  preview the user forgot about while the one they were working in sits
+  untouched. Focus order (`mru`) is session-only state.
+
+Tab strips show a panel-reported detail (a port, a filename) *only* while a kind
+is open more than once, with an ordinal for a duplicate that has nothing to
+report yet. Detail is derived from live panel state — never persisted.
+
 ### Other
 
 - **Terminal** — a real PTY per workspace over a WebSocket (`api/terminal.py`).

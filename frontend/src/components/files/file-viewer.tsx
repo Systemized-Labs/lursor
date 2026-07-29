@@ -21,6 +21,12 @@ const TREE_HIDDEN_STORAGE_KEY = "lursor-file-tree-hidden"
 
 interface FileViewerProps {
   workspaceId?: string
+  /** Hosting dock tab, when this editor lives in the right dock. */
+  tabId?: string
+  /** Whether this panel is the one on screen; only it takes pending requests. */
+  active?: boolean
+  /** Report the open file's name for the tab strip. */
+  onDetail?: (tabId: string, detail: string | null) => void
 }
 
 /**
@@ -33,8 +39,16 @@ interface FileViewerProps {
  * {@link useFileBuffers} pair (also used by the skill editor); what lives here is
  * everything workspace-specific — the tree, the watcher, and open-file requests
  * arriving from elsewhere in the app.
+ *
+ * More than one can be open in the dock at a time (two files side by side), each
+ * with its own buffers; only the visible one takes pending open-file requests.
  */
-export function FileViewer({ workspaceId }: FileViewerProps) {
+export function FileViewer({
+  workspaceId,
+  tabId,
+  active = true,
+  onDetail,
+}: FileViewerProps) {
   const qc = useQueryClient()
   const [treeHidden, setTreeHidden] = useState(
     () =>
@@ -82,14 +96,28 @@ export function FileViewer({ workspaceId }: FileViewerProps) {
   // Open files requested from elsewhere (e.g. the global command palette). We
   // consume a pending request on mount and whenever a new one is parked, so a
   // freshly-opened file tab or an already-open viewer both react.
+  //
+  // Only while visible: hidden dock tabs stay mounted, so an unguarded viewer
+  // could swallow the request and open the file where nobody can see it. A
+  // parked request makes the shell focus a file tab, and that viewer — now
+  // active — picks it up.
   useEffect(() => {
+    if (!active) return
     const tryOpen = () => {
       const request = consumePendingFile(workspaceId)
       if (request) void openFile(request.path, request.name)
     }
     tryOpen()
     return subscribeOpenFile(tryOpen)
-  }, [workspaceId, openFile])
+  }, [workspaceId, openFile, active])
+
+  // Label the dock tab with the file on screen, so several Files tabs read as
+  // the documents they hold rather than as identical chips.
+  const activeName = openFiles.find((f) => f.path === activePath)?.name
+  useEffect(() => {
+    if (!tabId) return
+    onDetail?.(tabId, activeName ?? null)
+  }, [tabId, onDetail, activeName])
 
   useFileWatch(
     workspaceId,

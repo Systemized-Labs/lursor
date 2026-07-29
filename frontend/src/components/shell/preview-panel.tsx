@@ -10,6 +10,7 @@ import {
 
 import { cn } from "@/lib/utils"
 import { consumePendingPreview, subscribeOpenPreview } from "@/lib/open-preview"
+import { tabStorageKey } from "@/lib/tab-storage"
 import {
   usePreviewServersFor,
   type DetectedServer,
@@ -80,20 +81,55 @@ function sameUrl(a: string, b: string): boolean {
 const STORAGE_PREFIX = "lursor:preview:"
 const keyFor = (workspaceId?: string) => `${STORAGE_PREFIX}${workspaceId ?? "_global"}`
 
-function readSavedUrl(workspaceId?: string): string {
+/**
+ * The URL is remembered twice over, because a workspace can have several preview
+ * tabs open at once:
+ *
+ * - per tab, so each one reopens on the address *it* was showing rather than all
+ *   of them snapping to whichever navigated last;
+ * - per workspace, as the default a *newly opened* preview starts on — the last
+ *   address used here is a far better guess than a blank pane, and it keeps a
+ *   layout saved before per-tab state existed working.
+ */
+function readSavedUrl(workspaceId?: string, tabId?: string): string {
   try {
+    // A tab that was explicitly cleared holds `""` — distinct from "never set",
+    // so closing a preview and reloading doesn't resurrect it from the default.
+    const own = tabId ? localStorage.getItem(tabStorageKey(tabId, "preview")) : null
+    if (own !== null) return own
     return localStorage.getItem(keyFor(workspaceId)) ?? ""
   } catch {
     return ""
   }
 }
 
-function writeSavedUrl(workspaceId: string | undefined, url: string) {
+function writeSavedUrl(
+  workspaceId: string | undefined,
+  tabId: string | undefined,
+  url: string
+) {
   try {
+    if (tabId) localStorage.setItem(tabStorageKey(tabId, "preview"), url)
+    // Only real addresses update the workspace-wide default: clearing one tab
+    // shouldn't rob a preview opened later of a sensible starting point.
     if (url) localStorage.setItem(keyFor(workspaceId), url)
-    else localStorage.removeItem(keyFor(workspaceId))
+    else if (!tabId) localStorage.removeItem(keyFor(workspaceId))
   } catch {
     // Best-effort: ignore quota / disabled-storage errors.
+  }
+}
+
+/**
+ * A short label for the dock tab strip: the port for a local dev server (the
+ * thing that actually tells two previews apart), else the hostname.
+ */
+function urlLabel(raw: string): string | null {
+  if (!raw) return null
+  try {
+    const u = new URL(raw)
+    return u.port ? `:${u.port}` : u.hostname
+  } catch {
+    return null
   }
 }
 
@@ -184,12 +220,20 @@ function writePref(key: string, value: string) {
 interface PreviewPanelProps {
   /** Keys the persisted URL, so each workspace remembers its own preview target. */
   workspaceId?: string
+  /** Hosting dock tab — keys this preview's own remembered URL. */
+  tabId?: string
+  /** Whether this panel is the one on screen; only it takes pending requests. */
+  active?: boolean
+  /** Report the loaded port/host for the tab strip. */
+  onDetail?: (tabId: string, detail: string | null) => void
 }
 
 /**
  * A web preview pane: an address bar plus an iframe rendering a URL — typically
  * the dev server an agent has started in the workspace. The last URL is
- * persisted per workspace so the preview reopens where it left off.
+ * persisted per tab (and per workspace, as the default for new previews) so the
+ * preview reopens where it left off. Several previews can be open side by side —
+ * one per port, say — each navigating independently.
  *
  * Dev servers the agent starts are auto-detected by the backend and offered as
  * one-tap chips (with a live starting/ready state) — no port guessing. When the
@@ -199,14 +243,19 @@ interface PreviewPanelProps {
  * Cross-origin pages that send `X-Frame-Options`/`frame-ancestors` can't be
  * framed; the "open externally" affordance is always available as a fallback.
  */
-export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
+export function PreviewPanel({
+  workspaceId,
+  tabId,
+  active = true,
+  onDetail,
+}: PreviewPanelProps) {
   // Dev servers the backend detected for this workspace (stream-derived).
   const detected = usePreviewServersFor(workspaceId)
   // The committed URL currently loaded in the iframe. A URL saved on the desktop
   // shell (loopback) is rewritten to this browser's host on restore, so opening
   // the same workspace from a phone loads the right machine.
   const [url, setUrl] = useState<string>(() =>
-    toBrowserHost(readSavedUrl(workspaceId))
+    toBrowserHost(readSavedUrl(workspaceId, tabId))
   )
   // The editable address-bar value (may differ from `url` while typing).
   const [draft, setDraft] = useState<string>(url)
@@ -241,10 +290,17 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
   useEffect(() => {
     if (wsRef.current === workspaceId) return
     wsRef.current = workspaceId
-    const saved = toBrowserHost(readSavedUrl(workspaceId))
+    const saved = toBrowserHost(readSavedUrl(workspaceId, tabId))
     setUrl(saved)
     setDraft(saved)
-  }, [workspaceId])
+  }, [workspaceId, tabId])
+
+  // Keep the dock tab labelled with what this preview is showing, so duplicate
+  // Preview tabs read as ":3000" and ":5173" rather than two identical chips.
+  useEffect(() => {
+    if (!tabId) return
+    onDetail?.(tabId, urlLabel(url))
+  }, [tabId, onDetail, url])
 
   const navigate = useCallback(
     (raw: string) => {
@@ -255,11 +311,11 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
       const target = toBrowserHost(normalized)
       setUrl(target)
       setDraft(target)
-      writeSavedUrl(workspaceId, target)
+      writeSavedUrl(workspaceId, tabId, target)
       setLoading(true)
       setReloadKey((k) => k + 1)
     },
-    [workspaceId]
+    [workspaceId, tabId]
   )
 
   const reload = useCallback(() => {
@@ -272,21 +328,28 @@ export function PreviewPanel({ workspaceId }: PreviewPanelProps) {
     setUrl("")
     setDraft("")
     setLoading(false)
-    writeSavedUrl(workspaceId, "")
-  }, [workspaceId])
+    writeSavedUrl(workspaceId, tabId, "")
+  }, [workspaceId, tabId])
 
   // Navigate to URLs requested from elsewhere (e.g. the right-click "Open in
   // Lursor Browser" on a chat link). Consume a pending request on mount and
   // whenever a new one is parked, so a freshly-opened preview tab or an
   // already-open panel both react.
+  //
+  // Only the visible panel consumes: with several previews mounted at once (the
+  // dock keeps hidden tabs alive) a free-for-all would hand the request to
+  // whichever mounted first and navigate a tab the user can't see. A parked
+  // request makes the shell focus a preview tab, and that panel — now active —
+  // picks it up.
   useEffect(() => {
+    if (!active) return
     const tryOpen = () => {
       const request = consumePendingPreview(workspaceId)
       if (request) navigate(request.url)
     }
     tryOpen()
     return subscribeOpenPreview(tryOpen)
-  }, [workspaceId, navigate])
+  }, [workspaceId, navigate, active])
 
   // When the server currently in the iframe transitions starting -> ready,
   // reload it so a first-load "connection refused" gives way to the live app.

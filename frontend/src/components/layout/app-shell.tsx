@@ -251,7 +251,17 @@ export function AppShell() {
                         mobileView !== kind && "hidden"
                       )}
                     >
-                      <DockPanelContent kind={kind} workspaceId={workspaceId} />
+                      {/* One panel per kind here — the bottom bar has no notion
+                          of duplicates — so a fixed id stands in for a tab id.
+                          Scoped by workspace: these panels are not remounted on
+                          a workspace switch, and per-tab storage is global, so a
+                          shared id would carry the last repo's preview URL over. */}
+                      <DockPanelContent
+                        kind={kind}
+                        workspaceId={workspaceId}
+                        tabId={`mobile-${workspaceId}-${kind}`}
+                        active={mobileView === kind}
+                      />
                     </div>
                   ))}
                 {workspaceId && (
