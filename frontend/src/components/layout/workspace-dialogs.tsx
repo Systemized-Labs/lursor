@@ -9,12 +9,7 @@ import {
   threadsApi,
   useUpdateThread,
 } from "@/api/threads"
-import {
-  useDeleteWorkspace,
-  useUpdateWorkspace,
-  workspaceKeys,
-  workspacesApi,
-} from "@/api/workspaces"
+import { useDeleteWorkspace, useUpdateWorkspace } from "@/api/workspaces"
 import type { Thread, Workspace } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { RenameDialog } from "@/components/layout/rename-dialog"
@@ -160,72 +155,46 @@ export function useWorkspaceDialogs({
   function handleBulkDelete() {
     // Close the dialog and update the UI immediately; the deletes run in the
     // background with an optimistic cache update (rolled back on failure).
-    if (selection.kind === "workspace") {
-      const ids = [...selection.workspaceIds]
-      const previous = qc.getQueryData<Workspace[]>(workspaceKeys.all)
-      qc.setQueryData<Workspace[]>(workspaceKeys.all, (old) =>
-        (old ?? []).filter((ws) => !ids.includes(ws.id))
-      )
-      if (activeWorkspaceId && ids.includes(activeWorkspaceId)) {
-        navigate("/customization")
-      }
-      selection.clear()
-      setBulkDeleteOpen(false)
-      Promise.all(ids.map((id) => workspacesApi.remove(id)))
-        .then(() => {
-          toast.success(
-            `${ids.length} workspace${ids.length > 1 ? "s" : ""} deleted`
-          )
-        })
-        .catch((err) => {
-          if (previous) qc.setQueryData(workspaceKeys.all, previous)
-          toast.error(err instanceof Error ? err.message : "Failed to delete")
-        })
-        .finally(() => {
-          qc.invalidateQueries({ queryKey: workspaceKeys.all })
-          for (const id of ids) invalidateThreadLists(qc, id)
-        })
-    } else if (selection.kind === "thread") {
-      const threads = [...selection.threads.values()]
-      const openDeleted = threads.find((t) => t.id === activeThreadId)
-      if (openDeleted) {
-        navigate(`/workspaces/${openDeleted.workspace_id}/chat`)
-      }
-      const ids = new Set(threads.map((t) => t.id))
-      const affected = [...new Set(threads.map((t) => t.workspace_id))]
-      // Both cache shapes hold these rows: the per-workspace lists the sections
-      // read, and the cross-workspace list Attention and Activity read. Drop
-      // them from every one, or the deleted conversations linger in the panel.
-      const previous = affected.map((wsId) => ({
-        wsId,
-        data: qc.getQueryData<Thread[]>(threadKeys.byWorkspace(wsId)),
-      }))
-      const previousAll = qc.getQueryData<Thread[]>(threadKeys.crossWorkspace())
-      const drop = (old: Thread[] | undefined) =>
-        (old ?? []).filter((t) => !ids.has(t.id))
-      for (const wsId of affected) {
-        qc.setQueryData<Thread[]>(threadKeys.byWorkspace(wsId), drop)
-      }
-      qc.setQueryData<Thread[]>(threadKeys.crossWorkspace(), drop)
-      selection.clear()
-      setBulkDeleteOpen(false)
-      Promise.all(threads.map((t) => threadsApi.remove(t.id)))
-        .then(() => {
-          toast.success(
-            `${threads.length} conversation${threads.length > 1 ? "s" : ""} deleted`
-          )
-        })
-        .catch((err) => {
-          for (const { wsId, data } of previous) {
-            if (data) qc.setQueryData(threadKeys.byWorkspace(wsId), data)
-          }
-          if (previousAll) qc.setQueryData(threadKeys.crossWorkspace(), previousAll)
-          toast.error(err instanceof Error ? err.message : "Failed to delete")
-        })
-        .finally(() => {
-          for (const wsId of affected) invalidateThreadLists(qc, wsId)
-        })
+    const threads = [...selection.threads.values()]
+    if (threads.length === 0) return
+    const openDeleted = threads.find((t) => t.id === activeThreadId)
+    if (openDeleted) {
+      navigate(`/workspaces/${openDeleted.workspace_id}/chat`)
     }
+    const ids = new Set(threads.map((t) => t.id))
+    const affected = [...new Set(threads.map((t) => t.workspace_id))]
+    // Both cache shapes hold these rows: the per-workspace lists the panel reads,
+    // and the cross-workspace list Activity and the rail's status marks read. Drop
+    // them from every one, or the deleted conversations linger in the panel.
+    const previous = affected.map((wsId) => ({
+      wsId,
+      data: qc.getQueryData<Thread[]>(threadKeys.byWorkspace(wsId)),
+    }))
+    const previousAll = qc.getQueryData<Thread[]>(threadKeys.crossWorkspace())
+    const drop = (old: Thread[] | undefined) =>
+      (old ?? []).filter((t) => !ids.has(t.id))
+    for (const wsId of affected) {
+      qc.setQueryData<Thread[]>(threadKeys.byWorkspace(wsId), drop)
+    }
+    qc.setQueryData<Thread[]>(threadKeys.crossWorkspace(), drop)
+    selection.clear()
+    setBulkDeleteOpen(false)
+    Promise.all(threads.map((t) => threadsApi.remove(t.id)))
+      .then(() => {
+        toast.success(
+          `${threads.length} conversation${threads.length > 1 ? "s" : ""} deleted`
+        )
+      })
+      .catch((err) => {
+        for (const { wsId, data } of previous) {
+          if (data) qc.setQueryData(threadKeys.byWorkspace(wsId), data)
+        }
+        if (previousAll) qc.setQueryData(threadKeys.crossWorkspace(), previousAll)
+        toast.error(err instanceof Error ? err.message : "Failed to delete")
+      })
+      .finally(() => {
+        for (const wsId of affected) invalidateThreadLists(qc, wsId)
+      })
   }
 
   const dialogs = (
@@ -285,20 +254,10 @@ export function useWorkspaceDialogs({
       <ConfirmDialog
         open={bulkDeleteOpen}
         onOpenChange={(open) => !open && setBulkDeleteOpen(false)}
-        title={
-          selection.kind === "workspace"
-            ? "Delete workspaces"
-            : "Delete conversations"
-        }
-        description={
-          selection.kind === "workspace"
-            ? `This will permanently delete ${selection.count} workspace${
-                selection.count > 1 ? "s" : ""
-              } and all of their conversations.`
-            : `This will permanently delete ${selection.count} conversation${
-                selection.count > 1 ? "s" : ""
-              }.`
-        }
+        title="Delete conversations"
+        description={`This will permanently delete ${selection.count} conversation${
+          selection.count > 1 ? "s" : ""
+        }.`}
         confirmLabel="Delete"
         destructive
         onConfirm={handleBulkDelete}

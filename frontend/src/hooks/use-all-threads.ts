@@ -11,12 +11,18 @@ export interface AllThreads {
   byWorkspace: Map<string, Thread[]>
   /** Workspace name for a thread's `workspace_id`; "" if it hasn't loaded. */
   workspaceName: (workspaceId: string) => string
-  /** Yours — the system workspace is a rail destination, not a folder. */
+  /** Yours — the studio is pinned separately in the rail. */
   workspaces: Workspace[]
+  /**
+   * Every workspace, studio included. Anything resolving `is_system` itself must
+   * read this: {@link workspaces} has already filtered the only row it looks for,
+   * so searching that list for the studio silently finds nothing.
+   */
+  allWorkspaces: Workspace[]
   /** Every workspace id including the studio's. */
   workspaceIds: string[]
   /** The system workspace behind the Skill Studio. */
-  studioId: string | undefined
+  studio: Workspace | undefined
   isLoading: boolean
   workspacesLoading: boolean
 }
@@ -62,14 +68,15 @@ export function useAllThreads(): AllThreads {
     [allWorkspaces]
   )
 
-  const derived = useMemo(
-    () => ({
+  const derived = useMemo(() => {
+    const studio = allWorkspaces.find((ws) => ws.is_system)
+    return {
       workspaces: allWorkspaces.filter((ws) => !ws.is_system),
+      allWorkspaces,
       workspaceIds: allWorkspaces.map((ws) => ws.id),
-      studioId: allWorkspaces.find((ws) => ws.is_system)?.id,
-    }),
-    [allWorkspaces]
-  )
+      studio,
+    }
+  }, [allWorkspaces])
 
   const workspaceName = useMemo(
     () => (workspaceId: string) => nameById.get(workspaceId) ?? "",

@@ -10,13 +10,13 @@ interface WorkspaceConversationsProps extends ConversationHandlers {
 }
 
 /**
- * A workspace's conversations, nested under its section header.
+ * A workspace's conversations, as the panel's whole list.
  *
  * The rows come from the cross-workspace list the sidebar already holds rather
  * than a per-workspace fetch. `GET /threads?workspace_id=` returns the same rows
- * in the same order, so a second query bought nothing and cost a request per
- * expanded folder — refired on every run-finish, stream-end and rename, because
- * the invalidation sweep has to hit both cache shapes.
+ * in the same order, so a second query bought nothing and cost an extra request —
+ * refired on every run-finish, stream-end and rename, because the invalidation
+ * sweep has to hit both cache shapes.
  */
 export function WorkspaceConversations({
   threads,
@@ -27,18 +27,18 @@ export function WorkspaceConversations({
   ...rowHandlers
 }: WorkspaceConversationsProps) {
   if (isLoading) {
-    return (
-      <p className="py-1 pl-8 text-[11px] text-muted-foreground">Loading…</p>
-    )
+    return <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading…</p>
   }
   if (threads.length === 0) {
     return (
-      <p className="py-1 pl-8 text-[11px] text-muted-foreground">{emptyLabel}</p>
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">{emptyLabel}</p>
     )
   }
 
   return (
-    <ul className="ml-3 flex min-w-0 flex-col border-l border-sidebar-border pl-1.5">
+    // Flush, not indented: these rows used to hang off a folder header, and the
+    // rail is the folder now.
+    <ul className="flex min-w-0 flex-col">
       {threads.map((thread) => (
         <ConversationRow
           key={thread.id}

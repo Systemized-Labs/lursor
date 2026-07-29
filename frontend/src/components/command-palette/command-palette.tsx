@@ -17,6 +17,7 @@ import {
   ArrowElbowDownLeft,
   Clock,
   Cpu,
+  FolderOpen,
   GitBranch,
   ChatCentered,
   Plug,
@@ -30,7 +31,7 @@ import {
 
 import { filesApi } from "@/api/files"
 import { useSkills } from "@/api/skills"
-import type { Skill } from "@/api/types"
+import type { Skill, Workspace } from "@/api/types"
 import { useAllThreads } from "@/hooks/use-all-threads"
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from "@/components/ui/dialog"
 import { fileKind } from "@/components/files/file-icon"
@@ -43,6 +44,7 @@ import {
 } from "@/lib/skill-location"
 import { timeAgo } from "@/lib/time-ago"
 import { cn } from "@/lib/utils"
+import { mruOrder, readVisits, resumeHref } from "@/lib/workspace-resume"
 
 // --- Public API -------------------------------------------------------------
 
@@ -111,9 +113,10 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
 
 // --- Filters ----------------------------------------------------------------
 
-type Filter = "all" | "agents" | "files" | "skills" | "actions"
+type Filter = "all" | "workspaces" | "agents" | "files" | "skills" | "actions"
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
+  { key: "workspaces", label: "Workspaces" },
   { key: "agents", label: "Agents" },
   { key: "files", label: "Files" },
   { key: "skills", label: "Skills" },
@@ -202,9 +205,14 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   const [activeIndex, setActiveIndex] = useState(0)
   const debouncedQuery = useDebounced(query)
 
-  const { threads, workspaces, workspaceName } = useAllThreads()
+  const { threads, workspaces, allWorkspaces, byWorkspace, workspaceName } =
+    useAllThreads()
   const files = useAllFiles(debouncedQuery, workspaces)
   const skills = useSkills().data ?? []
+  // Read once per open rather than through the stateful hook: the palette is
+  // mounted only while it is showing, so this is always fresh, and a second
+  // subscriber would mean a second copy of the record writing to the same key.
+  const visits = useMemo(() => readVisits(), [])
 
   const go = useCallback(
     (to: string) => {
@@ -240,6 +248,39 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   const q = query.trim().toLowerCase()
 
   const sections = useMemo<Section[]>(() => {
+    // Workspaces first: with the rail capped at what fits 68px, this is how the
+    // tenth workspace is reached, and how any of them is reached by name rather
+    // than by remembering which tile it is. Most-recent-first — unlike the rail,
+    // nothing here is navigated by position, so recency is simply more useful.
+    const workspaceRows: Row[] = mruOrder(visits)
+      .map((id) => allWorkspaces.find((ws) => ws.id === id))
+      .concat(
+        // Then everything never visited, in rail order, so a brand-new workspace
+        // is still findable here.
+        allWorkspaces.filter((ws) => !(ws.id in visits))
+      )
+      .filter((ws): ws is Workspace => Boolean(ws))
+      .filter((ws) => !q || ws.name.toLowerCase().includes(q))
+      .map((ws) => {
+        const wsThreads = byWorkspace.get(ws.id) ?? []
+        return {
+          id: `workspace:${ws.id}`,
+          label: ws.name,
+          meta: [
+            wsThreads.length
+              ? `${wsThreads.length} conversation${wsThreads.length > 1 ? "s" : ""}`
+              : null,
+            wsThreads[0] ? timeAgo(wsThreads[0].updated_at) : null,
+          ]
+            .filter(Boolean)
+            .join("  "),
+          icon: ws.is_system ? Sparkle : FolderOpen,
+          // The same resume rule the rail uses, so reaching a workspace by name
+          // lands exactly where clicking its tile would.
+          onSelect: () => go(resumeHref(ws.id, wsThreads, visits)),
+        }
+      })
+
     const agentRows: Row[] = threads
       .filter((t) => !q || (t.title || "Untitled").toLowerCase().includes(q))
       .map((t) => ({
@@ -266,7 +307,11 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     // or one in a personal folder that belongs to no workspace at all).
     const skillRows: Row[] = skills
       .filter((s) => !q || s.name.toLowerCase().includes(q) || s.slug.includes(q))
-      .map((s) => ({ skill: s, location: skillLocation(s, workspaces) }))
+      // `allWorkspaces`, not `workspaces`: a managed skill lives in the studio,
+      // and resolving it means finding the `is_system` row — which the filtered
+      // list has already removed, so every managed skill silently resolved to
+      // null and dropped out of search entirely.
+      .map((s) => ({ skill: s, location: skillLocation(s, allWorkspaces) }))
       .filter(
         (entry): entry is { skill: Skill; location: SkillLocation } =>
           entry.location !== null
@@ -283,23 +328,15 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         onSelect: () => openSkill(location),
       }))
 
-    const studio = workspaces.find((ws) => ws.is_system)
+    // No "Skill Studio" row here any more — the studio is a workspace, so it is in
+    // the Workspaces section above, where it resumes like every other one instead
+    // of always opening a blank composer.
     const actionDefs: {
       label: string
       icon: Icon
       to: string
       meta?: string
     }[] = [
-      ...(studio
-        ? [
-            {
-              label: "Skill Studio",
-              icon: Sparkle,
-              to: `/workspaces/${studio.id}/chat`,
-              meta: "write a skill",
-            },
-          ]
-        : []),
       { label: "Schedules", icon: Clock, to: "/schedules", meta: "cron jobs" },
       { label: "LAIOS", icon: Cpu, to: "/laios" },
       { label: "Customization", icon: SlidersHorizontal, to: "/customization" },
@@ -326,6 +363,11 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
 
     const all: Section[] = [
       {
+        key: "workspaces",
+        title: searching ? "Workspaces" : "Recent Workspaces",
+        rows: cap(workspaceRows),
+      },
+      {
         key: "agents",
         title: searching ? "Agents" : "Recent Agents",
         rows: cap(agentRows),
@@ -347,7 +389,9 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     workspaceName,
     files,
     skills,
-    workspaces,
+    allWorkspaces,
+    byWorkspace,
+    visits,
     q,
     filter,
     go,
@@ -402,7 +446,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         autoFocus
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search agents, files, actions..."
+        placeholder="Search workspaces, agents, files..."
         className="w-full border-b border-border/60 bg-transparent px-4 py-4 text-base text-foreground outline-none placeholder:text-muted-foreground"
       />
 
