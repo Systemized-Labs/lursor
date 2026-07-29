@@ -9,6 +9,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   CaretRight,
+  Copy,
   Folder,
   FolderOpen,
   FolderSimpleDashed,
@@ -23,6 +24,7 @@ import { toast } from "sonner"
 
 import { filesApi, useDirectory } from "@/api/files"
 import type { DirEntry } from "@/api/files"
+import { useWorkspace } from "@/api/workspaces"
 import { ApiError } from "@/api/client"
 import { Button } from "@/components/ui/button"
 import {
@@ -43,7 +45,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { requestOpenPreview } from "@/lib/open-preview"
-import { cn } from "@/lib/utils"
+import { cn, copyToClipboard } from "@/lib/utils"
 
 import { fileKind } from "./file-icon"
 import { SkillIngestMenu } from "./skill-ingest-menu"
@@ -61,6 +63,18 @@ function parentOf(path: string): string {
 /** Join a parent dir and a name into a workspace-relative path. */
 function joinPath(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name
+}
+
+/**
+ * The on-disk path of a workspace-relative one, given the workspace root.
+ *
+ * Tree paths are POSIX-style whatever the host is, and the root arrives verbatim
+ * from the server, so the only normalising needed is the trailing slash a root
+ * may or may not carry.
+ */
+function absolutePath(root: string, path: string): string {
+  const base = root.replace(/\/+$/, "")
+  return path ? `${base}/${path}` : base
 }
 
 /** A page the preview panel can render as a page rather than as source text. */
@@ -87,6 +101,8 @@ interface ExplorerContextValue {
   requestUpload: (parentPath: string) => void
   requestRename: (entry: DirEntry) => void
   requestDelete: (entry: DirEntry) => void
+  /** Put a row's absolute on-disk path on the clipboard. */
+  copyPath: (path: string) => Promise<void>
 }
 
 const ExplorerContext = createContext<ExplorerContextValue | null>(null)
@@ -108,8 +124,9 @@ type Pending =
  * the file watcher. Files open in the editor on click.
  *
  * Right-clicking a row (or the empty area, for root-level actions) opens a
- * context menu to create, rename, or delete files and folders — and, on a folder
- * holding a `SKILL.md`, to ingest it as a skill (see {@link SkillIngestMenu}).
+ * context menu to create, rename, delete or copy the path of files and folders —
+ * and, on a folder holding a `SKILL.md`, to ingest it as a skill (see
+ * {@link SkillIngestMenu}).
  * Depth is drawn with hairline indent guides, and the active file carries a left
  * accent rail.
  */
@@ -119,6 +136,9 @@ export function FileExplorer({
   onOpenFile,
 }: FileExplorerProps) {
   const qc = useQueryClient()
+  // Only for "Copy path" — the workspace root the tree's relative paths hang
+  // off. Already cached by whatever opened this workspace.
+  const { data: workspace } = useWorkspace(workspaceId)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [pending, setPending] = useState<Pending | null>(null)
   const [toDelete, setToDelete] = useState<DirEntry | null>(null)
@@ -161,6 +181,24 @@ export function FileExplorer({
     setPending({ mode: "rename", entry })
   }, [])
   const requestDelete = useCallback((entry: DirEntry) => setToDelete(entry), [])
+
+  const workspaceRoot = workspace?.path ?? ""
+  const copyPath = useCallback(
+    async (path: string) => {
+      // Without the root there is no absolute path to give, and half of one
+      // pasted into a terminal is worse than a refusal.
+      if (!workspaceRoot) {
+        toast.error("Couldn’t resolve the workspace path")
+        return
+      }
+      if (await copyToClipboard(absolutePath(workspaceRoot, path))) {
+        toast.success("Copied path")
+      } else {
+        toast.error("Couldn’t copy path")
+      }
+    },
+    [workspaceRoot]
+  )
 
   const createMut = useMutation({
     mutationFn: ({ path, isDir }: { path: string; isDir: boolean }) =>
@@ -229,6 +267,7 @@ export function FileExplorer({
     requestUpload,
     requestRename,
     requestDelete,
+    copyPath,
   }
 
   return (
@@ -251,6 +290,13 @@ export function FileExplorer({
           <ContextMenuItem onSelect={() => requestUpload("")}>
             <UploadSimple className="mr-2 h-4 w-4" />
             Upload files
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          {/* The empty area stands for the root, so the path it gives is the
+              workspace's own. */}
+          <ContextMenuItem onSelect={() => void copyPath("")}>
+            <Copy className="mr-2 h-4 w-4" />
+            Copy workspace path
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -427,6 +473,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
     requestUpload,
     requestRename,
     requestDelete,
+    copyPath,
   } = useExplorer()
   // Open state is tracked so the skill scan only runs for a folder someone has
   // actually right-clicked, not for every row in the tree.
@@ -543,6 +590,11 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
               open={menuOpen}
             />
           )}
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => void copyPath(entry.path)}>
+            <Copy className="mr-2 h-4 w-4" />
+            Copy path
+          </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => requestRename(entry)}>
             <Pencil className="mr-2 h-4 w-4" />
