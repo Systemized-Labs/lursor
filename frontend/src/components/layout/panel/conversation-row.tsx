@@ -1,4 +1,4 @@
-import { ChatCentered, Clock, Pencil, Trash } from "@phosphor-icons/react"
+import { Clock, Pencil, Trash } from "@phosphor-icons/react"
 import type { MouseEvent } from "react"
 import { Link } from "react-router-dom"
 
@@ -9,7 +9,6 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
-import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import type { RowHandlers } from "@/components/layout/panel/types"
 import type { SelectMods } from "@/components/layout/use-sidebar-selection"
 import type { ThreadState } from "@/hooks/use-thread-state"
@@ -20,17 +19,12 @@ export interface ConversationRowProps extends RowHandlers {
   thread: Thread
   state: ThreadState
   /**
-   * `compact` is one line for a workspace's own section. `stacked` gives the
-   * `workspace · state · time` metadata its own line, which is why Activity
-   * reads better in a 256px panel than the old single-line rows did.
+   * `compact` is one line for a workspace's own list. `stacked` gives the
+   * `workspace · time` metadata its own line, which is why Activity reads better
+   * in a 256px panel than a single-line row would.
    */
   variant?: "compact" | "stacked"
-  /**
-   * Which workspace it belongs to; only cross-workspace lists pass it. In
-   * `compact` it takes the trailing slot *instead of* the timestamp — which
-   * workspace beats how long ago when the list spans several, and there is only
-   * room for one before the title starts truncating to nothing.
-   */
+  /** Which workspace it belongs to; only cross-workspace lists pass it. */
   workspaceName?: string
   isSelected: boolean
   onSelect: (mods: SelectMods) => void
@@ -39,10 +33,17 @@ export interface ConversationRowProps extends RowHandlers {
 /**
  * One conversation in the sidebar panel.
  *
+ * The status marker is a 3px gutter rule rather than an icon. Every row used to
+ * carry the same chat bubble, which meant the leading column — the most valuable
+ * strip in the list, the one your eye rides down — spent itself restating a fact
+ * that was already true of every row. A rule uses that column for the thing that
+ * actually differs: filled and pulsing while an agent works, filled while a
+ * reply is unread, hairline once read. Thirty rows now have a scannable left
+ * edge instead of thirty identical bubbles.
+ *
  * A plain click always opens the conversation — ⌘/ctrl toggles it in the bulk
  * selection and ⇧ extends a range, but nothing silently redefines an unmodified
- * click. (The old sidebar swallowed plain clicks into selection toggles once
- * anything was selected, with no cue on the row that it had.)
+ * click.
  */
 export function ConversationRow({
   thread,
@@ -73,14 +74,6 @@ export function ConversationRow({
     }
   }
 
-  const icon = running ? (
-    <DotGridLoader size="xs" className="shrink-0 text-primary" label="Working" />
-  ) : unread ? (
-    <ChatCentered weight="fill" className="size-4 shrink-0 text-success" />
-  ) : (
-    <ChatCentered className="size-4 shrink-0 text-sidebar-foreground/60" />
-  )
-
   const title = thread.title || "Untitled"
 
   return (
@@ -90,74 +83,73 @@ export function ConversationRow({
           <Link
             to={`/workspaces/${thread.workspace_id}/chat?c=${thread.id}`}
             onClick={handleClick}
+            aria-current={isActive ? "page" : undefined}
             className={cn(
-              "flex w-full min-w-0 select-none gap-2 rounded-md px-2 text-sm text-sidebar-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2",
-              stacked ? "items-start py-1.5" : "h-7 items-center",
+              "group/row relative flex w-full min-w-0 select-none gap-2 rounded-md pl-2.5 pr-2 text-sidebar-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2",
+              stacked ? "flex-col py-1.5" : "h-7 items-center",
               isActive &&
                 "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
               isSelected && "bg-primary/15 text-foreground hover:bg-primary/20"
             )}
           >
+            {/* The status gutter. `running` outranks `unread`: a working agent is
+                the live fact, and a row cannot be both waiting and arriving. */}
+            <span
+              aria-hidden
+              className={cn(
+                "absolute inset-y-1 left-0.5 w-[3px] rounded-full transition-colors",
+                running
+                  ? "animate-pulse bg-primary"
+                  : unread
+                    ? "bg-success"
+                    : isActive
+                      ? "bg-sidebar-primary/60"
+                      : "bg-sidebar-border group-hover/row:bg-sidebar-foreground/25"
+              )}
+            />
+
             <span
               className={cn(
-                "flex shrink-0 items-center",
-                stacked ? "h-5" : "h-full"
+                "block min-w-0 max-w-full truncate text-[13px] leading-5 tracking-tight",
+                running && "text-primary",
+                unread && "font-medium text-foreground"
               )}
             >
-              {icon}
+              {title}
             </span>
 
-            <span className="min-w-0 flex-1">
-              <span
-                className={cn(
-                  "block truncate",
-                  stacked && "leading-5",
-                  running && "text-primary",
-                  unread && "font-medium text-foreground"
-                )}
-              >
-                {title}
-              </span>
-              {stacked ? (
-                <span className="block truncate text-[11px] leading-4 text-muted-foreground">
-                  {[
-                    workspaceName,
-                    running
-                      ? "running"
-                      : unread
-                        ? "new reply"
-                        : thread.schedule_id
-                          ? "schedule"
-                          : null,
-                    timeAgo(thread.updated_at),
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
+            {stacked ? (
+              // Metadata in its own line, with the workspace given the room to
+              // be read — it is the only thing distinguishing `cat-adoption`'s
+              // "Tell Me A Joke" from `cat-landing`'s.
+              <span className="flex w-full min-w-0 items-baseline gap-1.5 text-[10px] leading-4">
+                <span className="min-w-0 flex-1 truncate uppercase tracking-[0.06em] text-sidebar-foreground/60">
+                  {workspaceName}
                 </span>
-              ) : null}
-            </span>
-
-            {stacked ? null : (
-              <>
-                {/* Nobody started this one — a schedule did. Sits beside the
-                    trailing metadata rather than replacing the leading icon,
-                    which is the running/unread slot and carries the more urgent
-                    signal. */}
                 {thread.schedule_id ? (
                   <Clock
-                    className="size-3 shrink-0 text-muted-foreground/70"
+                    className="size-3 shrink-0 text-sidebar-foreground/45"
                     aria-label="Started by a schedule"
                   />
                 ) : null}
-                {workspaceName ? (
-                  <span className="max-w-[45%] shrink-0 truncate text-[10px] text-muted-foreground/70">
-                    {workspaceName}
-                  </span>
-                ) : (
-                  <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
-                    {timeAgo(thread.updated_at)}
-                  </span>
-                )}
+                {/* Right-aligned and tabular so the times form a column that can
+                    be read straight down instead of zig-zagging after each
+                    title. */}
+                <span className="shrink-0 tabular-nums text-sidebar-foreground/45">
+                  {running ? "live" : timeAgo(thread.updated_at)}
+                </span>
+              </span>
+            ) : (
+              <>
+                {thread.schedule_id ? (
+                  <Clock
+                    className="size-3 shrink-0 text-sidebar-foreground/45"
+                    aria-label="Started by a schedule"
+                  />
+                ) : null}
+                <span className="ml-auto shrink-0 text-[10px] tabular-nums text-sidebar-foreground/45">
+                  {running ? "live" : timeAgo(thread.updated_at)}
+                </span>
               </>
             )}
           </Link>

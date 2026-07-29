@@ -9,6 +9,7 @@ import { NavRail } from "@/components/layout/nav-rail"
 import { SidebarPanel } from "@/components/layout/sidebar-panel"
 import { usePanelMode } from "@/components/layout/use-panel-mode"
 import { useSidebarSelection } from "@/components/layout/use-sidebar-selection"
+import { useWorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import { useWorkspaceOrder } from "@/components/layout/use-workspace-order"
 import { useWorkspaceStatus } from "@/components/layout/use-workspace-status"
 import { useWorkspaceSwitch } from "@/components/layout/use-workspace-switch"
@@ -66,6 +67,7 @@ export function AppSidebar() {
   const selection = useSidebarSelection()
   const visits = useWorkspaceVisits(threads.workspaceIds)
   const order = useWorkspaceOrder(threads.workspaces)
+  const icons = useWorkspaceIcons(threads.workspaceIds)
 
   // Remember where you are, so switching back here later resumes it. Recorded
   // from the route rather than on click: arriving by ⌘K, by a link in a reply or
@@ -206,6 +208,7 @@ export function AppSidebar() {
           studio={threads.studio}
           activeWorkspaceId={activeWorkspaceId}
           status={status}
+          icons={icons}
           hrefFor={hrefFor}
           onOpenWorkspace={switchTo}
           onReorder={order.move}

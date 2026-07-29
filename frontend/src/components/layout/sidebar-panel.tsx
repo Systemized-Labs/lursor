@@ -9,6 +9,7 @@ import type { ConversationHandlers } from "@/components/layout/panel/types"
 import type { PanelMode } from "@/components/layout/use-panel-mode"
 import type { WorkspaceDialogs } from "@/components/layout/workspace-dialogs"
 import type { AllThreads } from "@/hooks/use-all-threads"
+import { isMacElectron } from "@/lib/platform"
 
 /** Header affordances share the panel's icon-button treatment. */
 const HEADER_TILE =
@@ -73,9 +74,20 @@ export function SidebarPanel({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-sidebar">
-      <div className="flex h-12 shrink-0 items-center gap-1 px-2">
+      {/* The traffic lights are 68px wide plus their inset, so on macOS the last
+          one lands *past* the rail and over this header. The rail reserves a
+          strip for them above its logo; without the same reservation here the
+          heading sat underneath the buttons. */}
+      {isMacElectron ? <div className="h-8 shrink-0 [-webkit-app-region:drag]" /> : null}
+
+      <div className="flex h-10 shrink-0 items-center gap-1 px-2">
+        {/* A ledger label, not a page title. At `text-sm font-semibold` this
+            competed with the conversation titles below it for the same rank —
+            and in a 256px column the thing you read is the list, not the word
+            naming it. Small, letterspaced and uppercase reads as a heading at a
+            fraction of the weight, and gives the rows back their prominence. */}
         <h2
-          className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-sidebar-foreground"
+          className="min-w-0 flex-1 truncate px-1 text-[11px] font-medium uppercase tracking-[0.1em] text-sidebar-foreground/70"
           title={isChats ? scopedWorkspace?.name : undefined}
         >
           {title}

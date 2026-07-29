@@ -1,11 +1,4 @@
-import {
-  Bell,
-  DotsThree,
-  FolderPlus,
-  Gear,
-  Palette,
-  Sparkle,
-} from "@phosphor-icons/react"
+import { Bell, DotsThree, FolderPlus, Gear, Palette } from "@phosphor-icons/react"
 import { useState, type DragEvent } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 
@@ -31,6 +24,7 @@ import {
   matchesRoute,
 } from "@/components/layout/rail-items"
 import { WorkspaceTile } from "@/components/layout/workspace-tile"
+import type { WorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import type { WorkspaceStatus } from "@/components/layout/use-workspace-status"
 import type { PanelMode } from "@/components/layout/use-panel-mode"
 import { isMacElectron } from "@/lib/platform"
@@ -47,6 +41,7 @@ interface NavRailProps {
   studio: Workspace | undefined
   activeWorkspaceId: string | undefined
   status: WorkspaceStatus
+  icons: WorkspaceIcons
   hrefFor: (workspaceId: string) => string
   onOpenWorkspace: (workspaceId: string) => void
   onReorder: (from: number, to: number) => void
@@ -91,6 +86,7 @@ export function NavRail({
   studio,
   activeWorkspaceId,
   status,
+  icons,
   hrefFor,
   onOpenWorkspace,
   onReorder,
@@ -156,7 +152,14 @@ export function NavRail({
       aria-label="Primary"
       // Collapsed *is* the rail, so both widths come from the one token rather
       // than a literal here and a constant in the sidebar primitive.
-      className="flex w-(--sidebar-width-icon) shrink-0 flex-col border-r border-sidebar-border bg-sidebar-accent/40"
+      //
+      // The separator is an `after:` pseudo-element rather than `border-r`, which
+      // is not cosmetic pedantry: a real border is inside the box, so it made the
+      // content column 67px of a 68px rail and centred every icon half a pixel
+      // left of the rail's visible middle. On a 2× display that is a whole device
+      // pixel of consistent leftward lean. Out of flow, the column is the full
+      // 68px and its centre is the rail's centre.
+      className="relative flex w-(--sidebar-width-icon) shrink-0 flex-col bg-sidebar-accent/40 after:pointer-events-none after:absolute after:inset-y-0 after:right-0 after:w-px after:bg-sidebar-border after:content-['']"
     >
       {/* On macOS the OS traffic lights overlay the top-left, which is the rail —
           reserve a drag strip above the logo to clear them. */}
@@ -189,7 +192,22 @@ export function NavRail({
         </Tooltip>
       </div>
 
-      <div className="scrollbar-hover flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 py-1">
+      {/* A mask, not a plain clip. With a dozen workspaces the list overflows,
+          and a tile sliced flat by the footer border reads as a rendering fault
+          rather than as more content — the fade says "scroll" without spending a
+          row on a chevron. `mask-image` degrades to no mask where unsupported,
+          which is exactly today's behaviour. */}
+      {/* `no-scrollbar`, not `scrollbar-hover`. The reveal-on-hover variant only
+          makes the *thumb* transparent — the global `::-webkit-scrollbar` is 10px
+          wide, so an overflowing rail still reserved that gutter and centred its
+          icons in 58px of a 68px column: a 5px leftward shift, appearing only once
+          there were enough workspaces to overflow, while the footer buttons (not
+          in a scroll container) stayed put. A 68px icon column has no room to
+          spend on a bar nobody needs, and the fade mask below already says there
+          is more. */}
+      <div
+        className="no-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1.5 py-1 [mask-image:linear-gradient(to_bottom,transparent,black_10px,black_calc(100%-14px),transparent)]"
+      >
         {workspaces.map((ws, index) => {
           const { running, unread } = status(ws.id)
           return (
@@ -198,10 +216,13 @@ export function NavRail({
               workspace={ws}
               index={index}
               href={hrefFor(ws.id)}
+              icon={icons.iconFor(ws)}
+              hasIconOverride={icons.hasOverride(ws.id)}
               isActive={activeWorkspaceId === ws.id}
               running={running}
               unreadCount={unread}
               onOpen={() => onOpenWorkspace(ws.id)}
+              onSetIcon={(next) => icons.setIcon(ws.id, next)}
               onNewConversation={() => onNewConversation(ws.id)}
               onRename={() => onRenameWorkspace(ws)}
               onClone={() => onCloneWorkspace(ws)}
@@ -222,14 +243,17 @@ export function NavRail({
               className="mx-2 my-1 h-px shrink-0 bg-sidebar-border"
             />
             <WorkspaceTile
+              key={studio.id}
               workspace={studio}
               index={workspaces.length}
               href={hrefFor(studio.id)}
+              icon={icons.iconFor(studio)}
+              hasIconOverride={icons.hasOverride(studio.id)}
               isActive={activeWorkspaceId === studio.id}
               running={status(studio.id).running}
               unreadCount={status(studio.id).unread}
-              icon={Sparkle}
               onOpen={() => onOpenWorkspace(studio.id)}
+              onSetIcon={(next) => icons.setIcon(studio.id, next)}
               onNewConversation={() => onNewConversation(studio.id)}
               onRename={() => onRenameWorkspace(studio)}
               onClone={() => onCloneWorkspace(studio)}
@@ -244,12 +268,9 @@ export function NavRail({
               type="button"
               onClick={onNewWorkspace}
               aria-label="New workspace"
-              className="mt-0.5 flex w-full flex-col items-center gap-0.5 rounded-md px-1 py-1.5 text-sidebar-foreground/70 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2"
+              className="mt-0.5 flex h-10 w-full shrink-0 items-center justify-center rounded-md text-sidebar-foreground/40 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2"
             >
-              <FolderPlus className="size-5" />
-              <span className="w-full truncate text-center text-[10px] leading-tight">
-                New
-              </span>
+              <FolderPlus className="size-[17px]" />
             </button>
           </TooltipTrigger>
           <TooltipContent side="right" hidden={isMobile}>
