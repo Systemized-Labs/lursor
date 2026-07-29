@@ -53,7 +53,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   // switches, merges/rebases/resets). Both funnel through one debounce so a burst
   // of edits followed by a commit re-queries git at most once per window.
   const qc = useQueryClient()
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const scheduleRefresh = useCallback(() => {
     if (!workspaceId) return
     clearTimeout(debounceRef.current)

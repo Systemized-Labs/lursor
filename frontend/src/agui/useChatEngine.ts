@@ -178,7 +178,7 @@ export interface ChatEngine {
  */
 export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
   // One store per surface mount; stable for the engine's lifetime.
-  const storeRef = useRef<ChatStore>()
+  const storeRef = useRef<ChatStore | undefined>(undefined)
   if (!storeRef.current) storeRef.current = createChatStore()
   const store = storeRef.current
 
