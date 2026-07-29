@@ -843,7 +843,8 @@ def build_deep_agent(
     no session. ``row.include_skills`` still gates the skills entirely, and the
     env-var listing in the prompt names keys only, never values.
     Tool rows are catalogued in the DB but not yet wired into execution (see
-    docs/PLAN.md — deferred); the deep agent ships its own builtin toolset.
+    AGENTS.md — deliberately deferred); the deep agent ships its own builtin
+    toolset.
 
     ``workspace_name`` / ``workspace_description`` orient the agent on disk: they
     feed an ``# Environment`` section prepended to the instructions that names the

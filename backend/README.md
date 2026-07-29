@@ -66,7 +66,7 @@ and usage rows are tagged the same way so unattended spend is visible in Analyti
 Because the scheduler lives in this process, schedules fire only while the app is
 up. On startup, an enabled schedule whose `next_fire_at` is in the past gets one
 `missed` history row recording how many occurrences elapsed, and its clock rolls
-forward — nothing is replayed. See `docs/PLAN-scheduled-jobs.md`.
+forward — nothing is replayed. See the Schedules section of `AGENTS.md`.
 
 ## How chat works
 

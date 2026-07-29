@@ -4,7 +4,7 @@
 // server (a frozen, self-contained Python interpreter shipped under the app's
 // resources), waits for it to become healthy, then loads the renderer. In
 // development it instead runs the backend from source via `uv` and loads the
-// Vite dev server. See docs/PLAN-desktop-install.md.
+// Vite dev server. See docs/ELECTRON.md.
 
 const path = require("node:path")
 const os = require("node:os")

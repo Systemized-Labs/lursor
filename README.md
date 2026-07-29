@@ -50,7 +50,8 @@ lursor/
   backend/     FastAPI + pydantic-deepagents + SQLite   (see backend/README.md)
   frontend/    Vite + React + Tailwind + shadcn/ui       (see frontend/README.md)
                also runs as an Electron desktop app     (see docs/ELECTRON.md)
-  docs/        Plans and design notes (docs/PLAN.md, docs/INSTALL.md)
+  docs/        Install, desktop, and release docs
+               design record lives in AGENTS.md at the repo root
   packaging/   Homebrew cask template (rendered by the release workflow)
   scripts/     dev.sh — run backend + frontend together
                install.sh — one-line desktop installer (curl | sh)
@@ -111,8 +112,7 @@ desktop app is wired and how to package a distributable.
 
 ## Status
 
-MVP, actively growing. See [docs/PLAN.md](docs/PLAN.md) for the original
-architecture and build phases, and the other `docs/PLAN-*.md` notes for the
-feature work layered on since (chat modes, goal mode, preview autodetect, daemon
-lifecycle, prompt library, and more). Auth/multi-tenancy and Docker sandboxing
-remain intentionally deferred.
+MVP, actively growing. [AGENTS.md](AGENTS.md) is the design record — the
+architecture, the subsystem-by-subsystem decisions, the invariants worth knowing
+before changing anything, and what is deliberately not built. Auth/multi-tenancy
+and Docker sandboxing remain intentionally deferred.

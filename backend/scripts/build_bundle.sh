@@ -8,7 +8,7 @@
 #
 #   <bundle>/python/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port <port>
 #
-# Strategy (see docs/PLAN-desktop-install.md): a python-build-standalone
+# Strategy (see docs/ELECTRON.md): a python-build-standalone
 # interpreter (the same distributions `uv` uses) is relocatable, so we install
 # the real wheels into it rather than freezing with PyInstaller — which copes
 # poorly with this dependency tree (Playwright, a git-sourced package, pydantic).
