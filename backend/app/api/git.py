@@ -5,6 +5,12 @@ workspace root and its working-tree changes against ``HEAD`` — each modified,
 added (including untracked), and deleted file, with its unified diff — so the
 right-dock Changes panel can render a review view without dropping to a terminal.
 
+``GET /api/workspaces/{id}/git/status`` is the same enumeration with the patches
+left out: just a state per path, for decorating rows in the file tree the way VS
+Code does. It exists separately because the tree wants this on every workspace it
+shows, and computing a patch per changed file to colour a row would be paying for
+the whole review view to draw a letter.
+
 A workspace often isn't a single repo at its root: it may hold one repo nested in
 a subdirectory (``swarmcore-ui/…``) or several sibling repos. So we walk the tree
 (pruning noise dirs like ``node_modules``) to discover all repo roots, diff each,
@@ -21,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
@@ -76,6 +83,24 @@ class ChangedFile(BaseModel):
     is_binary: bool
     truncated: bool
     diff: str  # unified diff text (empty for binary/truncated)
+
+
+class FileStatus(BaseModel):
+    """One path's working-tree state, with no patch — for tree decoration."""
+
+    path: str  # workspace-relative (repo subdir prefix + repo-relative path)
+    status: str  # "modified" | "added" | "untracked" | "deleted" | "conflicted"
+    staged: bool  # the index differs from HEAD (the change is at least partly staged)
+
+
+class GitStatus(BaseModel):
+    """Every path under the workspace that git has something to say about."""
+
+    is_repo: bool
+    files: list[FileStatus]
+    # Ignored paths. A trailing "/" marks a wholly-ignored directory and stands for
+    # everything beneath it, so a `node_modules` never arrives one file at a time.
+    ignored: list[str]
 
 
 class RepoInfo(BaseModel):
@@ -173,6 +198,44 @@ def _classify(xy: str) -> str:
     return "modified"
 
 
+# Porcelain codes for an unresolved merge conflict. They contain the same letters
+# as ordinary changes ("AA", "DU", …), so they have to be matched before anything
+# else reads a letter out of the pair.
+_CONFLICT_CODES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
+
+
+def _porcelain_records(out: str) -> Iterator[tuple[str, str]]:
+    """Yield ``(XY, path)`` for each record of ``git status --porcelain -z`` output.
+
+    A record is a two-letter code, a space, then the path — so anything shorter
+    than four characters is the trailing empty field, not an entry.
+    """
+    for record in out.split("\0"):
+        if not record or len(record) < 4:
+            continue
+        yield record[:2], record[3:]
+
+
+def _tree_status(xy: str) -> str:
+    """Map a porcelain code to the state a file-tree row is decorated with.
+
+    Finer-grained than :func:`_classify`, which only needs to know how to diff the
+    file: the tree draws VS Code's letters, where an untracked file (U, green) and
+    a staged new one (A) read differently, and a conflict (C) is its own state.
+    Deletion wins over addition so a staged-then-deleted path reads as gone, which
+    is what its absence from the tree already says.
+    """
+    if xy in _CONFLICT_CODES:
+        return "conflicted"
+    if xy == "??":
+        return "untracked"
+    if "D" in xy:
+        return "deleted"
+    if "A" in xy or "C" in xy:
+        return "added"
+    return "modified"  # M, T (typechange), and anything git adds later
+
+
 def _measure(patch: str) -> tuple[int, int, bool]:
     """Count added/removed lines and detect a binary patch, from the diff text."""
     additions = deletions = 0
@@ -228,10 +291,7 @@ async def _repo_diff(repo: Path) -> tuple[str | None, list[ChangedFile]]:
     )
 
     files: list[ChangedFile] = []
-    for record in status_out.split("\0"):
-        if not record or len(record) < 4:
-            continue
-        xy, path = record[:2], record[3:]
+    for xy, path in _porcelain_records(status_out):
         kind = _classify(xy)
 
         patch = await _file_patch(repo, path, kind, base)
@@ -295,6 +355,58 @@ async def get_diff(
         additions=total_add,
         deletions=total_del,
     )
+
+
+@router.get("/status", response_model=GitStatus)
+async def get_status(
+    workspace_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> GitStatus:
+    """Report a state per path across every repo under the workspace root.
+
+    One ``git status`` per repo and no diffing at all, so the file tree can decorate
+    its rows without the cost of ``/diff``. ``--ignored=matching`` is what keeps
+    that true for the ignored set: it collapses a wholly-ignored directory to the
+    directory itself instead of listing the 40,000 files inside a ``node_modules``.
+    """
+    root = await _workspace_root(workspace_id, session)
+    repos = _find_repos(root)
+    if not repos:
+        return GitStatus(is_repo=False, files=[], ignored=[])
+
+    files: list[FileStatus] = []
+    ignored: list[str] = []
+    for repo in repos:
+        rel = "" if repo == root else repo.relative_to(root).as_posix()
+        # --no-renames, as in the diff: a rename reads as a delete plus an add,
+        # which is one record per path and needs no two-path parsing.
+        _, out, _ = await _run_git(
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--no-renames",
+            cwd=str(repo),
+        )
+        for xy, path in _porcelain_records(out):
+            full = f"{rel}/{path}" if rel else path
+            if xy == "!!":
+                ignored.append(full)
+                continue
+            files.append(
+                FileStatus(
+                    path=full,
+                    status=_tree_status(xy),
+                    # X is the index column; " " means unstaged, "?"/"!" untracked
+                    # or ignored — neither of which is a staged change.
+                    staged=xy[0] not in " ?!",
+                )
+            )
+
+    files.sort(key=lambda f: f.path.lower())
+    ignored.sort(key=str.lower)
+    return GitStatus(is_repo=True, files=files, ignored=ignored)
 
 
 async def _list_branches(repo: Path) -> GitBranches:

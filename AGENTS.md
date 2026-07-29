@@ -500,7 +500,12 @@ report yet. Detail is derived from live panel state — never persisted.
 - **Terminal** — a real PTY per workspace over a WebSocket (`api/terminal.py`).
   POSIX only. Deliberately *not* env-injected.
 - **Files** — `api/files.py` + a per-workspace watcher; Monaco, lazily loaded,
-  fully editable on mobile with touch-tuned options.
+  fully editable on mobile with touch-tuned options. Tree rows carry VS Code-style
+  git decorations from `GET /git/status` — deliberately *not* `/git/diff`, which
+  computes a patch per changed file; the tree needs a state per path and nothing
+  else. Changes roll up onto collapsed folders (`lib/git-tree-status.ts`), and
+  `--ignored=matching` is what keeps the ignored set one entry per wholly-ignored
+  directory instead of one per file inside `node_modules`.
 - **Git / GitHub** — `api/git.py` returns `is_repo=False` for a non-repo
   (the skills catalog) and the panel renders its empty state. `api/github.py`
   holds the token server-side.

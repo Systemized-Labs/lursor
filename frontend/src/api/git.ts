@@ -20,6 +20,34 @@ export interface ChangedFile {
   diff: string
 }
 
+/** A file's working-tree state, at the granularity the file tree decorates rows
+ *  with — finer than {@link ChangeStatus}, which only labels a diff. */
+export type FileGitStatus =
+  | "modified"
+  | "added"
+  | "untracked"
+  | "deleted"
+  | "conflicted"
+
+/** One path git has something to say about, with no diff attached. */
+export interface GitFileStatus {
+  /** Workspace-relative path (repo subdir prefix + repo-relative path). */
+  path: string
+  status: FileGitStatus
+  /** The index differs from HEAD — the change is at least partly staged. */
+  staged: boolean
+}
+
+/** Every path under the workspace git has a state for: the cheap counterpart to
+ *  {@link GitDiff}, used to decorate the file tree (no patches computed). */
+export interface GitStatus {
+  is_repo: boolean
+  files: GitFileStatus[]
+  /** Ignored paths; a trailing "/" marks a wholly-ignored directory and stands
+   *  for everything beneath it. */
+  ignored: string[]
+}
+
 /** A git repo discovered under the workspace root. */
 export interface RepoInfo {
   /** Workspace-relative repo root ("" = workspace root). */
@@ -55,6 +83,8 @@ export interface GitBranches {
 export const gitApi = {
   diff: (workspaceId: string, signal?: AbortSignal) =>
     api.get<GitDiff>(`/workspaces/${workspaceId}/git/diff`, signal),
+  status: (workspaceId: string, signal?: AbortSignal) =>
+    api.get<GitStatus>(`/workspaces/${workspaceId}/git/status`, signal),
   branches: (workspaceId: string, signal?: AbortSignal) =>
     api.get<GitBranches>(`/workspaces/${workspaceId}/git/branches`, signal),
   checkout: (workspaceId: string, branch: string) =>
@@ -63,6 +93,7 @@ export const gitApi = {
 
 export const gitKeys = {
   diff: (workspaceId: string) => ["git", workspaceId, "diff"] as const,
+  status: (workspaceId: string) => ["git", workspaceId, "status"] as const,
   branches: (workspaceId: string) => ["git", workspaceId, "branches"] as const,
 }
 
@@ -81,6 +112,15 @@ export function useGitDiff(workspaceId: string | undefined) {
   return useQuery({
     queryKey: gitKeys.diff(workspaceId ?? ""),
     queryFn: ({ signal }) => gitApi.diff(workspaceId as string, signal),
+    enabled: Boolean(workspaceId),
+  })
+}
+
+/** Fetch a state per changed/ignored path (powers the file tree's decorations). */
+export function useGitStatus(workspaceId: string | undefined) {
+  return useQuery({
+    queryKey: gitKeys.status(workspaceId ?? ""),
+    queryFn: ({ signal }) => gitApi.status(workspaceId as string, signal),
     enabled: Boolean(workspaceId),
   })
 }

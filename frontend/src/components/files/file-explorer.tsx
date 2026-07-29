@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
@@ -24,8 +25,16 @@ import { toast } from "sonner"
 
 import { filesApi, useDirectory } from "@/api/files"
 import type { DirEntry } from "@/api/files"
+import { gitKeys, useGitStatus } from "@/api/git"
 import { useWorkspace } from "@/api/workspaces"
 import { ApiError } from "@/api/client"
+import { useFileWatch } from "@/hooks/use-file-watch"
+import { useGitWatch } from "@/hooks/use-git-watch"
+import {
+  buildGitStatusIndex,
+  type GitDecoration,
+  type GitStatusIndex,
+} from "@/lib/git-tree-status"
 import { Button } from "@/components/ui/button"
 import {
   ContextMenu,
@@ -53,6 +62,36 @@ import { SkillIngestMenu } from "./skill-ingest-menu"
 /** Left indent per tree level; row text starts one step in from the panel edge. */
 const INDENT_STEP = 12
 const BASE_INDENT = 8
+
+/**
+ * How a git state reads on a row: VS Code's letter and colour vocabulary, spelled
+ * in this theme's semantic tokens (amber for an edit, green for something new, red
+ * for a loss or a conflict, and a fade for what git is not tracking).
+ *
+ * Folders show a dot in the same colour instead of a letter — the rollup says
+ * *something* below changed, not which letter to expect.
+ */
+const GIT_DECOR: Record<
+  GitDecoration,
+  { letter: string; label: string; className: string }
+> = {
+  modified: { letter: "M", label: "Modified", className: "text-warning" },
+  added: { letter: "A", label: "Added", className: "text-success" },
+  untracked: { letter: "U", label: "Untracked", className: "text-success" },
+  deleted: { letter: "D", label: "Deleted", className: "text-destructive" },
+  conflicted: { letter: "C", label: "Conflicted", className: "text-destructive" },
+  // No letter: an ignored row is stated by the fade alone, exactly as in VS Code —
+  // a badge on every generated file would out-shout the changes that matter.
+  ignored: { letter: "", label: "Ignored", className: "text-muted-foreground/50" },
+}
+
+/**
+ * Coalesce bursts of edits into a single git re-query. An agent can touch dozens
+ * of files a second, and each refresh is a `git status` per repo under the
+ * workspace — matching the Changes panel's window keeps the tree live for the
+ * price of two queries a second at worst.
+ */
+const GIT_REFRESH_DEBOUNCE_MS = 500
 
 /** The parent directory of a workspace-relative path ("" for a root-level item). */
 function parentOf(path: string): string {
@@ -103,6 +142,8 @@ interface ExplorerContextValue {
   requestDelete: (entry: DirEntry) => void
   /** Put a row's absolute on-disk path on the clipboard. */
   copyPath: (path: string) => Promise<void>
+  /** Git state per row; every row is clean outside a repo. */
+  gitStatus: GitStatusIndex
 }
 
 const ExplorerContext = createContext<ExplorerContextValue | null>(null)
@@ -129,6 +170,11 @@ type Pending =
  * {@link SkillIngestMenu}).
  * Depth is drawn with hairline indent guides, and the active file carries a left
  * accent rail.
+ *
+ * Rows carry their git state the way VS Code's explorer does — a coloured name
+ * plus a letter, with changes rolled up onto the collapsed folders above them —
+ * fed by the workspace's `/git/status` and kept live by the same two sockets the
+ * Changes panel listens to.
  */
 export function FileExplorer({
   workspaceId,
@@ -151,6 +197,24 @@ export function FileExplorer({
     () => qc.invalidateQueries({ queryKey: ["files", workspaceId, "dir"] }),
     [qc, workspaceId]
   )
+
+  // Git decorations. Two sockets keep them honest, as in the Changes panel: the
+  // files watcher for working-tree edits, and the git watcher for the transitions
+  // it can't see because it ignores `.git/` — a commit, a `git add`, a branch
+  // switch. Both funnel through one debounce, so a burst of edits followed by a
+  // commit re-queries git once.
+  const { data: gitData } = useGitStatus(workspaceId)
+  const gitStatus = useMemo(() => buildGitStatusIndex(gitData), [gitData])
+  const gitRefreshRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const scheduleGitRefresh = useCallback(() => {
+    clearTimeout(gitRefreshRef.current)
+    gitRefreshRef.current = setTimeout(() => {
+      qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) })
+    }, GIT_REFRESH_DEBOUNCE_MS)
+  }, [qc, workspaceId])
+  useFileWatch(workspaceId, scheduleGitRefresh)
+  useGitWatch(workspaceId, scheduleGitRefresh)
+  useEffect(() => () => clearTimeout(gitRefreshRef.current), [])
 
   const isExpanded = useCallback((path: string) => expanded.has(path), [expanded])
 
@@ -268,6 +332,7 @@ export function FileExplorer({
     requestRename,
     requestDelete,
     copyPath,
+    gitStatus,
   }
 
   return (
@@ -474,6 +539,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
     requestRename,
     requestDelete,
     copyPath,
+    gitStatus,
   } = useExplorer()
   // Open state is tracked so the skill scan only runs for a folder someone has
   // actually right-clicked, not for every row in the tree.
@@ -488,9 +554,17 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
   // writes there, so the row says whose it is rather than looking like every other
   // folder — and the tooltip carries the path the badge has no room for.
   const linked = Boolean(entry.link_target)
-  const rowTitle = linked
-    ? `${entry.name} — linked from ${entry.link_target}`
-    : entry.name
+  const decoration = gitStatus.forPath(entry.path, entry.is_dir)
+  const git = decoration ? GIT_DECOR[decoration] : null
+  // One tooltip, assembled from whatever this row has to say — the name always,
+  // then where a link points and what git makes of it.
+  const rowTitle = [
+    entry.name,
+    linked ? `linked from ${entry.link_target}` : null,
+    git?.label,
+  ]
+    .filter(Boolean)
+    .join(" — ")
 
   return (
     <div>
@@ -546,7 +620,32 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
             {/* The name gets the width. The source is on the group heading above,
                 which costs one row instead of a slice of every row — in a tree
                 this narrow a badge here truncated names to a single letter. */}
-            <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+            <span className={cn("min-w-0 flex-1 truncate", git?.className)}>
+              {entry.name}
+            </span>
+
+            {/* Git marker, right-aligned after the name: a letter for a file, a
+                dot for a folder standing in for the changes it holds. Ignored rows
+                carry no letter, so both branches skip them. */}
+            {git?.letter &&
+              (entry.is_dir ? (
+                <span
+                  aria-hidden
+                  className={cn(
+                    "mr-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-current",
+                    git.className
+                  )}
+                />
+              ) : (
+                <span
+                  className={cn(
+                    "shrink-0 text-[10px] font-semibold leading-none",
+                    git.className
+                  )}
+                >
+                  {git.letter}
+                </span>
+              ))}
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent className="w-44">
