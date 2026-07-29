@@ -110,9 +110,25 @@ Then open the Vite URL (default `http://localhost:8888`).
 Ctrl-C stops both processes. See [docs/ELECTRON.md](docs/ELECTRON.md) for how the
 desktop app is wired and how to package a distributable.
 
+## Security
+
+**Lursor is single-user and local-first: there is no authentication, and the
+backend is as privileged as a shell on your machine.** It hands agents a real PTY
+and unsandboxed command execution, stores provider API keys unencrypted in
+SQLite, and accepts requests from any origin. Keep it bound to `127.0.0.1` — the
+desktop app already does; `scripts/dev.sh` binds `0.0.0.0` for LAN convenience —
+and never expose the port to the internet or an untrusted network.
+
+[SECURITY.md](SECURITY.md) has the full threat model, safe-operation notes, and
+how to report a vulnerability privately.
+
 ## Status
 
 MVP, actively growing. [AGENTS.md](AGENTS.md) is the design record — the
 architecture, the subsystem-by-subsystem decisions, the invariants worth knowing
 before changing anything, and what is deliberately not built. Auth/multi-tenancy
 and Docker sandboxing remain intentionally deferred.
+
+## License
+
+[Apache License 2.0](LICENSE).

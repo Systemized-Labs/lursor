@@ -31,3 +31,7 @@ backend/bundle/
 .DS_Store
 .idea/
 .vscode/
+
+# Per-machine agent settings (never shared)
+.claude/settings.local.json
+.mcp.local.json

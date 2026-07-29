@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "description": "Self-hosted agent harness with workspaces, live terminal, and git review",
   "author": "Jonathan Conn <JonathanConn@users.noreply.github.com>",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
