@@ -18,6 +18,8 @@ interface RenameDialogProps {
   pending: boolean
   onCancel: () => void
   onSave: (value: string) => void
+  /** The confirm button's word — "Create" when the empty field is the point. */
+  saveLabel?: string
 }
 
 /**
@@ -36,6 +38,7 @@ export function RenameDialog({
   pending,
   onCancel,
   onSave,
+  saveLabel,
 }: RenameDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
@@ -48,6 +51,7 @@ export function RenameDialog({
           pending={pending}
           onCancel={onCancel}
           onSave={onSave}
+          saveLabel={saveLabel}
         />
       </DialogContent>
     </Dialog>
@@ -59,6 +63,7 @@ function RenameField({
   pending,
   onCancel,
   onSave,
+  saveLabel = "Save",
 }: Omit<RenameDialogProps, "title" | "open">) {
   const [value, setValue] = useState(initialValue)
   return (
@@ -79,7 +84,7 @@ function RenameField({
           Cancel
         </Button>
         <Button onClick={() => onSave(value)} disabled={pending || !value.trim()}>
-          Save
+          {saveLabel}
         </Button>
       </DialogFooter>
     </>

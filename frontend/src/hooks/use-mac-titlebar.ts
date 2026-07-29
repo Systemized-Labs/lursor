@@ -13,18 +13,18 @@ import { isMacElectron } from "@/lib/platform"
  * it reads as one band rather than as two headers at two heights:
  *
  * - `enabled` — match the 44px line, so titles sit at the buttons' centre.
- * - `clearButtons` — *and* inset past the buttons themselves. Only when the
- *   sidebar is collapsed to its 68px rail: the buttons end around x=84, so with
- *   the panel open (68 + 256) this surface starts far to their right and needs
- *   nothing, but rail-only it starts at 68 and a title would land underneath the
- *   green one.
+ * - `clearButtons` — *and* inset past the buttons themselves. Only when what is
+ *   left of this surface is narrower than they are: the buttons end around x=84,
+ *   so with the panel open (68 + 256) it starts far to their right and needs
+ *   nothing, while rail-only it starts at 68 and a title would land underneath
+ *   the green one. A labelled rail is 232px, which clears them by itself.
  */
 export function useMacTitlebar() {
-  const { isMobile, open } = useSidebar()
+  const { isMobile, open, railWidth } = useSidebar()
 
   // Mobile is the off-canvas drawer over a full-width page, and never Electron —
   // no frameless chrome to work around.
   const enabled = isMacElectron && !isMobile
 
-  return { enabled, clearButtons: enabled && !open }
+  return { enabled, clearButtons: enabled && !open && railWidth < 88 }
 }

@@ -25,7 +25,7 @@ export interface WorkspaceVisits {
  * restores both halves of where you were.
  *
  * Deliberately *not* the rail's ordering. Tiles sit in a stable order so their
- * positions become muscle memory (see `use-workspace-order`); recency drives only
+ * positions become muscle memory (see `use-workspace-tree`); recency drives only
  * the ⌘-tab-style MRU switch, which wants the opposite of stability.
  *
  * `knownIds` prunes workspaces that no longer exist, and waits for a non-empty

@@ -10,14 +10,19 @@ import {
   useUpdateThread,
 } from "@/api/threads"
 import { useDeleteWorkspace, useUpdateWorkspace } from "@/api/workspaces"
-import type { Thread, Workspace } from "@/api/types"
+import {
+  useCreateWorkspaceFolder,
+  useDeleteWorkspaceFolder,
+  useRenameWorkspaceFolder,
+} from "@/api/workspace-folders"
+import type { Thread, Workspace, WorkspaceFolder } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { RenameDialog } from "@/components/layout/rename-dialog"
 import { CloneIntoWorkspaceDialog } from "@/pages/workspaces/clone-into-workspace-dialog"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
 import type { SidebarSelection } from "@/components/layout/use-sidebar-selection"
 
-/** Minimal identity of a workspace a dialog is acting on. */
+/** Minimal identity of a workspace (or folder) a dialog is acting on. */
 interface WorkspaceTarget {
   id: string
   name: string
@@ -39,6 +44,9 @@ export interface WorkspaceDialogs {
   openDeleteWorkspace: (workspace: Workspace) => void
   openCloneWorkspace: (workspace: Workspace) => void
   openBulkDelete: () => void
+  openNewFolder: () => void
+  openRenameFolder: (folder: WorkspaceFolder) => void
+  openDeleteFolder: (folder: WorkspaceFolder) => void
 }
 
 /**
@@ -68,6 +76,11 @@ export function useWorkspaceDialogs({
     null
   )
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
+  const [renameFolderTarget, setRenameFolderTarget] =
+    useState<WorkspaceTarget | null>(null)
+  const [deleteFolderTarget, setDeleteFolderTarget] =
+    useState<WorkspaceTarget | null>(null)
 
   const updateThread = useUpdateThread()
   const deleteThread = useMutation({
@@ -77,6 +90,9 @@ export function useWorkspaceDialogs({
   })
   const updateWorkspace = useUpdateWorkspace()
   const deleteWorkspace = useDeleteWorkspace()
+  const createFolder = useCreateWorkspaceFolder()
+  const renameFolder = useRenameWorkspaceFolder()
+  const deleteFolder = useDeleteWorkspaceFolder()
 
   // Esc leaves bulk selection (unless the confirm dialog owns Esc).
   useEffect(() => {
@@ -147,6 +163,39 @@ export function useWorkspaceDialogs({
         invalidateThreadLists(qc, ws.id)
         toast.success("Workspace deleted")
       },
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : "Failed to delete"),
+    })
+  }
+
+  async function handleCreateFolder(value: string) {
+    const name = value.trim()
+    if (!name) return
+    try {
+      await createFolder.mutateAsync(name)
+      setNewFolderOpen(false)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create folder")
+    }
+  }
+
+  async function handleRenameFolder(value: string) {
+    if (!renameFolderTarget) return
+    const name = value.trim()
+    if (!name) return
+    try {
+      await renameFolder.mutateAsync({ id: renameFolderTarget.id, name })
+      setRenameFolderTarget(null)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to rename")
+    }
+  }
+
+  function handleDeleteFolder() {
+    if (!deleteFolderTarget) return
+    const folder = deleteFolderTarget
+    setDeleteFolderTarget(null)
+    deleteFolder.mutate(folder.id, {
       onError: (err) =>
         toast.error(err instanceof Error ? err.message : "Failed to delete"),
     })
@@ -263,6 +312,41 @@ export function useWorkspaceDialogs({
         onConfirm={handleBulkDelete}
       />
 
+      <RenameDialog
+        title="New folder"
+        initialValue=""
+        saveLabel="Create"
+        open={newFolderOpen}
+        pending={createFolder.isPending}
+        onCancel={() => setNewFolderOpen(false)}
+        onSave={(v) => void handleCreateFolder(v)}
+      />
+
+      <RenameDialog
+        title="Rename folder"
+        initialValue={renameFolderTarget?.name ?? ""}
+        open={Boolean(renameFolderTarget)}
+        pending={renameFolder.isPending}
+        onCancel={() => setRenameFolderTarget(null)}
+        onSave={(v) => void handleRenameFolder(v)}
+      />
+
+      {/* Not destructive, and the wording has to earn that: a folder is a label,
+          so the workspaces inside it are still there afterwards — at the top
+          level. Anything vaguer would read as "delete these projects". */}
+      <ConfirmDialog
+        open={Boolean(deleteFolderTarget)}
+        onOpenChange={(open) => !open && setDeleteFolderTarget(null)}
+        title="Delete folder"
+        description={
+          deleteFolderTarget
+            ? `"${deleteFolderTarget.name}" will be removed from the rail. The workspaces in it move back to the top level — nothing on disk changes.`
+            : undefined
+        }
+        confirmLabel="Delete folder"
+        onConfirm={handleDeleteFolder}
+      />
+
       {cloneWsTarget ? (
         <CloneIntoWorkspaceDialog
           open={Boolean(cloneWsTarget)}
@@ -283,5 +367,10 @@ export function useWorkspaceDialogs({
     openDeleteWorkspace: (ws) => setDeleteWsTarget({ id: ws.id, name: ws.name }),
     openCloneWorkspace: (ws) => setCloneWsTarget({ id: ws.id, name: ws.name }),
     openBulkDelete: () => setBulkDeleteOpen(true),
+    openNewFolder: () => setNewFolderOpen(true),
+    openRenameFolder: (folder) =>
+      setRenameFolderTarget({ id: folder.id, name: folder.name }),
+    openDeleteFolder: (folder) =>
+      setDeleteFolderTarget({ id: folder.id, name: folder.name }),
   }
 }

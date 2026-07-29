@@ -610,6 +610,22 @@ class GitHubConfig(TimestampMixin, table=True):
     avatar_url: str | None = None
 
 
+class WorkspaceFolder(TimestampMixin, table=True):
+    """A sidebar group for workspaces: a label and a place in the list.
+
+    Purely presentational — a folder owns no directory, so filing a workspace
+    into one moves its row in the sidebar and leaves its checkout exactly where
+    it is. Only one level deep on purpose (no folder inside a folder), which is
+    what lets ``position`` share a single sequence with the ungrouped workspaces
+    at the root: a group and a loose workspace can sit in any order.
+    """
+
+    __tablename__ = "workspace_folders"
+
+    name: str = Field(index=True)
+    position: int = 0
+
+
 class Workspace(TimestampMixin, table=True):
     """A named directory on disk that scopes an agent's filesystem."""
 
@@ -618,6 +634,13 @@ class Workspace(TimestampMixin, table=True):
     name: str = Field(index=True)
     description: str = ""
     path: str = ""  # absolute path, assigned on creation
+    # Where the sidebar draws this row: inside ``folder_id``'s group, or at the
+    # root when null. ``position`` orders siblings under that same parent — see
+    # :class:`WorkspaceFolder` for why the root sequence is shared.
+    folder_id: str | None = Field(
+        default=None, foreign_key="workspace_folders.id", index=True
+    )
+    position: int = 0
 
 
 class Thread(TimestampMixin, table=True):

@@ -30,6 +30,7 @@ from app.api import (
     terminal,
     threads,
     tools,
+    workspace_folders,
     workspaces,
 )
 from app.api import (
@@ -139,6 +140,7 @@ for module in (
     tools,
     providers,
     workspaces,
+    workspace_folders,
     threads,
     chat,
     schedules,

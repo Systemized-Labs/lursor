@@ -1,4 +1,11 @@
-import { ArrowCounterClockwise, GitBranch, Pencil, Plus, Trash } from "@phosphor-icons/react"
+import {
+  ArrowCounterClockwise,
+  FolderOpen,
+  GitBranch,
+  Pencil,
+  Plus,
+  Trash,
+} from "@phosphor-icons/react"
 import type { DragEvent, MouseEvent } from "react"
 import { Link } from "react-router-dom"
 
@@ -8,6 +15,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import {
@@ -38,6 +48,14 @@ interface WorkspaceTileProps {
   onRename: () => void
   onClone: () => void
   onDelete: () => void
+  /** The rail is wide enough to carry the name beside the icon. */
+  expanded?: boolean
+  /** Filed inside a folder, so the row is indented under its header. */
+  nested?: boolean
+  /** The groups this workspace could be filed into, for the "Move to" submenu. */
+  folders?: { id: string; name: string }[]
+  /** Refile it: a folder id, or null for the top level. */
+  onMoveToFolder?: (folderId: string | null) => void
   /** Omitted for the studio tile, which is pinned below the draggable ones. */
   drag?: {
     onDragStart: (e: DragEvent) => void
@@ -63,6 +81,12 @@ interface WorkspaceTileProps {
  * the keyboard rather than hiding it in a tooltip. The name is one hover away and
  * always shown in the panel header beside it, so nothing is actually lost —
  * only moved off a surface too narrow to hold it.
+ *
+ * `expanded` is that surface finally being wide enough (⇧⌘B, 232px): the name
+ * comes out of the tooltip and onto the face, and the slot number moves from
+ * under the icon to the end of the row, where it yields to a status mark when
+ * there is one. Nothing about identity changes — the same glyph in the same
+ * order — so widening the rail doesn't make you re-learn it.
  */
 export function WorkspaceTile({
   workspace,
@@ -79,6 +103,10 @@ export function WorkspaceTile({
   onRename,
   onClone,
   onDelete,
+  expanded = false,
+  nested = false,
+  folders = [],
+  onMoveToFolder,
   drag,
 }: WorkspaceTileProps) {
   const handleClick = (e: MouseEvent) => {
@@ -125,7 +153,15 @@ export function WorkspaceTile({
         // every icon 1px right of the logo and the footer buttons, which centre in
         // the same column. A 22px icon in a 55px tile clears the spine by 14px on
         // its own.
-        "group/tile relative flex h-10 w-full shrink-0 items-center justify-center rounded-md outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent focus-visible:ring-2",
+        "group/tile relative flex h-10 w-full shrink-0 items-center rounded-md outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent focus-visible:ring-2",
+        // Centred at 68px, a row at 232px. The indent for a filed workspace is
+        // spent only in the wide state: at 68px the glyph *is* the identity, and
+        // shifting it off the column's centre to imply nesting would cost more
+        // than the nesting communicates — the group's header and its divider
+        // already say where the members are.
+        expanded
+          ? cn("justify-start gap-2.5 pl-2 pr-1.5", nested && "pl-5")
+          : "justify-center",
         isActive && "bg-sidebar-accent",
         drag?.isDragging && "opacity-40",
         // A rule above the drop position rather than shifting tiles under the
@@ -147,8 +183,11 @@ export function WorkspaceTile({
       {/* Anchored to the tile's corner rather than to a glyph, which is what kept
           the previous badge from landing on top of the index digits. Running
           outranks unread: a working agent is the live fact, and a workspace can't
-          be both waiting and arriving. */}
-      {running ? (
+          be both waiting and arriving.
+
+          Corner-anchored only while the tile is a square: in a row the same marks
+          sit at the end of the line, in flow, so they can't land on the name. */}
+      {expanded ? null : running ? (
         <span
           aria-hidden
           className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-primary"
@@ -181,22 +220,67 @@ export function WorkspaceTile({
         weight={isActive ? "fill" : "regular"}
       />
 
-      {/* Centred under the icon, not tucked into the left gutter. Hanging off one
-          side put visual weight on the left of every tile, so the pair read as
-          off-centre even once the icon itself was aligned — the glyph was correct
-          and the block around it was not. Absolutely positioned, so it still costs
-          the icon no height. */}
-      <span
-        aria-hidden
-        className={cn(
-          "pointer-events-none absolute inset-x-0 bottom-0 text-center font-mono text-[9px] leading-[11px] tabular-nums tracking-tight transition-colors",
-          isActive
-            ? "font-medium text-sidebar-accent-foreground/80"
-            : "text-sidebar-foreground/35 group-hover/tile:text-sidebar-foreground/60"
-        )}
-      >
-        {String(slot).padStart(2, "0")}
-      </span>
+      {expanded ? (
+        <>
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-left text-[13px] leading-tight transition-colors",
+              isActive
+                ? "font-medium text-sidebar-accent-foreground"
+                : "text-sidebar-foreground/80 group-hover/tile:text-sidebar-foreground"
+            )}
+          >
+            {workspace.name}
+          </span>
+
+          {/* One slot at the end of the row, and status has first claim on it:
+              the number is a hint you can also get from the tooltip, while a
+              working agent or a waiting reply is the thing you widened the rail
+              to see. */}
+          {running ? (
+            <span
+              aria-hidden
+              className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+            />
+          ) : unreadCount > 0 ? (
+            <span
+              aria-hidden
+              className="min-w-4 shrink-0 rounded-full bg-sidebar-primary px-1 text-center text-[10px] font-medium leading-4 tabular-nums text-sidebar-primary-foreground"
+            >
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          ) : (
+            <span
+              aria-hidden
+              className={cn(
+                "shrink-0 font-mono text-[10px] tabular-nums transition-colors",
+                isActive
+                  ? "text-sidebar-accent-foreground/70"
+                  : "text-sidebar-foreground/30 group-hover/tile:text-sidebar-foreground/50"
+              )}
+            >
+              {hint ?? String(slot).padStart(2, "0")}
+            </span>
+          )}
+        </>
+      ) : (
+        /* Centred under the icon, not tucked into the left gutter. Hanging off
+           one side put visual weight on the left of every tile, so the pair read
+           as off-centre even once the icon itself was aligned — the glyph was
+           correct and the block around it was not. Absolutely positioned, so it
+           still costs the icon no height. */
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-x-0 bottom-0 text-center font-mono text-[9px] leading-[11px] tabular-nums tracking-tight transition-colors",
+            isActive
+              ? "font-medium text-sidebar-accent-foreground/80"
+              : "text-sidebar-foreground/35 group-hover/tile:text-sidebar-foreground/60"
+          )}
+        >
+          {String(slot).padStart(2, "0")}
+        </span>
+      )}
     </Link>
   )
 
@@ -258,6 +342,37 @@ export function WorkspaceTile({
             <Plus className="size-4" />
             New conversation
           </ContextMenuItem>
+          {/* Filing without dragging. Dragging is the fast path on a mouse, but
+              it is the *only* path on a rail that also runs on a phone, where
+              HTML5 drag events never fire — and it is an awkward gesture for a
+              tile that is off-screen in a scrolled list either way. */}
+          {onMoveToFolder && folders.length > 0 ? (
+            <ContextMenuSub>
+              <ContextMenuSubTrigger>
+                <FolderOpen className="size-4" />
+                Move to
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent className="w-52">
+                {folders.map((folder) => (
+                  <ContextMenuItem
+                    key={folder.id}
+                    disabled={folder.id === workspace.folder_id}
+                    onSelect={() => onMoveToFolder(folder.id)}
+                  >
+                    <span className="truncate">{folder.name}</span>
+                  </ContextMenuItem>
+                ))}
+                {workspace.folder_id ? (
+                  <>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem onSelect={() => onMoveToFolder(null)}>
+                      Top level
+                    </ContextMenuItem>
+                  </>
+                ) : null}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          ) : null}
           <ContextMenuItem onSelect={onRename}>
             <Pencil className="size-4" />
             Rename
@@ -280,8 +395,10 @@ export function WorkspaceTile({
       </ContextMenu>
 
       {/* With no name on the tile this is where the name lives, so it carries the
-          full thing plus the shortcut. */}
-      <TooltipContent side="right" align="center">
+          full thing plus the shortcut. Suppressed once the rail is labelled: a
+          hover card repeating the name you can already read, over the column you
+          are pointing at, is noise. */}
+      <TooltipContent side="right" align="center" hidden={expanded}>
         {workspace.name}
         {hint ? (
           <span className="ml-2 font-mono text-muted-foreground">{hint}</span>
