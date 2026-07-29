@@ -1,5 +1,8 @@
 import { SidebarSimple } from "@phosphor-icons/react"
 
+import { useMacTitlebar } from "@/hooks/use-mac-titlebar"
+import { cn } from "@/lib/utils"
+
 interface DockRailProps {
   /** Re-open the right dock. */
   onOpen: () => void
@@ -13,13 +16,22 @@ interface DockRailProps {
  * own in-strip button, so there is never a duplicate toggle.
  */
 export function DockRail({ onOpen }: DockRailProps) {
+  const macTitlebar = useMacTitlebar()
+
   return (
     <div className="flex w-9 shrink-0 flex-col items-center bg-background">
-      {/* Top row is pinned to the same `h-9` as the chat header so the expand
+      {/* Top row is pinned to the same height as the chat header so the expand
           toggle lines up exactly with the header's new-chat button, and the
           `h-7 w-7` button mirrors that button's hit area. No border here — the
-          rail reads as a seamless continuation of the header. */}
-      <div className="flex h-9 shrink-0 items-center">
+          rail reads as a seamless continuation of the header, which on macOS
+          means taking that header's chrome height and tone as well, so the
+          window's top band runs unbroken to its right edge. */}
+      <div
+        className={cn(
+          "flex shrink-0 items-center",
+          macTitlebar.enabled ? "h-11 w-full justify-center bg-sidebar" : "h-9"
+        )}
+      >
         <button
           type="button"
           onClick={onOpen}

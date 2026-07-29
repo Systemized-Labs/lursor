@@ -27,7 +27,6 @@ import { WorkspaceTile } from "@/components/layout/workspace-tile"
 import type { WorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import type { WorkspaceStatus } from "@/components/layout/use-workspace-status"
 import type { PanelMode } from "@/components/layout/use-panel-mode"
-import { isMacElectron } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 
 /** Shared by the footer tiles, which are icon buttons rather than labelled ones. */
@@ -145,6 +144,33 @@ export function NavRail({
   const activityActive = panelVisible && panelMode === "activity"
   const activityCollapses = activityActive && !isMobile
 
+  // Setting the mode is not enough when the panel is away: with the sidebar
+  // collapsed there is nothing rendering that mode, so the click looked inert —
+  // the one control whose entire job is the panel could not bring it back.
+  const showActivity = () => {
+    onPanelMode("activity")
+    if (!panelVisible) setOpen(true)
+  }
+
+  // A workspace tile governs the panel on the same terms: it shows that
+  // workspace's conversations, bringing the panel back if it is away, and
+  // clicking the workspace already showing there puts it away again. Switching
+  // *to* a workspace and toggling the list for the one you are in are the same
+  // gesture because they are the same intent — "show me this workspace" — and
+  // the tile is the only control the collapsed rail has for it.
+  const showsChatsFor = (workspaceId: string) =>
+    panelVisible && panelMode === "chats" && activeWorkspaceId === workspaceId
+
+  const openTile = (workspaceId: string) => {
+    // Mobile's panel is the drawer; collapsing it would leave a bare rail.
+    if (showsChatsFor(workspaceId) && !isMobile) {
+      setOpen(false)
+      return
+    }
+    if (!panelVisible) setOpen(true)
+    onOpenWorkspace(workspaceId)
+  }
+
   const destinationActive = isDestinationRoute(pathname)
 
   return (
@@ -161,15 +187,10 @@ export function NavRail({
       // 68px and its centre is the rail's centre.
       className="relative flex w-(--sidebar-width-icon) shrink-0 flex-col bg-sidebar-accent/40 after:pointer-events-none after:absolute after:inset-y-0 after:right-0 after:w-px after:bg-sidebar-border after:content-['']"
     >
-      {/* On macOS the OS traffic lights overlay the top-left, which is the rail —
-          reserve a drag strip above the logo to clear them. */}
-      <div
-        className={cn(
-          "flex shrink-0 flex-col items-center",
-          isMacElectron && "[-webkit-app-region:drag]"
-        )}
-      >
-        {isMacElectron ? <div className="h-8" /> : null}
+      {/* The macOS traffic lights are cleared by the one chrome strip above both
+          columns (see AppSidebar), not by a reservation here — a strip inside the
+          rail put the separator and the rail's tint through the buttons. */}
+      <div className="flex shrink-0 flex-col items-center">
         <Tooltip>
           <TooltipTrigger asChild>
             <Link
@@ -177,7 +198,7 @@ export function NavRail({
               onClick={onNavigate}
               aria-label="New chat"
               aria-current={matchesRoute(pathname, "/") ? "page" : undefined}
-              className="my-1.5 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2 [-webkit-app-region:no-drag]"
+              className="my-1.5 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
             >
               <img
                 src="/lursor_icon.png"
@@ -221,7 +242,7 @@ export function NavRail({
               isActive={activeWorkspaceId === ws.id}
               running={running}
               unreadCount={unread}
-              onOpen={() => onOpenWorkspace(ws.id)}
+              onOpen={() => openTile(ws.id)}
               onSetIcon={(next) => icons.setIcon(ws.id, next)}
               onNewConversation={() => onNewConversation(ws.id)}
               onRename={() => onRenameWorkspace(ws)}
@@ -252,7 +273,7 @@ export function NavRail({
               isActive={activeWorkspaceId === studio.id}
               running={status(studio.id).running}
               unreadCount={status(studio.id).unread}
-              onOpen={() => onOpenWorkspace(studio.id)}
+              onOpen={() => openTile(studio.id)}
               onSetIcon={(next) => icons.setIcon(studio.id, next)}
               onNewConversation={() => onNewConversation(studio.id)}
               onRename={() => onRenameWorkspace(studio)}
@@ -289,7 +310,7 @@ export function NavRail({
               size="icon"
               onClick={() => {
                 if (activityCollapses) setOpen(false)
-                else onPanelMode("activity")
+                else showActivity()
               }}
               aria-expanded={activityActive}
               aria-label={

@@ -17,7 +17,10 @@ interface UseWorkspaceSwitchOptions {
   /** Conversations bucketed by workspace, each newest-first. */
   byWorkspace: Map<string, Thread[]>
   activeWorkspaceId: string | undefined
-  /** Close the mobile drawer once a switch lands. */
+  /**
+   * A switch landed — from a tile, ⌘1…⌘9 or double-⌘ alike. Used to point the
+   * panel at the workspace's conversations and to close the mobile drawer.
+   */
   onNavigate: () => void
 }
 

@@ -27,7 +27,9 @@ import { GoalRunPanel } from "@/components/chat/GoalPanel"
 import { parseSlashCommand } from "@/components/chat/commands/registry"
 import type { AgentScope, CommandAction } from "@/components/chat/commands/types"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
+import { useMacTitlebar } from "@/hooks/use-mac-titlebar"
 import { requestOpenFile } from "@/lib/open-file"
+import { cn } from "@/lib/utils"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
 import type { DefaultAgentsSettings } from "@/api/types"
@@ -82,6 +84,10 @@ export function WorkspaceChatPage() {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
   const { data: defaultAgents } = useDefaultAgents()
+  // This header is the top-left of the window whenever the sidebar is down to
+  // its rail, so it shares the traffic lights' line rather than sitting under
+  // them.
+  const macTitlebar = useMacTitlebar()
 
   // A manual per-turn override of the agent a queued slash command would switch
   // to. Null unless the user picks a different agent from the composer while a
@@ -534,8 +540,24 @@ export function WorkspaceChatPage() {
   return (
     <ChatStoreProvider value={store}>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-        {/* Header */}
-        <div className="flex h-9 shrink-0 items-center gap-3 bg-background/70 px-3 backdrop-blur-sm">
+        {/* Header. On macOS it continues the sidebar's chrome line: the same 44px
+            height, so the conversation title sits level with the window buttons
+            and the panel heading beside it, and the same `bg-sidebar`, so the top
+            of the window is one surface rather than two tones meeting under the
+            buttons — which is what collapsing the sidebar to its 68px rail made
+            of a `bg-background` header. `pl-[26px]` is for that collapsed case:
+            this row then starts at the rail's edge, and 26 plus the title's own
+            6px of padding puts the text at x=100, the same place the panel
+            heading starts (see AppSidebar). */}
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-3 px-3",
+            macTitlebar.enabled
+              ? "h-11 bg-sidebar"
+              : "h-9 bg-background/70 backdrop-blur-sm",
+            macTitlebar.clearButtons && "pl-[26px]"
+          )}
+        >
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {isEditingTitle ? (
               <input

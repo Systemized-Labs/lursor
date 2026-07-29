@@ -1,19 +1,16 @@
-import { MagnifyingGlass, Plus, Trash, X } from "@phosphor-icons/react"
+import { Trash } from "@phosphor-icons/react"
 
 import type { Thread, Workspace } from "@/api/types"
 import { Button } from "@/components/ui/button"
-import { useSidebar } from "@/components/ui/sidebar"
 import { ActivityPanel } from "@/components/layout/panel/activity-panel"
 import { ChatsPanel } from "@/components/layout/panel/chats-panel"
+import { PanelHeader } from "@/components/layout/panel/panel-header"
 import type { ConversationHandlers } from "@/components/layout/panel/types"
 import type { PanelMode } from "@/components/layout/use-panel-mode"
 import type { WorkspaceDialogs } from "@/components/layout/workspace-dialogs"
 import type { AllThreads } from "@/hooks/use-all-threads"
 import { isMacElectron } from "@/lib/platform"
-
-/** Header affordances share the panel's icon-button treatment. */
-const HEADER_TILE =
-  "size-7 text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+import { cn } from "@/lib/utils"
 
 interface SidebarPanelProps {
   panelMode: PanelMode
@@ -59,75 +56,33 @@ export function SidebarPanel({
   onSearch,
 }: SidebarPanelProps) {
   const { selection } = handlers
-  const { isMobile, setOpenMobile } = useSidebar()
 
   const isChats = panelMode === "chats"
-  const title = isChats ? (scopedWorkspace?.name ?? "Conversations") : "Activity"
-
-  // ⊕ means "another conversation in the workspace this list is showing". With
-  // no workspace at all there is nothing to add one to, so it falls back to the
-  // New Agent home.
-  const handleNew = () => {
-    if (scopedWorkspace) onNewConversation(scopedWorkspace.id)
-    else onNewChat()
-  }
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-sidebar">
-      {/* The traffic lights are 68px wide plus their inset, so on macOS the last
-          one lands *past* the rail and over this header. The rail reserves a
-          strip for them above its logo; without the same reservation here the
-          heading sat underneath the buttons. */}
-      {isMacElectron ? <div className="h-8 shrink-0 [-webkit-app-region:drag]" /> : null}
-
-      <div className="flex h-10 shrink-0 items-center gap-1 px-2">
-        {/* A ledger label, not a page title. At `text-sm font-semibold` this
-            competed with the conversation titles below it for the same rank —
-            and in a 256px column the thing you read is the list, not the word
-            naming it. Small, letterspaced and uppercase reads as a heading at a
-            fraction of the weight, and gives the rows back their prominence. */}
-        <h2
-          className="min-w-0 flex-1 truncate px-1 text-[11px] font-medium uppercase tracking-[0.1em] text-sidebar-foreground/70"
-          title={isChats ? scopedWorkspace?.name : undefined}
-        >
-          {title}
-        </h2>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onSearch}
-          aria-label="Search"
-          title="Search (⌘K)"
-          className={HEADER_TILE}
-        >
-          <MagnifyingGlass className="size-4" />
-        </Button>
-        {isChats ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleNew}
-            aria-label="New conversation"
-            title="New conversation"
-            className={HEADER_TILE}
-          >
-            <Plus className="size-4" />
-          </Button>
-        ) : null}
-        {/* The off-canvas sheet hides its own close, so give the drawer a clear
-            dismiss affordance. */}
-        {isMobile ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setOpenMobile(false)}
-            aria-label="Close menu"
-            className={HEADER_TILE}
-          >
-            <X className="size-4" />
-          </Button>
-        ) : null}
-      </div>
+    <div
+      className={cn(
+        "flex min-w-0 flex-1 flex-col bg-sidebar",
+        // With the header hoisted into the chrome strip, the first row of the
+        // list would otherwise start hard against it. The header row used to
+        // supply this gap.
+        isMacElectron && "pt-1.5"
+      )}
+    >
+      {/* On macOS the header is rendered by AppSidebar into the traffic-light
+          strip, so the heading shares that line instead of adding a second band
+          under it. Elsewhere there is no strip, and it belongs here. */}
+      {isMacElectron ? null : (
+        <div className="flex h-10 shrink-0 items-center">
+          <PanelHeader
+            panelMode={panelMode}
+            scopedWorkspace={scopedWorkspace}
+            onNewConversation={onNewConversation}
+            onNewChat={onNewChat}
+            onSearch={onSearch}
+          />
+        </div>
+      )}
 
       {/* Bulk-selection toolbar — appears once ⌘/⇧-click selects something.
           Plain clicks keep navigating throughout; "Done" or Esc clears. */}
