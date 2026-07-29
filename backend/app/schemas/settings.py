@@ -134,14 +134,21 @@ class CompactionDefaultsRead(BaseModel):
     # fires, and fraction of the history it folds into the summary (1.0 = all).
     threshold: float
     ratio: float
+    # The model that writes the summary, as a stored routing string
+    # ("openrouter:…" / "custom:{provider}:{model}"). Deliberately not the thread
+    # agent's model: summarizing is a cheap, throwaway task, and the run's own
+    # model may be heavy or offline.
+    model: str
     # Where each effective value comes from — a value saved here ("database") or
     # the process environment / .env ("env"), mirroring the OpenRouter and memory
     # sections. Only a "database" value can be reset.
     threshold_source: Literal["database", "env"] = "env"
     ratio_source: Literal["database", "env"] = "env"
+    model_source: Literal["database", "env"] = "env"
     # What resetting reverts to, so the UI can name it before the user commits.
     env_threshold: float
     env_ratio: float
+    env_model: str
 
 
 class CompactionDefaultsUpdate(BaseModel):
@@ -151,6 +158,11 @@ class CompactionDefaultsUpdate(BaseModel):
     # that knob to the environment default.
     threshold: float | None = Field(default=None, gt=0, le=1)
     ratio: float | None = Field(default=None, gt=0, le=1)
+    # Free-form like every other stored model field (an agent row's ``model``): the
+    # picker sends a routing string, and an unreachable one surfaces as a compaction
+    # warning rather than a save-time error. Blank is normalized to null (= revert
+    # to the environment default) in the endpoint.
+    model: str | None = None
 
 
 # Per-command default agent is an open ``dict[str, str]`` map (command name ->

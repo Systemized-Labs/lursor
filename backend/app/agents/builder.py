@@ -7,6 +7,7 @@ filesystem is rooted at the workspace directory via a ``LocalBackend``.
 
 from __future__ import annotations
 
+import logging
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -62,6 +63,8 @@ from app.db.models import Subagent as SubagentRow
 from app.skills.script_exec import SkillEnvScriptExecutor
 
 settings = get_settings()
+
+logger = logging.getLogger(__name__)
 
 # Appended to every agent's system instructions so models default to English
 # rather than drifting into another language mid-conversation. Applied here (the
@@ -702,6 +705,33 @@ def resolve_model(
     return model
 
 
+def _summarizer_model(
+    compaction_model: str | None,
+    providers: dict[str, CustomProvider],
+    fallback: str | Model,
+) -> str | Model:
+    """The model that writes in-run summaries, resolved through Lursor's stack.
+
+    ``fallback`` is the run's own (already resolved) model, used when the
+    compaction model can't be built — the case for a local-only install with no
+    OpenRouter key, where resolving the ``openrouter:`` default raises. Summarizing
+    on the run's own model costs more than the small default but always works;
+    what we must not do is let the library keep its ``anthropic:`` default, which
+    fails at the moment compaction fires and silently drops the compaction.
+    """
+    model_str = compaction_model or settings.default_compaction_model
+    try:
+        return resolve_model(model_str, providers)
+    except Exception as exc:  # noqa: BLE001 — any provider construction failure
+        logger.warning(
+            "compaction: summarizer model %r is unusable (%s) — summarizing on the "
+            "run's own model instead",
+            model_str,
+            exc,
+        )
+        return fallback
+
+
 def _subagent_config(
     sa: SubagentRow,
     *,
@@ -718,6 +748,7 @@ def _subagent_config(
     child_depth: int,
     skill_runtime: SkillRuntime | None,
     hindsight: HindsightConfig | None = None,
+    compaction_model: str | None = None,
 ) -> dict:
     """Turn a stored subagent row into a pydantic-deep ``SubAgentConfig`` dict.
 
@@ -758,6 +789,9 @@ def _subagent_config(
             # workspace, so it shares the parent's bank, connection, and scope
             # tags rather than resolving its own.
             hindsight=hindsight,
+            # App-wide setting, not a per-row one: a subagent summarizes on the
+            # same model as its parent (its own threshold/ratio still apply).
+            compaction_model=compaction_model,
             _subagent_depth=child_depth,
         )
         return sub_agent
@@ -787,6 +821,7 @@ def build_deep_agent(
     workspace_id: str | None = None,
     skill_runtime: SkillRuntime | None = None,
     hindsight: HindsightConfig | None = None,
+    compaction_model: str | None = None,
     _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
@@ -838,6 +873,12 @@ def build_deep_agent(
     ``row.include_memory`` is on. ``None`` — the default, and what a
     misconfigured or unselected provider resolves to — means the file provider:
     pydantic-deep's per-workspace ``MEMORY.md``, unchanged from before.
+
+    ``compaction_model`` is the ``AppConfig.compaction_model`` override for the
+    model that writes *in-run* summaries, so mid-run compaction and the manual
+    ``/compact`` run on the same one. ``None`` means
+    ``settings.default_compaction_model``; the library's own default is an
+    ``anthropic:`` model we have no key for (see ``agents/context_budget.py``).
 
     ``subagents`` is the global roster of specialists (see ``db.models.Subagent``).
     They are only handed to the agent when ``row.include_subagents`` is on, and a
@@ -924,6 +965,7 @@ def build_deep_agent(
                 child_depth=child_depth,
                 skill_runtime=skill_runtime,
                 hindsight=hindsight,
+                compaction_model=compaction_model,
             )
 
         # Disabled user subagents stay in the roster/UI but are excluded from the
@@ -1147,9 +1189,15 @@ def build_deep_agent(
         **extra_config,
     )
     # Retune the context manager the library just built to this row's compaction
-    # settings (when the window fills up, and how much of it gets summarized).
-    # Applies to subagents too: each one comes back through here via its own
-    # factory, so a specialist compacts on its own budget, not its parent's.
-    apply_compaction_settings(agent, row)
+    # settings (when the window fills up, how much of it gets summarized, and which
+    # model writes the summary — the library's default is an ``anthropic:`` one we
+    # have no key for). Applies to subagents too: each one comes back through here
+    # via its own factory, so a specialist compacts on its own budget, not its
+    # parent's.
+    apply_compaction_settings(
+        agent,
+        row,
+        _summarizer_model(compaction_model, custom_providers or {}, fallback=model),
+    )
     deps = create_default_deps(backend)
     return agent, deps

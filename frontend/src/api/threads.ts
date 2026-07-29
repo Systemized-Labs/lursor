@@ -3,6 +3,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query"
 
 import { api } from "./client"
@@ -14,6 +15,10 @@ export const threadsApi = {
       `/threads?workspace_id=${encodeURIComponent(workspaceId)}`,
       signal
     ),
+  /** Every conversation in every workspace, newest activity first. One request
+   *  for the cross-workspace surfaces (the sidebar's Attention/Activity panels,
+   *  the command palette) that would otherwise fan out per workspace. */
+  listAll: (signal?: AbortSignal) => api.get<Thread[]>("/threads", signal),
   /** Conversations one schedule's fires opened, newest activity first. These are
    *  excluded from `listByWorkspace` so a daily job doesn't bury a workspace's
    *  human-started threads. */
@@ -52,6 +57,14 @@ export const threadsApi = {
 }
 
 export const threadKeys = {
+  /** The cross-workspace list. A *separate* cache entry from the per-workspace
+   *  lists, so anything that mutates conversations has to invalidate both — see
+   *  {@link invalidateThreadLists}. Deliberately not named `all`: by react-query
+   *  convention that reads as "every query in this domain", and someone
+   *  invalidating it expecting that would quietly miss the per-workspace ones. */
+  crossWorkspace: () => ["threads", "all"] as const,
+  /** Prefix covering every per-workspace list at once. */
+  byWorkspacePrefix: () => ["threads", "workspace"] as const,
   byWorkspace: (workspaceId: string) =>
     ["threads", "workspace", workspaceId] as const,
   bySchedule: (scheduleId: string) =>
@@ -59,6 +72,37 @@ export const threadKeys = {
   detail: (id: string) => ["threads", id] as const,
   messages: (id: string) => ["threads", id, "messages"] as const,
   activeRuns: () => ["threads", "active-runs"] as const,
+}
+
+/**
+ * Refresh the conversation lists after a mutation. There are two shapes — the
+ * cross-workspace list behind {@link threadKeys.crossWorkspace} and the
+ * per-workspace lists behind {@link threadKeys.byWorkspace} — and forgetting
+ * the former leaves the sidebar's Attention and Activity sections showing
+ * conversations the workspace sections have already dropped. Always go through
+ * here.
+ *
+ * Omit `workspaceId` to sweep every per-workspace list (e.g. when a background
+ * run finishes and we don't know which lists reordered).
+ */
+export function invalidateThreadLists(
+  qc: QueryClient,
+  workspaceId?: string
+): void {
+  qc.invalidateQueries({ queryKey: threadKeys.crossWorkspace() })
+  qc.invalidateQueries({
+    queryKey: workspaceId
+      ? threadKeys.byWorkspace(workspaceId)
+      : threadKeys.byWorkspacePrefix(),
+  })
+}
+
+/** Every conversation across every workspace, newest activity first. */
+export function useAllThreadsQuery() {
+  return useQuery({
+    queryKey: threadKeys.crossWorkspace(),
+    queryFn: ({ signal }) => threadsApi.listAll(signal),
+  })
 }
 
 export function useThreads(workspaceId: string | undefined) {
@@ -103,10 +147,7 @@ export function useCreateThread() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input: ThreadInput) => threadsApi.create(input),
-    onSuccess: (thread) =>
-      qc.invalidateQueries({
-        queryKey: threadKeys.byWorkspace(thread.workspace_id),
-      }),
+    onSuccess: (thread) => invalidateThreadLists(qc, thread.workspace_id),
   })
 }
 
@@ -116,9 +157,7 @@ export function useUpdateThread() {
     mutationFn: ({ id, input }: { id: string; input: ThreadUpdate }) =>
       threadsApi.update(id, input),
     onSuccess: (thread) => {
-      qc.invalidateQueries({
-        queryKey: threadKeys.byWorkspace(thread.workspace_id),
-      })
+      invalidateThreadLists(qc, thread.workspace_id)
       qc.invalidateQueries({ queryKey: threadKeys.detail(thread.id) })
     },
   })
@@ -128,12 +167,6 @@ export function useDeleteThread(workspaceId: string | undefined) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => threadsApi.remove(id),
-    onSuccess: () => {
-      if (workspaceId) {
-        qc.invalidateQueries({
-          queryKey: threadKeys.byWorkspace(workspaceId),
-        })
-      }
-    },
+    onSuccess: () => invalidateThreadLists(qc, workspaceId),
   })
 }

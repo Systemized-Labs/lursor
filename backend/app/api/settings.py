@@ -449,15 +449,24 @@ async def get_compaction_defaults(
         current.default_compaction_threshold,
         current.default_compaction_ratio,
     )
+    # The model is read straight off the row rather than the running process: every
+    # consumer (the run builder and the ``/compact`` endpoint) loads ``AppConfig``
+    # for the run anyway, so there is nothing to push into ``Settings`` — which
+    # makes ``settings.default_compaction_model`` always the environment's value.
+    saved_model = cfg.compaction_model if cfg else None
+    env_model = current.default_compaction_model
     return CompactionDefaultsRead(
         threshold=current.default_compaction_threshold,
         ratio=current.default_compaction_ratio,
+        model=saved_model or env_model,
         threshold_source=(
             "database" if cfg and cfg.compaction_threshold is not None else "env"
         ),
         ratio_source="database" if cfg and cfg.compaction_ratio is not None else "env",
+        model_source="database" if saved_model else "env",
         env_threshold=env_threshold,
         env_ratio=env_ratio,
+        env_model=env_model,
     )
 
 
@@ -469,8 +478,9 @@ async def set_compaction_defaults(
 
     Partial: each knob is only touched when the request actually carries it, and a
     present-but-null value clears that knob back to the environment default. The
-    saved values are pushed into the running process, so the next run compacts on
-    them without a restart — agents with their own override are unaffected.
+    two fractions are pushed into the running process, so the next run compacts on
+    them without a restart — agents with their own override are unaffected. The
+    summarizer model needs no push: the run builder reads it off this row.
     """
     _capture_env_baseline()
     cfg = await _get_config(session)
@@ -481,6 +491,10 @@ async def set_compaction_defaults(
         cfg.compaction_threshold = payload.threshold
     if "ratio" in sent:
         cfg.compaction_ratio = payload.ratio
+    if "model" in sent:
+        # Blank is a clear, not a saved empty string: an empty model would resolve
+        # to nothing at build time and the summarizer would have no model at all.
+        cfg.compaction_model = (payload.model or "").strip() or None
     session.add(cfg)
     await session.commit()
 

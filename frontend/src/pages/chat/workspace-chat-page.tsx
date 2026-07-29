@@ -8,7 +8,7 @@ import { useStickToBottom } from "use-stick-to-bottom"
 
 import { useAgents } from "@/api/agents"
 import {
-  threadKeys,
+  invalidateThreadLists,
   threadsApi,
   useActiveRuns,
   useThread,
@@ -103,7 +103,7 @@ export function WorkspaceChatPage() {
     activeRuns,
     reconnect: true,
     onThreadCreated: (thread) => {
-      qc.invalidateQueries({ queryKey: threadKeys.byWorkspace(thread.workspace_id) })
+      invalidateThreadLists(qc, thread.workspace_id)
       setSearchParams({ c: thread.id }, { replace: true })
     },
   })
@@ -153,7 +153,7 @@ export function WorkspaceChatPage() {
   const wasStreaming = useRef(isStreaming)
   useEffect(() => {
     if (wasStreaming.current && !isStreaming && workspaceId) {
-      qc.invalidateQueries({ queryKey: threadKeys.byWorkspace(workspaceId) })
+      invalidateThreadLists(qc, workspaceId)
     }
     wasStreaming.current = isStreaming
   }, [isStreaming, workspaceId, qc])

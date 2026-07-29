@@ -871,6 +871,10 @@ async def _build_agent_and_context(
         # Where memory lives for this run: ``None`` (an unselected or unusable
         # provider) means the library's per-workspace MEMORY.md, unchanged.
         hindsight=resolve_hindsight_config(app_config, settings),
+        # Which model writes *in-run* summaries — the same override ``/compact``
+        # uses, so both paths compact on one model instead of the library's
+        # Anthropic default (see ``agents/context_budget.py``).
+        compaction_model=app_config.compaction_model if app_config else None,
     )
     return agent, deps, custom_providers, app_config, skill_runtime
 
