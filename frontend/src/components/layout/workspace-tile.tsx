@@ -87,6 +87,11 @@ export function WorkspaceTile({
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
     e.preventDefault()
     onOpen()
+    // Clicking the tile focuses the <a>, and Radix Tooltip stays open while its
+    // trigger is focused — so the name lingered after the pointer left until you
+    // clicked elsewhere. Blur on a real mouse click (detail > 0) so the tooltip
+    // closes with the pointer; keyboard activation (Enter, detail 0) keeps focus.
+    if (e.detail > 0) (e.currentTarget as HTMLElement).blur()
   }
 
   const slot = index + 1
