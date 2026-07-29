@@ -47,6 +47,14 @@ export const filesApi = {
   /** Absolute URL to a file's raw bytes — usable directly as an `<img src>`. */
   rawUrl: (workspaceId: string, path: string) =>
     `${API_BASE}/workspaces/${workspaceId}/files/raw?path=${encodeURIComponent(path)}`,
+  /** Absolute URL serving a file with its path in the URL instead of a query —
+   *  what an HTML page needs to be framed, so its relative `<img>`/`<link>`/
+   *  `<script>` references resolve against the sibling files on disk. */
+  serveUrl: (workspaceId: string, path: string) =>
+    `${API_BASE}/workspaces/${workspaceId}/files/serve/${path
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")}`,
   search: (workspaceId: string, query = "", limit = 50, signal?: AbortSignal) =>
     api.get<DirEntry[]>(
       `/workspaces/${workspaceId}/files/search?q=${encodeURIComponent(query)}&limit=${limit}`,

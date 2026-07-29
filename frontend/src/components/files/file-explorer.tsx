@@ -14,6 +14,7 @@ import {
   FolderSimpleDashed,
   FilePlus,
   FolderPlus,
+  Globe,
   Pencil,
   Trash,
   UploadSimple,
@@ -41,6 +42,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { requestOpenPreview } from "@/lib/open-preview"
 import { cn } from "@/lib/utils"
 
 import { fileKind } from "./file-icon"
@@ -59,6 +61,11 @@ function parentOf(path: string): string {
 /** Join a parent dir and a name into a workspace-relative path. */
 function joinPath(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name
+}
+
+/** A page the preview panel can render as a page rather than as source text. */
+function isHtmlFile(name: string): boolean {
+  return /\.x?html?$/i.test(name)
 }
 
 interface FileExplorerProps {
@@ -494,6 +501,24 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent className="w-44">
+          {/* An HTML file is worth looking at rendered, not just as source, so it
+              gets the top slot — the reason you right-clicked it. */}
+          {!entry.is_dir && isHtmlFile(entry.name) && (
+            <>
+              <ContextMenuItem
+                onSelect={() =>
+                  requestOpenPreview({
+                    workspaceId,
+                    url: filesApi.serveUrl(workspaceId, entry.path),
+                  })
+                }
+              >
+                <Globe className="mr-2 h-4 w-4" />
+                Open in Preview
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+            </>
+          )}
           <ContextMenuItem onSelect={() => requestCreate(createParent, false)}>
             <FilePlus className="mr-2 h-4 w-4" />
             New file

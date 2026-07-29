@@ -446,6 +446,34 @@ async def read_raw(
     return FileResponse(target, media_type=media_type or "application/octet-stream")
 
 
+@router.get("/serve/{file_path:path}")
+async def serve_file(
+    workspace_id: str,
+    file_path: str,
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """Serve a file's raw bytes with its path *in the URL* rather than a query.
+
+    Same bytes and content type as ``/raw``; the difference is the shape of the
+    URL. An HTML page previewed in an iframe resolves its relative references
+    against the URL it was loaded from, so ``?path=docs/report.html`` would send
+    a sibling ``chart.png`` to ``files/chart.png`` and 404. Served at
+    ``files/serve/docs/report.html`` the same reference lands on
+    ``files/serve/docs/chart.png``, which is the file next to it. Root-relative
+    (``/style.css``) references still can't resolve — they don't over ``file:``
+    either.
+
+    Path safety is identical to ``/read``: the path is confined to the workspace
+    root.
+    """
+    root = await _workspace_root(workspace_id, session)
+    target = _safe_join(root, file_path)
+    if not target.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    media_type, _ = mimetypes.guess_type(target.name)
+    return FileResponse(target, media_type=media_type or "application/octet-stream")
+
+
 @router.put("/write", response_model=WriteFileResponse)
 async def write_file(
     workspace_id: str,

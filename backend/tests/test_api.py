@@ -724,6 +724,39 @@ async def test_file_upload_into_folder(client: AsyncClient):
     assert raw.content == png_bytes
 
 
+async def test_file_serve_path_in_url_with_html_type(client: AsyncClient):
+    """`/serve/<path>` returns the file as `text/html`, siblings included.
+
+    The path-in-URL shape is the point: it is what lets a framed page's relative
+    references reach the files next to it.
+    """
+    ws = (await client.post("/workspaces", json={"name": "Serve"})).json()
+    wid = ws["id"]
+
+    page = '<html><body><img src="chart.png"></body></html>'
+    for path, content in (("site/report.html", page), ("site/chart.png", "not-a-png")):
+        r = await client.put(
+            f"/workspaces/{wid}/files/write", json={"path": path, "content": content}
+        )
+        assert r.status_code == 200, r.text
+
+    served = await client.get(f"/workspaces/{wid}/files/serve/site/report.html")
+    assert served.status_code == 200
+    assert served.headers["content-type"].startswith("text/html")
+    assert served.text == page
+
+    # The relative reference in that page resolves next to it.
+    sibling = await client.get(f"/workspaces/{wid}/files/serve/site/chart.png")
+    assert sibling.status_code == 200
+
+    # A directory is not a file, and traversal is refused as it is on /read.
+    # (Percent-encoded, since a plain `../` is collapsed by the client — and by a
+    # browser — long before it reaches us.)
+    assert (await client.get(f"/workspaces/{wid}/files/serve/site")).status_code == 404
+    escape = await client.get(f"/workspaces/{wid}/files/serve/%2e%2e/%2e%2e/etc/hosts")
+    assert escape.status_code == 400
+
+
 async def test_file_tree_exposes_plans_but_hides_rest_of_agents(client: AsyncClient):
     """`.agents/plan/` is browsable in the tree; the rest of `.agents/` stays hidden."""
     ws = (await client.post("/workspaces", json={"name": "PlanTree"})).json()
