@@ -23,7 +23,10 @@ from app.agents.preview_service import PreviewService, preview_service
         # Host is normalized to `localhost` (not a literal IP) so the browser
         # reaches whichever family the server bound — Vite binds IPv6 `::1`.
         ("  ➜  Local:   http://localhost:5173/", ("http://localhost:5173", 5173)),
-        ("Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C)", ("http://localhost:8000", 8000)),
+        (
+            "Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C)",
+            ("http://localhost:8000", 8000),
+        ),
         ("- Local:        http://localhost:3000", ("http://localhost:3000", 3000)),
         # Wildcard bind is normalized to a framable loopback host.
         ("listening at http://0.0.0.0:4000", ("http://localhost:4000", 4000)),

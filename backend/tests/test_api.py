@@ -504,10 +504,11 @@ async def test_build_deep_agent_injects_environment_block(client: AsyncClient, t
     Without this anchor the model never learns which directory it is rooted in
     (`ls` prints only relative names), so it guesses absolute paths and gets lost.
     """
-    from app.agents.builder import build_deep_agent
-    from app.db.models import Agent as AgentRow
     from pydantic_ai.messages import ModelResponse, TextPart
     from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from app.agents.builder import build_deep_agent
+    from app.db.models import Agent as AgentRow
 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
 
@@ -542,14 +543,15 @@ async def test_build_deep_agent_read_only_allowlists_tools(client: AsyncClient, 
     subagent delegation (`task`) and shell/script execution — by driving a real
     agent run through a FunctionModel and asserting on the tools it is offered.
     """
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
     from app.agents.builder import (
         _READONLY_TOOL_ALLOWLIST,
         _readonly_tool_filter,
         build_deep_agent,
     )
     from app.db.models import Agent as AgentRow
-    from pydantic_ai.messages import ModelResponse, TextPart
-    from pydantic_ai.models.function import AgentInfo, FunctionModel
 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
     row.include_subagents = True  # ensure the `task` delegation tool is present
@@ -603,10 +605,11 @@ async def test_build_deep_agent_plan_mode_keeps_full_toolset(client: AsyncClient
     plan turn now sees the same tools as a normal build turn; ``goal_loop``'s
     planning instruction ("do NOT execute yet") is what keeps it to planning.
     """
-    from app.agents.builder import build_deep_agent
-    from app.db.models import Agent as AgentRow
     from pydantic_ai.messages import ModelResponse, TextPart
     from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from app.agents.builder import build_deep_agent
+    from app.db.models import Agent as AgentRow
 
     row = AgentRow(name="local", instructions="hi", model="openrouter:qwen/qwen3.7-max")
     row.include_subagents = True  # ensure the `task` delegation tool is present

@@ -88,17 +88,17 @@ async def _forward(
     try:
         async with _client(conn, timeout=timeout) as client:
             resp = await client.request(method, path, params=params, json=json_body)
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as exc:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT,
             f"laios daemon at {conn.base_url} timed out",
-        )
+        ) from exc
     except httpx.RequestError as exc:
         logger.warning("laios %r unreachable: %s", conn.name, exc)
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             f"could not reach laios daemon at {conn.base_url} — is it running?",
-        )
+        ) from exc
 
     if resp.status_code >= 400:
         detail = _daemon_error_detail(resp)

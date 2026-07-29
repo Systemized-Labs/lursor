@@ -4,18 +4,18 @@ version = "0.1.0"
 description = "Lursor agent-harness backend (FastAPI + pydantic-deepagents)"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
-    "sqlmodel>=0.0.22",
-    "aiosqlite>=0.20",
-    "greenlet>=3.0",
-    "pydantic-settings>=2.5",
-    "pydantic-ai>=0.0.20",
-    "ag-ui-protocol>=0.1.7",
+    "fastapi>=0.140",
+    "uvicorn[standard]>=0.52",
+    "sqlmodel>=0.0.39",
+    "aiosqlite>=0.22",
+    "greenlet>=3.5",
+    "pydantic-settings>=2.14",
+    "pydantic-ai>=2.20",
+    "ag-ui-protocol>=0.1.19",
     # Pinned to a commit: an unpinned git dependency makes releases
     # unreproducible and lets an upstream push change what we ship.
-    "pydantic-deep[browser] @ git+https://github.com/vstorm-co/pydantic-deepagents.git@8b91848525f361b159fdd4c782c2f21a6f1b9871",
-    "pydantic-ai-slim[duckduckgo,exa,tavily]>=2.8.0",
+    "pydantic-deep[browser] @ git+https://github.com/vstorm-co/pydantic-deepagents.git@04c802b673ec8468407a9887a053d97e6ea17bb4",
+    "pydantic-ai-slim[duckduckgo,exa,tavily]>=2.20.0",
     "croniter>=6.2.4",
 ]
 
