@@ -296,9 +296,11 @@ interface ChildrenProps {
 function DirectoryChildren({ path, depth }: ChildrenProps) {
   const { workspaceId } = useExplorer()
   const { data, isLoading, isError } = useDirectory(workspaceId, path)
+  const showLoading = useDelayed(isLoading, LOADING_DELAY_MS)
 
   if (isLoading) {
-    return <LoadingRows depth={depth} />
+    // Nothing at all for the first moments — see LOADING_DELAY_MS.
+    return showLoading ? <LoadingRows depth={depth} /> : null
   }
   if (isError) {
     return <Hint depth={depth}>Couldn’t load this folder.</Hint>
@@ -684,15 +686,42 @@ function errMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
 }
 
+/**
+ * How long a folder may take to load before we admit to it.
+ *
+ * Listing a local directory answers in a few milliseconds, so a skeleton drawn
+ * the instant a folder expands appears and vanishes within one blink — a flash,
+ * and a worse one for an empty folder, where the rows collapse to nothing at all.
+ * Past this window the wait is real and the skeleton is the honest thing to show.
+ */
+const LOADING_DELAY_MS = 200
+
+/** True once `active` has stayed true for `delayMs`; false the moment it clears. */
+function useDelayed(active: boolean, delayMs: number): boolean {
+  const [elapsed, setElapsed] = useState(false)
+
+  useEffect(() => {
+    if (!active) {
+      setElapsed(false)
+      return
+    }
+    const timer = setTimeout(() => setElapsed(true), delayMs)
+    return () => clearTimeout(timer)
+  }, [active, delayMs])
+
+  return active && elapsed
+}
+
 /** Skeleton rows shown while a directory loads, indented to match the tree. */
 function LoadingRows({ depth }: { depth: number }) {
   const widths = ["60%", "45%", "72%"]
   return (
-    <div className="space-y-1.5 py-1">
+    <div>
       {widths.map((w, i) => (
+        // Row geometry matches TreeNode's, so the real rows replace these in place.
         <div
           key={i}
-          className="flex items-center gap-1.5 pr-2"
+          className="flex items-center gap-1.5 py-1 pr-2"
           style={{ paddingLeft: BASE_INDENT + depth * INDENT_STEP }}
         >
           <Skeleton className="h-3.5 w-3.5 rounded-sm" />
