@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.api.workspace_folders import next_root_position
 from app.config import get_settings
 from app.db.models import Workspace
 from app.db.session import get_session
@@ -166,7 +167,12 @@ async def ensure_skills_workspace(session: AsyncSession) -> Workspace:
 
 @router.get("", response_model=list[WorkspaceRead])
 async def list_workspaces(session: AsyncSession = Depends(get_session)):
-    result = await session.execute(select(Workspace).order_by(Workspace.created_at))
+    # Sidebar order, with creation order breaking ties — the root sequence is
+    # shared with the folders (see ``api/workspace_folders.py``), so the client
+    # interleaves the two lists by position.
+    result = await session.execute(
+        select(Workspace).order_by(Workspace.position, Workspace.created_at)
+    )
     return [WorkspaceRead.from_workspace(w) for w in result.scalars().all()]
 
 
@@ -177,6 +183,9 @@ async def create_workspace(
     ws = Workspace(name=payload.name, description=payload.description)
     # Materialize the workspace directory (agent filesystem root).
     ws.path = _materialize(payload.path, ws.name)
+    # A new workspace lands at the bottom of the root list, never inside a group
+    # you happened to have open.
+    ws.position = await next_root_position(session)
 
     session.add(ws)
     await session.commit()

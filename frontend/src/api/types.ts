@@ -372,8 +372,43 @@ export interface Workspace {
   // App-owned workspace (the skills catalog). Computed from the path server
   // side; can be renamed but not deleted or relocated.
   is_system: boolean
+  // Sidebar placement: the {@link WorkspaceFolder} this row is filed under (null
+  // at the root level), and its slot among its siblings there.
+  folder_id: string | null
+  position: number
   created_at: string
   updated_at: string
+}
+
+/**
+ * A sidebar group for workspaces — a name and a place in the list, nothing on
+ * disk. Groups live in the same root ordering space as the ungrouped
+ * workspaces, so `position` interleaves the two lists.
+ */
+export interface WorkspaceFolder {
+  id: string
+  name: string
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+/** One row's desired spot, as sent to the layout endpoint after a drop. */
+export interface FolderPlacement {
+  id: string
+  position: number
+}
+
+export interface WorkspacePlacement {
+  id: string
+  folder_id: string | null
+  position: number
+}
+
+/** The whole workspace tree, sent in full rather than as a delta. */
+export interface SidebarLayout {
+  folders: FolderPlacement[]
+  workspaces: WorkspacePlacement[]
 }
 
 export interface WorkspaceInput {

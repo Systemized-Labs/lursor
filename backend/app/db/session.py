@@ -301,6 +301,30 @@ async def _apply_lightweight_migrations(conn) -> None:
     if "require_plan_approval" in thread_cols:
         await conn.execute(text("ALTER TABLE threads DROP COLUMN require_plan_approval"))
 
+    # Sidebar grouping: which folder a workspace is filed under and where it sits
+    # among its siblings. Existing rows land at the root, ordered by creation —
+    # which is exactly the order the sidebar was already showing, so an upgrade
+    # doesn't reshuffle anyone's list.
+    workspace_cols = await columns("workspaces")
+    if "folder_id" not in workspace_cols:
+        await conn.execute(text("ALTER TABLE workspaces ADD COLUMN folder_id VARCHAR"))
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_workspaces_folder_id "
+            "ON workspaces (folder_id)"
+        )
+    )
+    if "position" not in workspace_cols:
+        await conn.execute(
+            text("ALTER TABLE workspaces ADD COLUMN position INTEGER DEFAULT 0")
+        )
+        await conn.execute(
+            text(
+                "UPDATE workspaces SET position = (SELECT COUNT(*) FROM workspaces "
+                "AS earlier WHERE earlier.created_at < workspaces.created_at)"
+            )
+        )
+
     # Manually-listed model IDs for providers that don't expose ``/models``.
     # Existing rows default to "" and keep relying on discovery alone.
     provider_cols = await columns("custom_providers")

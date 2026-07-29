@@ -1,26 +1,20 @@
 import {
   ChartBar,
-  ChatCentered,
   Clock,
   Cpu,
-  Folder,
-  FolderOpen,
   FolderPlus,
   Gear,
   GitBranch,
   MagnifyingGlass,
   NotePencil,
   Palette,
-  Pencil,
   Plus,
   SlidersHorizontal,
-  Sparkle,
   Trash,
   X,
 } from "@phosphor-icons/react"
 import {
   type ComponentType,
-  type MouseEvent,
   useEffect,
   useMemo,
   useRef,
@@ -36,12 +30,11 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
-import type { Thread, Workspace } from "@/api/types"
+import type { Thread, Workspace, WorkspaceFolder } from "@/api/types"
 import {
   threadKeys,
   threadsApi,
   useActiveRuns,
-  useThreads,
   useUpdateThread,
 } from "@/api/threads"
 import {
@@ -51,6 +44,12 @@ import {
   workspaceKeys,
   workspacesApi,
 } from "@/api/workspaces"
+import {
+  useCreateWorkspaceFolder,
+  useDeleteWorkspaceFolder,
+  useRenameWorkspaceFolder,
+  useWorkspaceFolders,
+} from "@/api/workspace-folders"
 import { useGitHubConfig } from "@/api/github"
 import {
   Sidebar,
@@ -63,18 +62,9 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
 import {
   Dialog,
   DialogContent,
@@ -83,24 +73,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import { Input } from "@/components/ui/input"
-import {
-  markThreadRead,
-  seedThreadRead,
-  useThreadReads,
-} from "@/hooks/use-thread-reads"
 import { useOptimisticRuns } from "@/hooks/use-optimistic-runs"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ThemePicker } from "@/components/ui/theme-picker"
 import { WorkspaceFormDialog } from "@/pages/workspaces/workspace-form-dialog"
 import { CloneIntoWorkspaceDialog } from "@/pages/workspaces/clone-into-workspace-dialog"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
-import {
-  type SelectMods,
-  type SidebarSelection,
-  useSidebarSelection,
-} from "@/components/layout/use-sidebar-selection"
+import { useSidebarSelection } from "@/components/layout/use-sidebar-selection"
+import { WorkspaceRow } from "@/components/layout/workspace-row"
+import { WorkspaceTree } from "@/components/layout/workspace-tree"
 import { cn } from "@/lib/utils"
 import { isMacElectron } from "@/lib/platform"
 
@@ -125,24 +107,11 @@ const navItems: NavItem[] = [
  */
 const SKILL_STUDIO_LABEL = "Skill Studio"
 
-/** Compact relative time ("3s" / "5m" / "2h" / "4d"). */
-function timeAgo(iso?: string): string {
-  if (!iso) return ""
-  const then = new Date(iso).getTime()
-  if (Number.isNaN(then)) return ""
-  const s = Math.max(0, Math.floor((Date.now() - then) / 1000))
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h`
-  return `${Math.floor(h / 24)}d`
-}
-
 /**
  * Cursor-style left navigation: the primary destinations up top, then the
- * workspaces rendered as expandable folders whose conversations nest beneath
- * them. Selecting a conversation drives the chat surface via `?c=<threadId>`.
+ * workspaces — grouped into folders, and rendered as expandable rows whose
+ * conversations nest beneath them. Selecting a conversation drives the chat
+ * surface via `?c=<threadId>`.
  */
 export function AppSidebar() {
   const { pathname } = useLocation()
@@ -153,6 +122,7 @@ export function AppSidebar() {
   const qc = useQueryClient()
 
   const workspacesQuery = useWorkspaces()
+  const foldersQuery = useWorkspaceFolders()
   const githubConfig = useGitHubConfig().data
   const activeRunsQuery = useActiveRuns()
   // Union the polled server runs with locally-optimistic ones so a just-sent
@@ -211,6 +181,14 @@ export function AppSidebar() {
   )
   const [workspaceFormOpen, setWorkspaceFormOpen] = useState(false)
 
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
+  const [newFolderName, setNewFolderName] = useState("")
+  const [renameFolderTarget, setRenameFolderTarget] =
+    useState<WorkspaceFolder | null>(null)
+  const [renameFolderValue, setRenameFolderValue] = useState("")
+  const [deleteFolderTarget, setDeleteFolderTarget] =
+    useState<WorkspaceFolder | null>(null)
+
   const updateThread = useUpdateThread()
   const deleteThread = useMutation({
     mutationFn: (thread: Thread) => threadsApi.remove(thread.id),
@@ -221,6 +199,10 @@ export function AppSidebar() {
 
   const updateWorkspace = useUpdateWorkspace()
   const deleteWorkspace = useDeleteWorkspace()
+
+  const createFolder = useCreateWorkspaceFolder()
+  const renameFolder = useRenameWorkspaceFolder()
+  const deleteFolder = useDeleteWorkspaceFolder()
 
   const selection = useSidebarSelection()
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
@@ -300,6 +282,41 @@ export function AppSidebar() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to rename")
     }
+  }
+
+  async function handleCreateFolder() {
+    const name = newFolderName.trim()
+    if (!name) return
+    try {
+      await createFolder.mutateAsync(name)
+      setNewFolderOpen(false)
+      setNewFolderName("")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create folder")
+    }
+  }
+
+  async function handleRenameFolder() {
+    if (!renameFolderTarget) return
+    const name = renameFolderValue.trim()
+    if (!name) return
+    try {
+      await renameFolder.mutateAsync({ id: renameFolderTarget.id, name })
+      setRenameFolderTarget(null)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to rename")
+    }
+  }
+
+  function handleDeleteFolder() {
+    if (!deleteFolderTarget) return
+    const folder = deleteFolderTarget
+    setDeleteFolderTarget(null)
+    deleteFolder.mutate(folder.id, {
+      onSuccess: () => toast.success(`Folder "${folder.name}" deleted`),
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : "Failed to delete"),
+    })
   }
 
   function handleDeleteWorkspace() {
@@ -386,10 +403,12 @@ export function AppSidebar() {
   // Skill Studio is a fixed destination, not one of your projects: it lives in
   // Platform above the Workspaces group. Still rendered as a workspace row
   // there, so conversations about skills nest under it and stay resumable.
-  const allWorkspaces = workspacesQuery.data ?? []
-  const studioId = allWorkspaces.find((ws) => ws.is_system)?.id
-  const workspaces = allWorkspaces.filter((ws) => !ws.is_system)
-  const orderedWorkspaceIds = workspaces.map((ws) => ws.id)
+  const studioId = workspacesQuery.data?.find((ws) => ws.is_system)?.id
+  const workspaces = useMemo(
+    () => (workspacesQuery.data ?? []).filter((ws) => !ws.is_system),
+    [workspacesQuery.data]
+  )
+  const folders = foldersQuery.data ?? []
 
   // Entering the studio expands it, however you got there — its own row, the
   // manager's "Author with agent", a skill deep link, the palette. Otherwise you
@@ -557,12 +576,24 @@ export function AppSidebar() {
             <SidebarGroupLabel className="flex-1">Workspaces</SidebarGroupLabel>
             <button
               type="button"
+              onClick={() => {
+                setNewFolderName("")
+                setNewFolderOpen(true)
+              }}
+              title="New folder"
+              aria-label="New folder"
+              className="flex size-5 items-center justify-center rounded-md text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/workspaces:opacity-100 group-data-[collapsible=icon]:hidden"
+            >
+              <FolderPlus className="size-4" />
+            </button>
+            <button
+              type="button"
               onClick={() => setWorkspaceFormOpen(true)}
               title="New workspace"
               aria-label="New workspace"
-              className="mr-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/workspaces:opacity-100 group-data-[collapsible=icon]:hidden"
+              className="mx-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/workspaces:opacity-100 group-data-[collapsible=icon]:hidden"
             >
-              <FolderPlus className="size-4" />
+              <Plus className="size-4" />
             </button>
           </div>
 
@@ -602,51 +633,39 @@ export function AppSidebar() {
           ) : null}
           <SidebarGroupContent className="scrollbar-hover min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:overflow-hidden">
             <SidebarMenu>
-              {workspacesQuery.isLoading ? (
-                <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-                  Loading…
-                </p>
-              ) : workspaces.length === 0 ? (
-                <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-                  No workspaces yet.
-                </p>
-              ) : (
-                workspaces.map((ws) => (
-                  <WorkspaceRow
-                    key={ws.id}
-                    workspaceId={ws.id}
-                    name={ws.name}
-                    isSystem={ws.is_system}
-                    isOpen={openWorkspaces.has(ws.id)}
-                    isActive={activeWorkspaceId === ws.id}
-                    isSelected={selection.isWorkspaceSelected(ws.id)}
-                    selection={selection}
-                    onSelect={(mods) =>
-                      selection.selectWorkspace(ws.id, mods, orderedWorkspaceIds)
-                    }
-                    activeThreadId={activeThreadId}
-                    activeRuns={activeRuns}
-                    onToggle={() => toggleWorkspace(ws.id)}
-                    onNewConversation={() => newConversation(ws.id)}
-                    onNavigate={closeMobile}
-                    onRename={(t) => {
-                      setRenameTarget(t)
-                      setRenameValue(t.title)
-                    }}
-                    onDelete={setDeleteTarget}
-                    onRenameWorkspace={() => {
-                      setRenameWsTarget({ id: ws.id, name: ws.name })
-                      setRenameWsValue(ws.name)
-                    }}
-                    onDeleteWorkspace={() =>
-                      setDeleteWsTarget({ id: ws.id, name: ws.name })
-                    }
-                    onCloneWorkspace={() =>
-                      setCloneWsTarget({ id: ws.id, name: ws.name })
-                    }
-                  />
-                ))
-              )}
+              <WorkspaceTree
+                workspaces={workspaces}
+                folders={folders}
+                isLoading={workspacesQuery.isLoading || foldersQuery.isLoading}
+                activeWorkspaceId={activeWorkspaceId}
+                activeThreadId={activeThreadId}
+                activeRuns={activeRuns}
+                openWorkspaces={openWorkspaces}
+                onToggleWorkspace={toggleWorkspace}
+                onNewConversation={newConversation}
+                selection={selection}
+                onNavigate={closeMobile}
+                onRenameThread={(t) => {
+                  setRenameTarget(t)
+                  setRenameValue(t.title)
+                }}
+                onDeleteThread={setDeleteTarget}
+                onRenameWorkspace={(ws) => {
+                  setRenameWsTarget({ id: ws.id, name: ws.name })
+                  setRenameWsValue(ws.name)
+                }}
+                onDeleteWorkspace={(ws) =>
+                  setDeleteWsTarget({ id: ws.id, name: ws.name })
+                }
+                onCloneWorkspace={(ws) =>
+                  setCloneWsTarget({ id: ws.id, name: ws.name })
+                }
+                onRenameFolder={(folder) => {
+                  setRenameFolderTarget(folder)
+                  setRenameFolderValue(folder.name)
+                }}
+                onDeleteFolder={setDeleteFolderTarget}
+              />
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -773,6 +792,92 @@ export function AppSidebar() {
         onConfirm={handleDelete}
       />
 
+      {/* New folder dialog */}
+      <Dialog
+        open={newFolderOpen}
+        onOpenChange={(open) => !open && setNewFolderOpen(false)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New folder</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            placeholder="Clients"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                void handleCreateFolder()
+              }
+            }}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNewFolderOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleCreateFolder()}
+              disabled={createFolder.isPending || !newFolderName.trim()}
+            >
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Folder rename dialog */}
+      <Dialog
+        open={Boolean(renameFolderTarget)}
+        onOpenChange={(open) => !open && setRenameFolderTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename folder</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameFolderValue}
+            onChange={(e) => setRenameFolderValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                void handleRenameFolder()
+              }
+            }}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRenameFolderTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleRenameFolder()}
+              disabled={renameFolder.isPending || !renameFolderValue.trim()}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(deleteFolderTarget)}
+        onOpenChange={(open) => !open && setDeleteFolderTarget(null)}
+        title="Delete folder"
+        description={
+          deleteFolderTarget
+            ? `"${deleteFolderTarget.name}" is only a group — the workspaces inside it move back out to the top level and keep all of their conversations.`
+            : undefined
+        }
+        confirmLabel="Delete folder"
+        destructive
+        onConfirm={handleDeleteFolder}
+      />
+
       {/* Workspace rename dialog */}
       <Dialog
         open={Boolean(renameWsTarget)}
@@ -860,364 +965,4 @@ export function AppSidebar() {
 interface WorkspaceTarget {
   id: string
   name: string
-}
-
-interface WorkspaceRowProps {
-  /** Undefined only for the studio row before the workspace list has loaded: the
-   *  row still renders, it just has nowhere to travel to yet. */
-  workspaceId: string | undefined
-  name: string
-  /**
-   * App-owned (the skills catalog): distinct glyph, and none of the workspace
-   * management — no rename (the nav label is fixed), no delete, no clone.
-   */
-  isSystem: boolean
-  isOpen: boolean
-  isActive: boolean
-  isSelected: boolean
-  selection: SidebarSelection
-  onSelect: (mods: SelectMods) => void
-  activeThreadId: string | null
-  activeRuns: Set<string>
-  onToggle: () => void
-  onNewConversation: () => void
-  onNavigate: () => void
-  onRename: (thread: Thread) => void
-  onDelete: (thread: Thread) => void
-  onRenameWorkspace: () => void
-  onDeleteWorkspace: () => void
-  onCloneWorkspace: () => void
-}
-
-function WorkspaceRow({
-  workspaceId,
-  name,
-  isSystem,
-  isOpen,
-  isActive,
-  isSelected,
-  selection,
-  onSelect,
-  activeThreadId,
-  activeRuns,
-  onToggle,
-  onNewConversation,
-  onNavigate,
-  onRename,
-  onDelete,
-  onRenameWorkspace,
-  onDeleteWorkspace,
-  onCloneWorkspace,
-}: WorkspaceRowProps) {
-  const handleClick = (e: MouseEvent) => {
-    // ⌘/ctrl toggles this workspace; ⇧ extends a range. Once a workspace
-    // selection is active ("sticky" mode) a plain click also toggles, so the
-    // selection is never lost by an errant click and folders don't navigate
-    // away mid-select. Esc / Done exits. A plain click while nothing (or only
-    // conversations) is selected keeps the normal folder open/close behaviour.
-    if (e.metaKey || e.ctrlKey) {
-      e.preventDefault()
-      onSelect({ toggle: true, range: false })
-    } else if (e.shiftKey) {
-      e.preventDefault()
-      onSelect({ toggle: false, range: true })
-    } else if (selection.count > 0) {
-      e.preventDefault()
-      onSelect({ toggle: true, range: false })
-    } else {
-      onToggle()
-    }
-  }
-
-  const button = (
-    <SidebarMenuButton
-      isActive={isActive}
-      tooltip={name}
-      onClick={handleClick}
-      className={cn(
-        "select-none",
-        isSelected &&
-          "bg-primary/15 text-foreground hover:bg-primary/20 data-[active=true]:bg-primary/25"
-      )}
-    >
-      {/* The skills catalog keeps one glyph open or closed — it reads as
-          a destination rather than a folder you filed things into. */}
-      {isSystem ? (
-        <Sparkle className="size-4" />
-      ) : isOpen ? (
-        <FolderOpen className="size-4" />
-      ) : (
-        <Folder className="size-4" />
-      )}
-      <span className="flex-1 truncate">{name}</span>
-    </SidebarMenuButton>
-  )
-
-  return (
-    <SidebarMenuItem className="group/workspace relative">
-      {/* Nothing to manage on the catalog row: its label is a fixed nav label,
-          delete is refused by the API, and cloning a repo into the catalog would
-          strew a checkout through your skills. No menu at all, then. */}
-      {isSystem ? (
-        button
-      ) : (
-        <ContextMenu>
-          <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
-          <ContextMenuContent>
-            <ContextMenuItem onSelect={onRenameWorkspace}>
-              <Pencil className="size-4" />
-              Rename
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={onCloneWorkspace}>
-              <GitBranch className="size-4" />
-              Clone repo
-            </ContextMenuItem>
-            <ContextMenuItem
-              className="text-destructive focus:text-destructive"
-              onSelect={onDeleteWorkspace}
-            >
-              <Trash className="size-4" />
-              Delete
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
-      )}
-
-      <button
-        type="button"
-        aria-label="New conversation"
-        title="New conversation"
-        onClick={(e) => {
-          e.stopPropagation()
-          onNewConversation()
-        }}
-        className="absolute right-1 top-1.5 flex size-5 items-center justify-center rounded-md text-sidebar-foreground opacity-0 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/workspace:opacity-100 group-data-[collapsible=icon]:hidden"
-      >
-        <Plus className="size-4" />
-      </button>
-
-      <WorkspaceThreads
-        workspaceId={workspaceId}
-        isOpen={isOpen}
-        activeThreadId={activeThreadId}
-        activeRuns={activeRuns}
-        selection={selection}
-        onNavigate={onNavigate}
-        onRename={onRename}
-        onDelete={onDelete}
-      />
-    </SidebarMenuItem>
-  )
-}
-
-interface WorkspaceThreadsProps {
-  /** Undefined until the owning workspace is known; the query stays idle. */
-  workspaceId: string | undefined
-  isOpen: boolean
-  activeThreadId: string | null
-  activeRuns: Set<string>
-  selection: SidebarSelection
-  onNavigate: () => void
-  onRename: (thread: Thread) => void
-  onDelete: (thread: Thread) => void
-}
-
-/**
- * Nested conversation list. Always mounts (and fetches) so read state stays
- * current, but when the folder is collapsed it shows only the conversations
- * that still warrant attention — the active chat, anything running, and any
- * pending unread replies — hiding the rest.
- */
-function WorkspaceThreads({
-  workspaceId,
-  isOpen,
-  activeThreadId,
-  activeRuns,
-  selection,
-  onNavigate,
-  onRename,
-  onDelete,
-}: WorkspaceThreadsProps) {
-  const threadsQuery = useThreads(workspaceId)
-  const threads = useMemo(() => threadsQuery.data ?? [], [threadsQuery.data])
-  const { isUnread } = useThreadReads()
-
-  // Reconcile read state: record threads on first sight (so pre-existing
-  // activity isn't retroactively flagged) and keep the open conversation marked
-  // read as its activity advances.
-  useEffect(() => {
-    for (const thread of threads) {
-      seedThreadRead(thread.id, thread.updated_at)
-      if (thread.id === activeThreadId) {
-        markThreadRead(thread.id, thread.updated_at)
-      }
-    }
-  }, [threads, activeThreadId])
-
-  // While collapsed, keep only chats that still need attention: the active
-  // conversation, anything currently running, and pending unread replies.
-  const visibleThreads = useMemo(() => {
-    if (isOpen) return threads
-    return threads.filter(
-      (thread) =>
-        thread.id === activeThreadId ||
-        activeRuns.has(thread.id) ||
-        isUnread(thread.id, thread.updated_at)
-    )
-  }, [isOpen, threads, activeThreadId, activeRuns, isUnread])
-
-  // Collapsed with nothing worth surfacing: render nothing at all.
-  if (!isOpen && visibleThreads.length === 0) return null
-
-  return (
-    <SidebarMenuSub className="mx-2 px-1.5">
-      {isOpen && threadsQuery.isLoading ? (
-        <li className="px-2 py-1 text-[11px] text-muted-foreground">Loading…</li>
-      ) : isOpen && threads.length === 0 ? (
-        <li className="px-2 py-1 text-[11px] text-muted-foreground">
-          No conversations
-        </li>
-      ) : (
-        visibleThreads.map((thread) => (
-          <SessionRow
-            key={thread.id}
-            thread={thread}
-            isActive={thread.id === activeThreadId}
-            running={activeRuns.has(thread.id)}
-            unread={
-              thread.id !== activeThreadId &&
-              !activeRuns.has(thread.id) &&
-              isUnread(thread.id, thread.updated_at)
-            }
-            isSelected={selection.isThreadSelected(thread.id)}
-            selection={selection}
-            onSelect={(mods) =>
-              selection.selectThread(thread, mods, visibleThreads)
-            }
-            onNavigate={onNavigate}
-            onRename={onRename}
-            onDelete={onDelete}
-          />
-        ))
-      )}
-    </SidebarMenuSub>
-  )
-}
-
-interface SessionRowProps {
-  thread: Thread
-  isActive: boolean
-  running: boolean
-  /** A reply landed since this conversation was last opened. */
-  unread: boolean
-  isSelected: boolean
-  selection: SidebarSelection
-  onSelect: (mods: SelectMods) => void
-  onNavigate: () => void
-  onRename: (thread: Thread) => void
-  onDelete: (thread: Thread) => void
-}
-
-function SessionRow({
-  thread,
-  isActive,
-  running,
-  unread,
-  isSelected,
-  selection,
-  onSelect,
-  onNavigate,
-  onRename,
-  onDelete,
-}: SessionRowProps) {
-  const handleClick = (e: MouseEvent) => {
-    // ⌘/ctrl toggles this conversation; ⇧ extends a range within this
-    // workspace. Once any selection is active ("sticky" mode) a plain click
-    // toggles too instead of navigating, so clicks never lose the selection or
-    // yank you to another chat. Esc / Done exits back to normal navigation.
-    if (e.metaKey || e.ctrlKey) {
-      e.preventDefault()
-      onSelect({ toggle: true, range: false })
-    } else if (e.shiftKey) {
-      e.preventDefault()
-      onSelect({ toggle: false, range: true })
-    } else if (selection.count > 0) {
-      e.preventDefault()
-      onSelect({ toggle: true, range: false })
-    } else {
-      onNavigate()
-    }
-  }
-
-  return (
-    <SidebarMenuSubItem className="group/session">
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <SidebarMenuSubButton
-            asChild
-            isActive={isActive}
-            className={cn(
-              "select-none",
-              isSelected &&
-                "bg-primary/15 text-foreground hover:bg-primary/20 data-[active=true]:bg-primary/25"
-            )}
-          >
-            <Link
-              to={`/workspaces/${thread.workspace_id}/chat?c=${thread.id}`}
-              onClick={handleClick}
-            >
-              {running ? (
-                <DotGridLoader
-                  size="xs"
-                  className="shrink-0 text-primary"
-                  label="Working"
-                />
-              ) : unread ? (
-                <ChatCentered
-                  weight="fill"
-                  className="size-4 shrink-0 text-success"
-                />
-              ) : (
-                <ChatCentered className="size-4" />
-              )}
-              <span
-                className={cn(
-                  "flex-1 truncate",
-                  running && "text-primary",
-                  unread && "font-medium text-foreground"
-                )}
-              >
-                {thread.title || "Untitled"}
-              </span>
-              {/* Nobody started this one — a schedule did. Sits beside the
-                  timestamp rather than replacing the leading icon, which is the
-                  running/unread slot and carries the more urgent signal. */}
-              {thread.schedule_id ? (
-                <Clock
-                  className="size-3 shrink-0 text-muted-foreground/70"
-                  aria-label="Started by a schedule"
-                />
-              ) : null}
-              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
-                {timeAgo(thread.updated_at)}
-              </span>
-            </Link>
-          </SidebarMenuSubButton>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem onSelect={() => onRename(thread)}>
-            <Pencil className="size-4" />
-            Rename
-          </ContextMenuItem>
-          <ContextMenuItem
-            className="text-destructive focus:text-destructive"
-            onSelect={() => onDelete(thread)}
-          >
-            <Trash className="size-4" />
-            Delete
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
-    </SidebarMenuSubItem>
-  )
 }
