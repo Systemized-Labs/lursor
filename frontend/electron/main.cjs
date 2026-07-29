@@ -211,10 +211,12 @@ function createWindow() {
     show: false,
     backgroundColor: "#000000",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    // Nudge the macOS traffic lights down so they sit centered in the app's
-    // top strip instead of clipping the sidebar logo.
+    // Centre the macOS traffic lights in the sidebar's 44px chrome strip (the
+    // `h-11` band in AppSidebar): the current controls are ~15px tall, so a 15px
+    // top inset leaves ~14px below them and puts their centre on the strip's,
+    // level with the panel heading rendered beside them.
     trafficLightPosition:
-      process.platform === "darwin" ? { x: 14, y: 18 } : undefined,
+      process.platform === "darwin" ? { x: 14, y: 15 } : undefined,
     icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),

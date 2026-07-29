@@ -11,91 +11,45 @@ export interface SelectMods {
 }
 
 /**
- * Bulk-selection state for the sidebar. Workspaces and conversations are
- * selected in mutually exclusive sets — picking one kind clears the other so a
- * bulk action always targets a single kind. Range selection walks an ordered id
- * list supplied by the caller (the on-screen order), anchored on the last
- * non-range click.
+ * Bulk-selection state for the sidebar's conversation list. Range selection walks
+ * an ordered thread list supplied by the caller (the on-screen order), anchored on
+ * the last non-range click.
+ *
+ * Conversations only. Workspaces were selectable too, back when they were rows in
+ * this panel — that went with the folder tree: they are rail tiles now, and
+ * ⌘-clicking a tile is how you open one in a new window, not how you queue it for
+ * deletion. Workspaces are still renamed, cloned and deleted one at a time from a
+ * tile's context menu, which is the whole of what the count this rail is built for
+ * needs.
  */
 export interface SidebarSelection {
-  workspaceIds: Set<string>
   /** Kept as full objects so bulk delete knows each thread's workspace. */
   threads: Map<string, Thread>
-  selectWorkspace: (id: string, mods: SelectMods, orderedIds: string[]) => void
   selectThread: (
     thread: Thread,
     mods: SelectMods,
     orderedThreads: Thread[]
   ) => void
-  isWorkspaceSelected: (id: string) => boolean
   isThreadSelected: (id: string) => boolean
   clear: () => void
   count: number
-  kind: "workspace" | "thread" | null
 }
 
 export function useSidebarSelection(): SidebarSelection {
-  const [workspaceIds, setWorkspaceIds] = useState<Set<string>>(new Set())
   const [threads, setThreads] = useState<Map<string, Thread>>(new Map())
-  const [wsAnchor, setWsAnchor] = useState<string | null>(null)
   const [threadAnchor, setThreadAnchor] = useState<string | null>(null)
 
   const clear = useCallback(() => {
-    setWorkspaceIds(new Set())
     setThreads(new Map())
-    setWsAnchor(null)
     setThreadAnchor(null)
   }, [])
 
-  const selectWorkspace = useCallback(
-    (id: string, mods: SelectMods, orderedIds: string[]) => {
-      // Selecting a workspace abandons any conversation selection.
-      setThreads(new Map())
-      setThreadAnchor(null)
-
-      if (mods.range && wsAnchor) {
-        const a = orderedIds.indexOf(wsAnchor)
-        const b = orderedIds.indexOf(id)
-        if (a !== -1 && b !== -1) {
-          const [lo, hi] = a < b ? [a, b] : [b, a]
-          setWorkspaceIds((prev) => {
-            const next = new Set(prev)
-            for (const wid of orderedIds.slice(lo, hi + 1)) next.add(wid)
-            return next
-          })
-          return
-        }
-      }
-
-      if (mods.toggle) {
-        setWorkspaceIds((prev) => {
-          const next = new Set(prev)
-          if (next.has(id)) next.delete(id)
-          else next.add(id)
-          return next
-        })
-        setWsAnchor(id)
-        return
-      }
-
-      // Plain modifier-less selection (e.g. shift with no anchor): single-pick.
-      setWorkspaceIds(new Set([id]))
-      setWsAnchor(id)
-    },
-    [wsAnchor]
-  )
-
   const selectThread = useCallback(
     (thread: Thread, mods: SelectMods, orderedThreads: Thread[]) => {
-      // Selecting a conversation abandons any workspace selection.
-      setWorkspaceIds(new Set())
-      setWsAnchor(null)
-
       if (mods.range && threadAnchor) {
         const ids = orderedThreads.map((t) => t.id)
         const a = ids.indexOf(threadAnchor)
         const b = ids.indexOf(thread.id)
-        // Range only applies within the same workspace's ordered list.
         if (a !== -1 && b !== -1) {
           const [lo, hi] = a < b ? [a, b] : [b, a]
           setThreads((prev) => {
@@ -108,8 +62,8 @@ export function useSidebarSelection(): SidebarSelection {
       }
 
       // Range requested but the anchor isn't in this list (e.g. it's in another
-      // workspace) — extend the selection with the clicked item rather than
-      // discarding everything already selected.
+      // workspace's list, reached via Activity) — extend the selection with the
+      // clicked item rather than discarding everything already selected.
       if (mods.range && threads.size > 0) {
         setThreads((prev) => new Map(prev).set(thread.id, thread))
         setThreadAnchor(thread.id)
@@ -133,39 +87,19 @@ export function useSidebarSelection(): SidebarSelection {
     [threadAnchor, threads]
   )
 
-  const isWorkspaceSelected = useCallback(
-    (id: string) => workspaceIds.has(id),
-    [workspaceIds]
-  )
   const isThreadSelected = useCallback(
     (id: string) => threads.has(id),
     [threads]
   )
 
-  const kind: "workspace" | "thread" | null =
-    workspaceIds.size > 0 ? "workspace" : threads.size > 0 ? "thread" : null
-
   return useMemo(
     () => ({
-      workspaceIds,
       threads,
-      selectWorkspace,
       selectThread,
-      isWorkspaceSelected,
       isThreadSelected,
       clear,
-      count: workspaceIds.size + threads.size,
-      kind,
+      count: threads.size,
     }),
-    [
-      workspaceIds,
-      threads,
-      selectWorkspace,
-      selectThread,
-      isWorkspaceSelected,
-      isThreadSelected,
-      clear,
-      kind,
-    ]
+    [threads, selectThread, isThreadSelected, clear]
   )
 }

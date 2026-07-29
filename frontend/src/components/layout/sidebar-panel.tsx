@@ -1,40 +1,27 @@
-import { FolderPlus, MagnifyingGlass, Plus, Trash, X } from "@phosphor-icons/react"
+import { Trash } from "@phosphor-icons/react"
 
+import type { Thread, Workspace } from "@/api/types"
 import { Button } from "@/components/ui/button"
-import { useSidebar } from "@/components/ui/sidebar"
 import { ActivityPanel } from "@/components/layout/panel/activity-panel"
 import { ChatsPanel } from "@/components/layout/panel/chats-panel"
-import { SkillsPanel } from "@/components/layout/panel/skills-panel"
+import { PanelHeader } from "@/components/layout/panel/panel-header"
 import type { ConversationHandlers } from "@/components/layout/panel/types"
-import type { OpenWorkspaces } from "@/components/layout/use-open-workspaces"
 import type { PanelMode } from "@/components/layout/use-panel-mode"
 import type { WorkspaceDialogs } from "@/components/layout/workspace-dialogs"
 import type { AllThreads } from "@/hooks/use-all-threads"
-
-/**
- * Everything that varies per mode, in one table. These four facts used to be
- * spread across a title record, two inline ternaries in the JSX and a render
- * chain whose final `else` silently caught anything unrecognised — so adding a
- * mode meant finding six places, one of which failed quietly.
- */
-const PANELS: Record<
-  PanelMode,
-  { title: string; newConversation: boolean; workspaceFooter: boolean }
-> = {
-  chats: { title: "Conversations", newConversation: true, workspaceFooter: true },
-  activity: { title: "Activity", newConversation: false, workspaceFooter: false },
-  skills: { title: "Skill Studio", newConversation: true, workspaceFooter: false },
-}
-
-/** Header affordances share the panel's icon-button treatment. */
-const HEADER_TILE = "size-7 text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+import { isMacElectron } from "@/lib/platform"
+import { cn } from "@/lib/utils"
 
 interface SidebarPanelProps {
   panelMode: PanelMode
   /** The one cross-workspace query every mode reads from. */
   threads: AllThreads
-  openWorkspaces: OpenWorkspaces
-  activeWorkspaceId: string | undefined
+  /**
+   * The workspace the Chats list is showing. Usually the one you're in; the most
+   * recent one when you're on a page that isn't a workspace at all.
+   */
+  scopedWorkspace: Workspace | undefined
+  scopedThreads: Thread[]
   handlers: ConversationHandlers
   dialogs: WorkspaceDialogs
   onNewConversation: (workspaceId: string) => void
@@ -43,20 +30,25 @@ interface SidebarPanelProps {
 }
 
 /**
- * The contextual column beside the rail: a header, the bulk-selection toolbar,
- * and whichever list the rail last put here.
+ * The contextual column beside the rail: a header naming what you're looking at,
+ * the bulk-selection toolbar, and the list.
  *
- * One scroll region for the whole thing. The old sidebar split the column
- * between a nav group capped at 55vh and a workspace group taking the rest — a
- * fixed carve-up of a scarce resource, where expanding two workspaces left the
- * conversations scrolling inside 45vh while mostly-static nav rows held the top
- * half. The nav rows are in the rail now, so there is nothing to split.
+ * Two modes now, where there were three. "Skills" was the Skill Studio's
+ * conversations, which needed a mode of its own only because the studio is a
+ * workspace that had no way to be one — it is a rail tile now, and its
+ * conversations are just the Chats list scoped to it, so the mode, its panel and
+ * its per-mode config row all went away.
+ *
+ * The header carries the workspace name because the panel is scoped to one and
+ * the rail's 10px label truncates. Between them you can always answer "which
+ * repo am I in" — a question the old sidebar left unanswered anywhere on screen
+ * once the panel was collapsed.
  */
 export function SidebarPanel({
   panelMode,
   threads,
-  openWorkspaces,
-  activeWorkspaceId,
+  scopedWorkspace,
+  scopedThreads,
   handlers,
   dialogs,
   onNewConversation,
@@ -64,61 +56,33 @@ export function SidebarPanel({
   onSearch,
 }: SidebarPanelProps) {
   const { selection } = handlers
-  const { isMobile, setOpenMobile } = useSidebar()
-  const panel = PANELS[panelMode]
 
-  // The header's ⊕ means "another conversation here" when you're inside a
-  // workspace, and the New Agent home otherwise — there is no sensible
-  // workspace to guess at from outside one.
-  const handleNew = () => {
-    const target =
-      panelMode === "skills" ? threads.studioId : activeWorkspaceId
-    if (target) onNewConversation(target)
-    else onNewChat()
-  }
+  const isChats = panelMode === "chats"
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-sidebar">
-      <div className="flex h-12 shrink-0 items-center gap-1 px-2">
-        <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-sidebar-foreground">
-          {panel.title}
-        </h2>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onSearch}
-          aria-label="Search"
-          title="Search (⌘K)"
-          className={HEADER_TILE}
-        >
-          <MagnifyingGlass className="size-4" />
-        </Button>
-        {panel.newConversation ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleNew}
-            aria-label="New conversation"
-            title="New conversation"
-            className={HEADER_TILE}
-          >
-            <Plus className="size-4" />
-          </Button>
-        ) : null}
-        {/* The off-canvas sheet hides its own close, so give the drawer a clear
-            dismiss affordance. */}
-        {isMobile ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setOpenMobile(false)}
-            aria-label="Close menu"
-            className={HEADER_TILE}
-          >
-            <X className="size-4" />
-          </Button>
-        ) : null}
-      </div>
+    <div
+      className={cn(
+        "flex min-w-0 flex-1 flex-col bg-sidebar",
+        // With the header hoisted into the chrome strip, the first row of the
+        // list would otherwise start hard against it. The header row used to
+        // supply this gap.
+        isMacElectron && "pt-1.5"
+      )}
+    >
+      {/* On macOS the header is rendered by AppSidebar into the traffic-light
+          strip, so the heading shares that line instead of adding a second band
+          under it. Elsewhere there is no strip, and it belongs here. */}
+      {isMacElectron ? null : (
+        <div className="flex h-10 shrink-0 items-center">
+          <PanelHeader
+            panelMode={panelMode}
+            scopedWorkspace={scopedWorkspace}
+            onNewConversation={onNewConversation}
+            onNewChat={onNewChat}
+            onSearch={onSearch}
+          />
+        </div>
+      )}
 
       {/* Bulk-selection toolbar — appears once ⌘/⇧-click selects something.
           Plain clicks keep navigating throughout; "Done" or Esc clears. */}
@@ -126,13 +90,7 @@ export function SidebarPanel({
         <div className="mx-2 mb-1 flex shrink-0 items-center gap-1 rounded-md border border-sidebar-border bg-sidebar-accent/50 px-2 py-1">
           <span className="flex-1 truncate text-xs font-medium text-sidebar-foreground">
             {selection.count}{" "}
-            {selection.kind === "workspace"
-              ? selection.count > 1
-                ? "workspaces"
-                : "workspace"
-              : selection.count > 1
-                ? "conversations"
-                : "conversation"}
+            {selection.count > 1 ? "conversations" : "conversation"}
           </span>
           <Button
             variant="ghost"
@@ -156,54 +114,23 @@ export function SidebarPanel({
       ) : null}
 
       <div className="scrollbar-hover min-h-0 flex-1 overflow-y-auto">
-        {panelMode === "chats" ? (
+        {isChats ? (
           <ChatsPanel
-            workspaces={threads.workspaces}
-            allThreads={threads.threads}
-            byWorkspace={threads.byWorkspace}
-            workspaceName={threads.workspaceName}
-            threadsLoading={threads.isLoading}
+            threads={scopedThreads}
+            isLoading={threads.isLoading}
+            hasWorkspace={Boolean(scopedWorkspace)}
             workspacesLoading={threads.workspacesLoading}
-            openWorkspaces={openWorkspaces}
-            activeWorkspaceId={activeWorkspaceId}
-            onNewConversation={onNewConversation}
-            onRenameWorkspace={dialogs.openRenameWorkspace}
-            onDeleteWorkspace={dialogs.openDeleteWorkspace}
-            onCloneWorkspace={dialogs.openCloneWorkspace}
             {...handlers}
           />
-        ) : panelMode === "activity" ? (
+        ) : (
           <ActivityPanel
             allThreads={threads.threads}
             workspaceName={threads.workspaceName}
             isLoading={threads.isLoading}
             {...handlers}
           />
-        ) : (
-          <SkillsPanel
-            threads={
-              threads.studioId
-                ? (threads.byWorkspace.get(threads.studioId) ?? [])
-                : []
-            }
-            isLoading={threads.isLoading}
-            {...handlers}
-          />
         )}
       </div>
-
-      {panel.workspaceFooter ? (
-        <div className="shrink-0 border-t border-sidebar-border p-2">
-          <button
-            type="button"
-            onClick={dialogs.openNewWorkspace}
-            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm text-sidebar-foreground/70 outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2"
-          >
-            <FolderPlus className="size-4 shrink-0" />
-            <span className="truncate">New workspace</span>
-          </button>
-        </div>
-      ) : null}
     </div>
   )
 }

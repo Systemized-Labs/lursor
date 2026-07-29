@@ -16,9 +16,10 @@ export interface RowHandlers {
 
 /**
  * {@link RowHandlers} plus the ambient state a list needs to derive each row's
- * {@link ThreadState}. Lives here rather than beside one panel: Activity
- * renders no workspace sections at all, so it should not have to import its
- * core props contract from `workspace-section`.
+ * {@link ThreadState}. Lives here rather than beside either panel, so the two
+ * lists that render conversation rows — the workspace's own and Activity's
+ * cross-workspace one — share a contract instead of one importing it from the
+ * other.
  */
 export interface ConversationHandlers extends RowHandlers {
   activeThreadId: string | null

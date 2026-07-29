@@ -28,12 +28,14 @@ const SHARD = "shard:"
  * The two halves are shaped differently on purpose, because the questions
  * differ. *Which* node matters when you place a whole engine — you're choosing
  * headroom, or co-location with something else. *How many* is the question for
- * a shard, which exists because the model fits nowhere on its own; the peers
+ * a shard, which exists because the model fits nowhere on its own; the members
  * are then just the roomiest Ready ones, which is the same order the daemon
  * would pick for `worker: "auto"`.
  *
- * Shard options always lead with the head: the daemon reads the first entry of
- * `nodes[]` as its own fabric address, so it is rank 0 whether or not you ask.
+ * Members are chosen by free VRAM, head included but not privileged. A shard
+ * needs the same slice on every rank, so the roomiest N is the set most likely
+ * to admit — and when the head is busy serving something else, that set is the
+ * idle workers, which the daemon now roots the shard on directly.
  */
 export function PlacementPicker({
   placement,
@@ -47,35 +49,39 @@ export function PlacementPicker({
   const head = targets.find((t) => t.role === "head")
   const workers = targets.filter((t) => t.role === "worker")
 
-  // Roomiest Ready peers first, so "3 nodes" is the best three, not the first
-  // three to have joined.
-  const peers = workers
-    .filter((w) => w.shardable)
-    .sort((a, b) => b.freeVramMb - a.freeVramMb)
+  // Roomiest usable nodes first, so "3 nodes" is the best three, not the
+  // first three to have joined. The head sorts in on its free VRAM like any
+  // other node — a busy head simply drops out of the small sizes.
+  const members = targets
+    .filter((t) => t.placeable)
+    .sort((a, b) => b.freeVramMb - a.freeVramMb || (a.role === "head" ? -1 : 1))
 
-  // One option per reachable size: 2 nodes is the head plus the roomiest peer,
-  // 3 adds the next, and so on.
-  const shardOptions = head
-    ? peers.map((_, i) => {
-        const chosen = peers.slice(0, i + 1)
-        const members = [head, ...chosen]
-        return {
-          count: members.length,
-          nodeIds: chosen.map((p) => p.nodeId),
-          // Naming every member stops fitting past a pair, and the head is the
-          // only one whose identity is fixed — so summarize the rest.
-          names:
-            chosen.length === 1
-              ? `${head.name} + ${chosen[0].name}`
-              : `${head.name} + ${chosen.length} peers`,
-          freeVramMb: members.reduce((sum, m) => sum + m.freeVramMb, 0),
-        }
-      })
-    : []
+  // One option per reachable size: 2 nodes is the roomiest pair, 3 adds the
+  // next, and so on. Sizes below two aren't a shard.
+  const shardOptions = members.slice(1).map((_, i) => {
+    const chosen = members.slice(0, i + 2)
+    return {
+      count: chosen.length,
+      nodeIds: chosen.map((m) => m.nodeId),
+      // Naming every member stops fitting past a pair, so summarize beyond it —
+      // but always say whether the head is carrying a rank, since that is what
+      // changes when it's busy.
+      names:
+        chosen.length === 2
+          ? `${chosen[0].name} + ${chosen[1].name}`
+          : chosen.some((m) => m.role === "head")
+            ? `${chosen[0].name} + ${chosen.length - 1} more`
+            : `${chosen.length} workers, head free`,
+      freeVramMb: chosen.reduce((sum, m) => sum + m.freeVramMb, 0),
+    }
+  })
+
+  // `worker: "auto"` only means something when there is a Ready worker to pick.
+  const autoAvailable = workers.some((w) => w.autoEligible)
 
   const sharding = placement.kind === "shard"
   const value = sharding
-    ? `${SHARD}${placement.nodeIds.length + 1}`
+    ? `${SHARD}${placement.nodeIds.length}`
     : placement.kind === "auto"
       ? "auto"
       : placement.kind === "worker"
@@ -95,7 +101,7 @@ export function PlacementPicker({
   }
 
   const triggerLabel = sharding
-    ? `${placement.nodeIds.length + 1} nodes`
+    ? `${placement.nodeIds.length} nodes`
     : placement.kind === "auto"
       ? "Best worker"
       : (placementNodes(placement, targets)[0]?.name ?? head?.name ?? "This node")
@@ -139,7 +145,7 @@ export function PlacementPicker({
               />
             </DropdownMenuRadioItem>
           ))}
-          {peers.length > 0 ? (
+          {autoAvailable ? (
             <DropdownMenuRadioItem value="auto">
               <Line label="Best worker" detail="most free VRAM" />
             </DropdownMenuRadioItem>

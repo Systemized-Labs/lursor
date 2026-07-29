@@ -5,11 +5,16 @@ import { useCallback, useState } from "react"
  * than a route: opening a conversation from the Activity list navigates to that
  * chat, and if the panel were derived from the route it would flip back to
  * Chats under the cursor. Only a rail click changes the mode.
+ *
+ * "Skills" used to be a third mode, for the Skill Studio's conversations. The
+ * studio is a workspace, so it is a rail tile now and its conversations are the
+ * Chats list scoped to it — a mode for it was only ever compensating for the
+ * studio having no way to be the workspace it is.
  */
-export type PanelMode = "chats" | "activity" | "skills"
+export type PanelMode = "chats" | "activity"
 
 const STORAGE_KEY = "sidebar:panel"
-const MODES: PanelMode[] = ["chats", "activity", "skills"]
+const MODES: PanelMode[] = ["chats", "activity"]
 
 function load(): PanelMode {
   if (typeof window === "undefined") return "chats"

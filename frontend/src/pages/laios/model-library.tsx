@@ -39,6 +39,7 @@ import {
   placementInput,
   placementLabel,
   placementNodes,
+  placementSplit,
   recipeConstraints,
   resolvePlacement,
   type Placement,
@@ -108,12 +109,22 @@ interface Compat {
   reason: string
 }
 
-// Normalized VRAM pool the chosen placement can draw on: `usable` is the most a
-// single model could ever get there; `available` is what's free right now.
-// `label` names the destination so every verdict says where it applies.
-interface VramPool {
+// One machine's VRAM: `usable` is the most a model could ever get there,
+// `available` is what's free right now.
+interface NodeVram {
+  name: string
   usable: number
   available: number
+}
+
+// The VRAM a placement can draw on, kept per node rather than summed.
+//
+// A shard does not pool memory: every rank holds its own slice on its own GPU,
+// so a total is the wrong number to compare against — head 2 GB + peer 200 GB
+// looks like plenty in aggregate and fits nowhere. `label` names the
+// destination so every verdict says where it applies.
+interface VramPool {
+  nodes: NodeVram[]
   label: string
 }
 
@@ -125,7 +136,9 @@ function classify(
   placement: Placement,
   nodeCount: number,
   shardAvailable: boolean,
-  pool: VramPool | undefined
+  pool: VramPool | undefined,
+  /** Ranks the model splits into — 1 for anything but a shard. */
+  split: number
 ): Compat {
   const sharding = placement.kind === "shard"
   const { clusterOnly, soloOnly, minNodes, maxNodes } = constraints
@@ -165,39 +178,60 @@ function classify(
     }
   }
 
-  if (est == null || !pool) {
+  if (est == null || !pool || pool.nodes.length === 0) {
     return { fit: "unknown", unavailable: false, canServe: true, reason: "" }
   }
-  const { usable, available, label } = pool
-  if (est > usable) {
+  // What one rank has to hold. The whole model on a single-node placement; its
+  // slice on a shard — the same `estimate / tensor_parallel` the daemon admits
+  // against, node by node.
+  const perNode = Math.ceil(est / Math.max(1, split))
+  // The daemon trims a shard's members to the tensor-parallel width, so judge
+  // the nodes it would actually use — picking three for a tp=2 recipe must not
+  // be failed by the third, which never gets a rank.
+  const nodes = split > 1 ? pool.nodes.slice(0, split) : pool.nodes
+  const { label } = pool
+  // A shard's verdict has to name the node it turns on, since the others may
+  // have room to spare.
+  const each = split > 1 ? `${gb(perNode)} on each of ${nodes.length} nodes` : gb(perNode)
+
+  const tooSmall = nodes.find((n) => perNode > n.usable)
+  if (tooSmall) {
     return {
       fit: "too-big",
       unavailable: true,
       canServe: false,
-      reason: `Too large for ${label} — needs ${gb(est)}, only ${gb(usable)} usable.`,
+      reason: `Too large for ${split > 1 ? tooSmall.name : label} — needs ${each}, only ${gb(
+        tooSmall.usable
+      )} usable${split > 1 ? ` on ${tooSmall.name}` : ""}.`,
     }
   }
-  if (est > available) {
+  const full = nodes.find((n) => perNode > n.available)
+  if (full) {
     return {
       fit: "no-fit",
       unavailable: false,
       canServe: false,
-      reason: `Not enough free VRAM on ${label} — needs ${gb(est)}, ${gb(available)} free. Stop a running model or pick another node.`,
+      reason: `Not enough free VRAM on ${full.name} — needs ${each}, ${gb(
+        full.available
+      )} free there. Stop a running model or pick another node.`,
     }
   }
+  const tightest = Math.min(...nodes.map((n) => n.available))
   return {
-    fit: est > available * 0.85 ? "tight" : "ok",
+    fit: perNode > tightest * 0.85 ? "tight" : "ok",
     unavailable: false,
     canServe: true,
-    reason: `Fits on ${label} — ${gb(est)} of ${gb(available)} free.`,
+    reason: `Fits on ${label} — ${each}, ${gb(tightest)} free on the tightest.`,
   }
 }
 
 // A single unified list entry: a catalog recipe, optionally backed by installed
-// weights and/or a live instance. This is the merge — recipes you could serve
-// and models already on disk are the same objects here.
+// weights and/or live instances — plus anything live or on disk whose recipe has
+// since left the catalog. This is the merge: everything the daemon knows about a
+// model, servable or not, is one row here.
 interface ModelEntry {
   key: string
+  /** Identity, shown and searchable. Known for anything on disk or running. */
   recipeId: string | null
   name: string
   engine: string
@@ -205,9 +239,21 @@ interface ModelEntry {
   vramEstimateMb: number | null
   constraints: RecipeConstraints
   installed: boolean
+  /**
+   * Whether a catalog recipe still backs this row — the servability gate. A
+   * known `recipeId` is not enough: weights and live instances both outlive the
+   * recipe file they came from, and `/v1/serve` can only start what the daemon's
+   * catalog still holds.
+   */
   recipePresent: boolean
   model?: LaiosModel
-  running?: LaiosInstance
+  /**
+   * Every live instance of this recipe, across all nodes. A list rather than a
+   * single instance because the same model on N nodes is N replicas, which the
+   * gateway pools — so already running somewhere must never stop you from
+   * serving it somewhere else.
+   */
+  instances: LaiosInstance[]
   fit: Compat
 }
 
@@ -220,10 +266,11 @@ const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
   { key: "running", label: "Running" },
 ]
 
-// A short fit pill for the collapsed row: label + tone by fit outcome. Running
-// models don't use this (they show a "live" badge instead).
+// A short fit pill for the collapsed row: label + tone by fit outcome. Shown
+// even for live models — it describes the *next* serve, which is a replica on
+// whatever node is currently selected.
 function fitPill(entry: ModelEntry): { label: string; className: string } | null {
-  if (!entry.recipeId) {
+  if (!entry.recipePresent) {
     return {
       label: "no recipe",
       className: "border-destructive/40 bg-destructive/10 text-destructive",
@@ -299,14 +346,22 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
   const [orphanToDelete, setOrphanToDelete] = useState<
     LaiosOrphanedModel | undefined
   >()
-  const [toStop, setToStop] = useState<ModelEntry | undefined>()
+  // A specific replica, not a model: stopping is per instance now that one
+  // recipe can be live on several nodes at once.
+  const [toStop, setToStop] = useState<LaiosInstance | undefined>()
 
   // Every node this daemon can place on, head first. Empty when the daemon has
   // no cluster, which is what hides the picker.
   const targets = useMemo(() => nodeTargets(cluster), [cluster])
   const isCluster = (cluster?.resources?.total_nodes_known ?? 0) > 1
+  // Names the node a replica sits on. Falls back to a short id for a node that
+  // has since left the roster but still has an instance attributed to it.
+  const nodeName = useMemo(() => {
+    const byId = new Map(targets.map((t) => [t.nodeId, t.name]))
+    return (id: string) => byId.get(id) ?? id.slice(0, 8)
+  }, [targets])
   const shardAvailable =
-    isCluster && targets.some((t) => t.role === "worker" && t.shardable)
+    isCluster && targets.some((t) => t.role === "worker" && t.placeable)
 
   // A worker can drop out (or the whole cluster can) while it's selected, so
   // the placement actually used is always re-derived from live membership.
@@ -328,15 +383,23 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
       if (!budget) return undefined
       const usable = Math.max(0, budget.total_mb - budget.reserved_mb)
       return {
-        usable,
-        available: Math.max(0, usable - budget.allocated_mb),
+        nodes: [
+          {
+            name: "this machine",
+            usable,
+            available: Math.max(0, usable - budget.allocated_mb),
+          },
+        ],
         label: "this machine",
       }
     }
     if (activeNodes.length === 0) return undefined
     return {
-      usable: activeNodes.reduce((sum, n) => sum + n.totalVramMb, 0),
-      available: activeNodes.reduce((sum, n) => sum + n.freeVramMb, 0),
+      nodes: activeNodes.map((n) => ({
+        name: n.name,
+        usable: n.totalVramMb,
+        available: n.freeVramMb,
+      })),
       label: placementLabel(active, targets),
     }
   }, [isCluster, budget, activeNodes, active, targets])
@@ -359,13 +422,23 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
     // instance's own recipe_id — NOT from a shared-weights manifest, whose single
     // running_instance would otherwise light up every recipe that can serve those
     // weights (e.g. the solo and 4-node variants) as live at once.
-    const runningByRecipe = new Map<string, LaiosInstance>()
+    //
+    // Every live instance is kept, not just the first: replicas of one recipe on
+    // different nodes are all real, each stoppable on its own.
+    const runningByRecipe = new Map<string, LaiosInstance[]>()
     for (const inst of instances ?? []) {
       if (inst.status === "stopped" || inst.status === "failed") continue
-      const prev = runningByRecipe.get(inst.recipe_id)
-      if (!prev || (inst.status === "running" && prev.status !== "running")) {
-        runningByRecipe.set(inst.recipe_id, inst)
-      }
+      const list = runningByRecipe.get(inst.recipe_id)
+      if (list) list.push(inst)
+      else runningByRecipe.set(inst.recipe_id, [inst])
+    }
+    // Live ones first, then by node, so the list order is stable across polls.
+    for (const list of runningByRecipe.values()) {
+      list.sort(
+        (a, b) =>
+          (a.status === "running" ? 0 : 1) - (b.status === "running" ? 0 : 1) ||
+          a.node_id.localeCompare(b.node_id)
+      )
     }
 
     const fromCatalog: ModelEntry[] = (catalog ?? []).map((r) => {
@@ -382,14 +455,15 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
         installed: Boolean(model?.installed),
         recipePresent: true,
         model,
-        running: runningByRecipe.get(r.id),
+        instances: runningByRecipe.get(r.id) ?? [],
         fit: classify(
           r.vram_estimate_mb,
           constraints,
           active,
           activeNodes.length,
           shardAvailable,
-          activePool
+          activePool,
+          placementSplit(active, constraints, activeNodes.length)
         ),
       }
     })
@@ -404,7 +478,7 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
       )
       .map((m) => ({
         key: `model:${m.id}`,
-        recipeId: null,
+        recipeId: m.recipe_id,
         name: m.name,
         engine: m.engine,
         description: null,
@@ -413,7 +487,7 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
         installed: true,
         recipePresent: false,
         model: m,
-        running: runningByRecipe.get(m.recipe_id),
+        instances: runningByRecipe.get(m.recipe_id) ?? [],
         fit: {
           fit: "unknown",
           unavailable: true,
@@ -422,7 +496,47 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
         },
       }))
 
-    return [...fromCatalog, ...orphanModels]
+    // Anything still running whose recipe id matches no row above. Attribution
+    // is by recipe id, so an instance started from a recipe that has since left
+    // the catalog had nowhere to attach and vanished from this list entirely —
+    // indistinguishable from nothing running, and impossible to stop from here.
+    const covered = new Set<string>([
+      ...catalogIds,
+      ...orphanModels.map((e) => e.recipeId).filter((id): id is string => !!id),
+    ])
+    const fromInstances: ModelEntry[] = [...runningByRecipe.entries()]
+      .filter(([recipeId]) => !covered.has(recipeId))
+      .map(([recipeId, list]) => {
+        const model = modelByRecipe.get(recipeId)
+        // These weights may still be servable under another recipe — worth
+        // naming, since it's the actual route to another copy.
+        const alt = (model?.usable_recipes ?? []).find((rid) =>
+          catalogIds.has(rid)
+        )
+        return {
+          key: `instance:${recipeId}`,
+          recipeId,
+          name: list[0].served_name || recipeId,
+          engine: list[0].engine,
+          description: null,
+          vramEstimateMb: null,
+          constraints: { clusterOnly: false, soloOnly: false, minNodes: 1 },
+          installed: Boolean(model?.installed),
+          recipePresent: false,
+          model,
+          instances: list,
+          fit: {
+            fit: "unknown",
+            unavailable: true,
+            canServe: false,
+            reason: alt
+              ? `Running, but its recipe "${recipeId}" is no longer in the catalog — serve "${alt}" for another copy of these weights.`
+              : `Running, but its recipe "${recipeId}" is no longer in the catalog — restore the recipe file to serve another copy.`,
+          },
+        }
+      })
+
+    return [...fromCatalog, ...orphanModels, ...fromInstances]
   }, [
     catalog,
     models,
@@ -438,14 +552,24 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     const rank = (e: ModelEntry) =>
-      e.running ? 0 : e.fit.canServe ? 1 : e.installed ? 2 : e.fit.unavailable ? 4 : 3
+      e.instances.length > 0
+        ? 0
+        : e.fit.canServe
+          ? 1
+          : e.installed
+            ? 2
+            : e.fit.unavailable
+              ? 4
+              : 3
     return entries
       .filter((e) => {
         if (q && !`${e.name} ${e.recipeId ?? ""} ${e.engine}`.toLowerCase().includes(q))
           return false
-        if (filter === "ready") return e.fit.canServe && !e.running
+        // "Ready" means servable right now — including another replica of
+        // something already live elsewhere.
+        if (filter === "ready") return e.fit.canServe
         if (filter === "installed") return e.installed
-        if (filter === "running") return Boolean(e.running)
+        if (filter === "running") return e.instances.length > 0
         return true
       })
       .sort((a, b) => {
@@ -458,7 +582,7 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
   }, [entries, query, filter])
 
   const installedCount = entries.filter((e) => e.installed).length
-  const runningCount = entries.filter((e) => e.running).length
+  const runningCount = entries.filter((e) => e.instances.length > 0).length
 
   function toggleExpanded(key: string) {
     setExpandedKey((cur) => (cur === key ? undefined : key))
@@ -469,16 +593,23 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
   }
 
   function handleServe(entry: ModelEntry) {
-    if (!entry.recipeId || !entry.fit.canServe) return
+    if (!entry.recipePresent || !entry.recipeId || !entry.fit.canServe) return
     const target = placementInput(active, targets)
-    // A shard is addressed by fabric IP, and the head's has to be routable —
-    // a daemon still advertising loopback can't be rank 0, so say that here
-    // rather than letting the serve fail deep in the cluster resolver.
-    if (active.kind === "shard" && (target.nodes?.length ?? 0) < 2) {
-      toast.error(
-        "Multi-node serve needs every node's fabric address — set node.advertise on the head to its CX-7 IP."
-      )
-      return
+    // A shard is addressed by fabric IP, so every member needs a routable
+    // advertise — a node still on loopback would silently drop out of the
+    // member list. Compare against the members actually chosen rather than a
+    // floor of two, or a 3-node shard quietly serves as a 2-node one.
+    if (active.kind === "shard") {
+      const addressed = target.nodes?.length ?? 0
+      if (addressed < activeNodes.length || addressed < 2) {
+        const missing = activeNodes.filter((n) => !n.host).map((n) => n.name)
+        toast.error(
+          `Multi-node serve needs every node's fabric address — set node.advertise to the CX-7 IP on ${
+            missing.join(", ") || "every member"
+          }.`
+        )
+        return
+      }
     }
     const input: LaiosServeInput = { recipe: entry.recipeId, ...target }
     if (maxLen.trim()) {
@@ -519,10 +650,10 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
 
   async function confirmStop() {
     const target = toStop
-    if (!target?.running) return
+    if (!target) return
     try {
-      await stopInstance.mutateAsync(target.running.id)
-      toast.success(`Stopping ${target.running.served_name}`)
+      await stopInstance.mutateAsync(target.id)
+      toast.success(`Stopping ${target.served_name}`)
       setToStop(undefined)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to stop model")
@@ -612,9 +743,11 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
               targetLabel={
                 isCluster ? placementLabel(active, targets) : undefined
               }
+              nodeName={nodeName}
+              targetNodeIds={isCluster ? activeNodes.map((n) => n.nodeId) : []}
               onServe={() => handleServe(e)}
               onDelete={() => setToDelete(e)}
-              onStop={() => setToStop(e)}
+              onStop={setToStop}
             />
           ))}
         </div>
@@ -682,8 +815,10 @@ export function ModelLibrary({ connectionId, onServe }: ModelLibraryProps) {
         onOpenChange={(o) => !o && setToStop(undefined)}
         title="Stop model"
         description={
-          toStop?.running
-            ? `Stop "${toStop.running.served_name}"? This tears down the engine and frees its VRAM.`
+          toStop
+            ? `Stop "${toStop.served_name}" on ${nodeName(
+                toStop.node_id
+              )}? This tears down that engine and frees its VRAM. Replicas on other nodes keep serving.`
             : undefined
         }
         confirmLabel="Stop"
@@ -729,7 +864,7 @@ function FilterChip({
 
 // A dot conveying a model's headline state at a glance in the list.
 function StatusDot({ entry }: { entry: ModelEntry }) {
-  const tone = entry.running
+  const tone = entry.instances.length > 0
     ? "bg-success"
     : entry.fit.canServe
       ? entry.installed
@@ -764,6 +899,8 @@ function ModelRow({
   servedName,
   onServedName,
   targetLabel,
+  nodeName,
+  targetNodeIds,
   onServe,
   onDelete,
   onStop,
@@ -779,13 +916,17 @@ function ModelRow({
   onServedName: (v: string) => void
   /** Where this serve would land; undefined on a standalone daemon. */
   targetLabel?: string
+  nodeName: (nodeId: string) => string
+  /** Nodes the current placement spans; empty on a standalone daemon. */
+  targetNodeIds: string[]
   onServe: () => void
   onDelete: () => void
-  onStop: () => void
+  onStop: (instance: LaiosInstance) => void
 }) {
-  const { running, installed, model, fit } = entry
+  const { instances, installed, model, fit } = entry
+  const live = instances.length > 0
   const lastServed = fmtAgo(model?.last_served_at)
-  const pill = running ? null : fitPill(entry)
+  const pill = fitPill(entry)
   const size =
     entry.model?.bytes_total != null && entry.installed
       ? fmtBytes(entry.model.bytes_total)
@@ -810,10 +951,10 @@ function ModelRow({
             <span className="truncate text-sm font-medium text-foreground">
               {entry.name}
             </span>
-            {running ? (
+            {live ? (
               <Badge variant="success" className="h-4 shrink-0 gap-1 px-1.5 font-normal">
                 <span className="h-1.5 w-1.5 rounded-full bg-success-foreground" />
-                live
+                {instances.length > 1 ? `live on ${instances.length}` : "live"}
               </Badge>
             ) : null}
           </div>
@@ -821,7 +962,7 @@ function ModelRow({
             <span className="truncate">{entry.engine}</span>
             <span aria-hidden>·</span>
             <span className="shrink-0 font-mono">{size}</span>
-            {installed && !running ? (
+            {installed && !live ? (
               <>
                 <span aria-hidden>·</span>
                 <span className="shrink-0 text-success/80">on disk</span>
@@ -859,8 +1000,58 @@ function ModelRow({
             <p className="text-sm text-muted-foreground">{entry.description}</p>
           ) : null}
 
-          {/* Fit verdict for a servable pick (running models skip this). */}
-          {running ? null : entry.recipeId && fit.reason ? (
+          {/* Where it's live right now — one line per replica, each stoppable
+              on its own. Serving again below adds to this list rather than
+              replacing it. */}
+          {live ? (
+            <div className="space-y-1.5">
+              <div className="text-[0.65rem] uppercase tracking-wide text-muted-foreground">
+                {instances.length > 1 ? "Running replicas" : "Running"}
+              </div>
+              <div className="divide-y divide-border/60 rounded-lg border border-border bg-background/60">
+                {instances.map((inst) => (
+                  <div key={inst.id} className="flex items-center gap-2 px-3 py-2">
+                    <span
+                      className={cn(
+                        "h-2 w-2 shrink-0 rounded-full",
+                        inst.status === "running" ? "bg-success" : "bg-warning"
+                      )}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-foreground">
+                        {nodeName(inst.node_id)}
+                        {targetNodeIds.includes(inst.node_id) ? (
+                          <span className="ml-1.5 text-xs text-muted-foreground">
+                            selected node
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {inst.served_name}
+                        {inst.status === "running" ? "" : ` · ${inst.status}`}
+                        {inst.vram_allocated_mb > 0
+                          ? ` · ${gb(inst.vram_allocated_mb)}`
+                          : ""}
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onStop(inst)}
+                      className="shrink-0 text-muted-foreground hover:text-destructive"
+                    >
+                      <Square className="h-4 w-4" />
+                      Stop
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {/* Fit verdict for the next serve — for a live model this is about a
+              replica on the currently selected node, not the one already up. */}
+          {entry.recipePresent && fit.reason ? (
             <div
               className={cn(
                 "flex items-start gap-2 rounded-lg border px-3 py-2 text-sm text-foreground",
@@ -876,7 +1067,7 @@ function ModelRow({
               )}
               <span>{fit.reason}</span>
             </div>
-          ) : !entry.recipeId ? (
+          ) : !entry.recipePresent ? (
             <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
               <WarningCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <span>{fit.reason}</span>
@@ -920,7 +1111,7 @@ function ModelRow({
           ) : null}
 
           {/* Serve options — tucked behind Advanced so the default path is one click. */}
-          {!running && entry.recipeId ? (
+          {entry.recipePresent ? (
             <div className="space-y-3">
               <button
                 type="button"
@@ -961,19 +1152,18 @@ function ModelRow({
 
           {/* Actions. */}
           <div className="flex flex-wrap items-center gap-2">
-            {running ? (
-              <Button variant="destructive" size="sm" onClick={onStop}>
-                <Square className="h-4 w-4" />
-                Stop model
-              </Button>
-            ) : entry.recipeId ? (
+            {entry.recipePresent ? (
               <Button size="sm" onClick={onServe} disabled={!fit.canServe}>
                 <Lightning className="h-4 w-4" />
-                {installed ? "Serve" : "Download & serve"}
+                {!installed
+                  ? "Download & serve"
+                  : live
+                    ? "Serve another"
+                    : "Serve"}
                 {targetLabel ? ` on ${targetLabel}` : ""}
               </Button>
             ) : null}
-            {installed && !running ? (
+            {installed && !live ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -984,9 +1174,11 @@ function ModelRow({
                 Delete weights
               </Button>
             ) : null}
-            {installed && running ? (
+            {installed && live ? (
               <span className="text-xs text-muted-foreground">
-                Stop the model to delete its weights.
+                {instances.length > 1
+                  ? "Stop every replica to delete its weights."
+                  : "Stop the model to delete its weights."}
               </span>
             ) : null}
           </div>

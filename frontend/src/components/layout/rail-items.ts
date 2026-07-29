@@ -1,99 +1,49 @@
 import {
-  Bell,
   ChartBar,
-  ChatsCircle,
   Clock,
   Cpu,
-  NotePencil,
+  Gear,
   SlidersHorizontal,
-  Sparkle,
 } from "@phosphor-icons/react"
 import type { ComponentType } from "react"
 
-import type { PanelMode } from "@/components/layout/use-panel-mode"
-
-export interface RailItem {
+export interface RailDestination {
   key: string
   label: string
-  /** Spelled out in the tooltip when the 10px label had to be abbreviated. */
-  title?: string
   icon: ComponentType<{ className?: string }>
-  /** Where a click travels, if anywhere. */
-  to?: string
-  /**
-   * The Skill Studio is a real workspace, so its route isn't known until the
-   * workspace list loads. Declared as a flag rather than resolved by key at the
-   * render site, so "which item is the studio" stays in this table.
-   */
-  studioRoute?: true
-  /** Which list a click puts in the panel, if any. */
-  panel?: PanelMode
+  to: string
 }
 
 /**
- * The rail, top to bottom. Each item declares up to two effects — navigate,
- * and/or swap the panel — and that is the whole contract. A click does both if
- * both are set.
+ * The whole-page destinations, which live behind the rail's ⋯ tile.
  *
- * An item with a `to` and no `panel` is a **whole-page destination**: it owns
- * the window, so arriving there collapses the panel. That is one fact, declared
- * once, here — {@link routeHasPanel} derives from this table rather than
- * repeating the route strings, because two lists that must agree eventually
- * won't, and the failure mode is a stale conversation list beside a dashboard.
+ * These used to be tiles of their own — eight of them, stacked down the rail at
+ * the same visual weight as the conversation list, two abbreviated past
+ * legibility ("Sched", "Custom") and one truncated outright ("Activi…"). That
+ * allocation was backwards: every one of these is a page you open, read and
+ * leave, maybe once a session, while the workspaces you switch between dozens of
+ * times a day had no representation in the rail at all. Labels that don't fit
+ * their column are the symptom; the column was being spent on the wrong thing.
  *
- * Module-level rather than built per render: only the studio's `to` is dynamic,
- * and that resolves at the one item that needs it.
+ * So they collapse to one tile and a menu, where the labels finally fit, and the
+ * rail's height goes to workspaces. ⌘K reaches all of them by name too.
  */
-export const RAIL_ITEMS: RailItem[] = [
-  // No `panel`: the New Agent home is a whole-page destination, so declaring
-  // one would open the panel and let the route rule shut it again a frame
-  // later — a flash through the width transition, for nothing.
-  { key: "new", label: "New", title: "New Chat", icon: NotePencil, to: "/" },
-  { key: "chats", label: "Chats", icon: ChatsCircle, panel: "chats" },
-  { key: "activity", label: "Activity", icon: Bell, panel: "activity" },
-  {
-    key: "skills",
-    label: "Skills",
-    title: "Skill Studio",
-    icon: Sparkle,
-    studioRoute: true,
-    panel: "skills",
-  },
-  {
-    key: "schedules",
-    label: "Sched",
-    title: "Schedules",
-    icon: Clock,
-    to: "/schedules",
-  },
+export const RAIL_DESTINATIONS: RailDestination[] = [
+  { key: "schedules", label: "Schedules", icon: Clock, to: "/schedules" },
   { key: "usage", label: "Usage", icon: ChartBar, to: "/analytics" },
   { key: "laios", label: "LAIOS", icon: Cpu, to: "/laios" },
   {
     key: "customization",
-    label: "Custom",
-    title: "Customization",
+    label: "Customization",
     icon: SlidersHorizontal,
     to: "/customization",
   },
+  { key: "settings", label: "Settings", icon: Gear, to: "/settings" },
 ]
-
-/** Reached from the rail's footer tile rather than the list above. */
-const FOOTER_ROUTES = ["/settings"]
-
-/** Where this item goes, once the studio's workspace id is known. */
-export function railItemTo(
-  item: RailItem,
-  studioId: string | undefined
-): string | undefined {
-  if (!item.studioRoute) return item.to
-  return studioId ? `/workspaces/${studioId}/chat` : undefined
-}
 
 /**
  * Does this route match `to`? The root is exact — every path starts with "/",
- * so a prefix test there would swallow the whole app. Stated once and shared by
- * the rail's active state and {@link routeHasPanel}, which previously each had
- * their own copy of the rule.
+ * so a prefix test there would swallow the whole app.
  */
 export function matchesRoute(pathname: string, to: string): boolean {
   return to === "/"
@@ -101,19 +51,7 @@ export function matchesRoute(pathname: string, to: string): boolean {
     : pathname === to || pathname.startsWith(`${to}/`)
 }
 
-const PANEL_LESS_ROUTES = [
-  ...RAIL_ITEMS.filter((item) => item.to && !item.panel).map(
-    (item) => item.to as string
-  ),
-  ...FOOTER_ROUTES,
-]
-
-/**
- * False on the whole-page destinations: they own the window, and no list
- * belongs beside them. Usage and LAIOS have nothing of their own to put in a
- * panel, and a conversation list next to a usage chart is clutter that reads as
- * a bug.
- */
-export function routeHasPanel(pathname: string): boolean {
-  return !PANEL_LESS_ROUTES.some((route) => matchesRoute(pathname, route))
+/** True while one of the ⋯ destinations owns the main view. */
+export function isDestinationRoute(pathname: string): boolean {
+  return RAIL_DESTINATIONS.some((item) => matchesRoute(pathname, item.to))
 }

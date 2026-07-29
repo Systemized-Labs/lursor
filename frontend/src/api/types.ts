@@ -899,6 +899,12 @@ export interface LaiosRecipeCluster {
   distributed: string
   min_nodes?: number
   max_nodes?: number
+  /**
+   * Tensor-parallel width. A shard's per-rank VRAM is roughly
+   * `vram_estimate_mb / tensor_parallel`, so fit against a multi-node placement
+   * can only be predicted with this. Absent on older daemons.
+   */
+  tensor_parallel?: number
 }
 
 /** A curated recipe summary from the catalog. */

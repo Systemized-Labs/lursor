@@ -15,6 +15,11 @@
  * Two models on two nodes are *replicas* (serve twice, once per node) — the
  * gateway pools same-named instances automatically. That is not the same thing
  * as `shard`, which is one model too big for any single node.
+ *
+ * A shard's `nodes[]` is rank-ordered and the daemon roots it on the first
+ * entry. That entry may be a worker: a shard of all-worker members runs
+ * entirely off-head, which is how a cluster-only recipe gets a second replica
+ * while the head is still busy serving the first.
  */
 
 import type {
@@ -44,10 +49,18 @@ export interface NodeTarget {
   gpus: number
   totalVramMb: number
   freeVramMb: number
-  /** Accepts a solo engine now — the daemon takes Ready *or* Busy workers. */
+  /**
+   * Accepts work now — the daemon takes Ready *or* Busy workers, for a solo
+   * engine and for a shard rank alike. Whether there's *room* is a separate
+   * question, answered by the VRAM numbers below.
+   */
   placeable: boolean
-  /** Can join a multi-node serve — that path requires Ready, not Busy. */
-  shardable: boolean
+  /**
+   * Can be the daemon's `worker: "auto"` pick, which is stricter than
+   * `placeable`: that path considers Ready workers only, so a Busy one must not
+   * be shown as the destination auto would choose.
+   */
+  autoEligible: boolean
 }
 
 /**
@@ -77,14 +90,18 @@ export function nodeTargets(
       totalVramMb: n.total_vram_mb,
       freeVramMb: n.free_vram_mb,
       placeable: head || (n.online && (ready || n.status === "busy")),
-      shardable: head || (n.online && ready),
+      autoEligible: !head && n.online && ready,
     }
   })
 }
 
 /**
- * A chosen placement. `shard` holds worker node ids only: the head is always
- * rank 0 of a multi-node serve, so it is implicit rather than selectable.
+ * A chosen placement. `shard` lists every member in rank order — `nodeIds[0]`
+ * is rank 0, the node that binds the HTTP API and hosts the rendezvous.
+ *
+ * The head is one candidate among them, not a fixture: a shard whose members
+ * are all workers runs entirely off-head, which is the only way to place a
+ * second replica of a cluster-only recipe once the head's own VRAM is spent.
  */
 export type Placement =
   | { kind: "head" }
@@ -102,7 +119,7 @@ export function resolvePlacement(
 ): Placement {
   switch (placement.kind) {
     case "auto":
-      return targets.some((t) => t.role === "worker" && t.shardable)
+      return targets.some((t) => t.autoEligible)
         ? placement
         : { kind: "head" }
     case "worker": {
@@ -111,16 +128,17 @@ export function resolvePlacement(
     }
     case "shard": {
       const live = placement.nodeIds.filter((id) =>
-        targets.some((t) => t.nodeId === id && t.role === "worker" && t.shardable)
+        targets.some((t) => t.nodeId === id && t.placeable)
       )
-      return live.length > 0 ? { kind: "shard", nodeIds: live } : { kind: "head" }
+      // Below two members it is no longer a shard; the daemon would reject it.
+      return live.length >= 2 ? { kind: "shard", nodeIds: live } : { kind: "head" }
     }
     default:
       return placement
   }
 }
 
-/** Nodes a placement actually spans — the head counts as rank 0 of a shard. */
+/** Nodes a placement actually spans, in rank order for a shard. */
 export function placementNodes(
   placement: Placement,
   targets: NodeTarget[]
@@ -134,7 +152,7 @@ export function placementNodes(
     case "auto": {
       // Same rule the daemon applies: the Ready worker with the most free VRAM.
       const best = targets
-        .filter((t) => t.role === "worker" && t.shardable)
+        .filter((t) => t.autoEligible)
         .sort((a, b) => b.freeVramMb - a.freeVramMb)[0]
       return best ? [best] : []
     }
@@ -142,13 +160,11 @@ export function placementNodes(
       const t = byId(placement.nodeId)
       return t ? [t] : []
     }
-    case "shard": {
-      const head = targets.find((t) => t.role === "head")
-      const peers = placement.nodeIds
+    case "shard":
+      // Rank order as chosen — no implicit head.
+      return placement.nodeIds
         .map(byId)
         .filter((t): t is NodeTarget => Boolean(t))
-      return head ? [head, ...peers] : peers
-    }
   }
 }
 
@@ -171,9 +187,9 @@ export function placementLabel(
 }
 
 /**
- * The `/v1/serve` placement fields for a choice. A shard sends fabric IPs with
- * the head first, which is what `resolve_cluster_nodes` expects; everything
- * else sends an id the daemon resolves itself.
+ * The `/v1/serve` placement fields for a choice. A shard sends member fabric
+ * IPs in rank order — `resolve_cluster_nodes` roots it on the first — while
+ * everything else sends an id the daemon resolves itself.
  */
 export function placementInput(
   placement: Placement,
@@ -203,6 +219,8 @@ export interface RecipeConstraints {
   /** Lower bound for a multi-node serve; the daemon defaults cluster_only to 2. */
   minNodes: number
   maxNodes?: number
+  /** Ranks the model splits into. Undefined on daemons that don't report it. */
+  tensorParallel?: number
 }
 
 export function recipeConstraints(r: LaiosRecipeSummary): RecipeConstraints {
@@ -214,5 +232,24 @@ export function recipeConstraints(r: LaiosRecipeSummary): RecipeConstraints {
     soloOnly: r.cluster?.solo_only ?? false,
     minNodes: r.cluster?.min_nodes ?? (clusterOnly ? 2 : 1),
     maxNodes: r.cluster?.max_nodes,
+    tensorParallel: r.cluster?.tensor_parallel,
   }
+}
+
+/**
+ * How many ways a model is split for a given placement.
+ *
+ * Only a shard divides a model across machines, and it divides by the recipe's
+ * tensor-parallel width — not by however many nodes were picked, which the
+ * daemon truncates to that same width. Falls back to the node count for daemons
+ * that don't report `tensor_parallel`, which is what the two agree on anyway
+ * for every shipped multi-node recipe.
+ */
+export function placementSplit(
+  placement: Placement,
+  constraints: RecipeConstraints,
+  nodeCount: number
+): number {
+  if (placement.kind !== "shard") return 1
+  return Math.max(1, constraints.tensorParallel ?? nodeCount)
 }
