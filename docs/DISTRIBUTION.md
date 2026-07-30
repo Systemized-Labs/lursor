@@ -9,7 +9,7 @@ see [INSTALL.md](./INSTALL.md).
 | Channel | Platform | Notes |
 | --- | --- | --- |
 | `curl … install.sh \| sh` | macOS arm64, Linux x64 | Primary. Verifies a published SHA-256 before installing. |
-| Homebrew cask | macOS arm64 | Own tap (`JonathanConn/homebrew-lursor`), bumped automatically per release. |
+| Homebrew cask | macOS arm64 | **Not live.** Tap repo doesn't exist and `HOMEBREW_TAP_TOKEN` isn't set, so the bump step is skipped every release. Blocked on signing regardless — see below. |
 | Direct download | macOS arm64, Linux x64 | DMG / AppImage / deb straight off the GitHub Release. |
 | In-app auto-update | Linux AppImage, signed macOS | `electron-updater` against the same Release. `.deb` is not self-updating. |
 | `curl … update.sh \| sh` | macOS arm64, Linux x64 | Version-aware wrapper around install.sh. Also what the app falls back to while macOS builds are unsigned. |
@@ -53,24 +53,39 @@ The release workflow imports the cert into a throwaway keychain and exports
 sign out of. With the secrets absent, both signing and notarization are skipped
 and the build still produces installable (unsigned) artifacts.
 
-### 2. Homebrew tap (optional, macOS)
+### 2. Homebrew tap (not set up — macOS)
+
+**Do not advertise this channel until all three steps below are done.** As of
+now none of them are: `JonathanConn/homebrew-lursor` returns 404, and the repo
+has no secrets at all, so the `homebrew` job's bump step is gated off by
+`if: env.HOMEBREW_TAP_TOKEN != ''` and **skips on every release while the job
+still reports success**. A green `homebrew` job means nothing until step 2 lands.
 
 The official `homebrew/cask` is not an option yet: self-submission needs 90 forks,
 90 watchers, or 225 stars, and from 2026-09-01 every cask there must be signed and
 notarized. Own tap in the meantime:
 
-1. Create a **public** repo `JonathanConn/homebrew-lursor` with a `Casks/` directory.
-2. Create a fine-grained PAT with `contents: write` on that repo, and add it to
+1. **Sign and notarize first** (step 1 above). Homebrew dropped
+   `--no-quarantine` in 4.7 and macOS 15 removed the Control-click bypass, so a
+   cask installing an unsigned app produces a bundle the user cannot open —
+   strictly worse than `install.sh`, which clears the quarantine flag itself.
+2. Create a **public** repo `JonathanConn/homebrew-lursor` with a `Casks/` directory.
+3. Create a fine-grained PAT with `contents: write` on that repo, and add it to
    *this* repo as the secret `HOMEBREW_TAP_TOKEN`.
-3. Each tagged release renders `packaging/homebrew/lursor.rb.template` and pushes
-   it to `Casks/lursor.rb`. Never hand-edit the tap copy.
 
-Users then run:
+Each tagged release then renders `packaging/homebrew/lursor.rb.template` and
+pushes it to `Casks/lursor.rb`. Never hand-edit the tap copy.
+
+Users would then run:
 
 ```bash
-brew tap --trust JonathanConn/lursor     # Homebrew 6.0+ requires trusting third-party taps
+brew tap JonathanConn/lursor
 brew install --cask lursor
 ```
+
+Note there is no `--trust` flag: it does not exist in Homebrew 6.0.13
+(`brew tap --trust` → `Error: invalid option: --trust`). Verify against the
+`brew tap` help of the day before documenting one.
 
 ## Cutting a release
 
@@ -100,7 +115,7 @@ The `release` workflow then runs `build` per platform:
 Then a single `publish` job assembles the release: it downloads every platform's
 artifacts, checks the set against the list of assets a release must contain,
 generates one `SHA256SUMS.txt` over all of them, and creates **one** draft
-release. Finally `homebrew` bumps the cask.
+release. Finally `homebrew` would bump the cask — currently a no-op, see above.
 
 One writer, running only after every platform succeeded, is what guarantees a
 release is either complete or absent. When the build jobs each published for
@@ -118,6 +133,13 @@ gh release edit v0.2.0 --repo JonathanConn/lursor --draft=false
 
 Until that runs, the anonymous API returns 404 and `install.sh` cannot find the
 release — which looks exactly like a broken installer.
+
+`update.sh` fails more quietly still: `releases/latest` skips drafts, so it
+resolves the last *published* version, finds it already installed, and reports
+"already up to date". A fix can sit in a drafted release for days while every
+user is told they are current. v0.1.1 and v0.1.2 both sat drafted this way, and
+the sidebar-logo fix in v0.1.1 looked like it had failed to install. When a fix
+does not appear to land, check `gh release list` for a stuck draft first.
 
 `workflow_dispatch` runs the build jobs without publishing at all (the `publish`
 and `homebrew` jobs are tag-gated) — use it to test a pipeline change without
@@ -182,6 +204,11 @@ latest release, and only then calls `install.sh`.
 
 ## Known gaps
 
+- **Apple signing** — no certs, so no repo secrets, so builds ship unsigned.
+  `install.sh` clears the quarantine flag to compensate, and in-app updates fall
+  back to `scripts/update.sh`. This one blocks Homebrew too.
+- **Homebrew** — tap repo and token both missing; see the setup section. Not
+  advertised in the README or INSTALL.md until it works.
 - **Windows** — no installer, no signing story. The Electron main process already
   branches on `win32` for the interpreter path, so the bundle script is the
   missing piece.

@@ -75,16 +75,13 @@ curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/in
 
 This downloads the prebuilt app for your OS/arch from GitHub Releases, verifies
 it against the published SHA-256, and installs it — `Lursor.app` into
-`/Applications` on macOS (signed and notarized, so Gatekeeper accepts it), or
-`Lursor.AppImage` into `~/.local/bin` plus an app-menu entry on Linux.
-Re-running it upgrades in place.
+`/Applications` on macOS, or `Lursor.AppImage` into `~/.local/bin` plus an
+app-menu entry on Linux. Re-running it upgrades in place.
 
-Or on macOS, via Homebrew:
-
-```bash
-brew tap --trust JonathanConn/lursor
-brew install --cask lursor
-```
+Builds aren't code-signed yet, so the installer clears the macOS quarantine flag
+for you. That's also why this script — not Homebrew — is the macOS install path:
+Homebrew dropped `--no-quarantine` in 4.7, so a cask can't do the same. A tap
+lands once releases are signed and notarized.
 
 To update an existing install — checks your version against the latest release
 and does nothing if you're current:

@@ -16,20 +16,18 @@ This downloads the prebuilt app for your OS/architecture from GitHub Releases,
 verifies it against the published SHA-256, and installs it:
 
 - **macOS** → `Lursor.app` into `/Applications` (or `~/Applications` if that isn't
-  writable). Released builds are signed and notarized, so Gatekeeper accepts them
-  with no extra steps.
+  writable). Builds are not code-signed yet, so the installer checks them against
+  Gatekeeper and clears the quarantine flag when they fail, which is what lets the
+  app open. Once releases are signed and notarized it leaves the flag in place.
 - **Linux** → `Lursor.AppImage` into `~/.local/bin` plus an app-menu entry.
 
 ## Homebrew (macOS)
 
-```bash
-brew tap --trust JonathanConn/lursor
-brew install --cask lursor
-```
-
-Homebrew 6.0+ requires third-party taps to be trusted explicitly, which is what
-the first command does. Lursor updates itself, so `brew upgrade` leaves the app
-alone (`auto_updates true` in the cask).
+**Not available yet.** A tap needs the builds to be signed and notarized first —
+Homebrew removed `--no-quarantine` in 4.7, so a cask cannot clear the quarantine
+flag the way the installer above does, and an unsigned app installed by `brew`
+would simply be blocked. Use the one-line installer for now. See
+[DISTRIBUTION.md](./DISTRIBUTION.md) for what's left to set up.
 
 ### First run
 

@@ -1,5 +1,9 @@
 # Cask template for the Lursor Homebrew tap (JonathanConn/homebrew-lursor).
 #
+# NOT IN USE YET: the tap repo does not exist and HOMEBREW_TAP_TOKEN is unset, so
+# the release workflow's bump step skips. See docs/DISTRIBUTION.md before
+# enabling — signing has to land first, per the quarantine note below.
+#
 # The release workflow substitutes @@VERSION@@ / @@SHA256@@ and pushes the result
 # to Casks/lursor.rb in the tap repo. Don't edit the tap copy by hand — it is
 # overwritten on every release.
