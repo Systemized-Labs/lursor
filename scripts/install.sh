@@ -34,9 +34,14 @@ case "$ARCH" in
   *) die "unsupported architecture: $ARCH" ;;
 esac
 
+# ASSET_ARCH is the arch string electron-builder actually puts in the filename,
+# which is not always ARCH_TAG: it substitutes each target's own convention
+# rather than the `${arch}` in our artifactName template (AppImage -> x86_64,
+# deb -> amd64). ARCH_TAG stays the normalized form and still names the
+# checksum file, which the release workflow derives from `matrix.arch`.
 case "$OS" in
-  Darwin) OS_TAG="mac";   EXT="dmg" ;;
-  Linux)  OS_TAG="linux"; EXT="AppImage" ;;
+  Darwin) OS_TAG="mac";   EXT="dmg";      ASSET_ARCH="$ARCH_TAG" ;;
+  Linux)  OS_TAG="linux"; EXT="AppImage"; ASSET_ARCH="x86_64" ;;
   *) die "unsupported OS: $OS (this installer supports macOS and Linux)" ;;
 esac
 
@@ -50,7 +55,7 @@ if [ "$OS_TAG" = "mac" ] && [ "$ARCH_TAG" != "arm64" ]; then
   die "macOS builds are Apple Silicon only. On an Intel Mac, run Lursor from source (see README)."
 fi
 
-SUFFIX="${OS_TAG}-${ARCH_TAG}.${EXT}"
+SUFFIX="${OS_TAG}-${ASSET_ARCH}.${EXT}"
 SUMS_ASSET="SHA256SUMS-${OS_TAG}-${ARCH_TAG}.txt"
 
 # --- Uninstall ------------------------------------------------------------

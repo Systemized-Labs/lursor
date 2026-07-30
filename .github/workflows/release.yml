@@ -60,6 +60,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # frontend/package.json's version — not the tag — names every artifact, so
+      # a mismatch produces a release full of wrongly-versioned files and fails
+      # the Homebrew bump only after a full build has already run. Fail in
+      # seconds instead.
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./frontend/package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "error: tag $GITHUB_REF_NAME implies $TAG_VERSION, but frontend/package.json is $PKG_VERSION" >&2
+            echo "Bump the version and re-tag." >&2
+            exit 1
+          fi
+          echo "version $PKG_VERSION matches $GITHUB_REF_NAME"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
@@ -156,7 +172,8 @@ jobs:
             frontend/release/*.zip
             frontend/release/*.AppImage
             frontend/release/*.deb
-          if-no-files-found: ignore
+          # A build that silently produced nothing should not report success.
+          if-no-files-found: error
 
   # Point the Homebrew tap at the new version. Runs only for tagged releases and
   # only when a tap token is configured; the tap repo itself is
