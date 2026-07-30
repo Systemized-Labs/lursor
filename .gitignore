@@ -12,6 +12,9 @@ __pycache__/
 
 # Database & runtime data
 *.db
+# WAL sidecars, created alongside the DB now that the engine runs in WAL mode.
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 backend/workspaces/

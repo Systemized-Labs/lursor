@@ -1214,3 +1214,27 @@ export interface LaiosJob {
   created_at: string
   updated_at: string
 }
+
+/**
+ * What Lursor can see of a local Hermes install and of our plugin inside it.
+ *
+ * Detection only: Lursor reads another tool's directory and never writes to it,
+ * so the Integrations page shows these commands for the operator to run rather
+ * than running them itself.
+ */
+export interface HermesIntegration {
+  hermes_present: boolean
+  home: string
+  /** Absolute path to the `hermes` CLI, or "" when it could not be located. */
+  cli_path: string
+  plugin_installed: boolean
+  /** The plugin directory is a symlink, i.e. wired to a working checkout. */
+  plugin_linked: boolean
+  plugin_enabled: boolean
+  installed_version: string
+  available_version: string
+  update_available: boolean
+  install_command: string
+  enable_command: string
+  detail: string
+}

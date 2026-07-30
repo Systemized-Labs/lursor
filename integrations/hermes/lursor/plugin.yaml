@@ -1,0 +1,36 @@
+name: lursor
+# Hermes checks this at install time and refuses a plugin built for a newer
+# installer than it has. Declaring it makes the failure legible instead of
+# leaving the installer to guess.
+manifest_version: 1
+version: 0.2.0
+description: >-
+  Drive a local Lursor control room from Hermes — delegate work to Lursor agents
+  rooted in real directories, follow autonomous goal runs, read back the reply
+  and the git diff, put agents on a schedule, manage local models, and report
+  what it all cost.
+author: Lursor
+homepage: https://github.com/JonathanConn/lursor
+provides_tools:
+  - lursor_workspaces
+  - lursor_agents
+  - lursor_threads
+  - lursor_messages
+  - lursor_delegate
+  - lursor_run_status
+  - lursor_stop_run
+  - lursor_diff
+  - lursor_list_files
+  - lursor_read_file
+  - lursor_usage
+  - lursor_schedules
+  - lursor_create_schedule
+  - lursor_schedule_control
+  - lursor_local_models
+  - lursor_serve_model
+  - lursor_github
+provides_hooks:
+  - pre_llm_call
+# LURSOR_API_BASE is deliberately NOT declared under requires_env: the default
+# (http://127.0.0.1:8791/api) is right for every normal install, and gating the
+# plugin on an env var would prompt users for something they don't need to set.
