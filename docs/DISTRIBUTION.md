@@ -83,7 +83,7 @@ git tag v0.2.0
 git push origin main --tags
 ```
 
-The `release` workflow then, per platform:
+The `release` workflow then runs `build` per platform:
 
 1. Freezes the backend (`backend/scripts/build_bundle.sh`) — a standalone CPython
    with dependencies installed **from `uv.lock`**, so the bundle matches what was
@@ -93,11 +93,34 @@ The `release` workflow then, per platform:
    them, a minute or so), signs the app, then notarizes and staples the DMG/ZIP.
    Notarizing a ~400 MB image is the slow part; budget several minutes. Apple
    allows 75 notarizations/day.
-4. Uploads artifacts to the Release plus a `SHA256SUMS-<os>-<arch>.txt`.
-5. Bumps the Homebrew cask.
+4. Uploads everything (installers, `latest-*.yml` update feeds, blockmaps) as a
+   workflow artifact. **The build jobs never publish** — they only produce files.
 
-`workflow_dispatch` runs the same build without publishing — use it to test a
-pipeline change without burning a version number.
+Then a single `publish` job assembles the release: it downloads every platform's
+artifacts, checks the set against the list of assets a release must contain,
+generates one `SHA256SUMS.txt` over all of them, and creates **one** draft
+release. Finally `homebrew` bumps the cask.
+
+One writer, running only after every platform succeeded, is what guarantees a
+release is either complete or absent. When the build jobs each published for
+themselves, v0.1.0 produced *three* duplicate drafts with the assets split
+between them — electron-builder creates the release lazily per upload, so
+concurrent uploads (even within a single job) each made their own. A build that
+fails on one platform would likewise have left a half-populated release that
+looked installable. Do not move publishing back into the matrix.
+
+The release is created as a draft on purpose. Check the assets, then ship it:
+
+```bash
+gh release edit v0.2.0 --repo JonathanConn/lursor --draft=false
+```
+
+Until that runs, the anonymous API returns 404 and `install.sh` cannot find the
+release — which looks exactly like a broken installer.
+
+`workflow_dispatch` runs the build jobs without publishing at all (the `publish`
+and `homebrew` jobs are tag-gated) — use it to test a pipeline change without
+burning a version number.
 
 ### Verify after publishing
 
@@ -111,7 +134,10 @@ curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/in
 
 # Auto-update feed exists for both platforms.
 gh release view v0.2.0 --json assets --jq '.assets[].name'
-#   expect: .dmg, .zip, latest-mac.yml, .AppImage, .deb, latest-linux.yml, SHA256SUMS-*
+#   expect: .dmg, .zip, latest-mac.yml, .AppImage, .deb, latest-linux.yml, SHA256SUMS.txt
+
+# Exactly one release for the tag — more than one means publishing raced again.
+gh api repos/JonathanConn/lursor/releases --jq '[.[]|select(.tag_name=="v0.2.0")]|length'
 ```
 
 ## Auto-update mechanics

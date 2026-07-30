@@ -56,7 +56,8 @@ if [ "$OS_TAG" = "mac" ] && [ "$ARCH_TAG" != "arm64" ]; then
 fi
 
 SUFFIX="${OS_TAG}-${ASSET_ARCH}.${EXT}"
-SUMS_ASSET="SHA256SUMS-${OS_TAG}-${ARCH_TAG}.txt"
+# One checksum file covers every platform's assets; we look ours up by name.
+SUMS_ASSET="SHA256SUMS.txt"
 
 # --- Uninstall ------------------------------------------------------------
 uninstall() {
