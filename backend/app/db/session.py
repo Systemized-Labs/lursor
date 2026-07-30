@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
@@ -18,7 +18,37 @@ from app.config import get_settings
 
 settings = get_settings()
 
+# How long a connection waits for a peer to release its lock before raising
+# "database is locked". Dev runs routinely have a second backend alive (Electron
+# restarts it on reload; the old detached process group lingers a moment), and
+# startup DDL holds a write lock for longer than SQLite's 5s default allows.
+_BUSY_TIMEOUT_MS = 30_000
+
 engine = create_async_engine(settings.database_url, echo=settings.debug, future=True)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragmas(dbapi_conn, _record) -> None:
+    """Put every connection in WAL mode with a generous busy timeout.
+
+    Rollback-journal mode (SQLite's default) takes a file-level exclusive lock on
+    write, so one backend reading blocks another writing and startup dies with
+    ``OperationalError: database is locked``. WAL lets readers and a writer
+    coexist; the busy timeout absorbs the writer-vs-writer overlap that is left.
+    """
+    cursor = dbapi_conn.cursor()
+    try:
+        # Order matters: ``journal_mode=WAL`` needs the write lock itself, so the
+        # timeout has to be armed first or this very statement is what dies with
+        # "database is locked" against a busy peer.
+        cursor.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # WAL's default (FULL) fsyncs on every commit; NORMAL is the standard WAL
+        # pairing and still crash-safe, losing at most the last commits on power
+        # loss rather than corrupting the file.
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
 
 async_session_factory = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
