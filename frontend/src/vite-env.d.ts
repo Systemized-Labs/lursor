@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+/** App version, inlined from package.json by Vite (see vite.config.ts). */
+declare const __APP_VERSION__: string
+
 /**
  * API surface exposed by the Electron preload bridge (electron/preload.cjs).
  * Undefined when the app runs in a plain browser.

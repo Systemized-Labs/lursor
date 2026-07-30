@@ -94,10 +94,30 @@ The app bundle itself is read-only; all writable state lives under `~/.lursor`
 
 ## Updates
 
-Lursor checks for updates on launch and every six hours, downloads them in the
-background, and asks before restarting (restarting stops any running agents).
-This covers the macOS app and the Linux AppImage. If you installed the `.deb`,
-re-run the installer or download a new one — dpkg owns that install.
+Lursor checks for updates on launch and every six hours, and asks before
+restarting (restarting stops any running agents). How it installs one depends on
+the build:
+
+- **Linux AppImage, and signed macOS builds** — downloaded in the background and
+  installed in place. Nothing to do.
+- **Unsigned macOS builds** — Squirrel.Mac validates the code signature before
+  swapping the app bundle, so it can download an update and then refuse to
+  install it. Until Lursor's releases are signed and notarized, the app detects
+  this, and "Update now" quits Lursor, runs the updater in a Terminal window,
+  and reopens it.
+- **`.deb`** — dpkg owns that install; re-run the installer or download a new one.
+
+To update by hand at any time:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/update.sh | sh
+```
+
+It compares what you have installed against the latest release and does nothing
+if you're current. Add `--check` to see the two versions without installing, or
+`--force` to reinstall regardless. The same `LURSOR_REPO`, `LURSOR_VERSION`, and
+`LURSOR_PREFIX` variables apply, so `LURSOR_VERSION=1.2.3 … | sh` downgrades or
+pins.
 
 ## Not yet supported
 

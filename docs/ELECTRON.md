@@ -97,8 +97,10 @@ Two pieces make that work with a bundled interpreter:
 Local builds without a certificate still work — the hook logs that it found no
 identity and leaves the bundle unsigned.
 
-Auto-update (`electron-updater`) is wired in `main.cjs` and covers macOS and the
-Linux AppImage. See [DISTRIBUTION.md](./DISTRIBUTION.md) for the release runbook,
-the CI secrets, and the Homebrew tap.
+Auto-update is wired in `main.cjs` and covers the Linux AppImage and signed macOS
+builds via `electron-updater`. Unsigned macOS builds — which Squirrel.Mac refuses
+to update — fall back to `scripts/update.sh`, run from Terminal after the app
+quits. See [DISTRIBUTION.md](./DISTRIBUTION.md) for that fallback, the release
+runbook, the CI secrets, and the Homebrew tap.
 
 Windows remains unbuilt.

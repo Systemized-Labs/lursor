@@ -8,7 +8,7 @@ Build an agent, point it at a folder on your disk, and watch it work — with a 
 terminal, file tree, git diff, and dev-server preview beside every conversation.
 Your machine, your keys, your models.
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Security](#security) · [Design record](AGENTS.md)
+[Install](#install) · [How it works](#how-it-works) · [Security](#security) · [Design record](AGENTS.md)
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=for-the-badge)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/JonathanConn/lursor?style=for-the-badge&color=black)](https://github.com/JonathanConn/lursor/releases)
@@ -63,7 +63,50 @@ library of prompt templates.
 - **Chat UIs** give you a message box. Lursor gives the agent a shell, a
   filesystem, and a git working tree — and shows you all three while it works.
 
-## Quick start
+## Install
+
+The desktop app bundles its own backend — a frozen, self-contained Python
+interpreter that Lursor starts and stops for you. No Python, `uv`, `bun`, or
+manual server required.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh
+```
+
+This downloads the prebuilt app for your OS/arch from GitHub Releases, verifies
+it against the published SHA-256, and installs it — `Lursor.app` into
+`/Applications` on macOS (signed and notarized, so Gatekeeper accepts it), or
+`Lursor.AppImage` into `~/.local/bin` plus an app-menu entry on Linux.
+Re-running it upgrades in place.
+
+Or on macOS, via Homebrew:
+
+```bash
+brew tap --trust JonathanConn/lursor
+brew install --cask lursor
+```
+
+To update an existing install — checks your version against the latest release
+and does nothing if you're current:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/update.sh | sh
+```
+
+Pin a version with `LURSOR_VERSION=1.2.3`, change the Linux install dir with
+`LURSOR_PREFIX`, and remove it again with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh -s -- --uninstall
+```
+
+Requires macOS on Apple Silicon or Linux x86_64; Windows and Intel macOS aren't
+built yet — run from source there. On first launch, paste an
+[OpenRouter key](https://openrouter.ai/keys) or point at a local
+OpenAI-compatible endpoint. [docs/INSTALL.md](docs/INSTALL.md) covers the
+walkthrough, where your data lives, and how updates work.
+
+## Run from source
 
 One command, both processes:
 

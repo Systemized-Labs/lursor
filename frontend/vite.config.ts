@@ -3,8 +3,14 @@ import tailwindcss from "@tailwindcss/vite"
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 
+import pkg from "./package.json" with { type: "json" }
+
 // https://vite.dev/config/
 export default defineConfig({
+  // The app version, inlined at build time. package.json is the single source
+  // of truth — electron-builder names every release artifact from the same
+  // field, so what the UI shows always matches the build it shipped in.
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   // Relative asset paths so the built app loads correctly from file:// inside
   // Electron (the browser build is unaffected — the dev server ignores base).
   base: "./",

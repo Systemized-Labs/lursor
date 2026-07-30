@@ -107,6 +107,24 @@ export function SettingsPage() {
           <IntegrationsSection />
         </TabsContent>
       </Tabs>
+
+      <VersionFooter />
+    </div>
+  )
+}
+
+/**
+ * The running build, parked in the bottom-right corner of every tab. Sits
+ * outside <Tabs> so switching tabs never hides it — this is the answer to "what
+ * am I actually running", which matters most when reporting a bug or checking
+ * whether an update landed. Selectable, so it can be pasted into an issue.
+ */
+function VersionFooter() {
+  return (
+    <div className="flex justify-end">
+      <p className="select-text text-xs text-muted-foreground tabular-nums">
+        Lursor v{__APP_VERSION__}
+      </p>
     </div>
   )
 }
