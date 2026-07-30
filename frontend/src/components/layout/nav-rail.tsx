@@ -11,6 +11,11 @@ import {
 import { useState, type DragEvent, type ReactNode } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 
+// Imported rather than referenced as "/lursor_icon.png" out of public/: the
+// packaged app loads index.html over file://, where a root-absolute URL points
+// at the filesystem root and the image silently fails to load. Importing lets
+// Vite emit a URL that honours `base` (see vite.config.ts).
+import lursorIcon from "@/assets/lursor_icon.png"
 import { useGitHubConfig } from "@/api/github"
 import type { Workspace, WorkspaceFolder } from "@/api/types"
 import { Button } from "@/components/ui/button"
@@ -297,7 +302,7 @@ export function NavRail({
               )}
             >
               <img
-                src="/lursor_icon.png"
+                src={lursorIcon}
                 alt="Lursor"
                 className="size-9 shrink-0 rounded-md object-contain"
               />
