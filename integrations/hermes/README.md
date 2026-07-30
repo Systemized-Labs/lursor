@@ -10,8 +10,14 @@ picks up skills from `~/.hermes/skills`. This is the reverse direction.
 
 ## Install
 
-One command. Hermes's installer accepts an `owner/repo/subdir` shorthand, so it
-can pull this plugin straight out of the Lursor monorepo:
+The easiest route is **Lursor → Settings → Integrations**, which detects your
+Hermes install, works out which step you are on, and shows the one command that
+moves it forward with a copy button. It is deliberately detect-and-instruct
+rather than one-click: Lursor reads another tool's directory and never writes to
+it (see `backend/app/api/integrations.py`).
+
+Otherwise, one command. Hermes's installer accepts an `owner/repo/subdir`
+shorthand, so it can pull this plugin straight out of the Lursor monorepo:
 
 ```bash
 hermes plugins install JonathanConn/lursor/integrations/hermes/lursor

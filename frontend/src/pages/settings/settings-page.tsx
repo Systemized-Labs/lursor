@@ -8,6 +8,7 @@ import { AgentDefaultsSection } from "./agent-defaults-section"
 import { AppearanceSection } from "./appearance-section"
 import { CompactionSection } from "./compaction-section"
 import { DefaultAgentsSection } from "./default-agents-section"
+import { IntegrationsSection } from "./integrations-section"
 import {
   PROVIDER_TABS,
   ProvidersSection,
@@ -15,7 +16,7 @@ import {
   type ProviderTab,
 } from "./providers-section"
 
-const TABS = ["general", "appearance", "providers"] as const
+const TABS = ["general", "appearance", "providers", "integrations"] as const
 type Tab = (typeof TABS)[number]
 
 function isTab(value: string | null): value is Tab {
@@ -27,9 +28,11 @@ function isTab(value: string | null): value is Tab {
  * defaults (per-command agents, delegation depth, context compaction);
  * "Providers" groups the model sources (OpenRouter key, custom
  * endpoints), picked via a segmented control that sits inline on the tab row so
- * the section keeps the full page width. LAIOS is its own top-level
- * destination in the sidebar. The active tab is mirrored to `?tab=` so it
- * survives reloads and is deep-linkable.
+ * the section keeps the full page width. "Integrations" pairs Lursor with other
+ * agent tools on this machine — detection plus the commands to run, never a
+ * write into another tool's directory. LAIOS is its own top-level destination in
+ * the sidebar. The active tab is mirrored to `?tab=` so it survives reloads and
+ * is deep-linkable.
  */
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -65,6 +68,7 @@ export function SettingsPage() {
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="providers">Providers</TabsTrigger>
+            <TabsTrigger value="integrations">Integrations</TabsTrigger>
           </TabsList>
 
           {/* Provider sub-selector lives inline here (rather than a second tab
@@ -96,6 +100,9 @@ export function SettingsPage() {
         </TabsContent>
         <TabsContent value="providers">
           <ProvidersSection value={providerTab} />
+        </TabsContent>
+        <TabsContent value="integrations" className="space-y-6">
+          <IntegrationsSection />
         </TabsContent>
       </Tabs>
     </div>
