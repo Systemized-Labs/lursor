@@ -1,4 +1,8 @@
 name: lursor
+# Hermes checks this at install time and refuses a plugin built for a newer
+# installer than it has. Declaring it makes the failure legible instead of
+# leaving the installer to guess.
+manifest_version: 1
 version: 0.2.0
 description: >-
   Drive a local Lursor control room from Hermes — delegate work to Lursor agents

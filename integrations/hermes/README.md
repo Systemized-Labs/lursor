@@ -10,20 +10,45 @@ picks up skills from `~/.hermes/skills`. This is the reverse direction.
 
 ## Install
 
-The plugin is the `lursor/` directory here. Symlink it into Hermes's plugin
-directory so it tracks the repo:
+One command. Hermes's installer accepts an `owner/repo/subdir` shorthand, so it
+can pull this plugin straight out of the Lursor monorepo:
 
 ```bash
-ln -s "$(pwd)/integrations/hermes/lursor" ~/.hermes/plugins/lursor
-hermes plugins enable lursor
+hermes plugins install JonathanConn/lursor/integrations/hermes/lursor
 ```
 
-Then check it loaded:
+It clones the repo, extracts this directory, names it from the manifest
+(`~/.hermes/plugins/lursor`), and offers to enable it. Then check it loaded:
 
 ```bash
 hermes plugins list
 hermes lursor status
 ```
+
+Decline the `allow_tool_override` prompt — that capability is for replacing
+built-in tools like `shell_exec`, and this plugin never registers with
+`override=True`.
+
+**Upgrading.** A subdir install has no `.git` in it, so `hermes plugins update
+lursor` cannot work — it reports *"not installed from git"*. Re-run the install
+with force instead.
+
+### Developing against a checkout
+
+To have Hermes load your working copy live, symlink it instead:
+
+```bash
+ln -sfn "$(pwd)/integrations/hermes/lursor" ~/.hermes/plugins/lursor
+hermes plugins enable lursor
+```
+
+Use `-n` with `-f`. Without it, a second run resolves *through* the existing
+symlink and creates a recursive `lursor/lursor` link inside your checkout —
+which is easy to commit by accident.
+
+Either way, Hermes discovers plugins once per process and caches the result, so
+**restart Hermes** after installing. A new session in an already-running process
+will not pick it up.
 
 No dependencies — the plugin is stdlib-only on purpose, because it is imported by
 whatever interpreter the user's Hermes runs in.
