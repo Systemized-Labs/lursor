@@ -1,9 +1,10 @@
 name: lursor
-version: 0.1.0
+version: 0.2.0
 description: >-
   Drive a local Lursor control room from Hermes — delegate work to Lursor agents
-  rooted in real directories, follow autonomous goal runs, and read back the
-  reply, the git diff and the files they touched.
+  rooted in real directories, follow autonomous goal runs, read back the reply
+  and the git diff, put agents on a schedule, manage local models, and report
+  what it all cost.
 author: Lursor
 homepage: https://github.com/JonathanConn/lursor
 provides_tools:
@@ -17,6 +18,13 @@ provides_tools:
   - lursor_diff
   - lursor_list_files
   - lursor_read_file
+  - lursor_usage
+  - lursor_schedules
+  - lursor_create_schedule
+  - lursor_schedule_control
+  - lursor_local_models
+  - lursor_serve_model
+  - lursor_github
 provides_hooks:
   - pre_llm_call
 # LURSOR_API_BASE is deliberately NOT declared under requires_env: the default

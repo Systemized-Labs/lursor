@@ -12,6 +12,7 @@ import functools
 import json
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from . import client
 from .client import LursorError
@@ -643,6 +644,516 @@ def read_file(args, **kwargs):
             # Lursor truncates oversize files server-side; pass its verdict through
             # rather than re-deciding here.
             "truncated": bool(data.get("truncated")),
+        }
+    )
+
+
+# --- spend -----------------------------------------------------------------------
+
+_USAGE_PATHS = {
+    "total": "/analytics/summary",
+    "model": "/analytics/by-model",
+    "workspace": "/analytics/by-workspace",
+    "day": "/analytics/timeseries",
+}
+
+
+@handler
+def usage(args, **kwargs):
+    group_by = (args.get("group_by") or "total").strip()
+    path = _USAGE_PATHS.get(group_by)
+    if path is None:
+        return _fail(
+            "Unknown group_by {g!r}. Use one of: {opts}.".format(
+                g=group_by, opts=", ".join(sorted(_USAGE_PATHS))
+            )
+        )
+
+    params = {}
+    if args.get("workspace"):
+        rows = client.request("GET", "/workspaces") or []
+        params["workspace_id"] = client.resolve(rows, args["workspace"], "workspace")["id"]
+    for key in ("model", "kind"):
+        if args.get(key):
+            params[key] = str(args[key]).strip()
+
+    start = (args.get("start") or "").strip()
+    # `days` is the convenient form ("this week"); an explicit start wins.
+    if not start and args.get("days"):
+        span = _int(args, "days", 7, 1, 3650)
+        start = (datetime.now(timezone.utc) - timedelta(days=span)).strftime("%Y-%m-%d")
+    if start:
+        params["start"] = start
+    if args.get("end"):
+        params["end"] = str(args["end"]).strip()
+
+    data = client.request("GET", path, params=params)
+    payload = {"group_by": group_by, "filters": params or "none"}
+    if group_by == "total":
+        payload["totals"] = data
+    else:
+        rows = data or []
+        payload["rows"] = rows
+        payload["count"] = len(rows)
+        payload["cost_usd"] = round(sum(float(r.get("cost_usd") or 0) for r in rows), 6)
+    if not params.get("start"):
+        payload["note"] = "All time — pass days or start to scope this."
+    return _ok(payload)
+
+
+# --- standing orders -------------------------------------------------------------
+
+
+def _schedule_summary(row):
+    last = row.get("last_run") or None
+    return {
+        "schedule_id": row.get("id"),
+        "name": row.get("name"),
+        "enabled": bool(row.get("enabled")),
+        "cron": row.get("cron"),
+        "timezone": row.get("timezone"),
+        "run_type": row.get("run_type"),
+        "workspace_id": row.get("workspace_id"),
+        "agent_id": row.get("agent_id"),
+        "prompt": row.get("prompt"),
+        "next_fire_at": row.get("next_fire_at"),
+        "last_fired_at": row.get("last_fired_at"),
+        "last_run": (
+            {
+                "status": last.get("status"),
+                "thread_id": last.get("thread_id"),
+                "fired_at": last.get("fired_at"),
+                "detail": last.get("detail") or "",
+            }
+            if isinstance(last, dict)
+            else None
+        ),
+    }
+
+
+@handler
+def schedules(args, **kwargs):
+    schedule_id = (args.get("schedule_id") or "").strip()
+    if schedule_id:
+        row = client.request("GET", "/schedules/{sid}".format(sid=schedule_id))
+        limit = _int(args, "limit", 10, 1, 50)
+        runs = (
+            client.request(
+                "GET",
+                "/schedules/{sid}/runs".format(sid=schedule_id),
+                params={"limit": limit},
+            )
+            or []
+        )
+        payload = _schedule_summary(row)
+        payload["runs"] = [
+            {
+                "status": r.get("status"),
+                "fired_at": r.get("fired_at"),
+                "thread_id": r.get("thread_id"),
+                "missed_count": r.get("missed_count"),
+                "detail": r.get("detail") or "",
+            }
+            for r in runs
+        ]
+        payload["hint"] = (
+            "Read what a fire actually did with lursor_messages on its thread_id."
+        )
+        return _ok(payload)
+
+    workspace_id = None
+    if args.get("workspace"):
+        rows = client.request("GET", "/workspaces") or []
+        workspace_id = client.resolve(rows, args["workspace"], "workspace")["id"]
+    rows = client.request("GET", "/schedules", params={"workspace_id": workspace_id}) or []
+    return _ok(
+        {
+            "schedules": [_schedule_summary(r) for r in rows],
+            "count": len(rows),
+        }
+    )
+
+
+@handler
+def create_schedule(args, **kwargs):
+    cron = (args.get("cron") or "").strip()
+    prompt = (args.get("prompt") or "").strip()
+    if not cron:
+        return _fail("No cron expression given, e.g. '0 9 * * 1-5' for 9am weekdays.")
+    if not prompt:
+        return _fail("No prompt given — it is the turn each fire sends.")
+
+    run_type = (args.get("run_type") or "chat").strip()
+    if run_type not in ("chat", "goal"):
+        return _fail("run_type must be 'chat' or 'goal', not {rt!r}.".format(rt=run_type))
+
+    tz = (args.get("timezone") or "").strip() or client.local_timezone()
+
+    # Validate the expression before creating anything, so a typo comes back as a
+    # readable error plus nothing half-made. The preview doubles as confirmation
+    # that the schedule means what the caller intended.
+    preview = client.request(
+        "POST", "/schedules/preview", body={"cron": cron, "timezone": tz, "count": 5}
+    )
+
+    workspace = _pick(
+        client.request("GET", "/workspaces") or [], args.get("workspace"), "workspace"
+    )
+    agent = _pick(client.request("GET", "/agents") or [], args.get("agent"), "agent")
+
+    body = {
+        "name": (args.get("name") or prompt[:50] or "Hermes schedule").strip(),
+        "description": (args.get("description") or "").strip(),
+        "workspace_id": workspace["id"],
+        "agent_id": agent["id"],
+        "cron": cron,
+        "timezone": tz,
+        "prompt": prompt,
+        "run_type": run_type,
+        "success_criteria": (args.get("success_criteria") or "").strip(),
+    }
+    if args.get("max_iterations"):
+        body["max_iterations"] = _int(args, "max_iterations", 25, 1, 200)
+
+    row = client.request("POST", "/schedules", body=body)
+    payload = _schedule_summary(row)
+    payload["workspace"] = workspace.get("name")
+    payload["agent"] = agent.get("name")
+    payload["next_occurrences"] = (preview or {}).get("occurrences") or []
+    payload["next"] = (
+        "Fire it once now with lursor_schedule_control(action='run_now') to see what "
+        "it will do — that does not consume the next slot."
+    )
+    return _ok(payload)
+
+
+@handler
+def schedule_control(args, **kwargs):
+    schedule_id = (args.get("schedule_id") or "").strip()
+    action = (args.get("action") or "").strip()
+    if not schedule_id:
+        return _fail("No schedule_id given.")
+    if action not in ("run_now", "enable", "disable", "delete"):
+        return _fail(
+            "Unknown action {a!r}. Use run_now, enable, disable or delete.".format(a=action)
+        )
+    path = "/schedules/{sid}".format(sid=schedule_id)
+
+    if action == "run_now":
+        try:
+            run = client.request("POST", path + "/run-now", timeout=120.0)
+        except LursorError as exc:
+            if exc.status == 409:
+                return _ok(
+                    {
+                        "schedule_id": schedule_id,
+                        "fired": False,
+                        "detail": "This schedule already has a run in flight.",
+                    }
+                )
+            raise
+        return _ok(
+            {
+                "schedule_id": schedule_id,
+                "fired": True,
+                "status": run.get("status"),
+                "thread_id": run.get("thread_id"),
+                "detail": run.get("detail") or "",
+                "next": (
+                    "Follow it with lursor_run_status on the thread_id. The "
+                    "schedule's own clock was not moved."
+                ),
+            }
+        )
+
+    if action == "delete":
+        # Irreversible, so name what was destroyed in the result.
+        row = client.request("GET", path)
+        client.request("DELETE", path)
+        return _ok(
+            {
+                "schedule_id": schedule_id,
+                "deleted": True,
+                "name": row.get("name"),
+                "detail": (
+                    "Schedule deleted permanently. Conversations it already opened "
+                    "are untouched."
+                ),
+            }
+        )
+
+    row = client.request("PATCH", path, body={"enabled": action == "enable"})
+    return _ok(
+        {
+            "schedule_id": schedule_id,
+            "name": row.get("name"),
+            "enabled": bool(row.get("enabled")),
+            "next_fire_at": row.get("next_fire_at"),
+        }
+    )
+
+
+# --- local models (laios) --------------------------------------------------------
+
+
+def _connection(ref):
+    rows = client.request("GET", "/laios/connections") or []
+    if not rows:
+        raise LursorError(
+            "No laios connections are configured in Lursor, so there are no local "
+            "model daemons to drive."
+        )
+    if ref:
+        return client.resolve(rows, ref, "connection")
+    if len(rows) == 1:
+        return rows[0]
+    names = ", ".join((r.get("name") or "?") for r in rows)
+    raise LursorError(
+        "Which laios connection? Available: {names}. Pass 'connection'.".format(names=names)
+    )
+
+
+def _matches(needle, *fields):
+    if not needle:
+        return True
+    low = needle.strip().lower()
+    return any(low in str(f or "").lower() for f in fields)
+
+
+@handler
+def local_models(args, **kwargs):
+    view = (args.get("view") or "instances").strip()
+    if view == "connections":
+        rows = client.request("GET", "/laios/connections") or []
+        out = []
+        for r in rows:
+            entry = {
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "base_url": r.get("base_url"),
+            }
+            # Reachability is a live probe per connection; report the failure
+            # inline rather than letting one dead daemon fail the whole listing.
+            try:
+                st = client.request(
+                    "GET", "/laios/connections/{cid}/status".format(cid=r.get("id"))
+                )
+                entry["reachable"] = bool(st.get("reachable"))
+                entry["role"] = st.get("role")
+                entry["version"] = st.get("version")
+                if st.get("error"):
+                    entry["error"] = st["error"]
+            except LursorError as exc:
+                entry["reachable"] = False
+                entry["error"] = exc.message
+            out.append(entry)
+        return _ok({"connections": out, "count": len(out)})
+
+    conn = _connection(args.get("connection"))
+    cid = conn["id"]
+    search = args.get("search")
+    base = "/laios/connections/{cid}".format(cid=cid)
+
+    if view == "catalog":
+        rows = client.request("GET", base + "/catalog", timeout=60.0) or []
+        kept = [
+            r
+            for r in rows
+            if _matches(search, r.get("id"), r.get("name"), r.get("model"))
+        ]
+        return _ok(
+            {
+                "connection": conn.get("name"),
+                "recipes": [
+                    {
+                        "recipe_id": r.get("id"),
+                        "name": r.get("name"),
+                        "engine": r.get("engine"),
+                        "model": r.get("model"),
+                        "vram_estimate_mb": r.get("vram_estimate_mb"),
+                        "max_model_len": r.get("max_model_len"),
+                        "capabilities": r.get("capabilities") or [],
+                        "cluster_only": bool(r.get("cluster_only")),
+                    }
+                    for r in kept
+                ],
+                "returned": len(kept),
+                "total": len(rows),
+                "hint": "Pass a recipe_id to lursor_serve_model to start one.",
+            }
+        )
+
+    if view == "models":
+        rows = client.request("GET", base + "/models", timeout=60.0) or []
+        rows = rows if isinstance(rows, list) else rows.get("models") or []
+        kept = [r for r in rows if _matches(search, r.get("id"), r.get("name"))]
+        return _ok(
+            {"connection": conn.get("name"), "models": kept, "returned": len(kept)}
+        )
+
+    if view == "jobs":
+        rows = client.request("GET", base + "/jobs", timeout=60.0) or []
+        return _ok({"connection": conn.get("name"), "jobs": rows})
+
+    if view != "instances":
+        return _fail(
+            "Unknown view {v!r}. Use connections, catalog, models, instances or "
+            "jobs.".format(v=view)
+        )
+
+    rows = client.request("GET", base + "/instances", timeout=60.0) or []
+    return _ok(
+        {
+            "connection": conn.get("name"),
+            "instances": [
+                {
+                    "instance_id": r.get("id"),
+                    "recipe_id": r.get("recipe_id"),
+                    "model_id": r.get("model_id"),
+                    "served_name": r.get("served_name"),
+                    "engine": r.get("engine"),
+                    "status": r.get("status"),
+                    "endpoint": r.get("endpoint"),
+                    "vram_allocated_mb": r.get("vram_allocated_mb"),
+                    "error": r.get("error"),
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+            "running": sum(1 for r in rows if r.get("status") == "running"),
+        }
+    )
+
+
+@handler
+def serve_model(args, **kwargs):
+    action = (args.get("action") or "").strip()
+    if action not in ("serve", "stop"):
+        return _fail("action must be 'serve' or 'stop', not {a!r}.".format(a=action))
+    conn = _connection(args.get("connection"))
+    base = "/laios/connections/{cid}".format(cid=conn["id"])
+
+    if action == "stop":
+        instance_id = (args.get("instance_id") or "").strip()
+        if not instance_id:
+            return _fail(
+                "No instance_id given — see lursor_local_models(view='instances')."
+            )
+        row = client.request(
+            "POST",
+            base + "/instances/{iid}/stop".format(iid=instance_id),
+            timeout=90.0,
+        )
+        return _ok(
+            {
+                "connection": conn.get("name"),
+                "instance_id": instance_id,
+                "status": (row or {}).get("status"),
+                "detail": "Stop requested; VRAM frees once it reaches 'stopped'.",
+            }
+        )
+
+    recipe = (args.get("recipe") or "").strip()
+    if not recipe:
+        return _fail(
+            "No recipe given — pick a recipe_id from "
+            "lursor_local_models(view='catalog')."
+        )
+    body = {"recipe": recipe}
+    for key in ("max_model_len", "port", "served_name", "solo", "gpu_memory_utilization"):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    # Serving can involve a weights download, so the daemon answers with an
+    # instance in a transitional state rather than a ready one.
+    row = client.request("POST", base + "/serve", body=body, timeout=180.0) or {}
+    status = row.get("status")
+    return _ok(
+        {
+            "connection": conn.get("name"),
+            "instance_id": row.get("instance_id") or row.get("id"),
+            "recipe_id": row.get("recipe_id") or recipe,
+            "served_name": row.get("served_name"),
+            "status": status,
+            "endpoint": row.get("endpoint"),
+            "error": row.get("error"),
+            "next": (
+                "Poll lursor_local_models(view='instances') until status is "
+                "'running' before pointing an agent at it, then stop it with "
+                "action='stop' when the work is done."
+            ),
+        }
+    )
+
+
+# --- github ----------------------------------------------------------------------
+
+
+@handler
+def github(args, **kwargs):
+    action = (args.get("action") or "").strip()
+    if action == "repos":
+        limit = _int(args, "limit", 30, 1, 100)
+        try:
+            rows = client.request(
+                "GET", "/github/repos", params={"per_page": limit}, timeout=60.0
+            ) or []
+        except LursorError as exc:
+            if exc.status in (400, 404, 409):
+                return _fail(
+                    "No GitHub account is connected to Lursor — connect one in its "
+                    "settings first. ({detail})".format(detail=exc.message)
+                )
+            raise
+        search = args.get("search")
+        kept = [
+            r
+            for r in rows
+            if _matches(search, r.get("full_name"), r.get("description"))
+        ]
+        return _ok(
+            {
+                "repos": [
+                    {
+                        "full_name": r.get("full_name"),
+                        "private": bool(r.get("private")),
+                        "default_branch": r.get("default_branch"),
+                        "description": (r.get("description") or "")[:160],
+                        "updated_at": r.get("updated_at"),
+                    }
+                    for r in kept
+                ],
+                "returned": len(kept),
+                "hint": "Clone one with action='clone' and its full_name.",
+            }
+        )
+
+    if action != "clone":
+        return _fail("action must be 'repos' or 'clone', not {a!r}.".format(a=action))
+
+    repo = (args.get("repo") or "").strip()
+    if not repo:
+        return _fail("No repo given — pass 'owner/name' or a clone URL.")
+    body = {}
+    if repo.startswith("http://") or repo.startswith("https://") or repo.endswith(".git"):
+        body["clone_url"] = repo
+    else:
+        body["repo_full_name"] = repo
+    if args.get("name"):
+        body["name"] = str(args["name"]).strip()
+    if args.get("path"):
+        body["path"] = str(args["path"]).strip()
+
+    # A clone is a real git fetch over the network; give it room.
+    ws = client.request("POST", "/github/clone", body=body, timeout=300.0)
+    return _ok(
+        {
+            "workspace_id": ws.get("id"),
+            "workspace": ws.get("name"),
+            "path": ws.get("path"),
+            "repo": repo,
+            "next": (
+                "The workspace is ready — delegate against it with lursor_delegate."
+            ),
         }
     )
 

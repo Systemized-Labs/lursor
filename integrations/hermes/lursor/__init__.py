@@ -30,6 +30,13 @@ _TOOLS = (
     (schemas.DIFF, tools.diff),
     (schemas.LIST_FILES, tools.list_files),
     (schemas.READ_FILE, tools.read_file),
+    (schemas.USAGE, tools.usage),
+    (schemas.SCHEDULES, tools.schedules),
+    (schemas.CREATE_SCHEDULE, tools.create_schedule),
+    (schemas.SCHEDULE_CONTROL, tools.schedule_control),
+    (schemas.LOCAL_MODELS, tools.local_models),
+    (schemas.SERVE_MODEL, tools.serve_model),
+    (schemas.GITHUB, tools.github),
 )
 
 

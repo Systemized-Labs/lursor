@@ -55,6 +55,13 @@ All are registered under the `lursor` toolset.
 | `lursor_diff` | Uncommitted git changes across the workspace |
 | `lursor_list_files` | List a directory inside a workspace |
 | `lursor_read_file` | Read a file inside a workspace |
+| `lursor_usage` | Token/cost rollups — total, per model, per workspace, per day |
+| `lursor_schedules` | List standing orders; one schedule's run history |
+| `lursor_create_schedule` | Put an agent on a cron expression, in a real timezone |
+| `lursor_schedule_control` | `run_now` / `enable` / `disable` / `delete` |
+| `lursor_local_models` | laios daemons: connections, catalog, models, instances, jobs |
+| `lursor_serve_model` | Start or stop a local model on your own hardware |
+| `lursor_github` | List the connected account's repos; clone one into a new workspace |
 
 Also registered: a `pre_llm_call` hook that tells the agent when a background
 delegation has landed, a `/lursor` slash command, a `hermes lursor` CLI command,
@@ -74,6 +81,35 @@ and a bundled `delegating-to-lursor` skill (`skill_view("lursor:delegating-to-lu
 `goal` and `execute_plan` default to not waiting, since they run for minutes;
 poll them with `lursor_run_status`. Everything else waits inline, bounded by
 `timeout_seconds` (default 180).
+
+### The capacity-manager loop
+
+The reason `lursor_serve_model` and `lursor_local_models` are here: Hermes can
+provision compute, use it, and give it back.
+
+1. `lursor_local_models(view="catalog", search=…)` — pick a recipe that fits the
+   VRAM the machine actually has.
+2. `lursor_serve_model(action="serve", recipe=…)` — start it. The instance comes
+   back `pulling` or `starting`, **not** ready; poll `view="instances"` until it
+   reports `running`.
+3. `lursor_delegate` to a Lursor agent configured against that model.
+4. `lursor_serve_model(action="stop", instance_id=…)` — free the VRAM.
+
+`lursor_usage(group_by="model")` is what makes this worth doing: it shows local
+runs at `$0.00` next to the cloud spend they displaced.
+
+### Schedules
+
+`lursor_create_schedule` validates the cron expression through
+`POST /schedules/preview` *before* creating anything, and returns the next five
+fire times so a mistake is visible rather than discovered next Tuesday. The
+timezone defaults to this machine's IANA zone, read off `/etc/localtime` — a
+model has no reliable way to know the operator's, and a schedule's whole point is
+that 9am survives DST.
+
+`run_now` fires immediately **without** consuming the next slot or moving the
+clock, which is how you test what tonight's run will do. Prefer `disable` to
+`delete`; `delete` is irreversible, so the result names what it destroyed.
 
 ## Design notes
 
@@ -99,6 +135,13 @@ ones — and answers with an SSE event stream. `tools`/`context` are sent empty
 deliberately: the tools a run may use are the Lursor agent's own, configured in
 Lursor.
 
+**Validation errors arrive as a list, not a string.** A hand-raised
+`HTTPException` puts a string in FastAPI's `detail`, but a schema rejection (422)
+puts a list of `{loc, msg, type}` entries — and 422 is the common case here (bad
+cron, unknown timezone, out-of-range iterations). `client._format_detail`
+flattens both shapes, so a bad cron reports *"cron: Expected 5 space-separated
+fields… got 3"* instead of an opaque type error.
+
 Per the Hermes plugin contract, handlers return a JSON string and never raise;
 failures come back as `{"error": ...}` with a message written to be read by a
 model. Reply text, patches and transcripts are truncated to keep a long run from
@@ -110,10 +153,11 @@ swamping Hermes's context, and truncation is always reported rather than silent.
 python -m pytest integrations/hermes/tests -q
 ```
 
-30 unit tests, no backend or network needed — they cover the AG-UI body shape,
-SSE framing, name resolution, history re-sending, the truncation reports, and the
-never-raise contract. They were also validated against a live Lursor backend
-driven by a stub OpenAI-compatible model server.
+64 unit tests, no backend or network needed — they cover the AG-UI body shape,
+SSE framing, name resolution, history re-sending, the truncation reports, cron
+validation ordering, the laios views, and the never-raise contract. They were
+also validated against a live Lursor backend driven by a stub OpenAI-compatible
+model server.
 
 ## Security
 

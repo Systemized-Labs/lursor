@@ -1,6 +1,6 @@
 ---
 name: delegating-to-lursor
-description: How to hand coding work to a Lursor agent and verify the result. Use when a task wants a persistent workspace, a long autonomous run, or a different model than the one you are on — and when checking what a delegated run actually changed.
+description: How to hand coding work to a Lursor agent and verify the result, put agents on a schedule, serve local models, and report what it all cost. Use when a task wants a persistent workspace, a long autonomous run, or a different model than the one you are on — and when checking what a delegated run actually changed.
 ---
 
 # Delegating to Lursor
@@ -59,3 +59,53 @@ costs more than the work.
   *refines* the plan instead of carrying it out.
 - **Lursor is unsandboxed and single-user.** Its agents run commands with your
   privileges in the directory you point them at. Delegate accordingly.
+
+## Choosing where the work runs
+
+Each Lursor agent carries its own model, so *which agent you delegate to is which
+model you pay for*. `lursor_agents` shows the model per agent; `lursor_usage`
+with `group_by="model"` shows what each has actually cost. Long mechanical work
+belongs on a local model at zero marginal cost; keep the expensive one for
+judgement.
+
+If the model you want isn't up, you can provision it:
+
+1. `lursor_local_models(view="catalog", search=…)` — find a recipe whose
+   `vram_estimate_mb` fits the machine. Too large fails slowly.
+2. `lursor_serve_model(action="serve", recipe=…)` — the instance returns
+   `pulling`/`starting`, **not ready**. Poll `view="instances"` until `running`
+   before pointing an agent at it.
+3. Delegate.
+4. `lursor_serve_model(action="stop", instance_id=…)` — always give the VRAM back.
+
+Check `view="instances"` first: something may already be serving, and
+double-serving wastes memory.
+
+## Standing orders
+
+`lursor_create_schedule` puts an agent on a cron expression in a real timezone,
+opening a fresh conversation per fire. It validates the expression before
+creating anything and returns the next five fire times — read them back to the
+user, because "every Monday" and "every day in January" are one character apart.
+
+- Use `run_type="goal"` only when the work genuinely needs to run until done, and
+  set `max_iterations`: for an unattended run that is the only bound on spend.
+- `lursor_schedule_control(action="run_now")` tests a schedule without consuming
+  its next slot. Do this before trusting an overnight job.
+- To find out what an overnight run did: `lursor_schedules(schedule_id=…)` for
+  the history, then `lursor_messages` on the `thread_id` of the fire you care
+  about.
+- Prefer `disable` over `delete`. `delete` is irreversible.
+
+## Cloning work in
+
+`lursor_github(action="repos")` lists what the connected account can reach;
+`action="clone"` drops one into a brand-new workspace you can delegate against
+immediately. Cloning creates state, so only do it when asked.
+
+## Reporting cost
+
+`lursor_usage` answers "what have the agents been spending". Scope it with `days`
+rather than pulling all time, and pick the rollup that matches the question:
+`model` for which model dominates, `workspace` for which project, `day` for
+whether it is trending up.

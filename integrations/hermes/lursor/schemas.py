@@ -274,3 +274,334 @@ READ_FILE = {
         "required": ["workspace", "path"],
     },
 }
+
+
+# --- spend -----------------------------------------------------------------------
+
+USAGE = {
+    "name": "lursor_usage",
+    "description": (
+        "Token and cost totals for Lursor's agent runs, rolled up however you ask: "
+        "one grand total, per model, per workspace, or per day. Every rollup can be "
+        "filtered and scoped to a date window. Use this to answer what the agents "
+        "have been spending, which model or project dominates the bill, and whether "
+        "usage is trending up — including how much work ran free on local models."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "group_by": {
+                "type": "string",
+                "enum": ["total", "model", "workspace", "day"],
+                "description": "How to roll the numbers up. Defaults to 'total'.",
+            },
+            "days": {
+                "type": "integer",
+                "description": (
+                    "Only count the last N days. Simpler than start/end for "
+                    "'this week' style questions; ignored when start is given."
+                ),
+            },
+            "start": {
+                "type": "string",
+                "description": "Earliest day to count, as YYYY-MM-DD.",
+            },
+            "end": {
+                "type": "string",
+                "description": "Latest day to count, as YYYY-MM-DD.",
+            },
+            "workspace": dict(
+                _WORKSPACE, description=_WORKSPACE["description"] + " Optional filter."
+            ),
+            "model": {
+                "type": "string",
+                "description": "Only count runs on this exact model id.",
+            },
+            "kind": {
+                "type": "string",
+                "description": (
+                    "Only count runs of this kind (e.g. 'chat', 'goal', 'cron')."
+                ),
+            },
+        },
+    },
+}
+
+
+# --- standing orders -------------------------------------------------------------
+
+_SCHEDULE_ID = {
+    "type": "string",
+    "description": "Schedule id (see lursor_schedules).",
+}
+
+SCHEDULES = {
+    "name": "lursor_schedules",
+    "description": (
+        "List Lursor's standing orders — agents put on a cron expression, each "
+        "firing in its own timezone and opening a fresh conversation. Shows when "
+        "each next fires, when it last fired, and how that last fire went. Pass a "
+        "schedule_id for one schedule plus its run history, which is how you find "
+        "out what an overnight run actually did."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "schedule_id": dict(
+                _SCHEDULE_ID,
+                description="Narrow to one schedule and include its run history.",
+            ),
+            "workspace": dict(
+                _WORKSPACE, description=_WORKSPACE["description"] + " Optional filter."
+            ),
+            "limit": {
+                "type": "integer",
+                "description": "How many history rows to return (default 10, max 50).",
+            },
+        },
+    },
+}
+
+CREATE_SCHEDULE = {
+    "name": "lursor_create_schedule",
+    "description": (
+        "Put a Lursor agent on a recurring schedule. Each fire opens a fresh "
+        "conversation and sends the prompt — either as a single turn, or as a full "
+        "autonomous goal run. Anything due while Lursor was closed is reported, "
+        "never silently replayed.\n\n"
+        "The cron expression is validated before anything is created, and the "
+        "result lists the next few fire times so you can check the schedule means "
+        "what you intended. Use run_type='goal' for work that needs to run until "
+        "it is actually done, and remember an unattended goal run's only spend "
+        "bound is max_iterations."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Name for the schedule."},
+            "workspace": _WORKSPACE,
+            "agent": {
+                "type": "string",
+                "description": "Agent name or id to run each fire (see lursor_agents).",
+            },
+            "cron": {
+                "type": "string",
+                "description": (
+                    "Five-field cron expression, e.g. '0 9 * * 1-5' for 9am on "
+                    "weekdays."
+                ),
+            },
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "The turn each fire sends. For run_type='goal' this doubles as "
+                    "the success condition unless success_criteria is given."
+                ),
+            },
+            "timezone": {
+                "type": "string",
+                "description": (
+                    "IANA zone the cron is read in, e.g. 'America/New_York'. "
+                    "Defaults to this machine's zone."
+                ),
+            },
+            "run_type": {
+                "type": "string",
+                "enum": ["chat", "goal"],
+                "description": (
+                    "'chat' sends one turn; 'goal' runs autonomously until an "
+                    "evaluator judges it done. Defaults to 'chat'."
+                ),
+            },
+            "success_criteria": {
+                "type": "string",
+                "description": "What 'done' means for a goal fire.",
+            },
+            "max_iterations": {
+                "type": "integer",
+                "description": "Turn cap for a goal fire, 1-200 (Lursor default 25).",
+            },
+            "description": {
+                "type": "string",
+                "description": "Optional note about what this schedule is for.",
+            },
+        },
+        "required": ["workspace", "agent", "cron", "prompt"],
+    },
+}
+
+SCHEDULE_CONTROL = {
+    "name": "lursor_schedule_control",
+    "description": (
+        "Act on an existing schedule: pause it, resume it, fire it immediately, or "
+        "delete it.\n\n"
+        "  run_now — fire once right away WITHOUT consuming the next slot or moving "
+        "the clock. This is how you test what tonight's run will do.\n"
+        "  disable — stop it firing, keep the configuration. Prefer this to delete.\n"
+        "  enable  — resume a paused schedule.\n"
+        "  delete  — remove it permanently; the configuration is gone and cannot be "
+        "recovered. Only do this when the user has clearly asked to."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "schedule_id": _SCHEDULE_ID,
+            "action": {
+                "type": "string",
+                "enum": ["run_now", "enable", "disable", "delete"],
+                "description": "What to do with the schedule.",
+            },
+        },
+        "required": ["schedule_id", "action"],
+    },
+}
+
+
+# --- local models (laios) --------------------------------------------------------
+
+_CONNECTION = {
+    "type": "string",
+    "description": (
+        "laios connection name or id (see view='connections'). Defaults to the only "
+        "one when there is just one."
+    ),
+}
+
+LOCAL_MODELS = {
+    "name": "lursor_local_models",
+    "description": (
+        "Inspect the local model daemons (laios) Lursor can drive — your own "
+        "hardware rather than a cloud provider. Views:\n"
+        "  connections — the daemons Lursor knows, and whether each is reachable\n"
+        "  catalog     — recipes available to serve, with engine, VRAM estimate and "
+        "capabilities. A recipe id is what lursor_serve_model needs.\n"
+        "  models      — what is actually downloaded on disk\n"
+        "  instances   — what is running right now, with status, port and endpoint\n"
+        "  jobs        — in-flight model downloads with progress\n"
+        "Use this before serving anything, to pick a recipe that fits the VRAM you "
+        "have and to check you are not about to double-serve something."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "view": {
+                "type": "string",
+                "enum": ["connections", "catalog", "models", "instances", "jobs"],
+                "description": "What to look at. Defaults to 'instances'.",
+            },
+            "connection": _CONNECTION,
+            "search": {
+                "type": "string",
+                "description": (
+                    "Filter catalog or model entries by substring — the catalog is "
+                    "long, so narrow it."
+                ),
+            },
+        },
+    },
+}
+
+SERVE_MODEL = {
+    "name": "lursor_serve_model",
+    "description": (
+        "Start or stop a local model on a laios daemon. This is what makes Hermes a "
+        "capacity manager rather than just a caller: spin a model up on your own "
+        "hardware, delegate work to a Lursor agent pointed at it, then free the "
+        "VRAM again.\n\n"
+        "Serving needs a recipe id from lursor_local_models(view='catalog'). Check "
+        "the recipe's VRAM estimate against what the machine has — a too-large "
+        "recipe fails slowly. Serving can take a while if the weights still need "
+        "downloading; the instance comes back in a 'pulling' or 'starting' state "
+        "and you should poll view='instances' rather than assume it is ready. "
+        "Always stop what you started once the work is done."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["serve", "stop"],
+                "description": "Start a recipe, or stop a running instance.",
+            },
+            "connection": _CONNECTION,
+            "recipe": {
+                "type": "string",
+                "description": "Recipe id to serve (required for action='serve').",
+            },
+            "instance_id": {
+                "type": "string",
+                "description": "Instance to stop (required for action='stop').",
+            },
+            "max_model_len": {
+                "type": "integer",
+                "description": "Override the recipe's context length.",
+            },
+            "served_name": {
+                "type": "string",
+                "description": "Name the model is served under.",
+            },
+            "port": {"type": "integer", "description": "Override the serving port."},
+            "gpu_memory_utilization": {
+                "type": "number",
+                "description": "Fraction of VRAM the engine may take, e.g. 0.9.",
+            },
+            "solo": {
+                "type": "boolean",
+                "description": "Stop other instances first so this one runs alone.",
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+
+# --- github ----------------------------------------------------------------------
+
+GITHUB = {
+    "name": "lursor_github",
+    "description": (
+        "Work with the GitHub account connected to Lursor.\n"
+        "  repos — list repositories the account can reach, newest activity first\n"
+        "  clone — clone one into a brand-new Lursor workspace, ready to delegate "
+        "against immediately\n"
+        "Cloning creates a workspace, so it changes state: only clone when asked. "
+        "It refuses to clone into a directory that already has anything in it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["repos", "clone"],
+                "description": "List repositories, or clone one.",
+            },
+            "repo": {
+                "type": "string",
+                "description": (
+                    "Repository as 'owner/name' (for action='clone'). A full "
+                    "clone_url works too."
+                ),
+            },
+            "name": {
+                "type": "string",
+                "description": "Workspace name. Defaults to the repository name.",
+            },
+            "path": {
+                "type": "string",
+                "description": (
+                    "Absolute directory to clone into. Must be empty or absent. "
+                    "Defaults to a fresh directory under Lursor's workspaces root."
+                ),
+            },
+            "search": {
+                "type": "string",
+                "description": "Filter the repo listing by substring.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "How many repos to return (default 30, max 100).",
+            },
+        },
+        "required": ["action"],
+    },
+}

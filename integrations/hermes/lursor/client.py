@@ -88,6 +88,35 @@ def _unreachable(exc):
     )
 
 
+def _format_detail(detail):
+    """Render FastAPI's ``detail`` as one readable line.
+
+    A hand-raised ``HTTPException`` puts a string here, but a schema rejection
+    (422) puts a *list* of ``{loc, msg, type}`` entries — which is exactly the
+    case worth reporting well, since it names the field the caller got wrong.
+    """
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, list):
+        parts = []
+        for item in detail:
+            if isinstance(item, dict) and item.get("msg"):
+                # loc is like ["body", "cron"]; the "body" prefix is noise.
+                loc = [str(p) for p in (item.get("loc") or []) if p != "body"]
+                field = ".".join(loc)
+                parts.append(
+                    "{field}: {msg}".format(field=field, msg=item["msg"])
+                    if field
+                    else str(item["msg"])
+                )
+            else:
+                parts.append(str(item))
+        return "; ".join(p for p in parts if p)
+    if detail:
+        return json.dumps(detail)
+    return ""
+
+
 def _http_error(exc):
     """Turn an HTTPError into a LursorError carrying FastAPI's ``detail``."""
     detail = ""
@@ -95,7 +124,7 @@ def _http_error(exc):
         body = exc.read().decode("utf-8", "replace")
         parsed = json.loads(body)
         if isinstance(parsed, dict):
-            detail = parsed.get("detail") or parsed.get("message") or ""
+            detail = _format_detail(parsed.get("detail") or parsed.get("message") or "")
         detail = detail or body
     except Exception:
         detail = ""
@@ -226,6 +255,27 @@ def stream_chat(thread_id, run_input, deadline=None):
         ) from exc
     finally:
         resp.close()
+
+
+# --- local environment -----------------------------------------------------------
+
+
+def local_timezone():
+    """Best-effort IANA zone name for this machine, falling back to UTC.
+
+    ``ScheduleCreate`` requires a real zone (a schedule's whole point is that 9am
+    survives DST), but a model has no reliable way to know the operator's. Read it
+    off the ``/etc/localtime`` symlink, which is how macOS and Linux both record
+    it; the caller can always pass one explicitly.
+    """
+    try:
+        target = os.readlink("/etc/localtime")
+    except OSError:
+        return "UTC"
+    parts = target.split("/zoneinfo/", 1)
+    if len(parts) == 2 and parts[1]:
+        return parts[1]
+    return "UTC"
 
 
 # --- resource lookup -------------------------------------------------------------
