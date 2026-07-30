@@ -7,6 +7,8 @@ import { useOpenRouterSettings } from "@/api/settings"
 import type { Workspace } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
+import { seedCollapsedDock } from "@/hooks/use-dock-state"
+import { AgentStep } from "./agent-step"
 import { GitHubStep } from "./github-step"
 import { ModelStep } from "./model-step"
 import { ReadyStep } from "./ready-step"
@@ -14,12 +16,13 @@ import { StepRail } from "./step-rail"
 import { completeOnboarding, useOnboardingStatus } from "./use-onboarding"
 import { WorkspaceStep } from "./workspace-step"
 
-const STEP_LABELS = ["Model", "GitHub", "Workspace", "Ready"] as const
+const STEP_LABELS = ["Model", "GitHub", "Workspace", "Agent", "Ready"] as const
 const LAST = STEP_LABELS.length - 1
 
 /**
  * The first-run walkthrough at `/welcome`: bring a model, connect GitHub, open a
- * workspace, then a look at the room before landing in it.
+ * workspace, create the agent that runs in it, then a look at the room before
+ * landing there.
  *
  * Full-screen and outside the AppShell on purpose — there is nothing useful in
  * the sidebar or dock until these are done, and the steps read better with the
@@ -46,7 +49,9 @@ export function WelcomePage() {
           ? 1
           : !status.workspaceReady
             ? 2
-            : LAST
+            : !status.agentReady
+              ? 3
+              : LAST
     )
   }, [status, step])
 
@@ -54,12 +59,21 @@ export function WelcomePage() {
     status.modelReady,
     status.githubReady,
     status.workspaceReady || Boolean(created),
+    status.agentReady,
     false,
   ]
 
   function finish() {
     completeOnboarding()
     const workspaceId = created?.id ?? status.firstWorkspaceId
+    if (workspaceId) {
+      // Land on the conversation itself, full width: the dock's panels only mean
+      // something once there is work in flight, and an empty one beside a first
+      // empty chat is noise. Seeded before navigating so the shell reads it on
+      // mount rather than flashing an open dock. A workspace that already has a
+      // layout keeps it.
+      seedCollapsedDock(workspaceId)
+    }
     navigate(workspaceId ? `/workspaces/${workspaceId}/chat` : "/", {
       replace: true,
     })
@@ -129,6 +143,8 @@ export function WelcomePage() {
                 advance()
               }}
             />
+          ) : step === 3 ? (
+            <AgentStep onCreated={advance} />
           ) : (
             <ReadyStep workspaceName={created?.name} />
           )}

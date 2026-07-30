@@ -45,7 +45,10 @@ alone (`auto_updates true` in the cask).
    touched.
 4. **Open your first workspace** — clone a repo, or point at a folder you already
    have. That folder is where conversations run.
-5. (Optional) The first time an agent uses visual QA, Chromium is downloaded
+5. **Create your first agent** — a name, the model it runs on, and optionally what
+   it should do. Conversations run as an agent, so this is what you'll be talking
+   to; you can rename, re-prompt, and add tools later in Customization.
+6. (Optional) The first time an agent uses visual QA, Chromium is downloaded
    automatically (~150 MB, one time).
 
 To step through it again later: **Settings → General → Setup walkthrough**.

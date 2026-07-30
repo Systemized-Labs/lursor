@@ -1,3 +1,4 @@
+import { useAgents } from "@/api/agents"
 import { useGitHubConfig } from "@/api/github"
 import { useProviders } from "@/api/providers"
 import { useOpenRouterSettings } from "@/api/settings"
@@ -38,6 +39,8 @@ export interface OnboardingStatus {
   githubReady: boolean
   /** At least one workspace the user made. */
   workspaceReady: boolean
+  /** At least one agent exists — without one, a conversation has nothing to run. */
+  agentReady: boolean
   /** The workspace to open at the end (the first non-system one), if any. */
   firstWorkspaceId: string | null
   /** True until every underlying query has resolved once. */
@@ -55,6 +58,7 @@ export function useOnboardingStatus(): OnboardingStatus {
   const providers = useProviders()
   const github = useGitHubConfig()
   const workspaces = useWorkspaces()
+  const agents = useAgents()
 
   // The skills catalog registers itself as a workspace on every boot (see
   // `ensure_skills_workspace`), so a fresh install is never empty — "has a
@@ -66,11 +70,13 @@ export function useOnboardingStatus(): OnboardingStatus {
       Boolean(openrouter.data?.configured) || (providers.data ?? []).length > 0,
     githubReady: Boolean(github.data?.connected),
     workspaceReady: own.length > 0,
+    agentReady: (agents.data ?? []).length > 0,
     firstWorkspaceId: own[0]?.id ?? null,
     loading:
       openrouter.isLoading ||
       providers.isLoading ||
       github.isLoading ||
-      workspaces.isLoading,
+      workspaces.isLoading ||
+      agents.isLoading,
   }
 }
