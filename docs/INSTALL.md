@@ -33,11 +33,22 @@ alone (`auto_updates true` in the cask).
 
 ### First run
 
-1. Open Lursor. A brief splash shows while the bundled backend starts.
-2. Open **Settings** and paste your **OpenRouter API key** — models won't work
-   until you do. The key is stored locally in the app's config.
-3. (Optional) The first time an agent uses visual QA, Chromium is downloaded
+1. Open Lursor. A brief splash shows while the bundled backend starts, then the
+   setup walkthrough takes over.
+2. **Bring a model.** Paste an [OpenRouter key](https://openrouter.ai/keys), or
+   switch to **Local** and point at any OpenAI-compatible endpoint (Ollama, LM
+   Studio, vLLM, llama.cpp). Either one is enough; nothing runs without one. Keys
+   are stored locally, on your machine.
+3. **Connect GitHub** (optional). A personal access token with `repo` scope lets
+   you clone repos into workspaces and gives agents authenticated git in the
+   terminal. It lives in a Lursor-only git config — your `~/.gitconfig` is never
+   touched.
+4. **Open your first workspace** — clone a repo, or point at a folder you already
+   have. That folder is where conversations run.
+5. (Optional) The first time an agent uses visual QA, Chromium is downloaded
    automatically (~150 MB, one time).
+
+To step through it again later: **Settings → General → Setup walkthrough**.
 
 ## Options
 

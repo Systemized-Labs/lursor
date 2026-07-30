@@ -1,7 +1,8 @@
 import { useState } from "react"
-import { useSearchParams } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 
 import { PageHeader } from "@/components/page-header"
+import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GitHubPage } from "@/pages/github/github-page"
 import { AgentDefaultsSection } from "./agent-defaults-section"
@@ -90,6 +91,7 @@ export function SettingsPage() {
           <DefaultAgentsSection />
           <AgentDefaultsSection />
           <CompactionSection />
+          <WalkthroughRow />
         </TabsContent>
         <TabsContent value="appearance" className="space-y-6">
           <AppearanceSection />
@@ -98,6 +100,27 @@ export function SettingsPage() {
           <ProvidersSection value={providerTab} />
         </TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+/**
+ * Way back into the first-run walkthrough. It derives its state live, so this is
+ * a read of what is set up as much as a re-run — and it keeps `/welcome` from
+ * being a URL only a fresh install can find.
+ */
+function WalkthroughRow() {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border px-4 py-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-foreground">Setup walkthrough</p>
+        <p className="text-sm text-muted-foreground">
+          Step back through models, GitHub, and your first workspace.
+        </p>
+      </div>
+      <Button asChild variant="outline" size="sm">
+        <Link to="/welcome">Open</Link>
+      </Button>
     </div>
   )
 }

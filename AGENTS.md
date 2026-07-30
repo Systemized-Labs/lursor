@@ -495,6 +495,34 @@ Tab strips show a panel-reported detail (a port, a filename) *only* while a kind
 is open more than once, with an ordinal for a duplicate that has nothing to
 report yet. Detail is derived from live panel state — never persisted.
 
+### First run
+
+`pages/onboarding/` — a four-step walkthrough at `/welcome`: bring a model,
+connect GitHub, open the first workspace, then a summary of the surfaces before
+landing in it. Full-screen, outside `AppShell` (nothing in the sidebar or dock is
+useful yet). Four rules hold it together:
+
+- **Progress is derived, never stored.** `useOnboardingStatus` reads the
+  OpenRouter key, custom providers, the GitHub config, and the workspace list —
+  so a step is "done" because the thing exists, not because a step was walked.
+  That is what makes `/welcome` safe to revisit (Settings → General links to it)
+  and invisible to installs that predate it: `OnboardingGate` silently marks a
+  ready install complete instead of showing it a tour.
+- **"No workspaces" is never true.** `ensure_skills_workspace` registers the
+  skills catalog on every boot, so first-run detection has to filter
+  `is_system` — otherwise the walkthrough thinks a workspace already exists.
+- **Only a model gates.** GitHub and the workspace can be skipped (the forward
+  control says so); the rail refuses to unlock past step one until a model source
+  exists, since every other surface assumes one. LAIOS is deliberately absent —
+  it needs its own daemon installed first, so it stays a post-setup destination.
+- **The seen-flag is `localStorage`, read synchronously.** The gate short-circuits
+  on it before mounting anything, so a returning user fires no extra queries;
+  only an unfinished install pays for the check. Losing the flag costs nothing —
+  see the first rule.
+
+`GitHubRepoPickerDialog` takes `navigateOnClone={false}` here: it otherwise jumps
+straight into the cloned workspace's chat, which would skip the last step.
+
 ### Other
 
 - **Terminal** — a real PTY per workspace over a WebSocket (`api/terminal.py`).
