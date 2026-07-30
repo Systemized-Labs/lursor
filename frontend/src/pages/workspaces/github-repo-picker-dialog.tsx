@@ -23,6 +23,10 @@ interface GitHubRepoPickerDialogProps {
   defaultName?: string
   // Called after a successful clone (e.g. to close the parent workspace dialog).
   onCloned?: (workspace: Workspace) => void
+  // Whether a successful clone jumps into the new workspace's chat. Callers that
+  // have their own next step (the first-run walkthrough) opt out and route
+  // themselves from `onCloned`.
+  navigateOnClone?: boolean
 }
 
 /**
@@ -35,6 +39,7 @@ export function GitHubRepoPickerDialog({
   onOpenChange,
   defaultName,
   onCloned,
+  navigateOnClone = true,
 }: GitHubRepoPickerDialogProps) {
   const { data: config } = useGitHubConfig()
   const connected = Boolean(config?.connected)
@@ -98,7 +103,7 @@ export function GitHubRepoPickerDialog({
       toast.success(`Cloned into "${ws.name}"`)
       onOpenChange(false)
       onCloned?.(ws)
-      navigate(`/workspaces/${ws.id}/chat`)
+      if (navigateOnClone) navigate(`/workspaces/${ws.id}/chat`)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Clone failed")
     } finally {

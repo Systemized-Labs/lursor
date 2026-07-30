@@ -1,11 +1,12 @@
 import { Navigate, Route, Routes, useParams } from "react-router-dom"
 
-import { AppShell } from "@/components/layout/app-shell"
 import { AnalyticsPage } from "@/pages/analytics/analytics-page"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
 import { LaiosPage } from "@/pages/laios/laios-page"
 import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
+import { OnboardingGate } from "@/pages/onboarding/onboarding-gate"
+import { WelcomePage } from "@/pages/onboarding/welcome-page"
 import { SchedulesPage } from "@/pages/schedules/schedules-page"
 import { SettingsPage } from "@/pages/settings/settings-page"
 
@@ -35,7 +36,14 @@ function LegacyThreadRedirect() {
 function App() {
   return (
     <Routes>
-      <Route element={<AppShell />}>
+      {/* The first-run walkthrough owns the whole viewport (no sidebar, no
+          dock), so it sits outside the shell route. Reachable at any time — it
+          derives each step's state live, so revisiting it just shows what is
+          already set up. */}
+      <Route path="welcome" element={<WelcomePage />} />
+      {/* Everything else renders inside the shell, once setup is done: the gate
+          redirects a fresh install to /welcome. */}
+      <Route element={<OnboardingGate />}>
         <Route index element={<NewAgentPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="customization" element={<CustomizationPage />} />

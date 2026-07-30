@@ -122,6 +122,25 @@ export function hasStoredDockState(workspaceId?: string): boolean {
   }
 }
 
+/**
+ * Start a workspace with a closed, empty dock — but only when it has no saved
+ * layout yet, so a layout the user arranged is never overwritten (same contract
+ * as {@link hasStoredDockState}).
+ *
+ * Used by the first-run walkthrough: the first conversation should be the whole
+ * window, not a chat beside an empty panel. The dock is one keystroke away on the
+ * rail, so nothing is hidden — it just isn't opened *for* you.
+ */
+export function seedCollapsedDock(workspaceId: string): void {
+  if (hasStoredDockState(workspaceId)) return
+  writeDockState(workspaceId, {
+    collapsed: true,
+    tabs: [],
+    activeId: null,
+    mru: [],
+  })
+}
+
 function writeDockState(workspaceId: string | undefined, state: DockState) {
   try {
     const stored: StoredDock = {
