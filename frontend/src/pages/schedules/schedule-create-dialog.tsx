@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { useCreateSchedule } from "@/api/schedules"
-import type { Agent, Schedule, Workspace } from "@/api/types"
+import type { Agent, Schedule, ScheduleRunType, Workspace } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -37,15 +37,19 @@ interface ScheduleCreateDialogProps {
 }
 
 const DEFAULT_CRON = "0 9 * * *"
+// Matches the backend's own default, so the field is prefilled with what an
+// unspecified cap would have been rather than a second opinion about it.
+const DEFAULT_MAX_ITERATIONS = "25"
 
 /**
- * The minimum to make a schedule that fires: where, who, when, and what to say.
+ * Everything needed to make a schedule that fires: where, who, when, what to say,
+ * and how hard to work at it.
  *
- * Run type, success criteria and the turn cap are deliberately not here. A new
- * schedule is a single turn — the cheap, bounded default — and the detail pane it
- * opens into is where you upgrade it to an autonomous goal, with the room to
- * explain what that costs. Deciding that in a modal before you have seen the
- * schedule run once is the wrong order.
+ * A single turn stays the default — cheap and bounded is the right unattended
+ * shape — but the autonomous goal is offered here rather than only in the detail
+ * pane, because "run until this is true" is usually the reason someone is creating
+ * the schedule at all, not an upgrade they think of afterwards. The goal fields
+ * stay hidden until it is chosen, so the cheap path is still four fields long.
  */
 export function ScheduleCreateDialog({
   open,
@@ -62,7 +66,11 @@ export function ScheduleCreateDialog({
   const [cron, setCron] = useState(DEFAULT_CRON)
   const [timezone, setTimezone] = useState(hostTimezone())
   const [prompt, setPrompt] = useState("")
+  const [runType, setRunType] = useState<ScheduleRunType>("chat")
+  const [successCriteria, setSuccessCriteria] = useState("")
+  const [maxIterations, setMaxIterations] = useState(DEFAULT_MAX_ITERATIONS)
   const zones = useMemo(() => timezoneOptions(), [])
+  const isGoal = runType === "goal"
 
   // Reset on each open, and default the pickers to something valid so the form is
   // one field away from savable rather than four.
@@ -72,6 +80,9 @@ export function ScheduleCreateDialog({
     setCron(DEFAULT_CRON)
     setTimezone(hostTimezone())
     setPrompt("")
+    setRunType("chat")
+    setSuccessCriteria("")
+    setMaxIterations(DEFAULT_MAX_ITERATIONS)
     setWorkspaceId(
       defaultWorkspaceId && workspaces.some((w) => w.id === defaultWorkspaceId)
         ? defaultWorkspaceId
@@ -93,6 +104,11 @@ export function ScheduleCreateDialog({
       toast.error("A prompt is required — it is the turn each fire sends")
       return
     }
+    const parsedIterations = Number(maxIterations)
+    if (isGoal && (!Number.isInteger(parsedIterations) || parsedIterations < 1)) {
+      toast.error("Max turns must be a whole number of at least 1")
+      return
+    }
     try {
       const created = await createSchedule.mutateAsync({
         name: name.trim(),
@@ -101,6 +117,15 @@ export function ScheduleCreateDialog({
         cron: cron.trim(),
         timezone,
         prompt: prompt.trim(),
+        // Omitted entirely for a single turn: that is already the server's
+        // default, and the goal columns it would fill are unread in that mode.
+        ...(isGoal
+          ? {
+              run_type: runType,
+              success_criteria: successCriteria.trim(),
+              max_iterations: parsedIterations,
+            }
+          : {}),
       })
       toast.success(`${created.name} scheduled`)
       onOpenChange(false)
@@ -215,6 +240,61 @@ export function ScheduleCreateDialog({
               nobody watching.
             </p>
           </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="new-sched-run-type">Run type</Label>
+            <Select
+              value={runType}
+              onValueChange={(value) => setRunType(value as ScheduleRunType)}
+            >
+              <SelectTrigger id="new-sched-run-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="chat">Single turn</SelectItem>
+                <SelectItem value="goal">Autonomous goal</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              {isGoal
+                ? "The autonomous loop: work, evaluate against the criteria below, repeat until met or the turn cap is spent. Powerful, and the expensive option."
+                : "One turn. Bounded and predictable — the right default for anything unattended."}
+            </p>
+          </div>
+
+          {isGoal ? (
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor="new-sched-criteria">Done when</Label>
+                <Textarea
+                  id="new-sched-criteria"
+                  value={successCriteria}
+                  onChange={(e) => setSuccessCriteria(e.target.value)}
+                  rows={3}
+                  placeholder="Every dependency is on its latest minor version and the test suite passes."
+                />
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  What the evaluator checks each round against. Left empty it falls
+                  back to the prompt, which is usually too vague to ever read as met.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="new-sched-iters">Max turns</Label>
+                <Input
+                  id="new-sched-iters"
+                  value={maxIterations}
+                  onChange={(e) => setMaxIterations(e.target.value)}
+                  inputMode="numeric"
+                  className="w-24"
+                />
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  The hard stop, and the only ceiling on what one unattended fire can
+                  cost.
+                </p>
+              </div>
+            </>
+          ) : null}
         </div>
 
         <DialogFooter>
