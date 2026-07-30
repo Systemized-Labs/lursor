@@ -148,8 +148,12 @@ jobs:
         working-directory: frontend
         run: npx electron-builder ${{ matrix.builder_flags }} --publish never
 
-      # *.yml are the electron-updater feeds and *.blockmap backs differential
-      # updates; both must reach the release or auto-update silently breaks.
+      # latest*.yml are the electron-updater feeds and *.blockmap backs
+      # differential updates; both must reach the release or auto-update
+      # silently breaks. Match latest*.yml rather than *.yml: electron-builder
+      # also drops a builder-debug.yml of its internal config, which is the
+      # same filename on every platform — it would collide under the publish
+      # job's merge-multiple and get uploaded as a public release asset.
       # if-no-files-found: error so a build that produced nothing fails here
       # rather than yielding an incomplete release later.
       - name: Upload build artifacts
@@ -161,7 +165,7 @@ jobs:
             frontend/release/*.zip
             frontend/release/*.AppImage
             frontend/release/*.deb
-            frontend/release/*.yml
+            frontend/release/latest*.yml
             frontend/release/*.blockmap
           if-no-files-found: error
 
