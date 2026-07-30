@@ -11,7 +11,8 @@ see [INSTALL.md](./INSTALL.md).
 | `curl … install.sh \| sh` | macOS arm64, Linux x64 | Primary. Verifies a published SHA-256 before installing. |
 | Homebrew cask | macOS arm64 | Own tap (`JonathanConn/homebrew-lursor`), bumped automatically per release. |
 | Direct download | macOS arm64, Linux x64 | DMG / AppImage / deb straight off the GitHub Release. |
-| In-app auto-update | macOS, Linux AppImage | `electron-updater` against the same Release. `.deb` is not self-updating. |
+| In-app auto-update | Linux AppImage, signed macOS | `electron-updater` against the same Release. `.deb` is not self-updating. |
+| `curl … update.sh \| sh` | macOS arm64, Linux x64 | Version-aware wrapper around install.sh. Also what the app falls back to while macOS builds are unsigned. |
 
 **Platform scope.** macOS is Apple Silicon only and Linux is x64 only. The frozen
 backend is an architecture-specific CPython tree, so every extra arch is a full
@@ -151,6 +152,33 @@ It self-disables where it cannot work: unpackaged dev runs, and Linux installs
 that aren't AppImage (a `.deb` is owned by dpkg — `apt` or a fresh download is the
 upgrade path there). The macOS `zip` target must stay in the build config;
 Squirrel.Mac needs it to generate `latest-mac.yml`.
+
+### The unsigned-macOS fallback
+
+Squirrel.Mac validates the code signature before swapping the bundle, so an
+unsigned build downloads several hundred megabytes and then fails at the last
+step — with nothing but a log line to show for it, which is indistinguishable
+from "no updates" to the person using it.
+
+So on macOS the app runs `spctl --assess` against its own bundle before choosing
+a mechanism: approved → `electron-updater` as above; rejected → `scripts/update.sh`.
+The fallback polls the Releases API, offers the update in a dialog, and on accept
+writes a launcher into a `mkdtemp` directory, opens it in Terminal (somewhere for
+the download to show progress, since the app is about to exit), and quits. The
+script waits on the app's pid, hands off to `install.sh` with the version pinned,
+and reopens Lursor.
+
+**This is a stopgap.** `spctl` is the same question Squirrel asks, so the
+fallback disappears on its own the first time a signed, notarized build ships —
+no code change, no flag to remember. Deleting the fallback afterwards is
+optional; leaving it costs one `spctl` call per launch and keeps locally built
+installs updatable.
+
+`update.sh` is also the manual update path on both platforms — it reads the
+installed version (macOS: the bundle's `Info.plist`; Linux: the
+`~/.lursor/.install-version` stamp `install.sh` leaves behind, since an AppImage
+has no readable version short of unpacking its squashfs), compares against the
+latest release, and only then calls `install.sh`.
 
 ## Known gaps
 

@@ -45,7 +45,7 @@ frontend/         Vite + React 19 + Tailwind v4 + shadcn/ui  (frontend/README.md
   electron/       desktop main + preload
 docs/             INSTALL / ELECTRON / DISTRIBUTION
 packaging/        Homebrew cask template (rendered by CI)
-scripts/          dev.sh, install.sh
+scripts/          dev.sh, install.sh, update.sh
 ```
 
 ## 3. Commands

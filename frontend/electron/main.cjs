@@ -11,7 +11,7 @@ const os = require("node:os")
 const fs = require("node:fs")
 const http = require("node:http")
 const net = require("node:net")
-const { spawn } = require("node:child_process")
+const { spawn, execFile } = require("node:child_process")
 const { app, BrowserWindow, nativeImage, shell, ipcMain, dialog } = require("electron")
 
 const isDev = !app.isPackaged
@@ -289,29 +289,57 @@ ipcMain.handle("open-external", (_event, url) => {
 
 /** Re-check for updates on this cadence while the app stays open. */
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** Repo the update feed and the fallback updater script come from. */
+const UPDATE_REPO = process.env.LURSOR_REPO || "JonathanConn/lursor"
+const UPDATE_SCRIPT_URL = `https://raw.githubusercontent.com/${UPDATE_REPO}/main/scripts/update.sh`
 
 /**
- * Whether this build can install an update in place.
+ * Route this build to whichever update mechanism can actually finish the job.
  *
- * - dev: never (there is no update feed for an unpackaged app).
- * - macOS: Squirrel.Mac validates the code signature, so unsigned builds can
- *   download an update but never install one. We still let it try and surface
- *   the failure in the log rather than second-guessing the signature here.
- * - Linux: only AppImage self-updates. A .deb install is owned by apt/dpkg, and
+ * - dev: neither (there is no update feed for an unpackaged app).
+ * - Linux: only an AppImage self-updates. A .deb is owned by apt/dpkg, and
  *   electron-updater errors out if we ask it to update one, so skip.
+ * - macOS: Squirrel.Mac validates the code signature before swapping the
+ *   bundle, so an unsigned build downloads a few hundred MB and then fails at
+ *   the last step, with nothing but a log line to show for it. Ask Gatekeeper
+ *   the same question up front and fall back to scripts/update.sh when the
+ *   answer is no. This flips itself back to in-app updates the moment releases
+ *   are signed and notarized — see docs/DISTRIBUTION.md.
  */
-function canSelfUpdate() {
-  if (isDev) return false
-  if (process.platform === "linux") return Boolean(process.env.APPIMAGE)
-  return process.platform === "darwin"
-}
-
 function initAutoUpdate() {
-  if (!canSelfUpdate()) {
-    console.log("[updater] not supported for this build — skipping")
+  if (isDev) {
+    console.log("[updater] unpackaged build — skipping")
     return
   }
+  if (process.platform === "linux") {
+    if (process.env.APPIMAGE) initSquirrelUpdate()
+    else console.log("[updater] not an AppImage — skipping")
+    return
+  }
+  if (process.platform !== "darwin") return
 
+  isGatekeeperApproved().then((approved) => {
+    if (approved) initSquirrelUpdate()
+    else initScriptUpdate()
+  })
+}
+
+/**
+ * Whether Gatekeeper accepts this bundle — the same check Squirrel.Mac makes
+ * before installing an update, and the one install.sh makes before deciding
+ * whether to clear the quarantine flag.
+ * @returns {Promise<boolean>}
+ */
+function isGatekeeperApproved() {
+  const bundle = path.resolve(app.getPath("exe"), "..", "..", "..")
+  return new Promise((resolve) => {
+    execFile("spctl", ["--assess", "--type", "execute", bundle], (err) =>
+      resolve(!err)
+    )
+  })
+}
+
+function initSquirrelUpdate() {
   // Required lazily: pulling electron-updater into an unpackaged dev run would
   // have it complain about the missing app-update.yml on startup.
   const { autoUpdater } = require("electron-updater")
@@ -349,6 +377,116 @@ function initAutoUpdate() {
 
   autoUpdater.checkForUpdates()
   setInterval(() => autoUpdater.checkForUpdates(), UPDATE_CHECK_INTERVAL_MS)
+}
+
+// --- Script updater (builds Squirrel can't install) ------------------------
+
+/** Version we have already offered this run, so the re-check doesn't nag. */
+let offeredVersion = null
+
+/**
+ * Compare two release versions. Dotted numeric compare, with a trailing
+ * prerelease (1.2.0-rc.1) ranking below the release it leads to.
+ * @returns {boolean} true when `candidate` is newer than `current`
+ */
+function isNewerVersion(candidate, current) {
+  const parse = (value) => {
+    const v = String(value ?? "").trim().replace(/^v/, "")
+    const dash = v.indexOf("-")
+    const base = dash === -1 ? v : v.slice(0, dash)
+    return {
+      nums: base.split(".").map((n) => parseInt(n, 10) || 0),
+      pre: dash === -1 ? "" : v.slice(dash + 1),
+    }
+  }
+  const a = parse(candidate)
+  const b = parse(current)
+  for (let i = 0; i < Math.max(a.nums.length, b.nums.length); i++) {
+    const x = a.nums[i] ?? 0
+    const y = b.nums[i] ?? 0
+    if (x !== y) return x > y
+  }
+  if (a.pre === b.pre) return false
+  if (!a.pre) return true
+  if (!b.pre) return false
+  return a.pre > b.pre
+}
+
+function initScriptUpdate() {
+  console.log("[updater] build is unsigned — using the script updater")
+  checkForScriptUpdate()
+  setInterval(checkForScriptUpdate, UPDATE_CHECK_INTERVAL_MS)
+}
+
+async function checkForScriptUpdate() {
+  let latest = ""
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`,
+      {
+        headers: { Accept: "application/vnd.github+json" },
+        signal: AbortSignal.timeout(15_000),
+      }
+    )
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    latest = String((await res.json()).tag_name ?? "").replace(/^v/, "")
+  } catch (err) {
+    console.error("[updater] release check failed:", err?.message ?? err)
+    return
+  }
+
+  if (!latest || !isNewerVersion(latest, app.getVersion())) return
+  if (offeredVersion === latest) return
+  offeredVersion = latest
+
+  const { response } = await dialog.showMessageBox({
+    type: "info",
+    buttons: ["Update now", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+    message: `Lursor ${latest} is available`,
+    detail:
+      "Lursor will quit, finish the update in a Terminal window, then reopen. This stops any running agents.",
+  })
+  if (response === 0) runScriptUpdate(latest)
+}
+
+/**
+ * Hand the update to scripts/update.sh and get out of its way: the installer
+ * can only replace the app bundle once this process is gone, so it waits on our
+ * pid and reopens Lursor when it's done. Terminal gives a several-hundred-MB
+ * download somewhere to show progress, since the app won't be around to.
+ */
+function runScriptUpdate(version) {
+  const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+  const script = [
+    "#!/bin/sh",
+    `LURSOR_REPO=${quote(UPDATE_REPO)}`,
+    `LURSOR_VERSION=${quote(version)}`,
+    "export LURSOR_REPO LURSOR_VERSION",
+    `curl -fsSL ${quote(UPDATE_SCRIPT_URL)} | sh -s -- --wait-pid ${process.pid} --relaunch`,
+    "",
+  ].join("\n")
+
+  try {
+    // mkdtemp gives us a 0700 directory, so nothing else can swap the script
+    // out from under Terminal between writing it and opening it.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lursor-update-"))
+    const file = path.join(dir, "update-lursor.command")
+    fs.writeFileSync(file, script, { mode: 0o700 })
+    spawn("open", ["-a", "Terminal", file], {
+      detached: true,
+      stdio: "ignore",
+    }).unref()
+  } catch (err) {
+    console.error("[updater] could not start the updater:", err?.message ?? err)
+    dialog.showErrorBox(
+      "Could not start the updater",
+      `Run this in a terminal instead:\n\ncurl -fsSL ${UPDATE_SCRIPT_URL} | sh`
+    )
+    return
+  }
+  app.quit()
 }
 
 // ---------------------------------------------------------------------------

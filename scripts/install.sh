@@ -75,6 +75,8 @@ uninstall() {
     rm -f "$HOME/.local/share/icons/lursor.png"
     info "Removed Lursor AppImage and desktop entry"
   fi
+  # Install metadata, not user data — nothing under ~/.lursor that you created.
+  rm -f "${LURSOR_DATA_DIR:-$HOME/.lursor}/.install-version"
   info "Done. (Your data in ~/.lursor was left untouched.)"
   exit 0
 }
@@ -205,6 +207,18 @@ else
     # running window grouped under this launcher instead of a second entry.
     echo "StartupWMClass=Lursor"
   } > "$APPS_DIR/lursor.desktop"
+fi
+
+# --- Record what we installed ---------------------------------------------
+# scripts/update.sh compares against this. On macOS the app's Info.plist is the
+# real source of truth, but an AppImage carries no version we can read back
+# without unpacking ~400 MB of squashfs, so leave a stamp behind for it.
+INSTALLED_VERSION="${ASSET#Lursor-}"
+INSTALLED_VERSION="${INSTALLED_VERSION%-$SUFFIX}"
+STAMP_DIR="${LURSOR_DATA_DIR:-$HOME/.lursor}"
+if mkdir -p "$STAMP_DIR" 2>/dev/null; then
+  printf '%s\n' "$INSTALLED_VERSION" > "$STAMP_DIR/.install-version" 2>/dev/null \
+    || warn "could not record the installed version in $STAMP_DIR."
 fi
 
 # --- Runtime soft-check ---------------------------------------------------
