@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 
-import { API_BASE, api } from "./client"
+import { API_BASE, ApiError, api } from "./client"
 
 /** A single entry (file or directory) in a workspace directory listing. */
 export interface DirEntry {
@@ -33,6 +33,39 @@ export interface FileChange {
   path: string
 }
 
+/** One matching line from a workspace content search. */
+export interface GrepMatch {
+  /** POSIX-style path relative to the workspace root. */
+  path: string
+  /** 1-based line number. */
+  line: number
+  /** 1-based column in the *real* line — what the editor jumps to. */
+  column: number
+  /** The matching line, windowed when the line was too long to render. */
+  text: string
+  match_length: number
+  /** Characters dropped off the front of the line to build `text`; the match sits
+   *  at `column - 1 - text_offset` within it. */
+  text_offset: number
+}
+
+export interface GrepResult {
+  matches: GrepMatch[]
+  /** The search hit a cap — say so rather than implying these are all of them. */
+  truncated: boolean
+  files_scanned: number
+}
+
+/** Everything that decides a content search's result — also its query key. */
+export interface GrepParams {
+  q: string
+  regex: boolean
+  case: boolean
+  wholeWord: boolean
+  include: string
+  limit?: number
+}
+
 export const filesApi = {
   list: (workspaceId: string, path = "", signal?: AbortSignal) =>
     api.get<DirEntry[]>(
@@ -60,6 +93,22 @@ export const filesApi = {
       `/workspaces/${workspaceId}/files/search?q=${encodeURIComponent(query)}&limit=${limit}`,
       signal
     ),
+  /** Search file *contents* across the workspace. Read-only — there is no
+   *  replace-across-files counterpart by design. */
+  grep: (workspaceId: string, params: GrepParams, signal?: AbortSignal) => {
+    const query = new URLSearchParams({
+      q: params.q,
+      regex: String(params.regex),
+      case: String(params.case),
+      whole_word: String(params.wholeWord),
+      limit: String(params.limit ?? 200),
+    })
+    if (params.include) query.set("include", params.include)
+    return api.get<GrepResult>(
+      `/workspaces/${workspaceId}/files/grep?${query.toString()}`,
+      signal
+    )
+  },
   write: (workspaceId: string, path: string, content: string) =>
     api.put<{ path: string; size: number }>(
       `/workspaces/${workspaceId}/files/write`,
@@ -100,6 +149,43 @@ export const fileKeys = {
     ["files", workspaceId, "dir", path] as const,
   file: (workspaceId: string, path: string) =>
     ["files", workspaceId, "file", path] as const,
+  /** Keyed on the full parameter set: flipping `Aa` is a different search, not a
+   *  refetch of the same one. */
+  grep: (workspaceId: string, params: GrepParams) =>
+    ["files", workspaceId, "grep", params] as const,
+}
+
+/**
+ * Content search across a workspace.
+ *
+ * `placeholderData` keeps the previous result on screen while a new query is in
+ * flight, so typing dims the list instead of blanking it — a results pane that
+ * empties on every keystroke is unreadable at typing speed. Debouncing is the
+ * caller's job (the query only changes once the input settles).
+ *
+ * **A 4xx is not retried.** This is the one query in the app where the default
+ * three-retries-with-backoff is actively harmful: the search is local and answers
+ * in tens of milliseconds, so a failure that takes ~7s of backoff to surface reads
+ * as a hung, empty results pane rather than as the error it is. A bad regex (422)
+ * or a backend without the endpoint (404) will give the identical answer three
+ * attempts later, so there is nothing to gain by waiting for it. Genuine
+ * transport failures still get one more go.
+ */
+export function useWorkspaceGrep(
+  workspaceId: string | undefined,
+  params: GrepParams
+) {
+  return useQuery({
+    queryKey: fileKeys.grep(workspaceId ?? "", params),
+    queryFn: ({ signal }) =>
+      filesApi.grep(workspaceId as string, params, signal),
+    enabled: Boolean(workspaceId) && params.q.trim().length > 0,
+    placeholderData: (previous) => previous,
+    retry: (failureCount, error) =>
+      error instanceof ApiError && error.status >= 400 && error.status < 500
+        ? false
+        : failureCount < 1,
+  })
 }
 
 /** List a directory's children (lazy tree loading). */

@@ -1,23 +1,37 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
+import { FolderOpen, MagnifyingGlass } from "@phosphor-icons/react"
 
 import { filesApi } from "@/api/files"
-import type { FileChange } from "@/api/files"
+import type { FileChange, GrepMatch } from "@/api/files"
 import { isPlanFile } from "@/lib/plan-doc"
 import { useFileWatch } from "@/hooks/use-file-watch"
 import { consumePendingFile, subscribeOpenFile } from "@/lib/open-file"
+import { tabStorageKey } from "@/lib/tab-storage"
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
+import { cn } from "@/lib/utils"
 
 import { EditorPane } from "./editor-pane"
-import { useFileBuffers, type FileSource } from "./file-buffers"
+import { useFileBuffers, type FileSource, type OpenFileOptions } from "./file-buffers"
 import { FileExplorer } from "./file-explorer"
+import { SearchPanel } from "./search-panel"
 
-/** Persisted flag: is the file tree collapsed out of the viewer? */
+/** Persisted flag: is the side pane collapsed out of the viewer? */
 const TREE_HIDDEN_STORAGE_KEY = "lursor-file-tree-hidden"
+
+/** Which view the side pane is showing. */
+type SideView = "explorer" | "search"
+
+/**
+ * Narrowest panel worth splitting into two editors, in CSS pixels. Below this a
+ * split produces two unreadable columns, so the control is disabled and says why
+ * instead of obliging.
+ */
+const MIN_SPLIT_WIDTH = 700
 
 interface FileViewerProps {
   workspaceId?: string
@@ -30,15 +44,16 @@ interface FileViewerProps {
 }
 
 /**
- * A lightweight, VS Code-style editor for a workspace: a file tree, multiple
- * open files as tabs, and a Monaco editor. A filesystem watcher streams changes
- * so edits made by a running agent appear live — reloading a clean buffer in
- * place, or flagging a conflict when the file changed under unsaved edits.
+ * A lightweight, VS Code-style editor for a workspace: a file tree, workspace-wide
+ * content search, multiple open files as tabs (optionally as two groups side by
+ * side), and a Monaco editor. A filesystem watcher streams changes so edits made
+ * by a running agent appear live — reloading a clean buffer in place, or flagging
+ * a conflict when the file changed under unsaved edits.
  *
  * The tabs, buffers and editor itself are the shared {@link EditorPane} /
  * {@link useFileBuffers} pair (also used by the skill editor); what lives here is
- * everything workspace-specific — the tree, the watcher, and open-file requests
- * arriving from elsewhere in the app.
+ * everything workspace-specific — the tree, search, the watcher, and open-file
+ * requests arriving from elsewhere in the app.
  *
  * More than one can be open in the dock at a time (two files side by side), each
  * with its own buffers; only the visible one takes pending open-file requests.
@@ -55,6 +70,9 @@ export function FileViewer({
       typeof localStorage !== "undefined" &&
       localStorage.getItem(TREE_HIDDEN_STORAGE_KEY) === "1"
   )
+  // Per *tab*, not per workspace: two Files panels open at once would otherwise
+  // fight over which view their side pane shows.
+  const [sideView, setSideView] = useTabView(tabId)
 
   const source = useMemo<FileSource | undefined>(
     () =>
@@ -70,7 +88,11 @@ export function FileViewer({
     [workspaceId]
   )
   const buffers = useFileBuffers(source)
-  const { openFiles, activePath, reconcile, isOpen } = buffers
+  const { openFiles, activePath, split, reconcile, isOpen, closeGroup } = buffers
+
+  // Panel width decides whether a split is offered at all — see MIN_SPLIT_WIDTH.
+  const [editorArea, editorWidth] = useMeasuredWidth()
+  const splitTooNarrow = editorWidth > 0 && editorWidth < MIN_SPLIT_WIDTH
 
   const toggleTree = useCallback(() => {
     setTreeHidden((prev) => {
@@ -83,14 +105,29 @@ export function FileViewer({
   }, [])
 
   const openFile = useCallback(
-    async (path: string, name: string) => {
-      // Plan docs open full-width: collapse the tree on first open. Not
+    async (path: string, name: string, options?: OpenFileOptions) => {
+      // Plan docs open full-width: collapse the side pane on first open. Not
       // persisted — it's a per-session nudge, not a change to the saved
       // preference, and the toggle brings the tree right back.
       if (isPlanFile(name) && !isOpen(path)) setTreeHidden(true)
-      await buffers.openFile(path, name)
+      await buffers.openFile(path, name, options)
     },
     [buffers, isOpen]
+  )
+
+  // A search hit is a place, not just a file: carry the position through so the
+  // editor scrolls to the line and selects the match.
+  const openMatch = useCallback(
+    (match: GrepMatch) => {
+      void openFile(match.path, match.path.split("/").pop() ?? match.path, {
+        reveal: {
+          line: match.line,
+          column: match.column,
+          length: match.match_length,
+        },
+      })
+    },
+    [openFile]
   )
 
   // Open files requested from elsewhere (e.g. the global command palette). We
@@ -105,7 +142,19 @@ export function FileViewer({
     if (!active) return
     const tryOpen = () => {
       const request = consumePendingFile(workspaceId)
-      if (request) void openFile(request.path, request.name)
+      if (!request) return
+      void openFile(request.path, request.name, {
+        // A request that names a line asks to land on it; one that doesn't just
+        // opens the file, exactly as before.
+        reveal:
+          request.line === undefined
+            ? undefined
+            : {
+                line: request.line,
+                column: request.column,
+                length: request.length,
+              },
+      })
     }
     tryOpen()
     return subscribeOpenFile(tryOpen)
@@ -144,25 +193,63 @@ export function FileViewer({
     )
   }
 
-  // The tree can only be hidden once a file is open — with no file open you'd
+  // The side pane can only be hidden once a file is open — with no file open you'd
   // have no way to reach one, so force it visible there regardless of the pref.
-  const showTree = openFiles.length === 0 || !treeHidden
+  const showSide = openFiles.length === 0 || !treeHidden
 
-  const editorPane = (
-    <EditorPane
-      buffers={buffers}
-      rawUrl={source?.rawUrl}
-      sidebarHidden={treeHidden}
-      onToggleSidebar={toggleTree}
-    />
+  // The sidebar toggle and the close-split control belong on the *rightmost*
+  // strip: one is about the pane next to it, the other about folding this group
+  // back into the one on its left.
+  const editors = (
+    <div ref={editorArea} className="flex min-h-0 flex-1 flex-col">
+      {split ? (
+        <ResizablePanelGroup
+          direction="horizontal"
+          // Tab-scoped, or two Files panels would share one saved split ratio.
+          autoSaveId={`file-viewer-split:${tabId ?? "default"}`}
+          className="flex-1 min-h-0"
+        >
+          <ResizablePanel minSize={25} className="flex min-w-0 flex-col bg-card">
+            <EditorPane
+              group={0}
+              buffers={buffers}
+              rawUrl={source?.rawUrl}
+              splitEnabled
+              splitTooNarrow={splitTooNarrow}
+            />
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel minSize={25} className="flex min-w-0 flex-col bg-card">
+            <EditorPane
+              group={1}
+              buffers={buffers}
+              rawUrl={source?.rawUrl}
+              splitEnabled
+              splitTooNarrow={splitTooNarrow}
+              sidebarHidden={treeHidden}
+              onToggleSidebar={toggleTree}
+              onCloseGroup={() => closeGroup(1)}
+            />
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        // No inner group at all when there's no split, so the panel count doesn't
+        // churn as one appears and disappears.
+        <EditorPane
+          group={0}
+          buffers={buffers}
+          rawUrl={source?.rawUrl}
+          splitEnabled
+          splitTooNarrow={splitTooNarrow}
+          sidebarHidden={treeHidden}
+          onToggleSidebar={toggleTree}
+        />
+      )}
+    </div>
   )
 
-  // With the tree hidden the editor takes the whole pane — no resizable group,
-  // which also sidesteps the panel-count churn a conditional panel would cause.
-  if (!showTree) {
-    return (
-      <div className="flex-1 min-h-0 flex flex-col bg-card">{editorPane}</div>
-    )
+  if (!showSide) {
+    return <div className="flex-1 min-h-0 flex flex-col bg-card">{editors}</div>
   }
 
   return (
@@ -172,16 +259,146 @@ export function FileViewer({
       className="flex-1 min-h-0"
     >
       <ResizablePanel minSize={30} className="flex flex-col min-w-0 bg-card">
-        {editorPane}
+        {editors}
       </ResizablePanel>
       <ResizableHandle />
-      <ResizablePanel defaultSize={28} minSize={15} className="flex flex-col min-w-0">
-        <FileExplorer
-          workspaceId={workspaceId}
-          activePath={activePath}
-          onOpenFile={openFile}
-        />
+      {/* A touch wider than a bare file tree would need: this panel also holds the
+          search results, whose rows are `line │ text` and want the characters.
+          Only a default — an existing saved ratio (`autoSaveId`) still wins. */}
+      <ResizablePanel defaultSize={32} minSize={15} className="flex flex-col min-w-0">
+        <SideViewSwitch view={sideView} onChange={setSideView} />
+        {/* Both views stay mounted: switching preserves tree expansion and the
+            search results and query, which is the whole reason to have a switch
+            rather than a mode. */}
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            sideView !== "explorer" && "hidden"
+          )}
+        >
+          <FileExplorer
+            workspaceId={workspaceId}
+            activePath={activePath}
+            onOpenFile={(path, name) => void openFile(path, name)}
+          />
+        </div>
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            sideView !== "search" && "hidden"
+          )}
+        >
+          <SearchPanel
+            workspaceId={workspaceId}
+            activePath={activePath}
+            onOpenMatch={openMatch}
+          />
+        </div>
       </ResizablePanel>
     </ResizablePanelGroup>
   )
+}
+
+/**
+ * Explorer / Search at the side pane's top, as two icon buttons.
+ *
+ * Icons rather than labels because this pane is ~190px wide and the two words
+ * spent a third of it restating what the glyphs already say — width the search
+ * results and the tree both want. The name lives in the tooltip and the
+ * accessible label.
+ */
+function SideViewSwitch({
+  view,
+  onChange,
+}: {
+  view: SideView
+  onChange: (view: SideView) => void
+}) {
+  const items: { id: SideView; label: string; icon: React.ElementType }[] = [
+    { id: "explorer", label: "Explorer", icon: FolderOpen },
+    { id: "search", label: "Search", icon: MagnifyingGlass },
+  ]
+  return (
+    <div
+      role="tablist"
+      aria-label="Side pane view"
+      className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border/40 px-1.5"
+    >
+      {items.map(({ id, label, icon: Icon }) => {
+        const isActive = view === id
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            aria-label={label}
+            title={label}
+            onClick={() => onChange(id)}
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+              isActive
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            )}
+          >
+            <Icon className="h-4 w-4" />
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * The side pane's current view, persisted per dock tab.
+ *
+ * Keyed by tab id rather than by workspace: a workspace can hold two Files panels,
+ * and one showing search while the other shows the tree is a layout, not a
+ * conflict.
+ */
+function useTabView(tabId: string | undefined) {
+  const key = tabId ? tabStorageKey(tabId, "side-view") : null
+  const [view, setView] = useState<SideView>(() => {
+    if (!key || typeof localStorage === "undefined") return "explorer"
+    return localStorage.getItem(key) === "search" ? "search" : "explorer"
+  })
+  const update = useCallback(
+    (next: SideView) => {
+      setView(next)
+      if (key && typeof localStorage !== "undefined") {
+        try {
+          localStorage.setItem(key, next)
+        } catch {
+          // Best-effort: a full or disabled store just means it won't persist.
+        }
+      }
+    },
+    [key]
+  )
+  return [view, update] as const
+}
+
+/**
+ * A ref to attach and the element's live width in CSS pixels (0 until measured).
+ *
+ * Used to decide whether the panel has room for two editors. A media query can't
+ * answer that — the dock is a resizable split, so the panel's width has nothing to
+ * do with the viewport's.
+ */
+function useMeasuredWidth() {
+  const ref = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+
+  useEffect(() => {
+    const element = ref.current
+    if (!element || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(([entry]) => {
+      setWidth(entry.contentRect.width)
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  return [ref, width] as const
 }

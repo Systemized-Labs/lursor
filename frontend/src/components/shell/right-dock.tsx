@@ -1,4 +1,6 @@
 import {
+  ArrowsIn,
+  ArrowsOutSimple,
   GitDiff,
   FileCode,
   Globe,
@@ -9,7 +11,7 @@ import {
 } from "@phosphor-icons/react"
 import type { ElementType } from "react"
 
-import { Suspense, lazy, useCallback, useState } from "react"
+import { Suspense, lazy, useCallback, useEffect, useState } from "react"
 
 import { ChangesPanel } from "@/components/shell/changes-panel"
 import { PreviewPanel } from "@/components/shell/preview-panel"
@@ -54,6 +56,35 @@ interface RightDockProps {
   onSelectTab: (id: string) => void
   /** Collapse the dock (shell hides it and offers a re-open affordance). */
   onCollapse: () => void
+  /** Whether the dock currently fills the window. */
+  maximized: boolean
+  onSetMaximized: (maximized: boolean) => void
+}
+
+/**
+ * `Esc` restores a maximized dock — but only when it is the outermost thing Esc
+ * could mean.
+ *
+ * Radix dialogs, dropdowns and context menus stop propagation on their own Esc
+ * handling, so those never reach us. Monaco's find widget does not: it closes on
+ * Esc from a keydown handler on its own input, and the event still bubbles to
+ * `window`. Closing find should not also unmaximize the panel, so an Esc raised
+ * from inside the editor is left alone — the editor is exactly where Esc has a
+ * local meaning, and clicking outside it (or pressing the ⤡ button) is the way
+ * out from there.
+ */
+function useEscapeToRestore(active: boolean, onRestore: () => void) {
+  useEffect(() => {
+    if (!active) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return
+      const target = event.target as HTMLElement | null
+      if (target?.closest(".monaco-editor, [role='dialog'], [role='menu']")) return
+      onRestore()
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [active, onRestore])
 }
 
 /**
@@ -67,6 +98,11 @@ interface RightDockProps {
  * terminals, …). Duplicates are told apart in the strip by the detail their
  * panel reports — a preview's port, an editor's file — falling back to an
  * ordinal while a fresh panel has nothing to report yet.
+ *
+ * The strip also carries the size controls: maximize, which asks the shell to give
+ * the dock the whole window, and collapse, which hides it behind the rail. Both are
+ * dock-level — the panel inside is never remounted for either, so terminal sessions
+ * and editor state survive.
  */
 export function RightDock({
   workspaceId,
@@ -76,7 +112,11 @@ export function RightDock({
   onCloseTab,
   onSelectTab,
   onCollapse,
+  maximized,
+  onSetMaximized,
 }: RightDockProps) {
+  const restore = useCallback(() => onSetMaximized(false), [onSetMaximized])
+  useEscapeToRestore(maximized, restore)
   // What each panel wants shown beside its title, by tab id. Panel-reported and
   // transient — it's derived from live panel state, so there's nothing to
   // persist; a restored tab reports again as soon as it mounts.
@@ -116,7 +156,14 @@ export function RightDock({
       <div
         className={cn(
           "flex shrink-0 items-center gap-1 border-b border-border/40 px-1.5",
-          macTitlebar.enabled ? "h-11 bg-sidebar" : "h-9"
+          macTitlebar.enabled ? "h-11 bg-sidebar" : "h-9",
+          // Maximized, this strip is the only thing under the macOS traffic
+          // lights: the dock starts at the sidebar's 68px gutter and the buttons
+          // end around x=84, so the first tab lands beneath the green one. Inset
+          // past them — the same 26px the chat header uses from the same offset.
+          // Only while maximized; unmaximized the dock is over on the right and
+          // the padding would just be a gap.
+          macTitlebar.clearButtons && maximized && "pl-[26px]"
         )}
       >
         <div className="flex-1 flex items-center gap-0.5 overflow-x-auto">
@@ -198,6 +245,23 @@ export function RightDock({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+
+        {/* Maximize sits before collapse: the pair reads as one size control,
+            and the two extremes of it belong next to each other. */}
+        <button
+          type="button"
+          onClick={() => onSetMaximized(!maximized)}
+          aria-pressed={maximized}
+          title={maximized ? "Restore panel size (Esc)" : "Maximize panel"}
+          aria-label={maximized ? "Restore panel size" : "Maximize panel"}
+          className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
+        >
+          {maximized ? (
+            <ArrowsIn className="h-4 w-4" />
+          ) : (
+            <ArrowsOutSimple className="h-4 w-4" />
+          )}
+        </button>
 
         <button
           type="button"

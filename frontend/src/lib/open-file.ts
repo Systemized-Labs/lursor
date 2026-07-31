@@ -11,6 +11,16 @@ export interface OpenFileRequest {
   workspaceId: string
   path: string
   name: string
+  /**
+   * Where in the file to land, 1-based. Set by anything that knows a position and
+   * not just a file — a search hit today; a chat citation or a stack-trace frame
+   * next. The viewer scrolls there and selects `length` characters once the buffer
+   * is up, then forgets the request, so a later re-render can't drag the cursor
+   * back.
+   */
+  line?: number
+  column?: number
+  length?: number
 }
 
 let pending: OpenFileRequest | null = null

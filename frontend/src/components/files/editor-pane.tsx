@@ -1,8 +1,11 @@
-import { useEffect, useRef } from "react"
-import type { ReactNode } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import type { KeyboardEvent, ReactNode } from "react"
+import type * as Monaco from "monaco-editor"
 import {
   ArrowCounterClockwise,
+  ArrowLineLeft,
   ArrowsOut,
+  ArrowsLeftRight,
   CaretRight,
   Copy,
   DotsThree,
@@ -11,7 +14,10 @@ import {
   FloppyDisk,
   FolderOpen,
   GitDiff,
+  MagnifyingGlass,
   SidebarSimple,
+  SquareSplitHorizontal,
+  TextAa,
   Warning,
   X,
 } from "@phosphor-icons/react"
@@ -39,20 +45,38 @@ import { cn } from "@/lib/utils"
 
 import { CodeEditor, DiffCodeEditor } from "./code-editor"
 import {
+  filesInGroup,
   isImageFile,
   isMarkdownFile,
   isProseFile,
+  type EditorGroup,
   type FileBuffers,
   type OpenFile,
   type ViewMode,
 } from "./file-buffers"
 import { fileKind } from "./file-icon"
 
-/** Platform-aware save shortcut, resolved once for header hints. */
-const SAVE_HINT =
+/**
+ * Drag payload for moving a file tab between editor groups. A custom MIME type
+ * rather than `text/plain`, so the strip only accepts drags that are actually
+ * ours — and so `dragover` can tell without reading the data, which the browser
+ * won't allow mid-drag.
+ */
+const TAB_DRAG_TYPE = "application/x-lursor-file-tab"
+
+const IS_MAC =
   typeof navigator !== "undefined" && /Mac|iP/.test(navigator.platform)
-    ? "⌘S"
-    : "Ctrl+S"
+
+/** Platform-aware shortcut hints for the header and the `…` menu. */
+const SAVE_HINT = IS_MAC ? "⌘S" : "Ctrl+S"
+const FIND_HINT = IS_MAC ? "⌘F" : "Ctrl+F"
+// Monaco's own default for replace, which differs by platform — ⌘H is the system
+// "hide window" on macOS, so the editor never claims it there.
+const REPLACE_HINT = IS_MAC ? "⌘⌥F" : "Ctrl+H"
+
+/** Monaco action ids the pane drives directly. */
+const FIND_ACTION = "actions.find"
+const REPLACE_ACTION = "editor.action.startFindReplaceAction"
 
 interface EditorPaneProps {
   buffers: FileBuffers
@@ -63,6 +87,18 @@ interface EditorPaneProps {
   onToggleSidebar?: () => void
   /** Shown before any file is open. */
   empty?: ReactNode
+  /** Which editor group this pane renders. Defaults to the only one there is. */
+  group?: EditorGroup
+  /**
+   * Whether the host actually lays out two groups. Off for the skill editor,
+   * which renders one pane — offering "Split Right" there would tag a buffer into
+   * a group nothing renders, and the file would appear to vanish.
+   */
+  splitEnabled?: boolean
+  /** True when the panel is too narrow for two editors; the control says so. */
+  splitTooNarrow?: boolean
+  /** Fold this group away. Offered on the secondary group only. */
+  onCloseGroup?: () => void
 }
 
 /**
@@ -70,6 +106,12 @@ interface EditorPaneProps {
  * workspace file viewer and the skill editor. Everything stateful lives in
  * {@link FileBuffers}, so this renders one set of behaviours no matter where the
  * files come from.
+ *
+ * With a split, the host renders one of these per group and each shows only the
+ * tabs tagged with its own — but they read from one buffer store, so a file open
+ * in both groups is one buffer, saved once and reconciled once. Clicking anywhere
+ * in a pane makes its group the focused one, which is where a file opened from the
+ * tree or from a search result lands.
  */
 export function EditorPane({
   buffers,
@@ -77,80 +119,184 @@ export function EditorPane({
   sidebarHidden,
   onToggleSidebar,
   empty,
+  group = 0,
+  splitEnabled = false,
+  splitTooNarrow = false,
+  onCloseGroup,
 }: EditorPaneProps) {
   const {
     openFiles,
-    activePath,
+    activePaths,
+    focusedGroup,
     setActivePath,
+    setFocusedGroup,
     closeFile,
+    splitFile,
+    moveToGroup,
     saveFile,
     discardChanges,
     copyPath,
     patch,
+    clearReveal,
     settings,
     setSetting,
   } = buffers
-  const active = openFiles.find((f) => f.path === activePath)
+  const files = filesInGroup(openFiles, group)
+  const active = files.find((f) => f.path === activePaths[group])
+  const focused = focusedGroup === group
+  const { editorRef, runEditorAction, onPaneKeyDown } = useEditorActions()
 
-  if (openFiles.length === 0) return <>{empty ?? <EmptyEditor />}</>
+  // Any interaction inside this pane claims focus for its group, so the next file
+  // opened from the tree or a search result lands where the user is looking.
+  const claimFocus = () => {
+    if (!focused) setFocusedGroup(group)
+  }
 
   return (
-    <>
-      <TabStrip
-        files={openFiles}
-        activePath={activePath}
-        sidebarHidden={sidebarHidden}
-        onActivate={setActivePath}
-        onClose={closeFile}
-        onToggleSidebar={onToggleSidebar}
-      />
-      {active && (
-        <EditorBody
-          file={active}
-          rawUrl={rawUrl}
-          settings={settings}
-          setSetting={setSetting}
-          onSetView={(view) => patch(active.path, { view })}
-          onChange={(value) =>
-            patch(active.path, {
-              content: value,
-              dirty: value !== active.diskContent,
-            })
-          }
-          onSave={() => void saveFile(active.path)}
-          onDiscard={() => discardChanges(active.path)}
-          onCopyPath={() => void copyPath(active.path)}
-          onToggleDiff={() => patch(active.path, { diffView: !active.diffView })}
-          onReloadConflict={() =>
-            patch(active.path, {
-              content: active.conflict ?? active.content,
-              dirty: false,
-              conflict: undefined,
-            })
-          }
-          onDismissConflict={() => patch(active.path, { conflict: undefined })}
-        />
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      onKeyDown={onPaneKeyDown}
+      // Capture, so a click landing inside Monaco's own DOM still registers.
+      onMouseDownCapture={claimFocus}
+      onFocusCapture={claimFocus}
+      // A container listening for keys, not an interactive element itself — the
+      // real targets inside it (tabs, buttons, the editor) carry their own roles.
+      role="presentation"
+    >
+      {files.length === 0 ? (
+        empty ?? <EmptyEditor />
+      ) : (
+        <>
+          <TabStrip
+            files={files}
+            activePath={activePaths[group]}
+            focused={focused || !splitEnabled}
+            acceptsDrops={splitEnabled}
+            sidebarHidden={sidebarHidden}
+            onActivate={(path) => setActivePath(path, group)}
+            onClose={(path) => closeFile(path, group)}
+            onMoveHere={(path) => moveToGroup(path, group)}
+            onToggleSidebar={onToggleSidebar}
+            onCloseGroup={onCloseGroup}
+          />
+          {active && (
+            <EditorBody
+              file={active}
+              rawUrl={rawUrl}
+              settings={settings}
+              setSetting={setSetting}
+              editorRef={editorRef}
+              splitEnabled={splitEnabled}
+              splitTooNarrow={splitTooNarrow}
+              group={group}
+              onFind={() => runEditorAction(FIND_ACTION)}
+              onReplace={() => runEditorAction(REPLACE_ACTION)}
+              onSplit={() => splitFile(active.path)}
+              onMoveToOtherGroup={() =>
+                moveToGroup(active.path, group === 0 ? 1 : 0)
+              }
+              onSetView={(view) => patch(active.path, { view })}
+              onChange={(value) =>
+                patch(active.path, {
+                  content: value,
+                  dirty: value !== active.diskContent,
+                })
+              }
+              onSave={() => void saveFile(active.path)}
+              onDiscard={() => discardChanges(active.path)}
+              onCopyPath={() => void copyPath(active.path)}
+              onToggleDiff={() =>
+                patch(active.path, { diffView: !active.diffView })
+              }
+              onRevealed={() => clearReveal(active.path)}
+              onReloadConflict={() =>
+                patch(active.path, {
+                  content: active.conflict ?? active.content,
+                  dirty: false,
+                  conflict: undefined,
+                })
+              }
+              onDismissConflict={() => patch(active.path, { conflict: undefined })}
+            />
+          )}
+        </>
       )}
-    </>
+    </div>
   )
+}
+
+/**
+ * A handle on the live Monaco editor, plus the two ways the pane reaches it.
+ *
+ * Monaco's find widget has always worked, but only from inside the text area and
+ * with nothing anywhere advertising it. This makes it reachable from the header
+ * button and the `…` menu, and binds the shortcuts at the *pane* level so they
+ * also fire when focus is in the file tab strip or the header rather than in the
+ * text — the case where a person has just clicked a tab and typed ⌘F.
+ */
+function useEditorActions() {
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
+
+  const runEditorAction = useCallback((id: string) => {
+    if (!editorRef.current) return
+    // Deferred a frame: when this comes from the `…` menu, Radix restores focus
+    // to the trigger as the menu closes, which would pull focus straight back
+    // out of the find input we are about to open.
+    requestAnimationFrame(() => {
+      const editor = editorRef.current
+      if (!editor) return
+      editor.focus()
+      void editor.getAction(id)?.run()
+    })
+  }, [])
+
+  const onPaneKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      // Inside the text area Monaco owns these already, and its own handling is
+      // the better one (it seeds find from the selection).
+      if ((event.target as HTMLElement | null)?.closest(".monaco-editor")) return
+      if (IS_MAC ? !event.metaKey : !event.ctrlKey) return
+      // Keyed on `code`, not `key`: with Option held, macOS reports ⌥F as "ƒ".
+      if (event.code === "KeyF" && !event.altKey) {
+        event.preventDefault()
+        runEditorAction(FIND_ACTION)
+      } else if (IS_MAC ? event.code === "KeyF" && event.altKey : event.code === "KeyH") {
+        event.preventDefault()
+        runEditorAction(REPLACE_ACTION)
+      }
+    },
+    [runEditorAction]
+  )
+
+  return { editorRef, runEditorAction, onPaneKeyDown }
 }
 
 interface TabStripProps {
   files: OpenFile[]
   activePath?: string
+  /** Whether this strip's group has focus; the active rail fades when it doesn't. */
+  focused: boolean
+  /** Whether a tab dragged from the other group can be dropped here. */
+  acceptsDrops: boolean
   sidebarHidden?: boolean
   onActivate: (path: string) => void
   onClose: (path: string) => void
+  onMoveHere: (path: string) => void
   onToggleSidebar?: () => void
+  onCloseGroup?: () => void
 }
 
 function TabStrip({
   files,
   activePath,
+  focused,
+  acceptsDrops,
   sidebarHidden,
   onActivate,
   onClose,
+  onMoveHere,
   onToggleSidebar,
+  onCloseGroup,
 }: TabStripProps) {
   // Keep the open tab in view when it changes — activating a file from the tree
   // (or closing a neighbour) can leave the active tab scrolled off-screen.
@@ -159,8 +305,42 @@ function TabStrip({
     activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [activePath])
 
+  // Highlighted while a tab from the other group hovers over this strip. Plain
+  // HTML5 drag and drop — a whole dnd library for one payload of one string would
+  // be a poor trade.
+  const [dropActive, setDropActive] = useState(false)
+
   return (
-    <div className="flex h-9 min-w-0 shrink-0 items-stretch border-b border-border/40 bg-muted/30">
+    <div
+      className={cn(
+        "flex h-9 min-w-0 shrink-0 items-stretch border-b border-border/40 bg-muted/30 transition-colors",
+        dropActive && "bg-accent/60"
+      )}
+      onDragOver={
+        acceptsDrops
+          ? (e) => {
+              // `getData` is unreadable during a drag, so the type list is the
+              // only way to know whether this drop is ours to take.
+              if (!e.dataTransfer.types.includes(TAB_DRAG_TYPE)) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = "move"
+              setDropActive(true)
+            }
+          : undefined
+      }
+      onDragLeave={acceptsDrops ? () => setDropActive(false) : undefined}
+      onDrop={
+        acceptsDrops
+          ? (e) => {
+              setDropActive(false)
+              const path = e.dataTransfer.getData(TAB_DRAG_TYPE)
+              if (!path) return
+              e.preventDefault()
+              onMoveHere(path)
+            }
+          : undefined
+      }
+    >
       <div className="no-scrollbar flex min-w-0 flex-1 items-stretch overflow-x-auto">
       {files.map((f) => {
         const isActive = f.path === activePath
@@ -172,6 +352,11 @@ function TabStrip({
             role="tab"
             aria-selected={isActive}
             tabIndex={0}
+            draggable={acceptsDrops}
+            onDragStart={(e) => {
+              e.dataTransfer.setData(TAB_DRAG_TYPE, f.path)
+              e.dataTransfer.effectAllowed = "move"
+            }}
             onClick={() => onActivate(f.path)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") onActivate(f.path)
@@ -187,9 +372,16 @@ function TabStrip({
                 : "text-muted-foreground hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50"
             )}
           >
-            {/* Active rail — mirrors the tree's left rail across the top of the tab. */}
+            {/* Active rail — mirrors the tree's left rail across the top of the
+                tab. Faded in a group that doesn't have focus, so with a split it
+                is clear which side the next opened file will land in. */}
             {isActive && (
-              <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />
+              <span
+                className={cn(
+                  "absolute inset-x-0 top-0 h-0.5 bg-primary",
+                  !focused && "opacity-30"
+                )}
+              />
             )}
             <Glyph
               className={cn(
@@ -223,6 +415,19 @@ function TabStrip({
         )
       })}
       </div>
+      {/* Fold the split away. Only on the secondary group: group 0 is the pane
+          itself, and its tabs come back here when this one closes. */}
+      {onCloseGroup && (
+        <button
+          type="button"
+          onClick={onCloseGroup}
+          title="Close this group (its tabs move to the other one)"
+          aria-label="Close editor group"
+          className="flex w-9 shrink-0 items-center justify-center border-l border-border/40 text-muted-foreground outline-none transition-colors hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50"
+        >
+          <ArrowLineLeft className="h-4 w-4" />
+        </button>
+      )}
       {/* Pinned to the right of the scrolling tabs so it's always reachable —
           the only way back to the tree once it's hidden. */}
       {onToggleSidebar && (
@@ -255,6 +460,17 @@ interface EditorBodyProps {
     key: K,
     value: EditorSettings[K]
   ) => void
+  /** Filled by the code editor on mount, cleared on unmount. */
+  editorRef: React.MutableRefObject<Monaco.editor.IStandaloneCodeEditor | null>
+  splitEnabled: boolean
+  splitTooNarrow: boolean
+  group: EditorGroup
+  onFind: () => void
+  onReplace: () => void
+  onSplit: () => void
+  onMoveToOtherGroup: () => void
+  /** The pending reveal landed; forget it so it can't fire twice. */
+  onRevealed: () => void
   onSetView: (view: ViewMode) => void
   onChange: (value: string) => void
   onSave: () => void
@@ -270,6 +486,15 @@ function EditorBody({
   rawUrl,
   settings,
   setSetting,
+  editorRef,
+  splitEnabled,
+  splitTooNarrow,
+  group,
+  onFind,
+  onReplace,
+  onSplit,
+  onMoveToOtherGroup,
+  onRevealed,
   onSetView,
   onChange,
   onSave,
@@ -367,6 +592,20 @@ function EditorBody({
               {lineCount} {lineCount === 1 ? "line" : "lines"}
             </span>
           )}
+          {/* The find widget has always been in there; this is the first thing
+              that says so. Hidden in Diff View, where the action would open a
+              find bar over an editor the user is reading, not searching. */}
+          {!file.diffView && (
+            <button
+              type="button"
+              onClick={onFind}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title={`Find in file (${FIND_HINT})`}
+              aria-label="Find in file"
+            >
+              <MagnifyingGlass className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             onClick={onSave}
@@ -392,6 +631,13 @@ function EditorBody({
             markdown={markdown}
             settings={settings}
             setSetting={setSetting}
+            splitEnabled={splitEnabled}
+            splitTooNarrow={splitTooNarrow}
+            group={group}
+            onFind={onFind}
+            onReplace={onReplace}
+            onSplit={onSplit}
+            onMoveToOtherGroup={onMoveToOtherGroup}
             onSetView={onSetView}
             onSave={onSave}
             onDiscard={onDiscard}
@@ -424,6 +670,9 @@ function EditorBody({
                 display={display}
                 onChange={onChange}
                 onSave={onSave}
+                onReady={(editor) => (editorRef.current = editor)}
+                reveal={file.reveal}
+                onRevealed={onRevealed}
               />
             </ResizablePanel>
             <ResizableHandle />
@@ -438,6 +687,9 @@ function EditorBody({
             display={display}
             onChange={onChange}
             onSave={onSave}
+            onReady={(editor) => (editorRef.current = editor)}
+            reveal={file.reveal}
+            onRevealed={onRevealed}
           />
         )}
       </div>
@@ -482,6 +734,13 @@ interface EditorMenuProps {
     key: K,
     value: EditorSettings[K]
   ) => void
+  splitEnabled: boolean
+  splitTooNarrow: boolean
+  group: EditorGroup
+  onFind: () => void
+  onReplace: () => void
+  onSplit: () => void
+  onMoveToOtherGroup: () => void
   onSetView: (view: ViewMode) => void
   onSave: () => void
   onDiscard: () => void
@@ -500,6 +759,13 @@ function EditorMenu({
   markdown,
   settings,
   setSetting,
+  splitEnabled,
+  splitTooNarrow,
+  group,
+  onFind,
+  onReplace,
+  onSplit,
+  onMoveToOtherGroup,
   onSetView,
   onSave,
   onDiscard,
@@ -507,6 +773,9 @@ function EditorMenu({
   onToggleDiff,
 }: EditorMenuProps) {
   const canWrite = file.dirty && !file.saving
+  // Already in both groups: there is nowhere left to split it to.
+  const alreadySplit = file.groups.length > 1
+  const splitLabel = group === 0 ? "Split Right" : "Split Left"
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -526,6 +795,52 @@ function EditorMenu({
           <ArrowCounterClockwise className="h-4 w-4" />
           Discard Changes
         </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {/* Find/Replace live in the menu as well as on the header button: the
+            shortcuts are the fast path, and this is where you look them up. */}
+        <DropdownMenuItem onSelect={onFind} disabled={file.diffView}>
+          <MagnifyingGlass className="h-4 w-4" />
+          Find
+          <DropdownMenuShortcut>{FIND_HINT}</DropdownMenuShortcut>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onReplace} disabled={file.diffView}>
+          <TextAa className="h-4 w-4" />
+          Replace
+          <DropdownMenuShortcut>{REPLACE_HINT}</DropdownMenuShortcut>
+        </DropdownMenuItem>
+        {splitEnabled && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={onSplit}
+              disabled={alreadySplit || splitTooNarrow}
+              // Two 30-column editors are worse than one readable one, so the
+              // control says why rather than producing them.
+              title={
+                splitTooNarrow
+                  ? "The panel is too narrow for two editors — widen it first"
+                  : alreadySplit
+                    ? "Already open in both groups"
+                    : undefined
+              }
+            >
+              <SquareSplitHorizontal className="h-4 w-4" />
+              {splitLabel}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={onMoveToOtherGroup}
+              disabled={splitTooNarrow}
+              title={
+                splitTooNarrow
+                  ? "The panel is too narrow for two editors — widen it first"
+                  : undefined
+              }
+            >
+              <ArrowsLeftRight className="h-4 w-4" />
+              Move to Other Group
+            </DropdownMenuItem>
+          </>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onCopyPath}>
           <Copy className="h-4 w-4" />

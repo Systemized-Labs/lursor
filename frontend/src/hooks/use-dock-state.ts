@@ -20,6 +20,17 @@ export interface DockTab {
 /** Runtime dock state for a single workspace. */
 interface DockState {
   collapsed: boolean
+  /**
+   * The dock fills the window: the shell collapses the center column to zero and
+   * closes the app sidebar. Mutually exclusive with {@link DockState.collapsed} —
+   * a hidden dock has nothing to maximize — and every mutation below keeps it
+   * that way, as does {@link readDockState} for anything already persisted.
+   *
+   * Dock-level rather than per-kind, because "give this the whole window" is a
+   * layout request about the dock, and Terminal and Preview want it as much as
+   * the editor does.
+   */
+  maximized: boolean
   tabs: DockTab[]
   activeId: string | null
   /** Ids in focus order, most recent first — picks the target in {@link
@@ -42,6 +53,7 @@ function focusTab(state: DockState, id: string): DockState {
  *  to restore the same id to restore, say, a preview's URL. */
 interface StoredDock {
   collapsed: boolean
+  maximized: boolean
   tabs: DockTab[]
   activeIndex: number
 }
@@ -90,7 +102,13 @@ const STORAGE_PREFIX = "lursor:dock:"
 const keyFor = (workspaceId?: string) => `${STORAGE_PREFIX}${workspaceId ?? "_global"}`
 
 function readDockState(workspaceId?: string): DockState {
-  const empty: DockState = { collapsed: false, tabs: [], activeId: null, mru: [] }
+  const empty: DockState = {
+    collapsed: false,
+    maximized: false,
+    tabs: [],
+    activeId: null,
+    mru: [],
+  }
   try {
     const raw = localStorage.getItem(keyFor(workspaceId))
     if (!raw) return empty
@@ -98,8 +116,12 @@ function readDockState(workspaceId?: string): DockState {
     const tabs = parseStoredTabs(stored.tabs)
     const idx = typeof stored.activeIndex === "number" ? stored.activeIndex : tabs.length - 1
     const activeId = tabs[idx]?.id ?? tabs[tabs.length - 1]?.id ?? null
+    const collapsed = !!stored.collapsed
     return {
-      collapsed: !!stored.collapsed,
+      collapsed,
+      // Collapsed wins: a stored pair of both (older data, or a hand-edited key)
+      // would otherwise restore a window-filling dock that isn't rendered at all.
+      maximized: !collapsed && !!stored.maximized,
       tabs,
       activeId,
       mru: activeId ? [activeId] : [],
@@ -135,6 +157,7 @@ export function seedCollapsedDock(workspaceId: string): void {
   if (hasStoredDockState(workspaceId)) return
   writeDockState(workspaceId, {
     collapsed: true,
+    maximized: false,
     tabs: [],
     activeId: null,
     mru: [],
@@ -145,6 +168,7 @@ function writeDockState(workspaceId: string | undefined, state: DockState) {
   try {
     const stored: StoredDock = {
       collapsed: state.collapsed,
+      maximized: state.maximized,
       tabs: state.tabs.map((t) => ({ id: t.id, kind: t.kind })),
       activeIndex: state.tabs.findIndex((t) => t.id === state.activeId),
     }
@@ -155,10 +179,11 @@ function writeDockState(workspaceId: string | undefined, state: DockState) {
 }
 
 /**
- * Right-dock state (collapsed + open tabs + active tab) persisted per workspace
- * in localStorage. Switching workspaces loads that workspace's saved layout;
- * refreshing the page restores it. Every mutation writes through to storage, so
- * a closed dock stays closed and open panels reopen on reload.
+ * Right-dock state (collapsed, maximized, open tabs, active tab) persisted per
+ * workspace in localStorage. Switching workspaces loads that workspace's saved
+ * layout; refreshing the page restores it. Every mutation writes through to
+ * storage, so a closed dock stays closed, a maximized one reopens filling the
+ * window, and open panels reopen on reload.
  */
 export function useDockState(workspaceId?: string) {
   const [state, setState] = useState<DockState>(() => readDockState(workspaceId))
@@ -185,8 +210,25 @@ export function useDockState(workspaceId?: string) {
     [workspaceId]
   )
 
+  // Hiding the dock drops maximize with it, so re-opening never comes back
+  // window-filling when the user only asked for the panel again.
   const setCollapsed = useCallback(
-    (collapsed: boolean) => update((prev) => ({ ...prev, collapsed })),
+    (collapsed: boolean) =>
+      update((prev) => ({
+        ...prev,
+        collapsed,
+        maximized: collapsed ? false : prev.maximized,
+      })),
+    [update]
+  )
+
+  const setMaximized = useCallback(
+    (maximized: boolean) =>
+      update((prev) => ({
+        ...prev,
+        maximized,
+        collapsed: maximized ? false : prev.collapsed,
+      })),
     [update]
   )
 
@@ -266,9 +308,11 @@ export function useDockState(workspaceId?: string) {
 
   return {
     collapsed: state.collapsed,
+    maximized: state.maximized,
     tabs: state.tabs,
     activeId: state.activeId,
     setCollapsed,
+    setMaximized,
     openTab,
     ensureTab,
     closeTab,

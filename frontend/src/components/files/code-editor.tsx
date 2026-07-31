@@ -1,10 +1,11 @@
-import { useEffect, useRef } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import Editor, { DiffEditor } from "@monaco-editor/react"
 import type * as Monaco from "monaco-editor"
 
 import "./monaco-setup"
 import { defineMonacoTheme, MONACO_THEME_NAME } from "./monaco-theme"
 import { languageForFilename } from "./language"
+import type { RevealTarget } from "./file-buffers"
 import { useIsMobile } from "@/hooks/use-mobile"
 
 /**
@@ -74,6 +75,68 @@ interface CodeEditorProps {
   onChange: (value: string) => void
   /** Ctrl/Cmd+S inside the editor. */
   onSave: () => void
+  /**
+   * Hand the live editor instance up so the pane can drive editor actions
+   * (find, replace, go-to-line). Called with `null` on unmount, so a caller
+   * holding it in a ref never keeps a disposed editor.
+   */
+  onReady?: (editor: Monaco.editor.IStandaloneCodeEditor | null) => void
+  /** Scroll to and select a position; cleared via `onRevealed` once applied. */
+  reveal?: RevealTarget
+  onRevealed?: () => void
+}
+
+/**
+ * Apply a pending {@link RevealTarget} — on mount, and whenever a new one
+ * arrives for the file already on screen (a second search hit in the same file).
+ *
+ * The reveal is reported consumed as soon as it lands, so a later re-render
+ * can't yank the cursor back to a line the user has since scrolled away from.
+ */
+function useReveal(
+  editorRef: React.MutableRefObject<Monaco.editor.IStandaloneCodeEditor | null>,
+  monacoRef: React.MutableRefObject<typeof Monaco | null>,
+  path: string,
+  reveal: RevealTarget | undefined,
+  onRevealed: (() => void) | undefined
+): () => void {
+  // Read the callbacks and the target through refs so a new `onRevealed`
+  // identity (an inline arrow from the parent) can't re-run a reveal that
+  // already fired, and so `apply` stays stable enough to call from `onMount`.
+  const revealedRef = useRef(onRevealed)
+  revealedRef.current = onRevealed
+  const targetRef = useRef(reveal)
+  targetRef.current = reveal
+
+  const apply = useCallback(() => {
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+    const target = targetRef.current
+    if (!editor || !monaco || !target) return
+    const column = Math.max(1, target.column ?? 1)
+    editor.revealLineInCenterIfOutsideViewport(target.line)
+    editor.setSelection(
+      new monaco.Range(
+        target.line,
+        column,
+        target.line,
+        column + (target.length ?? 0)
+      )
+    )
+    editor.focus()
+    revealedRef.current?.()
+  }, [editorRef, monacoRef])
+
+  // A reveal that arrives while the editor is already up (a second search hit in
+  // the file on screen). `path` is a dependency too, because the editor swaps
+  // models when it changes and the new model is what the line belongs to.
+  useEffect(() => {
+    if (reveal) apply()
+  }, [apply, path, reveal])
+
+  // Returned so `onMount` can fire a reveal parked before Monaco finished
+  // loading — the common case, since the request and the mount race.
+  return apply
 }
 
 /**
@@ -93,10 +156,21 @@ export function CodeEditor({
   display,
   onChange,
   onSave,
+  onReady,
+  reveal,
+  onRevealed,
 }: CodeEditorProps) {
   const monacoRef = useRef<typeof Monaco | null>(null)
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   useThemeSync(monacoRef)
+  const applyReveal = useReveal(editorRef, monacoRef, path, reveal, onRevealed)
   const isMobile = useIsMobile()
+
+  // Report the editor away on unmount, so a pane holding it in a ref can't call
+  // actions on a disposed instance.
+  const readyRef = useRef(onReady)
+  readyRef.current = onReady
+  useEffect(() => () => readyRef.current?.(null), [])
 
   return (
     <Editor
@@ -110,10 +184,13 @@ export function CodeEditor({
         defineMonacoTheme(monaco)
       }}
       onMount={(editor, monaco) => {
+        editorRef.current = editor
         editor.addCommand(
           monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
           () => onSave()
         )
+        readyRef.current?.(editor)
+        applyReveal()
       }}
       options={{
         readOnly,
@@ -184,6 +261,10 @@ export function DiffCodeEditor({
         // Side-by-side needs width phones don't have — go inline on mobile.
         renderSideBySide: !isMobile,
         originalEditable: false,
+        // A review view shouldn't decorate either side: the left pane is the
+        // on-disk baseline, which isn't yours to fix here, and squiggles read as
+        // diff noise next to the real added/removed marks.
+        renderValidationDecorations: "off",
         padding: { top: 8 },
         ...displayOptions(display),
         ...mobileEditorOptions(isMobile),

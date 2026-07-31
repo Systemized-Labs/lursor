@@ -2,9 +2,10 @@
 
 The workspace directory is the agent's filesystem root, so these endpoints power
 a lightweight in-app editor: a lazily-loaded file tree, read/write of individual
-files, and a WebSocket that streams filesystem changes as the agent (or anyone
-else) touches the directory — so edits made by a running agent surface live in
-the open editor.
+files, fuzzy search over filenames (``/search``) and over file *contents*
+(``/grep``), and a WebSocket that streams filesystem changes as the agent (or
+anyone else) touches the directory — so edits made by a running agent surface
+live in the open editor.
 
 Every path is confined to the workspace root: a client-supplied relative path is
 joined onto the root and rejected if it escapes (``..`` traversal, absolute
@@ -18,8 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fnmatch
+import json
 import mimetypes
 import os
+import re
 import shutil
 from pathlib import Path, PurePosixPath
 
@@ -127,6 +131,20 @@ _MAX_READ_BYTES = 2 * 1024 * 1024
 # what we've seen.
 _MAX_SEARCH_SCAN = 20_000
 
+# Hard ceiling on matches a content search will return, whatever ``limit`` asks
+# for. The client shows the count and says when it truncated, so a bigger number
+# would only cost transfer for a list nobody scrolls.
+_MAX_GREP_MATCHES = 1_000
+
+# Matches taken from any one file, so a single minified bundle can't spend the
+# whole budget on one line.
+_MAX_GREP_MATCHES_PER_FILE = 20
+
+# Longest line returned verbatim. Past this the match is returned inside a window
+# of the line (see :func:`_window_line`) — a minified file otherwise sends a
+# hundred kilobytes to render one row.
+_MAX_GREP_LINE_CHARS = 400
+
 
 class DirEntry(BaseModel):
     name: str
@@ -151,6 +169,32 @@ class FileContent(BaseModel):
     is_binary: bool
     size: int
     truncated: bool
+
+
+class GrepMatch(BaseModel):
+    """One matching line, addressed well enough to open and select it."""
+
+    path: str  # POSIX-style, relative to the workspace root
+    line: int  # 1-based
+    # 1-based column of the match in the *real* line, which is what the editor
+    # jumps to — not an offset into ``text``.
+    column: int
+    # The matching line, windowed when it was long enough to be unrenderable.
+    text: str
+    match_length: int
+    # Characters dropped off the front of the line to build ``text``. 0 for any
+    # ordinary line; the client needs it to find ``column`` inside ``text``.
+    text_offset: int = 0
+
+
+class GrepResult(BaseModel):
+    matches: list[GrepMatch]
+    # Set when the search hit ``limit``, the per-file cap, or the scan ceiling —
+    # so the client can say "first 200 of more" instead of implying completeness.
+    truncated: bool
+    # Files the search actually looked at. When it stopped early there is no such
+    # number to report, so this falls back to the files it had seen matches in.
+    files_scanned: int
 
 
 class WriteFileRequest(BaseModel):
@@ -390,6 +434,313 @@ async def search_files(
         DirEntry(name=Path(rel).name, path=rel, is_dir=is_dir)
         for _, _, _, rel, is_dir in scored[:limit]
     ]
+
+
+# --- Content search -------------------------------------------------------------
+#
+# Two implementations of one endpoint. ``rg`` is used when the machine has it and
+# a pure-Python walk when it doesn't: a packaged Electron build can't assume
+# ripgrep is installed, so it has to stay an optimization and never a dependency.
+#
+# The two are kept deliberately close. ``rg`` is invoked with ``--no-ignore``
+# (so a ``.gitignore`` can't change what a search finds from one machine to the
+# next), ``--hidden`` (the walk doesn't skip dotfiles either) and an explicit
+# exclude glob per :data:`_IGNORED_DIRS` entry — which leaves exactly the tree the
+# walk covers. The ``include`` filter and every cap are applied in Python for both
+# paths, so the same query answers the same way whichever ran it.
+
+
+def _grep_pattern(q: str, regex: bool, case: bool, whole_word: bool) -> re.Pattern[str]:
+    """Compile the needle, raising 422 on a regex the user mistyped."""
+    body = q if regex else re.escape(q)
+    if whole_word:
+        body = rf"\b(?:{body})\b"
+    try:
+        return re.compile(body, 0 if case else re.IGNORECASE)
+    except re.error as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"Invalid regular expression: {exc}"
+        ) from exc
+
+
+def _parse_includes(include: str) -> tuple[str, ...]:
+    """Split the comma-separated include field into globs."""
+    return tuple(p for p in (part.strip() for part in include.split(",")) if p)
+
+
+def _include_matches(rel: str, patterns: tuple[str, ...]) -> bool:
+    """Whether a workspace-relative path passes the include globs (any of them).
+
+    A pattern carrying no ``/`` is about the *filename* (``*.ts``), so it is
+    matched against the basename as well as the path — otherwise the most obvious
+    thing anyone types would match nothing outside the root.
+    """
+    if not patterns:
+        return True
+    name = rel.rsplit("/", 1)[-1]
+    for pattern in patterns:
+        if fnmatch.fnmatch(rel, pattern):
+            return True
+        if "/" not in pattern and fnmatch.fnmatch(name, pattern):
+            return True
+    return False
+
+
+def _window_line(line: str, start: int, length: int) -> tuple[str, int]:
+    """``(text, dropped_prefix_chars)`` for a match at ``start`` in ``line``.
+
+    Short lines come back whole. A long one is returned as a window that keeps
+    some context in front of the match, because the interesting part of a minified
+    line is the match and its neighbourhood, not its first 400 characters.
+    """
+    if len(line) <= _MAX_GREP_LINE_CHARS:
+        return line, 0
+    lead = 40
+    begin = max(0, min(start - lead, len(line) - _MAX_GREP_LINE_CHARS))
+    return line[begin : begin + max(_MAX_GREP_LINE_CHARS, length)], begin
+
+
+def _matches_in_text(
+    rel: str, text: str, pattern: re.Pattern[str], budget: int
+) -> tuple[list[GrepMatch], bool]:
+    """Every match in one file's text, capped by ``budget`` and the per-file cap.
+
+    Returns ``(matches, more)`` where ``more`` says the file had matches we did
+    not take.
+    """
+    cap = min(budget, _MAX_GREP_MATCHES_PER_FILE)
+    found: list[GrepMatch] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        for hit in pattern.finditer(line):
+            if len(found) >= cap:
+                return found, True
+            windowed, offset = _window_line(line, hit.start(), len(hit.group(0)))
+            found.append(
+                GrepMatch(
+                    path=rel,
+                    line=number,
+                    column=hit.start() + 1,
+                    text=windowed,
+                    match_length=len(hit.group(0)),
+                    text_offset=offset,
+                )
+            )
+            # A zero-width match (an empty alternation, say) would otherwise spin
+            # on one position forever; one hit per line is enough to find it.
+            if not hit.group(0):
+                break
+    return found, False
+
+
+def _grep_walk(
+    root: Path, pattern: re.Pattern[str], includes: tuple[str, ...], limit: int
+) -> GrepResult:
+    """Search file contents with a plain recursive walk. Runs off the event loop.
+
+    Skips what ``read_file`` skips — anything over :data:`_MAX_READ_BYTES`, and
+    anything holding a NUL byte or not decodable as UTF-8 — so a binary can never
+    produce a match.
+    """
+    matches: list[GrepMatch] = []
+    scanned = 0
+    truncated = False
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _IGNORED_DIRS]
+        for name in filenames:
+            if name in _IGNORED_DIRS:
+                continue
+            target = Path(dirpath) / name
+            rel = _rel(root, target)
+            if not _include_matches(rel, includes):
+                continue
+            scanned += 1
+            try:
+                if target.stat().st_size > _MAX_READ_BYTES:
+                    continue
+                raw = target.read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in raw:
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            found, more = _matches_in_text(rel, text, pattern, limit - len(matches))
+            matches.extend(found)
+            truncated = truncated or more
+            if len(matches) >= limit:
+                return GrepResult(matches=matches, truncated=True, files_scanned=scanned)
+        if scanned >= _MAX_SEARCH_SCAN:
+            return GrepResult(matches=matches, truncated=True, files_scanned=scanned)
+
+    return GrepResult(matches=matches, truncated=truncated, files_scanned=scanned)
+
+
+def _rg_argv(root: Path, q: str, regex: bool, case: bool, whole_word: bool) -> list[str]:
+    """The ripgrep invocation matching what :func:`_grep_walk` would cover."""
+    argv = [
+        "rg",
+        "--json",
+        "--line-number",
+        "--column",
+        "--no-messages",
+        # Ignore files are a per-checkout thing; letting them in would make the
+        # same search answer differently on two machines.
+        "--no-ignore",
+        "--no-require-git",
+        "--hidden",
+        f"--max-count={_MAX_GREP_MATCHES_PER_FILE}",
+        f"--max-filesize={_MAX_READ_BYTES}",
+    ]
+    for ignored in sorted(_IGNORED_DIRS):
+        # No `/`, so this prunes a directory (or drops a file) of that name at any
+        # depth — the same rule the walk applies.
+        argv.append(f"--glob=!{ignored}")
+    if not case:
+        argv.append("--ignore-case")
+    if whole_word:
+        argv.append("--word-regexp")
+    if not regex:
+        argv.append("--fixed-strings")
+    argv += [f"--regexp={q}", "--", str(root)]
+    return argv
+
+
+def _parse_rg_json(
+    root: Path, stdout: bytes, includes: tuple[str, ...], limit: int
+) -> GrepResult:
+    """Turn ripgrep's JSON event stream into a :class:`GrepResult`."""
+    matches: list[GrepMatch] = []
+    per_file: dict[str, int] = {}
+    seen_files: set[str] = set()
+    reported_scanned: int | None = None
+    truncated = False
+
+    for raw_line in stdout.splitlines():
+        if not raw_line:
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        kind = event.get("type")
+        if kind == "summary":
+            stats = event.get("data", {}).get("stats", {})
+            searched = stats.get("searches")
+            if isinstance(searched, int):
+                reported_scanned = searched
+            continue
+        if kind != "match":
+            continue
+
+        data = event.get("data", {})
+        absolute = data.get("path", {}).get("text")
+        line_text = data.get("lines", {}).get("text")
+        number = data.get("line_number")
+        if not absolute or line_text is None or not isinstance(number, int):
+            # A non-UTF-8 path or line arrives base64-encoded under `bytes`; the
+            # walk wouldn't have returned it either, so skip it.
+            continue
+        try:
+            rel = _rel(root, Path(absolute))
+        except ValueError:
+            continue
+        if not _include_matches(rel, includes):
+            continue
+        seen_files.add(rel)
+        line = line_text.rstrip("\r\n")
+        raw = line.encode("utf-8")
+
+        for submatch in data.get("submatches", []):
+            begin, end = submatch.get("start"), submatch.get("end")
+            if not isinstance(begin, int) or not isinstance(end, int):
+                continue
+            if len(matches) >= limit:
+                return GrepResult(
+                    matches=matches,
+                    truncated=True,
+                    files_scanned=reported_scanned or len(seen_files),
+                )
+            if per_file.get(rel, 0) >= _MAX_GREP_MATCHES_PER_FILE:
+                truncated = True
+                break
+            # ripgrep reports byte offsets into the line; Monaco counts
+            # characters, so the prefix is decoded to find out how many there are.
+            start_chars = len(raw[:begin].decode("utf-8", errors="replace"))
+            match_chars = len(raw[begin:end].decode("utf-8", errors="replace"))
+            windowed, offset = _window_line(line, start_chars, match_chars)
+            matches.append(
+                GrepMatch(
+                    path=rel,
+                    line=number,
+                    column=start_chars + 1,
+                    text=windowed,
+                    match_length=match_chars,
+                    text_offset=offset,
+                )
+            )
+            per_file[rel] = per_file.get(rel, 0) + 1
+
+    # `--max-count` stopping a file short is a truncation the client should say.
+    if any(n >= _MAX_GREP_MATCHES_PER_FILE for n in per_file.values()):
+        truncated = True
+    return GrepResult(
+        matches=matches,
+        truncated=truncated,
+        files_scanned=reported_scanned or len(seen_files),
+    )
+
+
+@router.get("/grep", response_model=GrepResult)
+async def grep_workspace(
+    workspace_id: str,
+    q: str,
+    regex: bool = False,
+    case: bool = False,
+    whole_word: bool = False,
+    include: str = "",
+    limit: int = 200,
+    session: AsyncSession = Depends(get_session),
+) -> GrepResult:
+    """Search *file contents* under the workspace root.
+
+    The counterpart to ``/search``, which only looks at filenames. ``q`` is a
+    literal by default and a regular expression when ``regex`` is set (a bad
+    pattern is a 422, not a 500); ``case`` makes it case-sensitive, ``whole_word``
+    requires word boundaries, and ``include`` is a comma-separated list of globs
+    the path must match.
+
+    Read-only by design: replace-across-files is not offered here.
+    """
+    root = await _workspace_root(workspace_id, session)
+    needle = q.strip()
+    if not needle:
+        return GrepResult(matches=[], truncated=False, files_scanned=0)
+
+    # Compiled up front even on the ripgrep path, which never uses it: it is what
+    # turns a mistyped pattern into a 422, and that answer shouldn't depend on
+    # whether the machine happens to have ripgrep installed.
+    pattern = _grep_pattern(needle, regex, case, whole_word)
+    includes = _parse_includes(include)
+    limit = max(1, min(limit, _MAX_GREP_MATCHES))
+
+    if shutil.which("rg"):
+        argv = _rg_argv(root, needle, regex, case, whole_word)
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        # rg exits 1 for "no matches", which is not an error. Anything above that
+        # is (a bad pattern it disagrees with us about, a permissions problem) —
+        # fall through to the walk rather than reporting an empty workspace.
+        if (proc.returncode or 0) <= 1:
+            return _parse_rg_json(root, stdout, includes, limit)
+
+    return await asyncio.to_thread(_grep_walk, root, pattern, includes, limit)
 
 
 @router.get("/read", response_model=FileContent)

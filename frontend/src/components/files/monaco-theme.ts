@@ -75,6 +75,8 @@ export function defineMonacoTheme(monaco: typeof Monaco): string {
   const accent = tokenHex("--accent", "#dddddd")
   const border = tokenHex("--border", "#e5e5e5")
   const primary = tokenHex("--primary", foreground)
+  const destructive = tokenHex("--destructive", "#dc2626")
+  const warning = tokenHex("--warning", "#d97706")
   // The editor rides on the `--card` surface (one step off the canvas) so the
   // editing pane reads as a distinct panel instead of blending into the shell.
   const card = tokenHex("--card", background)
@@ -98,10 +100,43 @@ export function defineMonacoTheme(monaco: typeof Monaco): string {
       "editorIndentGuide.activeBackground": muted,
       "editorWhitespace.foreground": border,
       "editorGutter.background": card,
+      // Diagnostics. Only syntax errors survive (see `monaco-setup.ts`), and
+      // Monaco draws those in its own stock red unless told otherwise — so a
+      // genuine error read as foreign in every theme but the default two.
+      "editorError.foreground": destructive,
+      "editorWarning.foreground": warning,
+      "editorInfo.foreground": muted,
+      "editorOverviewRuler.errorForeground": destructive,
+      "editorOverviewRuler.warningForeground": warning,
+      // Widgets — the find/replace bar above all. Left unset these fall back to
+      // stock `vs`/`vs-dark`, which lands a light-grey toolbar in a dark theme.
       "editorWidget.background": card,
+      "editorWidget.foreground": foreground,
       "editorWidget.border": border,
       "input.background": card,
+      "input.foreground": foreground,
+      "input.border": border,
+      "input.placeholderForeground": muted,
+      "inputOption.activeBorder": primary,
+      "inputOption.activeForeground": foreground,
+      "inputOption.activeBackground": accent + "80",
+      "inputValidation.errorBackground": card,
+      "inputValidation.errorBorder": destructive,
+      "inputValidation.errorForeground": foreground,
+      "inputValidation.warningBackground": card,
+      "inputValidation.warningBorder": warning,
+      "inputValidation.warningForeground": foreground,
       "dropdown.background": card,
+      "dropdown.foreground": foreground,
+      "dropdown.border": border,
+      "toolbar.hoverBackground": accent + "99",
+      // Find matches. The current match is the strongest mark on screen; the
+      // others are a wash in the same hue, and the range highlight is fainter
+      // still so "search in selection" reads as scope rather than as a hit.
+      "editor.findMatchBackground": primary + "66",
+      "editor.findMatchHighlightBackground": primary + "33",
+      "editor.findRangeHighlightBackground": accent + "40",
+      "editor.findMatchBorder": primary,
     },
   })
 

@@ -28,6 +28,7 @@ import type { DirEntry } from "@/api/files"
 import { gitKeys, useGitStatus } from "@/api/git"
 import { useWorkspace } from "@/api/workspaces"
 import { ApiError } from "@/api/client"
+import { LOADING_DELAY_MS, useDelayed } from "@/hooks/use-delayed"
 import { useFileWatch } from "@/hooks/use-file-watch"
 import { useGitWatch } from "@/hooks/use-git-watch"
 import {
@@ -835,32 +836,6 @@ function DeleteDialog({ entry, pending, onOpenChange, onConfirm }: DeleteDialogP
 function errMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) return err.message
   return err instanceof Error ? err.message : fallback
-}
-
-/**
- * How long a folder may take to load before we admit to it.
- *
- * Listing a local directory answers in a few milliseconds, so a skeleton drawn
- * the instant a folder expands appears and vanishes within one blink — a flash,
- * and a worse one for an empty folder, where the rows collapse to nothing at all.
- * Past this window the wait is real and the skeleton is the honest thing to show.
- */
-const LOADING_DELAY_MS = 200
-
-/** True once `active` has stayed true for `delayMs`; false the moment it clears. */
-function useDelayed(active: boolean, delayMs: number): boolean {
-  const [elapsed, setElapsed] = useState(false)
-
-  useEffect(() => {
-    if (!active) {
-      setElapsed(false)
-      return
-    }
-    const timer = setTimeout(() => setElapsed(true), delayMs)
-    return () => clearTimeout(timer)
-  }, [active, delayMs])
-
-  return active && elapsed
 }
 
 /** Skeleton rows shown while a directory loads, indented to match the tree. */
