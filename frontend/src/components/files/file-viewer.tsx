@@ -262,7 +262,10 @@ export function FileViewer({
         {editors}
       </ResizablePanel>
       <ResizableHandle />
-      <ResizablePanel defaultSize={28} minSize={15} className="flex flex-col min-w-0">
+      {/* A touch wider than a bare file tree would need: this panel also holds the
+          search results, whose rows are `line │ text` and want the characters.
+          Only a default — an existing saved ratio (`autoSaveId`) still wins. */}
+      <ResizablePanel defaultSize={32} minSize={15} className="flex flex-col min-w-0">
         <SideViewSwitch view={sideView} onChange={setSideView} />
         {/* Both views stay mounted: switching preserves tree expansion and the
             search results and query, which is the whole reason to have a switch

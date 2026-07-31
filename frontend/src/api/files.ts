@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 
-import { API_BASE, api } from "./client"
+import { API_BASE, ApiError, api } from "./client"
 
 /** A single entry (file or directory) in a workspace directory listing. */
 export interface DirEntry {
@@ -162,6 +162,14 @@ export const fileKeys = {
  * flight, so typing dims the list instead of blanking it — a results pane that
  * empties on every keystroke is unreadable at typing speed. Debouncing is the
  * caller's job (the query only changes once the input settles).
+ *
+ * **A 4xx is not retried.** This is the one query in the app where the default
+ * three-retries-with-backoff is actively harmful: the search is local and answers
+ * in tens of milliseconds, so a failure that takes ~7s of backoff to surface reads
+ * as a hung, empty results pane rather than as the error it is. A bad regex (422)
+ * or a backend without the endpoint (404) will give the identical answer three
+ * attempts later, so there is nothing to gain by waiting for it. Genuine
+ * transport failures still get one more go.
  */
 export function useWorkspaceGrep(
   workspaceId: string | undefined,
@@ -173,6 +181,10 @@ export function useWorkspaceGrep(
       filesApi.grep(workspaceId as string, params, signal),
     enabled: Boolean(workspaceId) && params.q.trim().length > 0,
     placeholderData: (previous) => previous,
+    retry: (failureCount, error) =>
+      error instanceof ApiError && error.status >= 400 && error.status < 500
+        ? false
+        : failureCount < 1,
   })
 }
 

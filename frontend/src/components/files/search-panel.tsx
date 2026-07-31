@@ -7,19 +7,24 @@ import {
   Warning,
 } from "@phosphor-icons/react"
 
+import { ApiError } from "@/api/client"
 import { useWorkspaceGrep } from "@/api/files"
 import type { GrepMatch, GrepParams } from "@/api/files"
 import { Input } from "@/components/ui/input"
+import { useDelayed } from "@/hooks/use-delayed"
 import { cn } from "@/lib/utils"
 
 import { fileKind } from "./file-icon"
 
 /**
- * How long typing has to settle before a search runs. Long enough that a word
- * typed at speed is one request rather than eight, short enough that the pause
- * between words already shows results.
+ * How long typing has to settle before a search runs.
+ *
+ * Deliberately short. The search is a local process — ripgrep answers this
+ * workspace in tens of milliseconds — so the debounce, not the search, is what a
+ * person feels. Long enough that a word typed at speed is one request rather than
+ * eight; short enough that the pause between two words already has results in it.
  */
-const DEBOUNCE_MS = 250
+const DEBOUNCE_MS = 120
 
 /** Matches the backend's default `limit`; shown in the truncation notice. */
 const RESULT_LIMIT = 200
@@ -78,9 +83,14 @@ export function SearchPanel({
 
   const groups = useMemo(() => groupByFile(data?.matches ?? []), [data])
   const hasQuery = params.q.length > 0
-  // A query still settling, or one already in flight over stale results — both
-  // read as "the list you're looking at isn't the answer yet".
-  const stale = hasQuery && (query.trim() !== params.q || isPlaceholderData)
+  // Dim the list only once a search has been genuinely slow, and only while there
+  // are previous results underneath to dim. A local search normally answers
+  // faster than this delay, so the common case never flickers at all — dimming on
+  // every keystroke is most of what "slow" actually feels like.
+  const stale = useDelayed(hasQuery && isFetching && isPlaceholderData)
+  // Same restraint for the first search of all, where there is nothing to dim:
+  // "Searching…" that appears for 25ms is worse than a beat of the empty pane.
+  const searching = useDelayed(hasQuery && isFetching && !data)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -92,11 +102,16 @@ export function SearchPanel({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search in files"
             aria-label="Search in files"
-            className="h-8 pl-7 pr-[5.25rem] text-xs"
+            className="h-8 pl-7 text-xs"
           />
-          {/* Inside the field, as in VS Code: the toggles modify this query, and
-              putting them anywhere else makes them read as panel settings. */}
-          <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+        </div>
+        {/* The modifiers sit on their own row rather than inside the field, as
+            VS Code puts them. This pane is ~190px at its default width, and three
+            overlaid buttons plus their reserved padding left less than half of it
+            to type in — with the query's own centre underneath a toggle. On their
+            own row they still read as belonging to the query above them. */}
+        <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-0.5">
             <Toggle
               pressed={caseSensitive}
               onPressedChange={setCaseSensitive}
@@ -119,19 +134,22 @@ export function SearchPanel({
               <span className="font-mono text-[11px] leading-none">.*</span>
             </Toggle>
           </div>
+          <Input
+            value={include}
+            onChange={(e) => setInclude(e.target.value)}
+            placeholder="Include, e.g. src/**/*.ts"
+            aria-label="Files to include"
+            className="h-7 min-w-0 flex-1 text-xs"
+          />
         </div>
-        <Input
-          value={include}
-          onChange={(e) => setInclude(e.target.value)}
-          placeholder="Files to include, e.g. src/**/*.ts"
-          aria-label="Files to include"
-          className="h-7 text-xs"
-        />
       </div>
 
       <div
         className={cn(
-          "min-h-0 flex-1 overflow-auto py-1 text-sm transition-opacity",
+          // Y only: every row inside is built to fit the width, and a horizontal
+          // scrollbar here would mean one of them isn't — better to clip than to
+          // let one long name put the whole list on a second axis.
+          "min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1 text-sm transition-opacity",
           // Dimmed rather than blanked while refetching: the previous results are
           // still the best thing to show, and a spinner in their place makes the
           // pane flicker on every keystroke.
@@ -150,9 +168,7 @@ export function SearchPanel({
           <div className="px-3 py-2">
             <p className="flex items-start gap-1.5 text-xs text-foreground">
               <Warning className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
-              <span>
-                {error instanceof Error ? error.message : "The search failed."}
-              </span>
+              <span>{searchErrorMessage(error)}</span>
             </p>
             <button
               type="button"
@@ -164,7 +180,11 @@ export function SearchPanel({
           </div>
         ) : groups.length === 0 ? (
           <Hint>
-            {isFetching ? "Searching…" : `No results for “${params.q}”.`}
+            {searching
+              ? "Searching…"
+              : isFetching
+                ? ""
+                : `No results for “${params.q}”.`}
           </Hint>
         ) : (
           groups.map(([path, matches]) => (
@@ -190,6 +210,24 @@ export function SearchPanel({
   )
 }
 
+/**
+ * What to say when a search fails.
+ *
+ * A 404 is worth naming specially. The path is one the frontend knows about, so
+ * the only way to get one is a backend older than this build — a dev server left
+ * running across the change. Reported verbatim it reads as "Not Found", which
+ * looks like an empty result and sends you looking for the bug in your query.
+ */
+function searchErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 404) {
+    return "This backend doesn’t have workspace search yet — restart it to pick up the endpoint."
+  }
+  if (error instanceof ApiError && error.status === 422) {
+    return error.message
+  }
+  return error instanceof Error ? error.message : "The search failed."
+}
+
 /** Matches bucketed by file, keeping the order the backend returned them in. */
 function groupByFile(matches: GrepMatch[]): [string, GrepMatch[]][] {
   const buckets = new Map<string, GrepMatch[]>()
@@ -212,8 +250,13 @@ interface FileGroupProps {
 function FileGroup({ path, matches, isActive, onOpenMatch }: FileGroupProps) {
   const [collapsed, setCollapsed] = useState(false)
   const { Icon: Glyph } = fileKind(path)
-  const name = path.split("/").pop() ?? path
-  const folder = path.slice(0, path.length - name.length - 1)
+  const segments = path.split("/")
+  const name = segments.pop() ?? path
+  // The *immediate* parent, not the whole path. In a ~190px pane a full path
+  // truncated to "l…" is noise, while the containing folder is both short enough
+  // to fit and the part that actually tells two same-named files apart. The full
+  // path is on the row's tooltip either way.
+  const folder = segments[segments.length - 1] ?? ""
 
   return (
     <div>
@@ -237,9 +280,12 @@ function FileGroup({ path, matches, isActive, onOpenMatch }: FileGroupProps) {
           )}
         />
         <Glyph className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
-        <span className="shrink-0 text-xs">{name}</span>
-        {/* The folder takes whatever width is left over. The filename above is
-            the identifier; this is context, so it is the part that gives way. */}
+        {/* Both of these must be able to shrink, or a long filename widens the row
+            past the pane and puts the whole results list on a horizontal scroll.
+            The folder carries `flex-1` (so basis 0) and gives way first; the
+            filename is the identifier and only truncates once the folder is gone.
+            Neither loss matters much — the row's tooltip has the full path. */}
+        <span className="min-w-0 truncate text-xs">{name}</span>
         {folder && (
           <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
             {folder}
@@ -264,6 +310,18 @@ function FileGroup({ path, matches, isActive, onOpenMatch }: FileGroupProps) {
   )
 }
 
+/**
+ * Characters of the line kept in front of the match.
+ *
+ * The side pane is ~190px at its default width — about twenty monospace
+ * characters per line. Keeping a line's whole prefix therefore pushed the *match*
+ * off the right edge for anything indented or late in its line, which is a result
+ * list that doesn't show you what matched. A short lead puts the highlight within
+ * the first few characters and still shows what it sits inside; the row's second
+ * line (see below) carries the rest.
+ */
+const LEAD_CONTEXT_CHARS = 4
+
 /** A single hit: its line number, then the line with the match emphasized. */
 function MatchRow({ match, onOpen }: { match: GrepMatch; onOpen: () => void }) {
   // `column` is 1-based and true to the file; `text` may be a window of a long
@@ -271,29 +329,34 @@ function MatchRow({ match, onOpen }: { match: GrepMatch; onOpen: () => void }) {
   const start = Math.max(0, match.column - 1 - match.text_offset)
   const end = start + match.match_length
   const text = match.text
-  // Leading indentation is noise in a one-line result row, but only trimmed when
-  // the match itself isn't inside it.
-  const trim = Math.min(text.length - text.trimStart().length, start)
+  // Drop leading indentation (noise in a one-line row), then anything before the
+  // match beyond the lead budget.
+  const indent = Math.min(text.length - text.trimStart().length, start)
+  const from = Math.max(indent, start - LEAD_CONTEXT_CHARS)
+  // An ellipsis whenever something was dropped — here or by the backend's window.
+  const clipped = from > 0 || match.text_offset > 0
 
   return (
     <button
       type="button"
       onClick={onOpen}
-      title={`${match.path}:${match.line}`}
-      className="flex w-full items-baseline gap-2 py-0.5 pl-7 pr-2 text-left font-mono text-[11px] outline-none hover:bg-accent/50 focus-visible:bg-accent/60"
+      title={`${match.path}:${match.line} — ${text.trim()}`}
+      className="flex w-full items-baseline gap-1.5 py-0.5 pl-3 pr-2 text-left font-mono text-[11px] outline-none hover:bg-accent/50 focus-visible:bg-accent/60"
     >
-      <span className="w-9 shrink-0 text-right tabular-nums text-muted-foreground/70">
+      <span className="w-7 shrink-0 text-right tabular-nums text-muted-foreground/70">
         {match.line}
       </span>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-        {text.slice(trim, start)}
+      {/* Up to two lines, wrapping mid-token. One truncated line fits about
+          twenty characters here, which is not enough context to tell two hits
+          apart; two is. `break-all` because the interesting tokens in code are
+          long identifiers with no break opportunity in them. */}
+      <span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap break-all text-muted-foreground">
+        {clipped && <span className="text-muted-foreground/50">…</span>}
+        {text.slice(from, start)}
         <mark className="rounded-sm bg-primary/25 px-0 text-foreground">
           {text.slice(start, end)}
         </mark>
         {text.slice(end)}
-        {match.text_offset > 0 && (
-          <span className="text-muted-foreground/50"> …</span>
-        )}
       </span>
     </button>
   )
