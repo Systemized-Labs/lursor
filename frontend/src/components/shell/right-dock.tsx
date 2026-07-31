@@ -156,7 +156,14 @@ export function RightDock({
       <div
         className={cn(
           "flex shrink-0 items-center gap-1 border-b border-border/40 px-1.5",
-          macTitlebar.enabled ? "h-11 bg-sidebar" : "h-9"
+          macTitlebar.enabled ? "h-11 bg-sidebar" : "h-9",
+          // Maximized, this strip is the only thing under the macOS traffic
+          // lights: the dock starts at the sidebar's 68px gutter and the buttons
+          // end around x=84, so the first tab lands beneath the green one. Inset
+          // past them — the same 26px the chat header uses from the same offset.
+          // Only while maximized; unmaximized the dock is over on the right and
+          // the padding would just be a gap.
+          macTitlebar.clearButtons && maximized && "pl-[26px]"
         )}
       >
         <div className="flex-1 flex items-center gap-0.5 overflow-x-auto">

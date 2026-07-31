@@ -299,7 +299,14 @@ export function FileViewer({
   )
 }
 
-/** Explorer / Search, as a two-item segmented control at the side pane's top. */
+/**
+ * Explorer / Search at the side pane's top, as two icon buttons.
+ *
+ * Icons rather than labels because this pane is ~190px wide and the two words
+ * spent a third of it restating what the glyphs already say — width the search
+ * results and the tree both want. The name lives in the tooltip and the
+ * accessible label.
+ */
 function SideViewSwitch({
   view,
   onChange,
@@ -325,16 +332,17 @@ function SideViewSwitch({
             type="button"
             role="tab"
             aria-selected={isActive}
+            aria-label={label}
+            title={label}
             onClick={() => onChange(id)}
             className={cn(
-              "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+              "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
               isActive
                 ? "bg-accent text-foreground"
                 : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             )}
           >
-            <Icon className="h-3.5 w-3.5" />
-            {label}
+            <Icon className="h-4 w-4" />
           </button>
         )
       })}
