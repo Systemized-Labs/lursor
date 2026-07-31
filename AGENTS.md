@@ -495,6 +495,79 @@ Tab strips show a panel-reported detail (a port, a filename) *only* while a kind
 is open more than once, with an ordinal for a duplicate that has nothing to
 report yet. Detail is derived from live panel state — never persisted.
 
+**Maximize** (`⤢` in the tab strip, `Esc` to restore) is dock-level state, not
+per-kind: "give this the whole window" is a layout request, and Terminal and
+Preview want it as much as the editor. It works by collapsing the *existing*
+center `ResizablePanel` to zero and closing the app sidebar — never by portaling
+the dock into an overlay, which would remount every panel and take terminal
+sessions and Monaco view state with it. Two consequences worth keeping:
+
+- `maximized` and `collapsed` are mutually exclusive; every mutation enforces it
+  and `readDockState` normalizes anything already stored (collapsed wins). The
+  `DockRail` only renders while collapsed, so it can never appear maximized.
+- `AppShell` renders `SidebarProvider` itself and so can't call `useSidebar`.
+  `ShellBody` exists purely to sit *inside* the provider and read it; it
+  snapshots the pre-maximize open state in a ref rather than assuming "open",
+  because the provider persists that in a cookie. On the way out it only undoes
+  its own close — a sidebar the user opened while maximized stays open.
+- The dock panel's everyday `maxSize={70}` is lifted to 100 while maximized. Two
+  panels have to sum to 100, so the cap would otherwise refuse the collapse.
+
+### The file editor
+
+`components/files/` — `file-viewer.tsx` wires a workspace up (tree, search,
+watcher, open-file requests); `editor-pane.tsx` renders one group of tabs plus the
+active file; `file-buffers.ts` is the state machine behind both; `code-editor.tsx`
+wraps Monaco. The skill editor reuses the pane and the buffers, so it is the same
+editor without a workspace around it.
+
+**Monaco's language workers must be configured, not just registered.** Left at
+their defaults they report a screenful of errors on correct code, because each one
+assumes it is the whole toolchain for the file and this is a single-file view over
+a repo whose types live on disk. `monaco-setup.ts` therefore turns *semantic*
+TS/JS validation off outright (no `tsconfig.json`, no `node_modules`, no sibling
+modules in the model graph — so every import is "cannot find module"), demotes
+CSS `unknownAtRules` so Tailwind v4's `@theme`/`@apply` are not errors, and puts
+the JSON worker in jsonc mode with `enableSchemaRequest: false` so it never phones
+out to a schema URL. Syntax validation stays **on** everywhere — an unbalanced
+brace is real and needs no project. There is deliberately **no toggle**: semantic
+validation here is wrong for a structural reason, not a preference. If real
+diagnostics are ever wanted the honest version is a `tsserver`/LSP bridge on the
+backend, which is a subsystem, not a flag.
+
+Note the API moved in Monaco 0.56: the language namespaces are top-level
+(`monaco.typescript`, `monaco.css`, `monaco.json`), and `monaco.languages.*` is a
+deprecated stub. `unknownAtRules` is a real rule in the `vscode-css-languageservice`
+behind the worker but missing from Monaco's public `lint` type, so it is set
+through a widened type rather than a cast to `any`.
+
+**Content search** is `GET /files/grep`, the counterpart to `/search` (filenames).
+Two implementations of one endpoint: ripgrep when the machine has it, a pure-Python
+walk when it doesn't — a packaged Electron build cannot assume `rg`, so it stays an
+optimization and never a dependency. They are kept deliberately interchangeable:
+`rg` runs with `--no-ignore` (a checkout's `.gitignore` must not change what a
+search finds from one machine to the next), `--hidden`, and one exclude glob per
+`_IGNORED_DIRS` entry, and the `include` filter plus every cap are applied in
+Python for both paths. `rg` reports byte offsets and Monaco counts characters, so
+the column is converted. Read-only by design — there is no replace-across-files.
+
+**Split is one buffer store with tabs tagged by group**, never two
+`useFileBuffers`. Two stores would each need their own watcher fan-out and
+reconcile path, and the same file open in both would give one file on disk two
+independent dirty buffers — a conflict generator. So `OpenFile.groups` is a *set*
+of groups (a file split against itself is one buffer in two views), `saveFile` /
+`reconcile` / auto-save stay keyed on path alone, and `closeFile(path, group)`
+only prompts about unsaved edits when it is dropping the last view. Two
+`<Editor path=…>` with the same path share a Monaco model deliberately: edits and
+undo stay in step, while each editor keeps its own scroll and cursor because view
+state lives on the editor, not the model. Below `MIN_SPLIT_WIDTH` the split
+control is disabled with a reason rather than producing two unreadable columns.
+
+A search result — or any `OpenFileRequest` carrying a `line` — travels as a
+`RevealTarget` on the `OpenFile`, is applied on editor mount, and is then cleared,
+so a later re-render can't drag the cursor back. A reveal also forces a Markdown
+file to open as source: there is no line 42 in a rendered preview.
+
 ### First run
 
 `pages/onboarding/` — a five-step walkthrough at `/welcome`: bring a model, connect
@@ -546,7 +619,8 @@ the user arranged; the rail still reopens the dock.
   computes a patch per changed file; the tree needs a state per path and nothing
   else. Changes roll up onto collapsed folders (`lib/git-tree-status.ts`), and
   `--ignored=matching` is what keeps the ignored set one entry per wholly-ignored
-  directory instead of one per file inside `node_modules`.
+  directory instead of one per file inside `node_modules`. See **The file editor**
+  below for the panel itself.
 - **Git / GitHub** — `api/git.py` returns `is_repo=False` for a non-repo
   (the skills catalog) and the panel renders its empty state. `api/github.py`
   holds the token server-side.

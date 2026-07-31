@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import type { ReactNode } from "react"
 import { Outlet, useLocation } from "react-router-dom"
+import type { ImperativePanelHandle } from "react-resizable-panels"
 
 import { useWorkspace } from "@/api/workspaces"
 import { AppSidebar } from "@/components/layout/app-sidebar"
@@ -14,7 +16,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
+import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar"
 import { hasStoredDockState, useDockState } from "@/hooks/use-dock-state"
 import type { DockKind } from "@/hooks/use-dock-state"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -318,62 +320,144 @@ export function AppShell() {
   return (
     <SidebarProvider>
       <CommandPaletteProvider>
-      <AppSidebar />
-      {/* `min-w-0` lets this flex child shrink below its content's intrinsic
-          width; without it, widening the dock grows the whole inset past the
-          viewport instead of redistributing space within it. */}
-      <SidebarInset className="min-w-0">
-        {/* A horizontal row: the content area (with its optional dock split) and
-            a thin, always-present rail whose toggle governs the dock. The rail
-            owns a real column, so its toggle never overlaps page content.
-
-            The row is pinned to a concrete `h-svh` (the sidebar shell is only
-            `min-h-svh`, a floor that grows with content). Without a definite
-            height here, `flex-1`/`min-h-0` descendants have nothing to cap
-            against, so a tall panel — e.g. a large Changes diff in the dock —
-            would grow the whole inset and overflow the viewport instead of
-            scrolling internally. `overflow-hidden` clips at the row so the split
-            below always resolves its own scroll. */}
-        <div className="flex h-svh min-h-0 overflow-hidden">
-          <div className="flex flex-1 flex-col min-w-0 min-h-0">
-            {dockVisible ? (
-              <ResizablePanelGroup
-                direction="horizontal"
-                autoSaveId="app-shell-dock"
-                className="flex-1 min-h-0"
-              >
-                <ResizablePanel minSize={30} className="flex flex-col min-w-0">
-                  {center}
-                </ResizablePanel>
-                <ResizableHandle />
-                <ResizablePanel
-                  defaultSize={40}
-                  minSize={22}
-                  maxSize={70}
-                  className="flex flex-col min-w-0"
-                >
-                  <RightDock
-                    workspaceId={workspaceId}
-                    tabs={dock.tabs}
-                    activeId={dock.activeId}
-                    onOpenTab={dock.openTab}
-                    onCloseTab={dock.closeTab}
-                    onSelectTab={dock.selectTab}
-                    onCollapse={() => dock.setCollapsed(true)}
-                  />
-                </ResizablePanel>
-              </ResizablePanelGroup>
-            ) : (
-              center
-            )}
-          </div>
-
-          {!isMobile && workspaceId && dock.collapsed && (
-            <DockRail onOpen={() => dock.setCollapsed(false)} />
-          )}
-        </div>
-      </SidebarInset>
+        <AppSidebar />
+        <ShellBody
+          workspaceId={workspaceId}
+          dock={dock}
+          dockVisible={dockVisible}
+          center={center}
+        />
       </CommandPaletteProvider>
     </SidebarProvider>
+  )
+}
+
+interface ShellBodyProps {
+  workspaceId?: string
+  dock: ReturnType<typeof useDockState>
+  dockVisible: boolean
+  center: ReactNode
+}
+
+/**
+ * The desktop shell's inset: the routed content, its optional dock split, and
+ * the rail.
+ *
+ * Split out of {@link AppShell} for one reason — it has to live *inside*
+ * `SidebarProvider` to call {@link useSidebar}, which is what lets maximizing the
+ * dock close the app sidebar as well as the chat column. Everything else here is
+ * the markup that used to sit inline.
+ *
+ * Maximizing deliberately collapses the existing center panel rather than moving
+ * the dock into an overlay: Monaco view state, terminal sessions and preview
+ * iframes all die if a panel's position in the React tree changes, so the panel
+ * group, the tree and every panel stay mounted throughout. Restoring returns to
+ * the exact split the user had, because nothing was ever unmounted to lose it.
+ */
+function ShellBody({ workspaceId, dock, dockVisible, center }: ShellBodyProps) {
+  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar()
+  const centerPanelRef = useRef<ImperativePanelHandle>(null)
+  const maximized = dockVisible && dock.maximized
+
+  // Collapse/expand the center column to match `maximized`. Imperative because
+  // the panel's size is owned by react-resizable-panels (and persisted under
+  // `autoSaveId`), so driving it from a prop would fight the user's own drags.
+  useEffect(() => {
+    const panel = centerPanelRef.current
+    if (!panel) return
+    if (maximized) {
+      if (!panel.isCollapsed()) panel.collapse()
+    } else if (panel.isCollapsed()) {
+      // Also the repair path for a saved layout that was collapsed when the
+      // maximize flag didn't survive with it.
+      panel.expand()
+    }
+  }, [maximized, dockVisible])
+
+  // Close the app sidebar while maximized, and put it back on the way out. The
+  // provider persists open state in a cookie, so the pre-maximize value is
+  // snapshotted here rather than assumed to be "open".
+  const sidebarWasOpen = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (maximized) {
+      if (sidebarWasOpen.current === null) {
+        sidebarWasOpen.current = sidebarOpen
+        setSidebarOpen(false)
+      }
+      return
+    }
+    if (sidebarWasOpen.current === null) return
+    // Only undo our own close: a sidebar the user opened themselves while
+    // maximized stays open.
+    if (sidebarWasOpen.current && !sidebarOpen) setSidebarOpen(true)
+    sidebarWasOpen.current = null
+  }, [maximized, sidebarOpen, setSidebarOpen])
+
+  return (
+    /* `min-w-0` lets this flex child shrink below its content's intrinsic
+       width; without it, widening the dock grows the whole inset past the
+       viewport instead of redistributing space within it. */
+    <SidebarInset className="min-w-0">
+      {/* A horizontal row: the content area (with its optional dock split) and
+          a thin, always-present rail whose toggle governs the dock. The rail
+          owns a real column, so its toggle never overlaps page content.
+
+          The row is pinned to a concrete `h-svh` (the sidebar shell is only
+          `min-h-svh`, a floor that grows with content). Without a definite
+          height here, `flex-1`/`min-h-0` descendants have nothing to cap
+          against, so a tall panel — e.g. a large Changes diff in the dock —
+          would grow the whole inset and overflow the viewport instead of
+          scrolling internally. `overflow-hidden` clips at the row so the split
+          below always resolves its own scroll. */}
+      <div className="flex h-svh min-h-0 overflow-hidden">
+        <div className="flex flex-1 flex-col min-w-0 min-h-0">
+          {dockVisible ? (
+            <ResizablePanelGroup
+              direction="horizontal"
+              autoSaveId="app-shell-dock"
+              className="flex-1 min-h-0"
+            >
+              <ResizablePanel
+                ref={centerPanelRef}
+                minSize={30}
+                collapsible
+                collapsedSize={0}
+                className="flex flex-col min-w-0"
+              >
+                {center}
+              </ResizablePanel>
+              <ResizableHandle />
+              <ResizablePanel
+                defaultSize={40}
+                minSize={22}
+                // The everyday cap keeps some chat on screen; maximized, the
+                // dock *is* the window, and a 70% cap would refuse the collapse
+                // outright (the two panels have to sum to 100).
+                maxSize={maximized ? 100 : 70}
+                className="flex flex-col min-w-0"
+              >
+                <RightDock
+                  workspaceId={workspaceId}
+                  tabs={dock.tabs}
+                  activeId={dock.activeId}
+                  onOpenTab={dock.openTab}
+                  onCloseTab={dock.closeTab}
+                  onSelectTab={dock.selectTab}
+                  onCollapse={() => dock.setCollapsed(true)}
+                  maximized={dock.maximized}
+                  onSetMaximized={dock.setMaximized}
+                />
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          ) : (
+            center
+          )}
+        </div>
+
+        {workspaceId && dock.collapsed && (
+          <DockRail onOpen={() => dock.setCollapsed(false)} />
+        )}
+      </div>
+    </SidebarInset>
   )
 }
