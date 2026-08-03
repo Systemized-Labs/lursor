@@ -1254,7 +1254,14 @@ export interface LaiosVideoJob {
   /** The submitted body verbatim, so a run can be repeated or diffed. */
   request: Record<string, unknown>
   status: LaiosVideoStatus
-  /** 0–1 where the engine reports it; null when it doesn't. */
+  /**
+   * Percent, 0–100 — not a 0–1 fraction.
+   *
+   * MiniMax-H3 only ever reports 0 or 100: it sits at `queued`/0 for the whole
+   * run (denoising starts immediately regardless) and flips straight to
+   * `completed`/100. So this is a completion flag in practice, not a progress
+   * bar, and elapsed-vs-estimate is the only live signal available.
+   */
   progress: number | null
   error: string | null
   /** Content-addressed mp4 in the media store, once downloaded. */

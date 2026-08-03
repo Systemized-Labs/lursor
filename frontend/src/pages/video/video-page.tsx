@@ -345,6 +345,7 @@ function JobCard({
 }) {
   const cancel = useCancelVideo(connectionId)
   const active = isVideoActive(job)
+  const elapsed = useElapsedSeconds(active ? job.created_at : null)
 
   async function onCancel() {
     try {
@@ -382,6 +383,17 @@ function JobCard({
         </div>
       </div>
 
+      {active ? (
+        <p className="text-xs text-muted-foreground">
+          Generating · {formatDuration(elapsed)} elapsed
+          {estimateSeconds(job) ? (
+            <> of ~{formatDuration(estimateSeconds(job) as number)} expected</>
+          ) : null}
+          {" — "}this engine reports no progress until the clip is done, so
+          &ldquo;queued&rdquo; here still means it is denoising.
+        </p>
+      ) : null}
+
       {job.error ? (
         <p className="text-sm text-destructive">{job.error}</p>
       ) : null}
@@ -399,9 +411,12 @@ function JobCard({
 }
 
 function StatusBadge({ job }: { job: LaiosVideoJob }) {
+  // Percent, already 0–100 — multiplying by 100 here renders "10000%". Only
+  // shown between the extremes, since 0 and 100 are said better by the status
+  // word itself.
   const pct =
-    job.progress !== null && job.progress > 0
-      ? ` ${Math.round(job.progress * 100)}%`
+    job.progress !== null && job.progress > 0 && job.progress < 100
+      ? ` ${Math.round(job.progress)}%`
       : ""
 
   switch (job.status) {
@@ -419,4 +434,39 @@ function StatusBadge({ job }: { job: LaiosVideoJob }) {
         </Badge>
       )
   }
+}
+
+/**
+ * Expected wall-clock for a job, from the steps it was submitted with.
+ *
+ * The only live signal this engine gives is elapsed time, so the estimate is
+ * what makes it meaningful — ~44 s per denoise step, measured in the recipe.
+ */
+function estimateSeconds(job: LaiosVideoJob): number | null {
+  const steps = job.request?.num_inference_steps
+  return typeof steps === "number" && steps > 0 ? steps * 44 : null
+}
+
+/** Seconds since `since`, ticking every second. Null pauses the timer. */
+function useElapsedSeconds(since: string | null): number {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!since) return
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(timer)
+  }, [since])
+
+  if (!since) return 0
+  // Timestamps are UTC but serialized without an offset, so mark them as such
+  // rather than letting the browser read them as local time.
+  const startedAt = Date.parse(/[Zz+]|-\d\d:\d\d$/.test(since) ? since : `${since}Z`)
+  if (Number.isNaN(startedAt)) return 0
+  return Math.max(0, Math.floor((now - startedAt) / 1000))
+}
+
+function formatDuration(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
 }

@@ -308,6 +308,9 @@ async def video_content(
                 path,
                 media_type=media_store.mime_for_path(path),
                 filename=f"{job_id}.mp4",
+                # Passing `filename` alone would make this an attachment, which
+                # is wrong for the <video> element that is the main consumer.
+                content_disposition_type="inline",
             )
 
     conn = await load_connection(cid, session)
