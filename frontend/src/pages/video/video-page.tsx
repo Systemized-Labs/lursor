@@ -1,23 +1,13 @@
-import { FilmSlate, Prohibit, Sparkle } from "@phosphor-icons/react"
+import { Cpu, FilmSlate } from "@phosphor-icons/react"
 import { useEffect, useMemo, useState } from "react"
-import { toast } from "sonner"
+import { Link } from "react-router-dom"
 
 import { useLaiosConnections } from "@/api/laios"
 import type { LaiosVideoJob } from "@/api/types"
-import {
-  isVideoActive,
-  useCancelVideo,
-  useSubmitVideo,
-  useVideoJobSync,
-  useVideoJobs,
-  useVideoModels,
-  videoContentUrl,
-} from "@/api/videos"
+import { isVideoActive, useVideoJobSync, useVideoJobs } from "@/api/videos"
 import { PageHeader } from "@/components/page-header"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import {
   Select,
   SelectContent,
@@ -25,24 +15,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
+import { useVideoComposer } from "./use-video-composer"
+import { VideoComposer } from "./video-composer"
+import { VideoRunCard } from "./video-run-card"
 
 const DESCRIPTION =
   "Generate audio-video on a LAIOS box. A clip is a job, not a completion — submit, watch it denoise, play it back."
 
 // Shared with the LAIOS page so switching connection there carries over here.
 const ACTIVE_KEY = "laios.activeConnectionId"
-
-// The recipe's own probe values (docs/inference-matrix.md): 8 steps is the fast
-// smoke test at roughly 6 minutes, against a 50-step default that runs ~35.
-const DEFAULTS = {
-  shortEdge: 768,
-  aspectRatio: "16:9",
-  durationSeconds: 4,
-  steps: 8,
-}
-
-const ASPECT_RATIOS = ["16:9", "9:16", "1:1"]
 
 export function VideoPage() {
   const { data: connections, isLoading: connectionsLoading } =
@@ -63,6 +44,9 @@ export function VideoPage() {
   const { data: jobs } = useVideoJobs(connectionId)
   useVideoJobSync(connectionId, jobs)
 
+  // Held at the page so a run card can load a past run back into the form.
+  const composer = useVideoComposer()
+
   const hasConnections = Boolean(connections && connections.length > 0)
 
   return (
@@ -71,21 +55,21 @@ export function VideoPage() {
         title="Video"
         description={DESCRIPTION}
         actions={
-          hasConnections && connections && connections.length > 1 ? (
+          connections && connections.length > 1 ? (
             <Select
               value={connectionId ?? ""}
-              onValueChange={(v) => {
-                setConnectionId(v)
-                localStorage.setItem(ACTIVE_KEY, v)
+              onValueChange={(value) => {
+                setConnectionId(value)
+                localStorage.setItem(ACTIVE_KEY, value)
               }}
             >
-              <SelectTrigger className="w-48">
+              <SelectTrigger className="w-48" aria-label="Connection">
                 <SelectValue placeholder="Connection" />
               </SelectTrigger>
               <SelectContent>
-                {connections.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
+                {connections.map((connection) => (
+                  <SelectItem key={connection.id} value={connection.id}>
+                    {connection.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -95,378 +79,127 @@ export function VideoPage() {
       />
 
       {connectionsLoading ? (
-        <p className="text-sm text-muted-foreground">Loading connections…</p>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <DotGridLoader size="xs" />
+          Loading connections…
+        </div>
       ) : !hasConnections ? (
-        <p className="text-sm text-muted-foreground">
-          No LAIOS connection yet. Add one on the LAIOS page, then come back —
-          this page talks to that box's inference gateway.
-        </p>
+        <NoConnection />
       ) : connectionId ? (
         <>
-          <SubmitPanel connectionId={connectionId} />
-          <JobList connectionId={connectionId} jobs={jobs} />
+          <VideoComposer connectionId={connectionId} composer={composer} />
+          <Runs
+            connectionId={connectionId}
+            jobs={jobs}
+            onReuse={composer.loadRun}
+          />
         </>
       ) : null}
     </div>
   )
 }
 
-function SubmitPanel({ connectionId }: { connectionId: string }) {
-  const { options, controlReachable } = useVideoModels(connectionId)
-  const submit = useSubmitVideo(connectionId)
-
-  const [model, setModel] = useState("")
-  const [prompt, setPrompt] = useState("")
-  const [shortEdge, setShortEdge] = useState(String(DEFAULTS.shortEdge))
-  const [aspectRatio, setAspectRatio] = useState(DEFAULTS.aspectRatio)
-  const [duration, setDuration] = useState(String(DEFAULTS.durationSeconds))
-  const [steps, setSteps] = useState(String(DEFAULTS.steps))
-  const [seed, setSeed] = useState("")
-
-  // Preselect the only video model serving, which is the common case — one
-  // MiniMax-H3 instance per box, since the recipe is solo_only.
-  useEffect(() => {
-    if (!model && options.length > 0) setModel(options[0].servedName)
-  }, [options, model])
-
-  const estimate = useMemo(() => {
-    const n = Number(steps)
-    if (!Number.isFinite(n) || n <= 0) return null
-    // ~44 s/denoise step at 1344×768×107f, measured in the recipe header.
-    const minutes = (n * 44) / 60
-    return minutes < 1 ? "under a minute" : `~${Math.round(minutes)} min`
-  }, [steps])
-
-  async function onSubmit() {
-    if (!model.trim()) {
-      toast.error("Pick a model to generate with")
-      return
-    }
-    if (!prompt.trim()) {
-      toast.error("A prompt is required")
-      return
-    }
-    const parsedSeed = seed.trim() === "" ? undefined : Number(seed)
-    try {
-      await submit.mutateAsync({
-        model: model.trim(),
-        prompt: prompt.trim(),
-        task: "t2va",
-        target: {
-          short_edge: Number(shortEdge),
-          aspect_ratio: aspectRatio,
-          duration_seconds: Number(duration),
-        },
-        num_inference_steps: Number(steps),
-        ...(parsedSeed !== undefined && Number.isFinite(parsedSeed)
-          ? { seed: parsedSeed }
-          : {}),
-      })
-      toast.success("Generation submitted")
-      setPrompt("")
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to submit")
-    }
-  }
-
+/**
+ * There is nothing to generate on yet.
+ *
+ * A card with the way out rather than the sentence this used to be: the page is
+ * unusable without a box, so the one thing it owes you is the trip to the page
+ * that adds one.
+ */
+function NoConnection() {
   return (
-    <div className="space-y-4 rounded-lg border border-border bg-card p-4">
-      <div className="space-y-2">
-        <Label htmlFor="video-model" className="text-foreground">
-          Model
-        </Label>
-        {options.length > 0 ? (
-          <Select value={model} onValueChange={setModel}>
-            <SelectTrigger id="video-model">
-              <SelectValue placeholder="Select a video model" />
-            </SelectTrigger>
-            <SelectContent>
-              {options.map((o) => (
-                <SelectItem key={o.servedName} value={o.servedName}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : (
-          <>
-            <Input
-              id="video-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="minimax-h3"
-            />
-            {/* Two different reasons the picker can be empty, and the operator
-                needs to know which: nothing is serving, or the control plane
-                isn't published through the tunnel so we can't tell. */}
-            <p className="text-xs text-muted-foreground">
-              {controlReachable
-                ? "No video-capable model is serving on this box — serve one from the LAIOS page, or name it directly."
-                : "Could not read this box's model inventory (a tunnel without expose_control). Name the served model directly."}
-            </p>
-          </>
-        )}
+    <div className="rounded-xl border border-border bg-card p-6 text-center sm:p-10">
+      <div className="mx-auto flex size-10 items-center justify-center rounded-lg bg-muted text-foreground">
+        <Cpu className="h-5 w-5" />
       </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="video-prompt" className="text-foreground">
-          Prompt
-        </Label>
-        <Textarea
-          id="video-prompt"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="a paper boat drifting across a puddle at dusk"
-          rows={3}
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <div className="space-y-2">
-          <Label htmlFor="video-short-edge" className="text-foreground">
-            Short edge
-          </Label>
-          <Input
-            id="video-short-edge"
-            type="number"
-            value={shortEdge}
-            onChange={(e) => setShortEdge(e.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="video-aspect" className="text-foreground">
-            Aspect
-          </Label>
-          <Select value={aspectRatio} onValueChange={setAspectRatio}>
-            <SelectTrigger id="video-aspect">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {ASPECT_RATIOS.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {r}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="video-duration" className="text-foreground">
-            Seconds
-          </Label>
-          <Input
-            id="video-duration"
-            type="number"
-            step="0.5"
-            value={duration}
-            onChange={(e) => setDuration(e.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="video-steps" className="text-foreground">
-            Steps
-          </Label>
-          <Input
-            id="video-steps"
-            type="number"
-            value={steps}
-            onChange={(e) => setSteps(e.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="video-seed" className="text-foreground">
-            Seed
-          </Label>
-          <Input
-            id="video-seed"
-            type="number"
-            value={seed}
-            onChange={(e) => setSeed(e.target.value)}
-            placeholder="random"
-          />
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
-          {estimate
-            ? `Roughly ${estimate} at ~44s per denoise step. Generation runs on the box; this page polls.`
-            : "Steps must be a positive number."}
-        </p>
-        <Button onClick={onSubmit} disabled={submit.isPending}>
-          <Sparkle className="h-4 w-4" />
-          {submit.isPending ? "Submitting…" : "Generate"}
-        </Button>
-      </div>
+      <h2 className="mt-3 text-base font-semibold text-foreground">
+        Connect a LAIOS box first
+      </h2>
+      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+        Clips are generated on your own GPUs, through a LAIOS daemon's inference
+        gateway. Add a connection and serve a video-capable model, then come back.
+      </p>
+      <Button asChild className="mt-4">
+        <Link to="/laios">Go to LAIOS</Link>
+      </Button>
     </div>
   )
 }
 
-function JobList({
+/**
+ * The gallery of runs.
+ *
+ * A grid rather than the full-width stack this was: a 16:9 clip stretched across
+ * a 1100px column is a single enormous row, so two runs never fit on screen
+ * together — and comparing runs is the entire reason the history is kept. At card
+ * width a clip is still comfortably watchable and four of them are visible at
+ * once.
+ */
+function Runs({
   connectionId,
   jobs,
+  onReuse,
 }: {
   connectionId: string
   jobs: LaiosVideoJob[] | undefined
+  onReuse: (job: LaiosVideoJob) => void
 }) {
+  const activeCount = useMemo(
+    () => (jobs ?? []).filter(isVideoActive).length,
+    [jobs]
+  )
+
   if (!jobs) {
-    return <p className="text-sm text-muted-foreground">Loading jobs…</p>
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <DotGridLoader size="xs" />
+        Loading runs…
+      </div>
+    )
   }
+
   if (jobs.length === 0) {
     return (
-      <div className="rounded-lg border border-border bg-card p-8 text-center">
+      <div className="rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
         <FilmSlate className="mx-auto h-8 w-8 text-muted-foreground" />
         <p className="mt-2 text-sm font-medium text-foreground">
           No clips generated yet
         </p>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Submit a prompt above. Runs are kept here so you can compare them.
+        <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+          Describe a shot above and hit Generate. Every run is kept here with the
+          settings it used, so you can compare them and reuse the ones that work.
         </p>
       </div>
     )
   }
 
   return (
-    <div className="space-y-3">
-      <h2 className="text-sm font-semibold text-foreground">Runs</h2>
-      {jobs.map((job) => (
-        <JobCard key={job.id} connectionId={connectionId} job={job} />
-      ))}
-    </div>
-  )
-}
-
-function JobCard({
-  connectionId,
-  job,
-}: {
-  connectionId: string
-  job: LaiosVideoJob
-}) {
-  const cancel = useCancelVideo(connectionId)
-  const active = isVideoActive(job)
-  const elapsed = useElapsedSeconds(active ? job.created_at : null)
-
-  async function onCancel() {
-    try {
-      await cancel.mutateAsync(job.job_id)
-      toast.success("Generation cancelled")
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to cancel")
-    }
-  }
-
-  return (
-    <div className="space-y-3 rounded-lg border border-border bg-card p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <p className="truncate text-sm font-medium text-foreground">
-            {job.prompt || "(no prompt)"}
-          </p>
-          <p className="truncate text-xs text-muted-foreground">
-            {job.model} · {job.job_id}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <StatusBadge job={job} />
-          {active ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onCancel}
-              disabled={cancel.isPending}
-            >
-              <Prohibit className="h-4 w-4" />
-              Cancel
-            </Button>
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-foreground">Runs</h2>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {activeCount > 0 ? (
+            <span className="flex items-center gap-1.5 text-foreground">
+              <DotGridLoader size="2xs" />
+              {activeCount} generating
+            </span>
           ) : null}
+          <span className="tabular-nums">
+            {jobs.length} {jobs.length === 1 ? "run" : "runs"}
+          </span>
         </div>
       </div>
 
-      {active ? (
-        <p className="text-xs text-muted-foreground">
-          Generating · {formatDuration(elapsed)} elapsed
-          {estimateSeconds(job) ? (
-            <> of ~{formatDuration(estimateSeconds(job) as number)} expected</>
-          ) : null}
-          {" — "}this engine reports no progress until the clip is done, so
-          &ldquo;queued&rdquo; here still means it is denoising.
-        </p>
-      ) : null}
-
-      {job.error ? (
-        <p className="text-sm text-destructive">{job.error}</p>
-      ) : null}
-
-      {job.status === "completed" ? (
-        <video
-          controls
-          preload="metadata"
-          className="w-full rounded-md border border-border bg-muted"
-          src={videoContentUrl(connectionId, job.job_id)}
-        />
-      ) : null}
-    </div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {jobs.map((job) => (
+          <VideoRunCard
+            key={job.id}
+            connectionId={connectionId}
+            job={job}
+            onReuse={onReuse}
+          />
+        ))}
+      </div>
+    </section>
   )
-}
-
-function StatusBadge({ job }: { job: LaiosVideoJob }) {
-  // Percent, already 0–100 — multiplying by 100 here renders "10000%". Only
-  // shown between the extremes, since 0 and 100 are said better by the status
-  // word itself.
-  const pct =
-    job.progress !== null && job.progress > 0 && job.progress < 100
-      ? ` ${Math.round(job.progress)}%`
-      : ""
-
-  switch (job.status) {
-    case "completed":
-      return <Badge variant="success">completed</Badge>
-    case "failed":
-      return <Badge variant="destructive">failed</Badge>
-    case "cancelled":
-      return <Badge variant="outline">cancelled</Badge>
-    default:
-      return (
-        <Badge variant="secondary">
-          {job.status}
-          {pct}
-        </Badge>
-      )
-  }
-}
-
-/**
- * Expected wall-clock for a job, from the steps it was submitted with.
- *
- * The only live signal this engine gives is elapsed time, so the estimate is
- * what makes it meaningful — ~44 s per denoise step, measured in the recipe.
- */
-function estimateSeconds(job: LaiosVideoJob): number | null {
-  const steps = job.request?.num_inference_steps
-  return typeof steps === "number" && steps > 0 ? steps * 44 : null
-}
-
-/** Seconds since `since`, ticking every second. Null pauses the timer. */
-function useElapsedSeconds(since: string | null): number {
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    if (!since) return
-    const timer = setInterval(() => setNow(Date.now()), 1_000)
-    return () => clearInterval(timer)
-  }, [since])
-
-  if (!since) return 0
-  // Timestamps are UTC but serialized without an offset, so mark them as such
-  // rather than letting the browser read them as local time.
-  const startedAt = Date.parse(/[Zz+]|-\d\d:\d\d$/.test(since) ? since : `${since}Z`)
-  if (Number.isNaN(startedAt)) return 0
-  return Math.max(0, Math.floor((now - startedAt) / 1000))
-}
-
-function formatDuration(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
 }

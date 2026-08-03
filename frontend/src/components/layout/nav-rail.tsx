@@ -3,6 +3,7 @@ import {
   CaretLeft,
   CaretRight,
   DotsThree,
+  FilmSlate,
   FolderPlus,
   Gear,
   Palette,
@@ -539,8 +540,8 @@ export function NavRail({
       <div
         className={cn(
           "flex shrink-0 border-t border-sidebar-border py-2",
-          // Five controls stack in a 68px column and fit on one line at 232px,
-          // which is the point of the extra width: spending five rows of a
+          // Six controls stack in a 68px column and wrap to two rows at 232px,
+          // which is the point of the extra width: spending six rows of a
           // labelled rail on settings would push the workspaces off the screen.
           railExpanded && !isMobile
             ? "flex-row flex-wrap items-center justify-center gap-1 px-1.5"
@@ -582,6 +583,41 @@ export function NavRail({
           </TooltipTrigger>
           <TooltipContent side="right" hidden={isMobile}>
             {activityCollapses ? "Hide Activity" : "Activity"}
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Video, out of the ⋯ menu and onto the rail itself. Same argument as
+            Settings below: a clip is a minutes-long job you submit and come back
+            to, so the trip back happens far more often than for the pages it was
+            filed beside — and a destination you revisit that often shouldn't cost
+            a menu to reach. It keeps its ⋯ entry; this is the one you aim at
+            without reading. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              asChild
+              className={cn(
+                FOOTER_TILE,
+                matchesRoute(pathname, "/video") &&
+                  "bg-sidebar-accent text-sidebar-accent-foreground"
+              )}
+            >
+              <Link
+                to="/video"
+                onClick={onNavigate}
+                aria-label="Video"
+                aria-current={
+                  matchesRoute(pathname, "/video") ? "page" : undefined
+                }
+              >
+                <FilmSlate className="size-5" />
+              </Link>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right" hidden={isMobile}>
+            Video
           </TooltipContent>
         </Tooltip>
 

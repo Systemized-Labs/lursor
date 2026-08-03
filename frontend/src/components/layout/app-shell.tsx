@@ -6,6 +6,7 @@ import type { ImperativePanelHandle } from "react-resizable-panels"
 import { useWorkspace } from "@/api/workspaces"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { MobileHeader } from "@/components/layout/mobile-header"
+import { destinationFor } from "@/components/layout/rail-items"
 import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
 import { DockRail } from "@/components/shell/dock-rail"
 import { MobileDockBar } from "@/components/shell/mobile-dock-bar"
@@ -210,13 +211,11 @@ export function AppShell() {
     )
 
     // Header title: the active dock view when one is up, otherwise the route.
-    const routeTitle = pathname.startsWith("/customization")
-      ? "Customization"
-      : pathname.startsWith("/settings")
-        ? "Settings"
-        : workspaceId
-          ? workspaceForTitle.data?.name ?? "Workspace"
-          : "New chat"
+    // Whole-page destinations name themselves from the rail's own list, so a new
+    // one is titled correctly without a branch here.
+    const routeTitle =
+      destinationFor(pathname)?.label ??
+      (workspaceId ? workspaceForTitle.data?.name ?? "Workspace" : "New chat")
     const mobileTitle =
       mobileView === "chat"
         ? routeTitle

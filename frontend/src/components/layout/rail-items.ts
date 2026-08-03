@@ -13,6 +13,14 @@ export interface RailDestination {
   label: string
   icon: ComponentType<{ className?: string }>
   to: string
+  /**
+   * This destination also has its own tile in the rail footer.
+   *
+   * It stays in the menu — ⌘K and the ⋯ list should name every page — but the
+   * ⋯ tile must not light up for it, or a route with a dedicated tile shows two
+   * active controls at once and neither one tells you where you are.
+   */
+  pinned?: boolean
 }
 
 /**
@@ -33,14 +41,14 @@ export const RAIL_DESTINATIONS: RailDestination[] = [
   { key: "schedules", label: "Schedules", icon: Clock, to: "/schedules" },
   { key: "usage", label: "Usage", icon: ChartBar, to: "/analytics" },
   { key: "laios", label: "LAIOS", icon: Cpu, to: "/laios" },
-  { key: "video", label: "Video", icon: FilmSlate, to: "/video" },
+  { key: "video", label: "Video", icon: FilmSlate, to: "/video", pinned: true },
   {
     key: "customization",
     label: "Customization",
     icon: SlidersHorizontal,
     to: "/customization",
   },
-  { key: "settings", label: "Settings", icon: Gear, to: "/settings" },
+  { key: "settings", label: "Settings", icon: Gear, to: "/settings", pinned: true },
 ]
 
 /**
@@ -53,7 +61,25 @@ export function matchesRoute(pathname: string, to: string): boolean {
     : pathname === to || pathname.startsWith(`${to}/`)
 }
 
-/** True while one of the ⋯ destinations owns the main view. */
+/**
+ * The destination owning this route, if any.
+ *
+ * Also what names the route: the mobile header used to special-case
+ * "/customization" and "/settings" and fall through to "New chat" for
+ * everything else, so Video — and Schedules, Usage and LAIOS before it — sat
+ * under a title for a page you weren't on. One list, one answer.
+ */
+export function destinationFor(pathname: string): RailDestination | undefined {
+  return RAIL_DESTINATIONS.find((item) => matchesRoute(pathname, item.to))
+}
+
+/**
+ * True while the ⋯ tile is the rail's answer to "where am I".
+ *
+ * Pinned destinations are excluded: they have a tile of their own, and that tile
+ * is the one carrying the active state.
+ */
 export function isDestinationRoute(pathname: string): boolean {
-  return RAIL_DESTINATIONS.some((item) => matchesRoute(pathname, item.to))
+  const destination = destinationFor(pathname)
+  return destination !== undefined && !destination.pinned
 }
