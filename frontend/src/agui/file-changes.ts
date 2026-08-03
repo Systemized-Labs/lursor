@@ -10,9 +10,11 @@ export interface FileChangeSummary {
   deletions: number
 }
 
-// Tool names (from the pydantic-ai console toolset) that mutate files. The agent
-// emits `write_file` (create/overwrite) and `edit_file` (string replacement);
-// the others only appear under optional backend features but are cheap to cover.
+// Tool names (from the pydantic-ai console toolset) that mutate files. We run the
+// `hashline` edit format, so the edit tool is `hashline_edit`; `edit_file` is the
+// `str_replace` format's tool and only appears if an agent's `extra_config` flips
+// `edit_format`. `delete_file` is not registered by any toolset we build — kept so
+// a file removed by some future backend feature still shows up in the list.
 const WRITE_TOOLS = new Set(["write_file"])
 const EDIT_TOOLS = new Set(["edit_file", "hashline_edit"])
 const DELETE_TOOLS = new Set(["delete_file"])
@@ -46,6 +48,36 @@ function occurrences(result: string | undefined): number {
   return match ? Math.max(1, Number.parseInt(match[1], 10)) : 1
 }
 
+/**
+ * Line counts for a `hashline_edit`, read out of its result summary.
+ *
+ * The arguments cannot supply them: `hashline_edit` sends `new_content` but no
+ * `old_string`, so counting from args alone reported `-0` on every edit and
+ * `+0 -0` on a pure deletion. The summary carries both numbers — one of
+ * `Replaced N line(s) with M line(s) at line X`, `Replaced N line(s) at line X`
+ * (an equal-length replacement), `Deleted N line(s) at line X`, or
+ * `Inserted N line(s) after line X` (`pydantic_ai_backends/hashline.py`).
+ */
+function hashlineCounts(result: string | undefined): { additions: number; deletions: number } {
+  const replacedWith = result?.match(/Replaced (\d+) line\(s\) with (\d+) line\(s\)/)
+  if (replacedWith) {
+    return {
+      deletions: Number.parseInt(replacedWith[1], 10),
+      additions: Number.parseInt(replacedWith[2], 10),
+    }
+  }
+  const replaced = result?.match(/Replaced (\d+) line\(s\)/)
+  if (replaced) {
+    const count = Number.parseInt(replaced[1], 10)
+    return { additions: count, deletions: count }
+  }
+  const deleted = result?.match(/Deleted (\d+) line\(s\)/)
+  if (deleted) return { additions: 0, deletions: Number.parseInt(deleted[1], 10) }
+  const inserted = result?.match(/Inserted (\d+) line\(s\)/)
+  if (inserted) return { additions: Number.parseInt(inserted[1], 10), deletions: 0 }
+  return { additions: 0, deletions: 0 }
+}
+
 function asString(value: unknown): string {
   return typeof value === "string" ? value : ""
 }
@@ -53,9 +85,10 @@ function asString(value: unknown): string {
 /**
  * Derive the set of files an assistant turn changed from its tool calls,
  * aggregating repeated edits to the same path. Line counts are approximated
- * from the tool arguments (there is no git numstat available): a write counts
- * its content lines as additions; an edit counts new/old string lines per
- * occurrence. Failed tool calls (error results) are ignored.
+ * (there is no git numstat available): a write counts its content lines as
+ * additions, a `hashline_edit` reads both numbers out of its result summary, and
+ * an `edit_file` counts new/old string lines per occurrence. Failed tool calls
+ * (error results) are ignored.
  */
 export function deriveFileChanges(messages: ChatMessage[]): FileChangeSummary[] {
   const byPath = new Map<string, FileChangeSummary>()
@@ -77,10 +110,11 @@ export function deriveFileChanges(messages: ChatMessage[]): FileChangeSummary[] 
       let deletions = 0
       if (isWrite) {
         additions = lineCount(asString(args?.content))
+      } else if (tc.name === "hashline_edit") {
+        ;({ additions, deletions } = hashlineCounts(tc.result))
       } else if (isEdit) {
         const times = occurrences(tc.result)
-        additions =
-          lineCount(asString(args?.new_string) || asString(args?.new_content)) * times
+        additions = lineCount(asString(args?.new_string)) * times
         deletions = lineCount(asString(args?.old_string)) * times
       }
 

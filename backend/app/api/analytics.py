@@ -16,9 +16,11 @@ from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.agents.file_editing import hashline_stats
 from app.db.models import UsageRecord, Workspace
 from app.db.session import get_session
 from app.schemas.analytics import (
+    FileEditingStats,
     ModelUsage,
     TimeseriesPoint,
     UsageTotals,
@@ -161,3 +163,23 @@ async def usage_timeseries(
     stmt = stmt.group_by(day).order_by(day.asc())
     rows = (await session.execute(stmt)).all()
     return [TimeseriesPoint(date=str(r[0] or ""), **_totals_from_row(r[1:])) for r in rows]
+
+
+@router.get("/file-editing", response_model=FileEditingStats)
+async def file_editing_stats() -> FileEditingStats:
+    """How often the hashline edit anchors go stale in this process.
+
+    Takes no filters and touches no table: the counters live in memory and reset
+    with the process (``agents/file_editing.py``). Exposed because the audit's
+    remaining priority arguments all need this number and nothing else produced
+    it — the logs carry the same figures per event.
+    """
+    stats = hashline_stats()
+    return FileEditingStats(
+        edits=stats.edits,
+        mismatches=stats.mismatches,
+        mismatch_rate=stats.mismatch_rate,
+        recovered_anchors=stats.recovered_anchors,
+        missing_end_hash=stats.missing_end_hash,
+        blocked_writes=stats.blocked_writes,
+    )

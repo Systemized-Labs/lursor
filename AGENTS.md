@@ -388,6 +388,13 @@ Traps, all load-bearing:
   restores the flat roster everywhere.
 
 Full audit of the tool surface, including open findings: `docs/TOOL-SURFACE-AUDIT.md`.
+The file-editing tools (hashline read/edit) are audited separately against Claude
+Code and the reference hashline implementations: `docs/FILE-EDITING-AUDIT.md`. The
+guards that audit produced live in `agents/file_editing.py` (both ends of a range
+edit are validated, `write_file` cannot clobber an unread file, an anchor miss
+returns fresh anchors) and `agents/edit_syntax.py` (delta-only syntax check).
+Fixes that belong in the dependency are prepared as ready-to-submit diffs under
+`docs/upstream/`, not opened as PRs.
 
 ### Memory
 

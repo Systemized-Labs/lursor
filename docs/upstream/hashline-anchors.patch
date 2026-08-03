@@ -1,0 +1,378 @@
+diff --git a/src/pydantic_ai_backends/hashline.py b/src/pydantic_ai_backends/hashline.py
+index febc763..45f61c2 100644
+--- a/src/pydantic_ai_backends/hashline.py
++++ b/src/pydantic_ai_backends/hashline.py
+@@ -34,20 +34,46 @@ from __future__ import annotations
+ 
+ import hashlib
+ 
++HASH_WIDTH = 4
++"""Hex characters in a line hash.
++
++Two characters is 256 buckets: an unrelated line passes a stale anchor check
++about 1 time in 256, and hashing trimmed content (below) removes indentation as
++a distinguishing feature, so the collision rate matters more than it used to.
++Four characters is 65536 buckets — 1 in 65536 — for two more tokens per line.
++"""
++
+ 
+ def line_hash(content: str) -> str:
+-    """Generate a 2-char hex content hash for a line.
++    """Generate a content hash for a line, ignoring surrounding whitespace.
+ 
+-    Uses first 2 characters of MD5 hex digest.  Provides 256 possible
+-    values — sufficient for detecting changes within typical files.
++    Leading and trailing whitespace is stripped before hashing, so re-indenting
++    a line does not invalidate an anchor a model is holding. That matters because
++    an anchor's whole job is to survive until the edit lands: a formatter running
++    on save (Black, Prettier, gofmt) otherwise changes the hash of every line it
++    touches and forces a full re-read, which is exactly the round trip this
++    format exists to avoid.
+ 
+     Args:
+         content: The line content (without trailing newline).
+ 
+     Returns:
+-        2-character lowercase hex string.
++        Lowercase hex string of `HASH_WIDTH` characters.
++    """
++    return hashlib.md5(content.strip().encode("utf-8")).hexdigest()[:HASH_WIDTH]
++
++
++def hash_matches(expected: str, actual: str) -> bool:
++    """Whether a caller-supplied hash matches one computed now.
++
++    Compared on the shorter of the two lengths so a hash a model read before this
++    change (2 characters) still validates against a 4-character one. Without that,
++    every conversation in flight across an upgrade fails its next edit.
+     """
+-    return hashlib.md5(content.encode("utf-8")).hexdigest()[:2]
++    if not expected:
++        return False
++    width = min(len(expected), len(actual))
++    return expected[:width].lower() == actual[:width].lower()
+ 
+ 
+ def _split_lines(content: str) -> tuple[list[str], bool]:
+@@ -64,6 +90,21 @@ def _split_lines(content: str) -> tuple[list[str], bool]:
+     return lines, has_trailing_newline
+ 
+ 
++def _line_ending(content: str) -> str:
++    """The newline this file uses, so an edit does not mix the two.
++
++    Splitting on `\n` alone leaves a trailing `\r` on every line of a CRLF file:
++    the model is then asked to hash an invisible character, and any line it writes
++    lands with a bare LF next to CRLF neighbours.
++    """
++    return "\r\n" if "\r\n" in content else "\n"
++
++
++def _strip_cr(lines: list[str]) -> list[str]:
++    """Drop the `\r` that splitting a CRLF file on `\n` leaves behind."""
++    return [line[:-1] if line.endswith("\r") else line for line in lines]
++
++
+ def format_hashline_output(
+     content: str,
+     offset: int = 0,
+@@ -82,6 +123,7 @@ def format_hashline_output(
+         Formatted string with hashline-tagged lines.
+     """
+     lines, _ = _split_lines(content)
++    lines = _strip_cr(lines)
+     total_lines = len(lines)
+ 
+     if total_lines == 0:  # pragma: no cover
+@@ -152,16 +194,18 @@ def apply_hashline_edit_with_summary(
+     Args:
+         content: Current raw file content.
+         start_line: 1-indexed line number to start the edit.
+-        start_hash: Expected 2-char hash of the start line.
++        start_hash: Expected hash of the start line (see :func:`line_hash`).
+         new_content: Replacement text; empty deletes the line(s).
+         end_line: 1-indexed end of an inclusive range. `None` for single-line.
+-        end_hash: Expected 2-char hash of the end line.
++        end_hash: Expected hash of the end line. Required when `end_line` is set.
+         insert_after: Insert *after* `start_line` instead of replacing it.
+ 
+     Returns:
+         `(new_file_content, error, summary)`, where *error* is `None` on success.
+     """
++    newline = _line_ending(content)
+     lines, has_trailing_newline = _split_lines(content)
++    lines = _strip_cr(lines)
+     total_lines = len(lines)
+ 
+     # --- validate start line ---
+@@ -175,7 +219,7 @@ def apply_hashline_edit_with_summary(
+         return content, "end_line/end_hash cannot be combined with insert_after", ""
+ 
+     actual_start_hash = line_hash(lines[start_line - 1])
+-    if actual_start_hash != start_hash:
++    if not hash_matches(start_hash, actual_start_hash):
+         return (
+             content,
+             (
+@@ -193,8 +237,18 @@ def apply_hashline_edit_with_summary(
+             return content, (f"end_line ({end_line}) must be >= start_line ({start_line})"), ""
+         if end_line > total_lines:
+             return content, (f"End line {end_line} out of range (file has {total_lines} lines)"), ""
++        if end_hash is None:
++            return (
++                content,
++                (
++                    f"end_hash is required with end_line ({end_line}). Without it only "
++                    "the start of the range is validated, so an edit can silently "
++                    "overwrite lines that changed since the file was read."
++                ),
++                "",
++            )
+         actual_end_hash = line_hash(lines[end_line - 1])
+-        if end_hash is not None and actual_end_hash != end_hash:
++        if not hash_matches(end_hash, actual_end_hash):
+             return (
+                 content,
+                 (
+@@ -215,9 +269,9 @@ def apply_hashline_edit_with_summary(
+     else:
+         result_lines = lines[: start_line - 1] + new_lines + lines[effective_end:]
+ 
+-    result = "\n".join(result_lines)
++    result = newline.join(_strip_cr(result_lines))
+     if has_trailing_newline:
+-        result += "\n"
++        result += newline
+ 
+     # --- summary ---
+     lines_removed = effective_end - start_line + 1 if not insert_after else 0
+diff --git a/src/pydantic_ai_backends/toolsets/console.py b/src/pydantic_ai_backends/toolsets/console.py
+index 9cbdc19..376d47c 100644
+--- a/src/pydantic_ai_backends/toolsets/console.py
++++ b/src/pydantic_ai_backends/toolsets/console.py
+@@ -432,7 +432,20 @@ of replacing it.
+                 if not await backend.exists(path):
+                     return f"Error: File '{path}' not found"
+ 
+-                current = (await backend.read_bytes(path)).decode("utf-8", errors="replace")
++                raw = await backend.read_bytes(path)
++                try:
++                    current = raw.decode("utf-8")
++                except UnicodeDecodeError:
++                    # `errors="replace"` would let the edit through, but the write
++                    # below rewrites the *whole* file from the decoded text — so
++                    # every undecodable byte in it, including bytes nowhere near
++                    # this edit, would be replaced by U+FFFD on disk. Refuse
++                    # instead of silently corrupting the parts we cannot represent.
++                    return (
++                        f"Error: '{path}' is not valid UTF-8. Editing it here would "
++                        "replace the bytes that cannot be decoded, including bytes "
++                        "outside the edited range. Use execute() to modify it."
++                    )
+                 new_text, error, summary = apply_hashline_edit_with_summary(
+                     current,
+                     start_line,
+diff --git a/tests/test_console_tool_bodies.py b/tests/test_console_tool_bodies.py
+index 628ee12..299fe38 100644
+--- a/tests/test_console_tool_bodies.py
++++ b/tests/test_console_tool_bodies.py
+@@ -19,6 +19,7 @@ from pydantic_ai.models.test import TestModel
+ from pydantic_ai.usage import RunUsage
+ 
+ from pydantic_ai_backends import StateBackend, create_console_toolset
++from pydantic_ai_backends.hashline import line_hash
+ 
+ 
+ @dataclass
+@@ -202,6 +203,24 @@ class TestHashlineVariants:
+ 
+         assert out.startswith("Error: ")
+ 
++    async def test_a_file_that_is_not_utf8_is_refused(self, backend: StateBackend):
++        """The write-back rewrites the whole file, so an undecodable byte anywhere
++        in it would be replaced on disk — including bytes the edit never touched."""
++        backend.write("/blob.dat", b"header\n\xff\xfe payload\ntail\n")
++
++        out = await _call(
++            self._hashline(backend),
++            "hashline_edit",
++            path="/blob.dat",
++            start_line=1,
++            start_hash=line_hash("header"),
++            new_content="HEADER",
++        )
++
++        assert "not valid UTF-8" in out
++        # Untouched: the undecodable bytes are still there, byte for byte.
++        assert backend.read_bytes("/blob.dat") == b"header\n\xff\xfe payload\ntail\n"
++
+     async def test_a_failing_write_back_is_reported(self, backend: StateBackend):
+         class RefusingWrite:
+             """Reads like the real store, refuses only the write-back."""
+diff --git a/tests/test_hashline.py b/tests/test_hashline.py
+index 7fc5c15..df341d4 100644
+--- a/tests/test_hashline.py
++++ b/tests/test_hashline.py
+@@ -1,10 +1,12 @@
+ """Tests for hashline module — content-hash-tagged line editing."""
+ 
+ from pydantic_ai_backends.hashline import (
++    HASH_WIDTH,
+     _split_lines,
+     apply_hashline_edit,
+     apply_hashline_edit_with_summary,
+     format_hashline_output,
++    hash_matches,
+     line_hash,
+ )
+ 
+@@ -12,9 +14,9 @@ from pydantic_ai_backends.hashline import (
+ class TestLineHash:
+     """Test line_hash function."""
+ 
+-    def test_returns_two_char_hex(self):
++    def test_returns_hex_of_the_configured_width(self):
+         h = line_hash("hello")
+-        assert len(h) == 2
++        assert len(h) == HASH_WIDTH
+         assert all(c in "0123456789abcdef" for c in h)
+ 
+     def test_deterministic(self):
+@@ -29,12 +31,14 @@ class TestLineHash:
+ 
+     def test_empty_string(self):
+         h = line_hash("")
+-        assert len(h) == 2
++        assert len(h) == HASH_WIDTH
+ 
+-    def test_whitespace_matters(self):
+-        h1 = line_hash("  hello")
+-        h2 = line_hash("hello")
+-        assert h1 != h2
++    def test_surrounding_whitespace_is_ignored(self):
++        """Re-indenting a line must not invalidate an anchor a model is holding."""
++        assert line_hash("  hello") == line_hash("hello") == line_hash("\thello  ")
++
++    def test_interior_whitespace_still_counts(self):
++        assert line_hash("a b") != line_hash("ab")
+ 
+ 
+ class TestSplitLines:
+@@ -88,7 +92,7 @@ class TestFormatHashlineOutput:
+         assert ":" in prefix
+         num, h = prefix.split(":")
+         assert num == "1"
+-        assert len(h) == 2
++        assert len(h) == HASH_WIDTH
+ 
+     def test_offset(self):
+         content = "line1\nline2\nline3\nline4\n"
+@@ -293,13 +297,36 @@ class TestApplyHashlineEdit:
+         assert error is None
+         assert new == "aaa\nx\ny\nz\nbbb\n"
+ 
+-    def test_end_hash_optional(self):
++    def test_end_hash_is_required_with_end_line(self):
++        """A range edit validates both ends or it does not run.
++
++        With the end anchor optional, a model that read lines 1-2 and replaces 1-2
++        after line 2 changed underneath it gets no error and loses the new content.
++        """
+         content = "aaa\nbbb\nccc\n"
+         h = self._content_and_hash(content, 1)
+         new, error = apply_hashline_edit(content, 1, h, "XXX", end_line=2)
++        assert error is not None and "end_hash is required" in error
++        assert new == content
++
++    def test_range_edit_with_both_anchors(self):
++        content = "aaa\nbbb\nccc\n"
++        start = self._content_and_hash(content, 1)
++        end = self._content_and_hash(content, 2)
++        new, error = apply_hashline_edit(content, 1, start, "XXX", end_line=2, end_hash=end)
+         assert error is None
+         assert new == "XXX\nccc\n"
+ 
++    def test_a_stale_end_anchor_is_refused(self):
++        content = "aaa\nbbb\nccc\n"
++        start = self._content_and_hash(content, 1)
++        drifted = "aaa\nIMPORTANT\nccc\n"
++        new, error = apply_hashline_edit(
++            drifted, 1, start, "XXX", end_line=2, end_hash=line_hash("bbb")
++        )
++        assert error is not None and "Hash mismatch" in error
++        assert new == drifted
++
+     def test_replace_all_lines(self):
+         content = "aaa\nbbb\nccc\n"
+         h1 = self._content_and_hash(content, 1)
+@@ -485,3 +512,70 @@ class TestLazyImports:
+ 
+         assert isinstance(HASHLINE_CONSOLE_PROMPT, str)
+         assert "hashline" in HASHLINE_CONSOLE_PROMPT.lower()
++
++
++class TestHashMatches:
++    """Anchors a model read before the width change still have to validate."""
++
++    def test_exact(self):
++        assert hash_matches(line_hash("hello"), line_hash("hello"))
++
++    def test_a_shorter_legacy_hash_still_matches(self):
++        """A 2-char anchor from an in-flight conversation must not break on upgrade."""
++        full = line_hash("hello")
++        assert hash_matches(full[:2], full)
++
++    def test_case_insensitive(self):
++        full = line_hash("hello")
++        assert hash_matches(full.upper(), full)
++
++    def test_different_content_does_not_match(self):
++        assert not hash_matches(line_hash("hello"), line_hash("goodbye"))
++
++    def test_empty_expected_never_matches(self):
++        assert not hash_matches("", line_hash("hello"))
++
++
++class TestCrlf:
++    """A CRLF file must not end up with mixed line endings, or `\r` in its hashes."""
++
++    CRLF = "alpha\r\nbeta\r\ngamma\r\n"
++
++    def test_tags_do_not_include_the_carriage_return(self):
++        assert format_hashline_output(self.CRLF).splitlines() == [
++            f"1:{line_hash('alpha')}|alpha",
++            f"2:{line_hash('beta')}|beta",
++            f"3:{line_hash('gamma')}|gamma",
++        ]
++
++    def test_an_edit_keeps_the_files_own_ending(self):
++        new, error = apply_hashline_edit(self.CRLF, 2, line_hash("beta"), "BETA")
++        assert error is None
++        assert new == "alpha\r\nBETA\r\ngamma\r\n"
++
++    def test_lf_files_are_unaffected(self):
++        content = "alpha\nbeta\n"
++        new, error = apply_hashline_edit(content, 2, line_hash("beta"), "BETA")
++        assert error is None
++        assert new == "alpha\nBETA\n"
++
++    def test_multi_line_replacement_keeps_the_ending(self):
++        new, error = apply_hashline_edit(
++            self.CRLF, 1, line_hash("alpha"), "one\ntwo", end_line=2, end_hash=line_hash("beta")
++        )
++        assert error is None
++        assert new == "one\r\ntwo\r\ngamma\r\n"
++
++
++class TestReindentation:
++    """The point of hashing trimmed content: a formatter must not break anchors."""
++
++    def test_an_anchor_survives_reindentation(self):
++        # Read at two-space indentation, edited after a formatter widened it.
++        after = "def f():\n    return 1\n"
++        anchor = line_hash("  return 1")
++
++        new, error = apply_hashline_edit(after, 2, anchor, "    return 2")
++        assert error is None
++        assert new == "def f():\n    return 2\n"
++        assert anchor == line_hash("    return 1")

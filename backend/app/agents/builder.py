@@ -42,6 +42,8 @@ from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
 )
+from app.agents.edit_syntax import EditSyntaxCheck
+from app.agents.file_editing import FileEditingGuards
 from app.agents.hindsight import (
     HINDSIGHT_MEMORY_DIRECTIVE,
     HindsightConfig,
@@ -1211,6 +1213,20 @@ def build_deep_agent(
             )
         )
     library_memory = row.include_memory and not use_hindsight
+
+    # File-editing guards: make the hashline anchors load-bearing (a range edit
+    # must validate both ends), stop ``write_file`` overwriting a file this agent
+    # never read, and hand the model fresh anchors when one misses instead of
+    # costing it a full re-read. Unconditional — every agent that can edit files
+    # gets them, and on a read-only agent the guarded tools are filtered out above
+    # so the capability simply never fires. See ``agents/file_editing.py`` and
+    # ``docs/FILE-EDITING-AUDIT.md``.
+    capabilities.append(FileEditingGuards())
+
+    # Post-edit syntax check, immediately after the guards so it sees the same
+    # writes: report only breakage an edit *introduced*, in the languages we can
+    # parse without installing anything. See ``agents/edit_syntax.py``.
+    capabilities.append(EditSyntaxCheck())
 
     # On-demand tool loading, last so the tool-search wrapper sits outside every
     # capability above and sees the roster they produced (see

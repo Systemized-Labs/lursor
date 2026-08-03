@@ -233,6 +233,88 @@ def test_background_process_inherits_run_env(backend):
         set_run_env({}, ())
 
 
+# --- async_execute -------------------------------------------------------------
+#
+# From pydantic-ai-backend 0.2.24 the async adapter prefers ``async_execute``
+# whenever the backend defines it, so this — not ``execute`` — is the method the
+# agent's shell tool actually reaches. These pin that the env injection and the
+# redaction survive on that path; without the override both silently stop.
+
+
+async def test_async_execute_is_the_path_the_adapter_takes(backend):
+    """The adapter picks ``async_execute``, and ours is the one it finds."""
+    import inspect
+
+    from pydantic_ai_backends import ensure_async
+
+    from app.agents.deduping_backend import set_run_env
+
+    assert inspect.iscoroutinefunction(backend.async_execute)
+    assert backend.async_execute.__qualname__.startswith("DedupingLocalBackend")
+
+    # ``ensure_async`` is what the console toolset wraps the backend in, so this
+    # is the dispatch the agent's ``execute`` tool goes through.
+    adapter = ensure_async(backend)
+    set_run_env({"ROUTED": "routed-secret"}, ("routed-secret",))
+    try:
+        result = await adapter.execute("echo $ROUTED")
+        assert result.output.strip() == "***REDACTED***"
+    finally:
+        set_run_env({}, ())
+
+
+async def test_async_execute_parity_without_env(backend):
+    ok = await backend.async_execute("echo hi")
+    assert ok.output.strip() == "hi" and ok.exit_code == 0 and ok.truncated is False
+
+    failed = await backend.async_execute("exit 7")
+    assert failed.exit_code == 7
+
+    timed_out = await backend.async_execute("sleep 2", timeout=1)
+    assert timed_out.exit_code == 124 and "timed out" in timed_out.output
+
+    pwd = await backend.async_execute("pwd")
+    assert pwd.output.strip().endswith(backend.root_dir.name)
+
+
+async def test_async_execute_injects_env_and_redacts_secrets(backend):
+    from app.agents.deduping_backend import set_run_env
+
+    set_run_env({"MY_TOKEN": "tok-abcdefghij"}, ("tok-abcdefghij",))
+    try:
+        present = await backend.async_execute('test -n "$MY_TOKEN" && echo present')
+        assert present.output.strip() == "present"
+        leaked = await backend.async_execute("echo $MY_TOKEN")
+        assert leaked.output.strip() == "***REDACTED***"
+    finally:
+        set_run_env({}, ())
+
+
+async def test_async_execute_truncates_long_output(backend):
+    from app.agents.deduping_backend import MAX_EXECUTE_OUTPUT
+
+    r = await backend.async_execute(f"python3 -c \"print('x' * {MAX_EXECUTE_OUTPUT + 500})\"")
+    assert r.truncated is True and len(r.output) == MAX_EXECUTE_OUTPUT
+
+
+async def test_async_execute_cancellation_reaps_the_process_tree(backend):
+    """Stopping a turn must not orphan the command's children."""
+    import asyncio
+
+    marker = backend.root_dir / "orphan.txt"
+    task = asyncio.create_task(
+        backend.async_execute(f"sh -c 'sleep 5; echo alive > {marker}' & wait")
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The grandchild died with its session rather than finishing the write.
+    await asyncio.sleep(0.5)
+    assert not marker.exists()
+
+
 def test_read_background_redacts_secrets(backend):
     import time
 

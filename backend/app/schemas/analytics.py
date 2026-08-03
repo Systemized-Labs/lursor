@@ -28,3 +28,21 @@ class WorkspaceUsage(UsageTotals):
 class TimeseriesPoint(UsageTotals):
     # ISO date (YYYY-MM-DD) bucket.
     date: str
+
+
+class FileEditingStats(BaseModel):
+    """Counters from ``agents/file_editing.py``, since this process started.
+
+    Process-wide and not persisted: the question they answer is "how often do the
+    hashline anchors actually go stale", which is a property of the edit format and
+    the models we run, not of any one workspace. See ``docs/FILE-EDITING-AUDIT.md``
+    — under ~1% and the remaining hash findings are noise; 10%+ and the format is
+    costing more than it saves.
+    """
+
+    edits: int = 0
+    mismatches: int = 0
+    mismatch_rate: float = 0.0
+    recovered_anchors: int = 0
+    missing_end_hash: int = 0
+    blocked_writes: int = 0
