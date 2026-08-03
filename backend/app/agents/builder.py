@@ -322,54 +322,78 @@ def _keepalive_socket_options() -> list[tuple[int, int, int]]:
     return options
 
 
-# Process-shared HTTP client for every local (custom) provider.
+# Process-shared HTTP clients for every local (custom) provider, one per
+# timeout regime (see `_model_http_timeout`).
 #
-# `read` is deliberately finite but generous: httpx applies it per socket read,
-# so it *resets on every chunk*. A long local generation (big reasoning output,
-# slow prefill) streams for as long as it wants without tripping it — only a
-# stream that stops producing bytes entirely does. It was previously `read=None`
-# on the theory that the LiteLLM gateway's own `request_timeout` was a sufficient
-# backstop; it isn't. When the connection to the gateway dies mid-stream the
-# gateway never learns a request is in flight, so nothing anywhere holds a
-# stopwatch and the run hangs forever (observed: a 90-minute-dead turn on an
-# ESTABLISHED socket with an empty receive queue). Connect/write/pool stay finite
-# so setup faults still surface.
+# `read` is deliberately finite but generous. On a *streaming* call httpx
+# applies it per socket read, so it *resets on every chunk*: a long local
+# generation (big reasoning output, slow prefill) streams for as long as it
+# wants without tripping it — only a stream that stops producing bytes entirely
+# does. It was previously `read=None` on the theory that the LiteLLM gateway's
+# own `request_timeout` was a sufficient backstop; it isn't. When the connection
+# to the gateway dies mid-stream the gateway never learns a request is in
+# flight, so nothing anywhere holds a stopwatch and the run hangs forever
+# (observed: a 90-minute-dead turn on an ESTABLISHED socket with an empty
+# receive queue). Connect/write/pool stay finite so setup faults still surface.
 #
 # Shared (not per-request): OpenAIProvider does NOT own/close a passed-in client,
 # and the agent is rebuilt per turn, so a fresh client each time would leak
 # connections. Lazily created to stay off the import path — and so the timeout
-# reflects settings at first use rather than import time.
-_local_http_client: httpx.AsyncClient | None = None
+# reflects settings at first use rather than import time. Keyed by `streaming`
+# because the two regimes must not share a client: the timeout is baked in at
+# construction.
+_local_http_clients: dict[bool, httpx.AsyncClient] = {}
 
 
-def _model_http_timeout() -> httpx.Timeout:
-    """Timeout policy shared by both model clients (see the note above)."""
+def _model_http_timeout(*, streaming: bool) -> httpx.Timeout:
+    """Timeout policy for a model client, by response mode.
+
+    The `read` timeout means two different things depending on whether the
+    caller streams, and one number cannot serve both:
+
+    * streaming — a per-chunk stall detector; it resets on every token, so it
+      only fires on a genuinely dead stream.
+    * non-streaming — nothing arrives until generation completes, so there is
+      no chunk to reset on and `read` becomes the total request budget.
+
+    Sharing the streaming value with one-shot calls capped whole-response
+    latency at ``model_stream_stall_timeout``, silently aborting slow
+    compactions at exactly that mark. See ``Settings.one_shot_request_timeout``.
+    """
+    settings = get_settings()
     return httpx.Timeout(
         timeout=30.0,
         connect=15.0,
-        read=get_settings().model_stream_stall_timeout,
+        read=(
+            settings.model_stream_stall_timeout
+            if streaming
+            else settings.one_shot_request_timeout
+        ),
     )
 
 
-def _shared_local_http_client() -> httpx.AsyncClient:
+def _shared_local_http_client(*, streaming: bool = True) -> httpx.AsyncClient:
     """Return the process-wide client used for local OpenAI-compatible providers."""
-    global _local_http_client
-    if _local_http_client is None or _local_http_client.is_closed:
-        _local_http_client = httpx.AsyncClient(
+    client = _local_http_clients.get(streaming)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
             transport=httpx.AsyncHTTPTransport(socket_options=_keepalive_socket_options()),
-            timeout=_model_http_timeout(),
+            timeout=_model_http_timeout(streaming=streaming),
         )
-    return _local_http_client
+        _local_http_clients[streaming] = client
+    return client
 
 
-# Process-shared retrying client for OpenRouter. Same lazy/shared rationale as
-# the local client, and the same finite per-chunk read timeout and keep-alive
-# probes — a cloud gateway's connection can drop mid-stream just as a tunnelled
-# local one can, and `read=None` stranded the run identically.
-_openrouter_http_client: httpx.AsyncClient | None = None
+# Process-shared retrying clients for OpenRouter, one per timeout regime. Same
+# lazy/shared rationale as the local clients, and the same keep-alive probes — a
+# cloud gateway's connection can drop mid-stream just as a tunnelled local one
+# can, and `read=None` stranded the run identically. The streaming/one-shot
+# split applies here too: `default_compaction_model` is an ``openrouter:``
+# model, so the non-streaming path is not local-only.
+_openrouter_http_clients: dict[bool, httpx.AsyncClient] = {}
 
 
-def _shared_openrouter_http_client() -> httpx.AsyncClient:
+def _shared_openrouter_http_client(*, streaming: bool = True) -> httpx.AsyncClient:
     """Return the process-wide retrying client for OpenRouter requests.
 
     Wraps the default transport in an :class:`AsyncTenacityTransport` that, on a
@@ -378,8 +402,8 @@ def _shared_openrouter_http_client() -> httpx.AsyncClient:
     retries. After the attempts are exhausted the final response raises as usual,
     so a persistent outage still surfaces as ``ModelHTTPError``.
     """
-    global _openrouter_http_client
-    if _openrouter_http_client is None or _openrouter_http_client.is_closed:
+    client = _openrouter_http_clients.get(streaming)
+    if client is None or client.is_closed:
 
         def _raise_on_retryable(response: httpx.Response) -> None:
             if response.status_code in _OPENROUTER_RETRY_STATUSES:
@@ -401,10 +425,11 @@ def _shared_openrouter_http_client() -> httpx.AsyncClient:
             # detection compose instead of the latter being lost.
             wrapped=httpx.AsyncHTTPTransport(socket_options=_keepalive_socket_options()),
         )
-        _openrouter_http_client = httpx.AsyncClient(
-            transport=transport, timeout=_model_http_timeout()
+        client = httpx.AsyncClient(
+            transport=transport, timeout=_model_http_timeout(streaming=streaming)
         )
-    return _openrouter_http_client
+        _openrouter_http_clients[streaming] = client
+    return client
 
 # Tools the agent may keep in read-only ("ask") mode. This is an ALLOWLIST, not
 # a blocklist: the deep-agent toolset exposes many mutation/execution paths
@@ -646,7 +671,10 @@ def _reasoning_chat_template_kwargs(
 
 
 def resolve_model(
-    model_str: str, providers: dict[str, CustomProvider]
+    model_str: str,
+    providers: dict[str, CustomProvider],
+    *,
+    streaming: bool = True,
 ) -> str | Model:
     """Turn a stored model string into a value ``create_deep_agent`` accepts.
 
@@ -658,6 +686,14 @@ def resolve_model(
     OpenAI-compatible model object pointed at that provider's base URL. An
     unknown provider falls back to the default model. Any other string
     (e.g. ``anthropic:``) is passed through untouched.
+
+    ``streaming`` selects the timeout regime of the HTTP client the model is
+    wired to (see :func:`_model_http_timeout`). Pass ``False`` for callers that
+    ``await agent.run(...)`` rather than streaming, or the per-chunk stall
+    timeout silently becomes their total budget. It is keyword-only and defaults
+    to ``True`` because the streaming turn is the hot path; a plain string
+    (``anthropic:`` et al.) is returned untouched and ignores it, since
+    pydantic-ai builds that client itself.
     """
     if model_str.startswith(OPENROUTER_PREFIX):
         model_name = model_str[len(OPENROUTER_PREFIX) :]
@@ -665,7 +701,7 @@ def resolve_model(
             model_name,
             provider=OpenRouterProvider(
                 api_key=settings.openrouter_api_key,
-                http_client=_shared_openrouter_http_client(),
+                http_client=_shared_openrouter_http_client(streaming=streaming),
             ),
         )
 
@@ -677,7 +713,7 @@ def resolve_model(
     if provider is None or not model_name:
         # Fall back to the default model (an ``openrouter:`` string) via the same
         # path so it, too, gets the retrying client rather than a raw string.
-        return resolve_model(settings.default_model, providers)
+        return resolve_model(settings.default_model, providers, streaming=streaming)
 
     # Route through the tolerant model: local OpenAI-compatible servers
     # (vLLM/llama.cpp/LM Studio, often behind a LiteLLM proxy) run strict chat
@@ -695,9 +731,12 @@ def resolve_model(
             # Local servers usually need no key; OpenAIProvider requires a
             # non-null value, so send a placeholder when none is configured.
             api_key=provider.api_key or "api-key-not-set",
-            # Long-lived streaming: no client-side read cap (see
-            # _shared_local_http_client); the gateway's request_timeout bounds it.
-            http_client=_shared_local_http_client(),
+            # Read cap depends on how the caller consumes the response: a
+            # per-chunk stall timeout when streaming, a total budget when not
+            # (see _model_http_timeout). The gateway's own request_timeout is
+            # *not* a sufficient backstop — it never learns a request is in
+            # flight once the connection dies.
+            http_client=_shared_local_http_client(streaming=streaming),
         ),
     )
     # Strict local templates reject a request with no user turn; guarantee one.
@@ -709,6 +748,7 @@ def _summarizer_model(
     compaction_model: str | None,
     providers: dict[str, CustomProvider],
     fallback: str | Model,
+    fallback_model_str: str | None = None,
 ) -> str | Model:
     """The model that writes in-run summaries, resolved through Lursor's stack.
 
@@ -718,15 +758,36 @@ def _summarizer_model(
     on the run's own model costs more than the small default but always works;
     what we must not do is let the library keep its ``anthropic:`` default, which
     fails at the moment compaction fires and silently drops the compaction.
+
+    ``fallback_model_str`` is the string ``fallback`` was built from. The
+    resolved ``fallback`` is wired to the *streaming* client (it is the run's own
+    turn model), but summarizing is a one-shot ``.run()``, so taking it verbatim
+    would reinstate the stall timeout as compaction's total budget — on exactly
+    the local-only installs this fallback exists to serve. Re-resolve instead;
+    the string already resolved once, so only the client differs.
     """
     model_str = compaction_model or settings.default_compaction_model
     try:
-        return resolve_model(model_str, providers)
+        # In-run summarization is a one-shot `.run()`, not a stream.
+        return resolve_model(model_str, providers, streaming=False)
     except Exception as exc:  # noqa: BLE001 — any provider construction failure
         logger.warning(
             "compaction: summarizer model %r is unusable (%s) — summarizing on the "
             "run's own model instead",
             model_str,
+            exc,
+        )
+
+    if fallback_model_str is None:
+        return fallback
+    try:
+        return resolve_model(fallback_model_str, providers, streaming=False)
+    except Exception as exc:  # noqa: BLE001 — any provider construction failure
+        logger.warning(
+            "compaction: could not rebuild %r on the one-shot client (%s) — "
+            "summarizing on the run's streaming-wired model, which caps the "
+            "summary at model_stream_stall_timeout",
+            fallback_model_str,
             exc,
         )
         return fallback
@@ -1135,9 +1196,8 @@ def build_deep_agent(
         )
     library_memory = row.include_memory and not use_hindsight
 
-    model = resolve_model(
-        model_override or row.model or settings.default_model, custom_providers or {}
-    )
+    run_model_str = model_override or row.model or settings.default_model
+    model = resolve_model(run_model_str, custom_providers or {})
 
     # For local models whose chat template (not a top-level API field) controls
     # reasoning, translate the UI thinking level into extra_body.chat_template_kwargs.
@@ -1198,7 +1258,12 @@ def build_deep_agent(
     apply_compaction_settings(
         agent,
         row,
-        _summarizer_model(compaction_model, custom_providers or {}, fallback=model),
+        _summarizer_model(
+            compaction_model,
+            custom_providers or {},
+            fallback=model,
+            fallback_model_str=run_model_str,
+        ),
     )
     deps = create_default_deps(backend)
     return agent, deps

@@ -53,7 +53,10 @@ async def generate_title(
     text = (user_text or "").strip()
     if not text:
         return ""
-    model = resolve_model(model_str or settings.default_model, custom_providers or {})
+    # Titling is a one-shot `.run()`, not a stream.
+    model = resolve_model(
+        model_str or settings.default_model, custom_providers or {}, streaming=False
+    )
     titler = PydanticAgent(model, instructions=TITLE_SYSTEM)
     result = await titler.run(
         "Write the conversation title for this opening message:\n\n"
