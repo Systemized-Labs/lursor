@@ -169,7 +169,26 @@ class Settings(BaseSettings):
     # run forever otherwise: no FIN arrives, so the client waits on a socket
     # that will never speak again and the turn never fails, never retries, and
     # never returns. Raise it if a slow/queued cluster trips it during prefill.
+    #
+    # Applies to *streaming* calls only. See ``one_shot_request_timeout`` for
+    # why the non-streaming path cannot share this number.
     model_stream_stall_timeout: float = 300.0
+
+    # Seconds a non-streaming model call may take in total.
+    #
+    # A one-shot call (compaction, prompt authoring, titling, goal evaluation)
+    # gets no bytes back until generation finishes, so httpx's per-read timeout
+    # never resets — it silently becomes the *total* budget rather than a stall
+    # detector. Sharing ``model_stream_stall_timeout`` here therefore capped
+    # whole-response latency at 300s: observed in production as compaction runs
+    # aborting at exactly 300.0s with zero bytes received, while the relay was
+    # still waiting happily and logged nothing.
+    #
+    # Sized above the lastway relay's ``response_header_timeout`` (15m default)
+    # so the server's 504 is what surfaces. If this is the lower of the two, the
+    # client gives up first and the failure is invisible server-side — which is
+    # exactly how the original bug stayed hidden.
+    one_shot_request_timeout: float = 900.0
 
     # --- Web search ---
     # Optional API-key fallbacks for the paid search providers. A key saved on

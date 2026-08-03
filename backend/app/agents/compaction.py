@@ -163,7 +163,12 @@ async def summarize_thread(
     transcript = _render_transcript(messages)
     if not transcript.strip():
         return ""
-    model = resolve_model(model_str or settings.default_model, custom_providers or {})
+    # One-shot `.run()` below, and the prompt is the whole transcript — the
+    # largest, slowest request Lursor makes. It must not inherit the streaming
+    # stall timeout as a total budget (see builder._model_http_timeout).
+    model = resolve_model(
+        model_str or settings.default_model, custom_providers or {}, streaming=False
+    )
     summarizer = PydanticAgent(model, instructions=COMPACTION_SYSTEM)
     user_message = (
         "Summarize the following conversation transcript so the agent can "

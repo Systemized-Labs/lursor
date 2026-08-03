@@ -497,7 +497,12 @@ def build_goal_evaluator(
     have; ``resolve_model`` maps ``openrouter:`` / ``custom:`` strings to values
     that work here.
     """
-    return GoalEvaluator(model=resolve_model(model_str, custom_providers or {}))
+    # ``GoalEvaluator.evaluate`` awaits a one-shot ``.run()`` internally, so the
+    # evaluator's client needs the total-request budget, not the streaming
+    # stall timeout (see builder._model_http_timeout).
+    return GoalEvaluator(
+        model=resolve_model(model_str, custom_providers or {}, streaming=False)
+    )
 
 
 def build_continuation_adapter(

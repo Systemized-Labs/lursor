@@ -115,7 +115,10 @@ def _capability_lines(ctx: AgentPromptContext) -> str:
 def _build_author(
     ctx: AgentPromptContext, custom_providers: dict[str, CustomProvider]
 ) -> PydanticAgent:
-    model = resolve_model(ctx.model or settings.default_model, custom_providers)
+    # Authoring is a one-shot `.run()`, not a stream.
+    model = resolve_model(
+        ctx.model or settings.default_model, custom_providers, streaming=False
+    )
     return PydanticAgent(model, instructions=META_PROMPT)
 
 
