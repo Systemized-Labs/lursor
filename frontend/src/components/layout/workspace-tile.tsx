@@ -25,6 +25,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { isElectron } from "@/lib/platform"
 import { WORKSPACE_ICONS, type WorkspaceIconDef } from "@/lib/workspace-icon"
 import { cn } from "@/lib/utils"
 
@@ -123,7 +124,10 @@ export function WorkspaceTile({
   }
 
   const slot = index + 1
-  const hint = slot <= 9 ? `⌘${slot}` : undefined
+  // Desktop only, matching `useWorkspaceSwitch`: in a browser ⌘1…⌘9 belong to
+  // the tab switcher and aren't bound, so naming them would be a lie. The slot
+  // number itself stays either way — it's the tile's identity, not just a key.
+  const hint = isElectron && slot <= 9 ? `⌘${slot}` : undefined
   const Icon = icon.Icon
 
   const tile = (
