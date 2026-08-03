@@ -237,6 +237,16 @@ class Settings(BaseSettings):
     # set False locally to watch the agent drive the page.
     browser_qa_headless: bool = True
 
+    # --- Tool loading ---
+    # Keep the tools used in most turns in context and hide the rest behind a
+    # `search_tools` call (see `agents/tool_loading.py`). A fully-enabled agent
+    # offers 52 tools / ~10.7k tokens of definitions, which is past the point where
+    # tool-selection accuracy degrades; deferral takes that to 23 up front. The
+    # threshold in `tool_loading` means small rosters (e.g. `/ask`) are unaffected
+    # either way. Turn this off to give every agent its full flat roster again —
+    # the escape hatch if a small local model can't handle two-step discovery.
+    tool_search_enabled: bool = True
+
     # --- laios control plane ---
     # Used to auto-seed a "local" laios connection on startup when Lursor runs
     # alongside a daemon (the supervisor injects these). LAIOS_MASTER_KEY takes
