@@ -278,6 +278,61 @@ load_connection = _get_conn
 gateway_base = _derive_gateway_base
 
 
+async def non_chat_served_names(conn: LaiosConnection) -> set[str]:
+    """Served names on this box that are **not** chat models.
+
+    The gateway's ``/v1/models`` is a flat OpenAI list with no capability field,
+    so a generative-media model — MiniMax-H3, which speaks ``/v1/videos`` and has
+    no chat surface at all — is indistinguishable from an LLM there. Left alone it
+    lands in the chat picker, where selecting it makes every message fail.
+
+    The control plane's inventory *does* carry ``capabilities`` per recipe plus
+    the live instance's served name, so the join belongs here rather than in the
+    picker: this module already owns talking to the daemon.
+
+    Keyed on the absence of ``chat`` rather than the presence of ``video``, since
+    the same bug applies to any non-conversational surface (embeddings next), and
+    a model declaring both stays selectable.
+
+    **Fails open.** An unreachable or unauthorised control plane — a tunnelled box
+    without ``expose_control`` — returns an empty set, so a box we cannot classify
+    shows all of its models rather than none of them.
+    """
+    try:
+        async with _client(conn, timeout=httpx.Timeout(5.0)) as client:
+            resp = await client.get("/v1/models")
+        if resp.status_code >= 400:
+            return set()
+        inventory = resp.json()
+    except (httpx.RequestError, ValueError):
+        return set()
+
+    if not isinstance(inventory, list):
+        return set()
+
+    excluded: set[str] = set()
+    for model in inventory:
+        if not isinstance(model, dict):
+            continue
+        capabilities = model.get("capabilities")
+        # Unknown or unstated capabilities are unclassifiable, and hiding a model
+        # on a guess is worse than showing one that might not chat.
+        if not isinstance(capabilities, list) or not capabilities:
+            continue
+        if "chat" in capabilities:
+            continue
+        # The gateway advertises the *served* name, which is what the picker sees.
+        instance = model.get("running_instance") or {}
+        candidates = (
+            instance.get("served_name") if isinstance(instance, dict) else None,
+            model.get("served_model_name"),
+        )
+        for name in candidates:
+            if isinstance(name, str) and name:
+                excluded.add(name)
+    return excluded
+
+
 # --- Connection CRUD ------------------------------------------------------------
 
 
