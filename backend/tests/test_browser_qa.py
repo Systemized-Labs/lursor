@@ -200,6 +200,29 @@ async def test_capability_captures_telemetry_and_screenshots(
     assert cap._state.page is None
 
 
+async def test_prepare_tools_drops_base64_screenshot(tmp_path):
+    """The vendored ``screenshot`` tool never reaches the model.
+
+    It returns ``data:image/png;base64,...`` as a *string*: the model cannot see
+    it, and a plain 1280x800 page is ~100k base64 characters (~25-35k tokens) that
+    then sit in history for the rest of the turn. ``view_app`` is the working
+    version, so the broken one is filtered out rather than left as a trap.
+    """
+    from pydantic_ai.tools import ToolDefinition
+
+    cap = BrowserQACapability(workspace_id="ws-x", media_dir=tmp_path, headless=True)
+    # It is still registered on the vendored toolset — the roster filter is what
+    # removes it, so this pins the filter, not the vendored toolset.
+    assert "screenshot" in cap._toolset.tools
+
+    defs = [ToolDefinition(name=n) for n in ("screenshot", "view_app", "read_file")]
+    kept = {td.name for td in await cap.prepare_tools(None, defs)}
+
+    assert "screenshot" not in kept
+    # The tools that replace it, and unrelated tools, are untouched.
+    assert kept == {"view_app", "read_file"}
+
+
 async def test_open_app_reports_when_no_server(tmp_path, monkeypatch):
     from app.agents import preview_service as psmod
 

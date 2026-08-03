@@ -1760,15 +1760,15 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-backend"
-version = "0.2.16"
+version = "0.2.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "wcmatch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/0d/5a710c345a2704be4d338c59b1e334385c30757118060ab0738204fce4a1/pydantic_ai_backend-0.2.16.tar.gz", hash = "sha256:0b226c9278a3c6ac7463fdfa49ac09dfe687d732d9aaab57f24fdf2dcb72b9d8", size = 14156359, upload-time = "2026-07-17T22:39:08.624Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/9f/c71b634ac5c074df19468b4fbc5344389fa914955dcb171ea70b84a69ded/pydantic_ai_backend-0.2.24.tar.gz", hash = "sha256:7177198da4d3e3f154e5dd39309b048a32e3a6e5f3de99cc00d2e301dabbf444", size = 15145207, upload-time = "2026-08-02T22:31:37.774Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/c5/964d68a2ad2736ff6d472e8bbc88a9d1bec80847d0a05bbe713ebf45b10b/pydantic_ai_backend-0.2.16-py3-none-any.whl", hash = "sha256:b8c3d17df558d4f97944f801abfedff28f6ad7325baba445b9961c1c6729b53c", size = 83565, upload-time = "2026-07-17T22:39:07.13Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/d2/871ed40b14bad140add174a3fb4778d10fa50f02a346f86243ec99d41648/pydantic_ai_backend-0.2.24-py3-none-any.whl", hash = "sha256:e90e7836d26104e141030058cf7f769202e95405efa4cb36a0f5b59dd318b2f2", size = 187520, upload-time = "2026-08-02T22:31:35.389Z" },
 ]
 
 [package.optional-dependencies]

@@ -42,6 +42,8 @@ from app.agents.deep_defaults import (
     builtin_subagent_defaults,
     resolve_subagent_defaults,
 )
+from app.agents.edit_syntax import EditSyntaxCheck
+from app.agents.file_editing import FileEditingGuards
 from app.agents.hindsight import (
     HINDSIGHT_MEMORY_DIRECTIVE,
     HindsightConfig,
@@ -50,6 +52,7 @@ from app.agents.hindsight import (
 from app.agents.skill_runtime import SkillRuntime
 from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.agents.tool_errors import ToolErrorsAsText
+from app.agents.tool_loading import build_tool_loading_capabilities
 from app.agents.vision import make_view_image_tool
 from app.agents.web_fetch import build_web_fetch_capability
 from app.agents.web_search import (
@@ -448,9 +451,24 @@ _READONLY_TOOL_ALLOWLIST = frozenset(
         "glob",
         "grep",
         "view_image",
-        # web (read-only)
+        # web (read-only). The search tool's *name* is the provider's, never
+        # "web_search": the local fallbacks are ``duckduckgo_search`` /
+        # ``tavily_search`` / ``exa_search`` (``agents/web_search.py``), and
+        # ``web_search`` only ever names the provider-*native* tool, which is not
+        # a function tool and so never reaches this filter at all. Listing all
+        # three is load-bearing, not defensive: dropping the local fallback leaves
+        # the unsupported native tool with nothing to fall back to, and pydantic-ai
+        # raises ``UserError`` before the request — killing an /ask turn outright
+        # on every model without native web search (all ``custom:``/laios models).
         "web_fetch",
-        "web_search",
+        "duckduckgo_search",
+        "tavily_search",
+        "exa_search",
+        # tool-search discovery (see ``agents/tool_loading.py``). Deferred tools
+        # are unreachable without it, and it only ever *reveals* definitions — the
+        # revealed tools come back through this same filter on the next step, so a
+        # write tool cannot enter the read-only surface by being discovered.
+        "search_tools",
         # skills: inspect only — `run_skill_script` executes and is excluded
         "list_skills",
         "load_skill",
@@ -1195,6 +1213,31 @@ def build_deep_agent(
             )
         )
     library_memory = row.include_memory and not use_hindsight
+
+    # File-editing guards: make the hashline anchors load-bearing (a range edit
+    # must validate both ends), stop ``write_file`` overwriting a file this agent
+    # never read, and hand the model fresh anchors when one misses instead of
+    # costing it a full re-read. Unconditional — every agent that can edit files
+    # gets them, and on a read-only agent the guarded tools are filtered out above
+    # so the capability simply never fires. See ``agents/file_editing.py`` and
+    # ``docs/FILE-EDITING-AUDIT.md``.
+    capabilities.append(FileEditingGuards())
+
+    # Post-edit syntax check, immediately after the guards so it sees the same
+    # writes: report only breakage an edit *introduced*, in the languages we can
+    # parse without installing anything. See ``agents/edit_syntax.py``.
+    capabilities.append(EditSyntaxCheck())
+
+    # On-demand tool loading, last so the tool-search wrapper sits outside every
+    # capability above and sees the roster they produced (see
+    # ``agents/tool_loading.py``). Non-core tools are marked ``defer_loading`` and
+    # revealed by a ``search_tools`` call instead of riding in the prompt from the
+    # start. Composes with the filters above rather than fighting them: both of
+    # them run per step, so the read-only allowlist still vets a tool the model
+    # discovers mid-turn, and ``task`` is still rewritten to the live roster once
+    # revealed.
+    if settings.tool_search_enabled:
+        capabilities.extend(build_tool_loading_capabilities())
 
     run_model_str = model_override or row.model or settings.default_model
     model = resolve_model(run_model_str, custom_providers or {})

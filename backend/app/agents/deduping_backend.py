@@ -44,10 +44,14 @@ any run, such as an auto-restarted preview server.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import contextvars
 import os
 import re
+import signal
 import subprocess
+import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -60,6 +64,7 @@ from pydantic_ai_backends import (
     FileInfo,
     LocalBackend,
 )
+from pydantic_ai_backends.backends.local import shell_argv
 
 from app.envvars.resolve import redact
 
@@ -73,6 +78,21 @@ def _normalize(command: str) -> str:
     """Collapse whitespace and drop bare fd redirections so trivially-different
     spellings of the same command compare equal."""
     return re.sub(r"\s+", " ", _FD_REDIRECT.sub("", command)).strip()
+
+
+def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Kill the subprocess and, on Unix, every grandchild it forked.
+
+    Mirrors the base backend's private helper of the same name; ``async_execute``
+    is reimplemented here (see :meth:`DedupingLocalBackend.async_execute`) and
+    needs the same reaping behaviour.
+    """
+    if sys.platform == "win32":
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
 
 
 # Matches ``pydantic_ai_backends.backends.local.MAX_EXECUTE_OUTPUT``; ``execute``
@@ -151,6 +171,23 @@ class DedupingLocalBackend(LocalBackend):
         env = _run_env.get()
         return env if not env.is_empty() else self._default_env
 
+    def _spawn_env(self) -> dict[str, str] | None:
+        """``env=`` for a subprocess spawn: ``None`` when there is nothing to add."""
+        env = self._env()
+        return {**os.environ, **env.values} if env.values else None
+
+    def _response(self, output: str, returncode: int | None) -> ExecuteResponse:
+        """Redact secrets, then apply the base backend's cap and exit-code shape."""
+        output = redact(output, self._env().secrets)
+        truncated = len(output) > MAX_EXECUTE_OUTPUT
+        if truncated:
+            output = output[:MAX_EXECUTE_OUTPUT]
+        return ExecuteResponse(
+            output=output,
+            exit_code=returncode if returncode is not None else 1,
+            truncated=truncated,
+        )
+
     def execute(self, command: str, timeout: int | None = None) -> ExecuteResponse:
         """Run a command with the run's env injected and secrets redacted.
 
@@ -162,27 +199,18 @@ class DedupingLocalBackend(LocalBackend):
         is set. ``tests/test_deduping_backend.py`` pins that parity so an upstream
         change doesn't drift away unnoticed.
         """
-        if not self._enable_execute:
-            raise RuntimeError(
-                "Shell execution is disabled for this backend. "
-                "Initialize with enable_execute=True to enable."
-            )
+        denial = self._execute_denial(command)
+        if denial is not None:
+            return ExecuteResponse(output=f"Error: {denial}", exit_code=1, truncated=False)
 
-        perm_error = self._check_permission_sync("execute", command)
-        if perm_error:
-            return ExecuteResponse(
-                output=f"Error: {perm_error}", exit_code=1, truncated=False
-            )
-
-        env = self._env()
         try:
             result = subprocess.run(
-                self._shell_cmd(command),
+                shell_argv(command),
                 cwd=self._root,
                 capture_output=True,
                 text=True,
                 timeout=timeout if timeout is not None else DEFAULT_EXECUTE_TIMEOUT,
-                env={**os.environ, **env.values} if env.values else None,
+                env=self._spawn_env(),
             )
         except subprocess.TimeoutExpired:
             return ExecuteResponse(
@@ -191,25 +219,77 @@ class DedupingLocalBackend(LocalBackend):
         except Exception as exc:  # noqa: BLE001 — mirrors the base backend
             return ExecuteResponse(output=f"Error: {exc}", exit_code=1, truncated=False)
 
-        output = redact(result.stdout + result.stderr, env.secrets)
-        truncated = len(output) > MAX_EXECUTE_OUTPUT
-        if truncated:
-            output = output[:MAX_EXECUTE_OUTPUT]
-        return ExecuteResponse(
-            output=output, exit_code=result.returncode, truncated=truncated
-        )
+        return self._response(result.stdout + result.stderr, result.returncode)
+
+    async def async_execute(self, command: str, timeout: int | None = None) -> ExecuteResponse:
+        """Cancellable :meth:`execute`, with the same env injection and redaction.
+
+        This override is not optional. ``AsyncBackendAdapter`` prefers
+        ``async_execute`` whenever the backend defines it as a coroutine
+        (``pydantic_ai_backends/adapter.py``), so from backend 0.2.24 on, the
+        agent's ``execute`` tool no longer reaches :meth:`execute` at all — the
+        sync method above is left for direct callers. Without this override the
+        run's environment silently stops being injected *and* secrets stop being
+        redacted from tool output, which is the failure this module exists to
+        prevent.
+
+        Cancellation and timeout semantics mirror the base implementation: the
+        child gets its own session on Unix so the whole tree is reaped rather
+        than orphaned when a turn is stopped or the command overruns.
+        """
+        denial = self._execute_denial(command)
+        if denial is not None:
+            return ExecuteResponse(output=f"Error: {denial}", exit_code=1, truncated=False)
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *shell_argv(command),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._root,
+                env=self._spawn_env(),
+                start_new_session=(sys.platform != "win32"),
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout if timeout is not None else DEFAULT_EXECUTE_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                _kill_process_tree(process)
+                # Shielded so a second cancel cannot leave the pipes dangling.
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(asyncio.ensure_future(process.communicate()))
+                raise
+            except TimeoutError:
+                _kill_process_tree(process)
+                with contextlib.suppress(BaseException):
+                    await process.communicate()
+                return ExecuteResponse(
+                    output="Error: Command timed out", exit_code=124, truncated=False
+                )
+        except Exception as exc:  # noqa: BLE001 — mirrors the base backend
+            return ExecuteResponse(output=f"Error: {exc}", exit_code=1, truncated=False)
+
+        output = stdout.decode("utf-8", errors="replace")
+        output += stderr.decode("utf-8", errors="replace")
+        return self._response(output, process.returncode)
 
     def execute_background(self, command: str) -> BackgroundHandle:
+        """Reuse a live background process for an identical command, else spawn.
+
+        Reads the roster through the public ``list_background`` rather than the
+        backend's private process registry: backend 0.2.24 moved that bookkeeping
+        behind a ``BackgroundProcesses`` helper, and ``BackgroundProcessInfo``
+        already carries everything the dedup needs (command, pid, liveness).
+        """
         target = _normalize(command)
         with self._dedup_lock:
-            for proc in self._bg.values():
-                if _normalize(proc.command) != target:
-                    continue
-                # poll() is None while the process is still alive.
-                if proc.popen.poll() is None:
+            for proc in self.list_background():
+                if proc.running and _normalize(proc.command) == target:
                     return BackgroundHandle(
                         shell_id=proc.shell_id,
-                        pid=proc.popen.pid,
+                        pid=proc.pid,
                         command=proc.command,
                     )
             return self._spawn_background(command)
@@ -297,7 +377,7 @@ class DedupingLocalBackend(LocalBackend):
         if not candidate.is_absolute():
             return pattern
         try:
-            base = self._validate_path(path)
+            base = self._resolve(path)
         except PermissionError:
             # ``super().glob_info`` re-validates ``path`` and returns [] for it.
             return pattern

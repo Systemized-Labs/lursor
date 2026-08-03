@@ -74,6 +74,20 @@ LOOPBACK_HOSTS: list[str] = ["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"
 _MAX_CONSOLE = 300
 _MAX_NETWORK = 150
 
+# Vendored tools our own QA tools replace, removed from the roster in
+# ``prepare_tools`` rather than left as a trap the model can walk into.
+#
+# ``screenshot`` returns ``f"data:image/png;base64,{b64}"`` as a *string*: the
+# model cannot see it, and the blob lands in the transcript as text and stays
+# there (tool results are never evicted). A plain 1280x800 page measures ~100k
+# base64 characters — roughly 25-35k tokens for one call that conveys nothing,
+# billed again on every later request in the turn. ``view_app`` is the working
+# version (screenshot → vision model → a description the agent can act on) and is
+# what ``BROWSER_QA_INSTRUCTIONS`` tells the model to use; leaving the base64 one
+# registered only invited models with a "take a screenshot" prior to torch the
+# context window.
+_SUPERSEDED_TOOLS = frozenset({"screenshot"})
+
 # Default question for view_app: framed for QA so the vision model reports defects,
 # not just a neutral description.
 _DEFAULT_VIEW_QUESTION = (
@@ -248,11 +262,17 @@ class BrowserQACapability(AbstractCapability[Any]):
     async def prepare_tools(
         self, ctx: RunContext[Any], tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
-        """Hide browser tools if the browser can't launch; skip approval otherwise."""
+        """Hide browser tools if the browser can't launch; skip approval otherwise.
+
+        Also drops the vendored ``screenshot`` tool unconditionally — see
+        :data:`_SUPERSEDED_TOOLS`.
+        """
         if self._state.launch_error:
             return [td for td in tool_defs if td.name not in self._tool_names]
         result: list[ToolDefinition] = []
         for td in tool_defs:
+            if td.name in _SUPERSEDED_TOOLS:
+                continue
             if td.name in self._tool_names and td.kind == "unapproved":
                 result.append(replace(td, kind="function"))
             else:

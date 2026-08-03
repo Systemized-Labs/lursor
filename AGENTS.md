@@ -358,6 +358,44 @@ ignore enums.
 
 A user subagent with the same name as a built-in **shadows** it, not the reverse.
 
+### Tool loading — a small core, the rest on demand
+
+`agents/tool_loading.py`. A fully-enabled agent offers 52 tools / ~10.7k tokens of
+definitions — past the 30-50 band where tool-selection accuracy degrades. Every
+tool outside `_CORE_TOOLS` is marked `defer_loading=True` and hidden until a
+`search_tools` call reveals it (Anthropic's tool-search structure; pydantic-ai's
+`ToolSearch` capability picks native-vs-local per model, and Lursor is always on
+the local path because every model resolves to `OpenAIChatModel` /
+`TolerantOpenAIChatModel`). 23 tools up front, ~5.6k tokens.
+
+Traps, all load-bearing:
+
+- **Anything a directive names by hand must be core.** `DEV_SERVER_DIRECTIVE`
+  names `list_shells`/`run_in_background`/`kill_shell`, the memory and skills
+  prompts name theirs. Hiding a tool the prompt orders the model to call is the
+  same class of bug as trap 12 in §7.
+- **Guidance lives on the `search_tools` description, not in the system prompt.**
+  Instructions are assembled *before* tools are prepared each step, so a
+  "deferral is live" flag read at instruction time is a step stale — wrong on the
+  opening step. The tool description only exists when something is deferred, so
+  it cannot go stale.
+- **Deferral composes with the filters, it does not bypass them.** The read-only
+  allowlist and the `task` roster rewrite run per step, so they still vet a tool
+  the model discovers mid-turn. `search_tools` itself is allowlisted, or `/ask`
+  would strand its deferred tools.
+- Threshold (`_MIN_DEFERRABLE`) means small rosters stay flat, `/ask` included;
+  below it pydantic-ai registers no `search_tools` at all. `TOOL_SEARCH_ENABLED=false`
+  restores the flat roster everywhere.
+
+Full audit of the tool surface, including open findings: `docs/TOOL-SURFACE-AUDIT.md`.
+The file-editing tools (hashline read/edit) are audited separately against Claude
+Code and the reference hashline implementations: `docs/FILE-EDITING-AUDIT.md`. The
+guards that audit produced live in `agents/file_editing.py` (both ends of a range
+edit are validated, `write_file` cannot clobber an unread file, an anchor miss
+returns fresh anchors) and `agents/edit_syntax.py` (delta-only syntax check).
+Fixes that belong in the dependency are prepared as ready-to-submit diffs under
+`docs/upstream/`, not opened as PRs.
+
 ### Memory
 
 App-wide *provider* choice (`AppConfig.memory_provider`), exactly like web
@@ -675,6 +713,15 @@ Each of these has already cost a debugging session.
     tool enums, need the todo board to scaffold, and break on native
     `WebSearchTool` under `OpenAIChatModel`. Anything that narrows the toolset
     should be tested against them, not just against a frontier cloud model.
+12. **Tools are filtered by their real names, and `web_search` is not one.** The
+    local search tools are `duckduckgo_search` / `tavily_search` / `exa_search`;
+    `web_search` only ever names the provider-*native* tool, which is not a
+    function tool and never reaches a `PrepareTools` filter. Dropping a local
+    fallback leaves the unsupported native tool with nothing to fall back to and
+    pydantic-ai raises `UserError` *before the request* — this killed every `/ask`
+    turn with web search on a local model. A filter that allowlists by name needs
+    a test that every entry is a name some build really registers; a subset
+    assertion passes a dead entry silently (`tests/test_tool_loading.py`).
 
 ## 8. Desktop and distribution
 
