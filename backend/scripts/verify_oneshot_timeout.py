@@ -1,17 +1,25 @@
 """A/B the one-shot timeout split against the live lastway relay.
 
 Sends the *same* non-streaming request twice through Lursor's own client
-factories, differing only in which timeout regime built the client:
+factories, differing only in which timeout regime built the client. The point
+is the mechanism: on a non-streaming call there is no chunk to reset on, so the
+read timeout is the total budget and a generation that outlives it is killed
+client-side with zero bytes received -- which is the production bug.
 
-  streaming client (read=model_stream_stall_timeout) -- the old behaviour
-  one-shot client  (read=one_shot_request_timeout)   -- the fix
+Rather than engineering a >300s generation (the fleet's speculative decoding
+outruns it -- a predictable prompt accelerates to 30+ tok/s), this scales the
+*settings* down around a short real request and drives the genuine
+`_shared_local_http_client` factories. Same code path and same relay, seconds
+instead of minutes:
 
-The request is sized to generate for longer than the stall timeout, so the
-first must fail with ReadTimeout and the second must succeed. That is the
-production bug and its fix, end to end, against real infrastructure.
+  stall regime    -> read below the generation time  -> must ReadTimeout
+  one-shot regime -> read above the generation time  -> must succeed
 
-Not part of the test suite: it costs several minutes of real GPU time and
-depends on a reachable relay. Run it by hand.
+The absolute 300/900 values are settings, verified separately; what needs
+proving against real infrastructure is that the regime a caller gets decides
+whether a slow one-shot call survives.
+
+Not part of the test suite: it depends on a reachable relay. Run it by hand.
 """
 
 from __future__ import annotations
@@ -22,25 +30,23 @@ import time
 import httpx
 from sqlalchemy import select
 
-from app.agents.builder import _shared_local_http_client
+from app.agents import builder
 from app.config import get_settings
 from app.db.models import CustomProvider
 from app.db.session import async_session_factory
 
-MODEL = "glm-5.2-quanttrio"  # slowest of the fleet
-# ~19 tok/s sustained (a short calibration run reads lower, because fixed
-# prefill overhead dominates it), so ~9000 tokens is ~465s of generation --
-# past the 300s stall ceiling and well inside the 900s one-shot budget.
-MAX_TOKENS = 9000
+MODEL = "glm-5.2-quanttrio"
+CALIBRATE_TOKENS = 1200
 PROMPT = "Count from 1 to 6000, one number per line. Do not stop early."
 
 
-async def _attempt(label: str, *, streaming: bool, provider: CustomProvider) -> float:
-    """One non-streaming call on the client built for `streaming`."""
-    client = _shared_local_http_client(streaming=streaming)
-    read = client.timeout.read
-    print(f"\n[{label}] read timeout = {read}s -- sending...", flush=True)
+def _reset_client_cache() -> None:
+    """Force the factories to rebuild against the current settings."""
+    builder._local_http_clients.clear()
 
+
+async def _call(client: httpx.AsyncClient, provider: CustomProvider) -> tuple[str, float]:
+    """Return (outcome, elapsed) for one non-streaming request."""
     started = time.monotonic()
     try:
         response = await client.post(
@@ -49,48 +55,57 @@ async def _attempt(label: str, *, streaming: bool, provider: CustomProvider) -> 
             json={
                 "model": MODEL,
                 "messages": [{"role": "user", "content": PROMPT}],
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": CALIBRATE_TOKENS,
                 "stream": False,
             },
         )
     except httpx.ReadTimeout:
-        elapsed = time.monotonic() - started
-        print(f"[{label}] ReadTimeout after {elapsed:.1f}s (ceiling was {read}s)")
-        return elapsed
-
-    elapsed = time.monotonic() - started
-    usage = response.json().get("usage", {})
-    print(
-        f"[{label}] HTTP {response.status_code} after {elapsed:.1f}s, "
-        f"completion_tokens={usage.get('completion_tokens')}"
-    )
-    return elapsed
+        return "read_timeout", time.monotonic() - started
+    outcome = "ok" if response.status_code == 200 else f"http_{response.status_code}"
+    return outcome, time.monotonic() - started
 
 
 async def main() -> None:
     settings = get_settings()
-    print(
-        f"stall={settings.model_stream_stall_timeout}s  "
-        f"one_shot={settings.one_shot_request_timeout}s  "
-        f"model={MODEL}  max_tokens={MAX_TOKENS}"
-    )
-
     async with async_session_factory() as db:
         rows = (await db.execute(select(CustomProvider))).scalars()
         provider = next(p for p in rows if p.name == "lastway")
-    print(f"relay: {provider.base_url}")
+    print(f"relay: {provider.base_url}  model: {MODEL}")
 
-    # Sequentially: concurrent runs would contend on the same GPU and distort
-    # both timings.
-    old = await _attempt("OLD streaming client", streaming=True, provider=provider)
-    new = await _attempt("NEW one-shot client", streaming=False, provider=provider)
+    # 1. Measure how long this request actually takes, with both ceilings high.
+    settings.model_stream_stall_timeout = 600.0
+    settings.one_shot_request_timeout = 600.0
+    _reset_client_cache()
+    outcome, baseline = await _call(builder._shared_local_http_client(streaming=False), provider)
+    if outcome != "ok":
+        print(f"calibration failed ({outcome}) -- relay or model unavailable")
+        return
+    print(f"baseline: {CALIBRATE_TOKENS} tokens in {baseline:.1f}s")
+
+    # 2. Straddle it: the stall ceiling below, the one-shot budget above.
+    settings.model_stream_stall_timeout = round(baseline / 3, 1)
+    settings.one_shot_request_timeout = round(baseline * 4, 1)
+    _reset_client_cache()
+    print(
+        f"\nstall={settings.model_stream_stall_timeout}s (below) "
+        f"one_shot={settings.one_shot_request_timeout}s (above)"
+    )
+
+    streaming_client = builder._shared_local_http_client(streaming=True)
+    oneshot_client = builder._shared_local_http_client(streaming=False)
+    assert streaming_client is not oneshot_client
+
+    old_outcome, old_elapsed = await _call(streaming_client, provider)
+    print(f"[stall regime]    {old_outcome} after {old_elapsed:.1f}s")
+    new_outcome, new_elapsed = await _call(oneshot_client, provider)
+    print(f"[one-shot regime] {new_outcome} after {new_elapsed:.1f}s")
 
     print("\n--- verdict ---")
-    ok_old = abs(old - settings.model_stream_stall_timeout) < 15
-    ok_new = new > settings.model_stream_stall_timeout
-    print(f"old client aborted at the stall ceiling: {ok_old} ({old:.1f}s)")
-    print(f"new client outlived the stall ceiling:   {ok_new} ({new:.1f}s)")
-    print("RESULT:", "PASS" if (ok_old and ok_new) else "INCONCLUSIVE")
+    ok_old = old_outcome == "read_timeout"
+    ok_new = new_outcome == "ok" and new_elapsed > settings.model_stream_stall_timeout
+    print(f"stall regime killed the call:            {ok_old} ({old_outcome})")
+    print(f"one-shot regime carried it to completion: {ok_new} ({new_outcome})")
+    print("RESULT:", "PASS" if (ok_old and ok_new) else "FAIL")
 
 
 if __name__ == "__main__":
