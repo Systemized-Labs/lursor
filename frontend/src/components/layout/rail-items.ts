@@ -2,6 +2,7 @@ import {
   ChartBar,
   Clock,
   Cpu,
+  FilmSlate,
   Gear,
   SlidersHorizontal,
 } from "@phosphor-icons/react"
@@ -32,6 +33,7 @@ export const RAIL_DESTINATIONS: RailDestination[] = [
   { key: "schedules", label: "Schedules", icon: Clock, to: "/schedules" },
   { key: "usage", label: "Usage", icon: ChartBar, to: "/analytics" },
   { key: "laios", label: "LAIOS", icon: Cpu, to: "/laios" },
+  { key: "video", label: "Video", icon: FilmSlate, to: "/video" },
   {
     key: "customization",
     label: "Customization",

@@ -9,6 +9,7 @@ import { OnboardingGate } from "@/pages/onboarding/onboarding-gate"
 import { WelcomePage } from "@/pages/onboarding/welcome-page"
 import { SchedulesPage } from "@/pages/schedules/schedules-page"
 import { SettingsPage } from "@/pages/settings/settings-page"
+import { VideoPage } from "@/pages/video/video-page"
 
 /**
  * Opening a workspace now drops straight into its chat surface. The old
@@ -50,6 +51,9 @@ function App() {
         <Route path="laios" element={<LaiosPage />} />
         <Route path="schedules" element={<SchedulesPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        {/* Its own destination rather than a LAIOS tab: generating a clip is a
+            minutes-long job you come back to, not part of managing the box. */}
+        <Route path="video" element={<VideoPage />} />
         {/* Back-compat: LAIOS graduated from a Providers sub-tab to a top-level
             destination; the old deep link still lands on the page. */}
         <Route

@@ -17,6 +17,7 @@ import {
   ArrowElbowDownLeft,
   Clock,
   Cpu,
+  FilmSlate,
   FolderOpen,
   GitBranch,
   ChatCentered,
@@ -339,6 +340,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     }[] = [
       { label: "Schedules", icon: Clock, to: "/schedules", meta: "cron jobs" },
       { label: "LAIOS", icon: Cpu, to: "/laios" },
+      { label: "Video", icon: FilmSlate, to: "/video", meta: "generate a clip" },
       { label: "Customization", icon: SlidersHorizontal, to: "/customization" },
       { label: "Agents", icon: ShootingStar, to: "/customization?tab=agents" },
       { label: "Skills", icon: SquaresFour, to: "/customization?tab=skills" },

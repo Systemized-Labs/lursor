@@ -867,6 +867,14 @@ export interface LaiosConnection {
   id: string
   name: string
   base_url: string
+  /**
+   * Where this box's models are reached, when that differs from the control
+   * plane's host on `:4000` — a lastway tunnel, typically. Managing a box and
+   * calling its models are independent paths: management stays on the LAN while
+   * inference (chat and `/v1/videos`) can go over the tunnel. Null derives it
+   * from `base_url`.
+   */
+  gateway_url: string | null
   // The master_key is never returned to the browser; only whether one is set.
   has_master_key: boolean
   created_at: string
@@ -877,6 +885,7 @@ export interface LaiosConnectionInput {
   name: string
   base_url: string
   master_key?: string | null
+  gateway_url?: string | null
 }
 
 /** Result of probing a daemon's `/health` (+ `/v1/route`). */
@@ -1213,6 +1222,60 @@ export interface LaiosJob {
   bytes_total?: number | null
   created_at: string
   updated_at: string
+}
+
+/**
+ * Where an audio-video generation has got to. The engine's own vocabulary,
+ * relayed as-is; `cancelled` is set by us when a job is cancelled.
+ */
+export type LaiosVideoStatus =
+  | "queued"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+/**
+ * One clip we asked a laios gateway to generate.
+ *
+ * Persisted by Lursor rather than read back from the gateway: the gateway's
+ * job → upstream map is in-memory and bounded, so this row is what survives a
+ * restart and what gives the page a history of runs.
+ */
+export interface LaiosVideoJob {
+  /** Our row id. */
+  id: string
+  connection_id: string
+  /** The gateway's job id (`vid_…`) — what every follow-up call routes on. */
+  job_id: string
+  model: string
+  prompt: string
+  task: string
+  /** The submitted body verbatim, so a run can be repeated or diffed. */
+  request: Record<string, unknown>
+  status: LaiosVideoStatus
+  /** 0–1 where the engine reports it; null when it doesn't. */
+  progress: number | null
+  error: string | null
+  /** Content-addressed mp4 in the media store, once downloaded. */
+  media_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** The knobs the video page sends. Relayed to the engine unaltered. */
+export interface LaiosVideoInput {
+  model: string
+  prompt: string
+  /** `t2va` (prompt only) — `fl2va` needs a multipart upload, not wired up yet. */
+  task: string
+  target: {
+    short_edge: number
+    aspect_ratio: string
+    duration_seconds: number
+  }
+  num_inference_steps: number
+  seed?: number
 }
 
 /**

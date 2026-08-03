@@ -493,10 +493,50 @@ class LaiosConnection(TimestampMixin, table=True):
     name: str = Field(index=True)  # display name, e.g. "local" or "spark-head"
     base_url: str = ""  # daemon control-plane base, e.g. "http://127.0.0.1:7420"
     master_key: str | None = None  # Bearer token for /v1/*; kept server-side
+    # Where this box's *inference* gateway lives, when it is somewhere other than
+    # the control plane's host on :4000. The two planes are independent: managing
+    # a box (serve/stop/inventory) is a LAN-side operation, while reaching its
+    # models can go over a lastway tunnel. Setting this routes all model traffic
+    # — chat and /v1/videos alike — through the given base, e.g.
+    # "https://spark-1bf6.lastway.lursor.com/v1". Null derives it as before.
+    gateway_url: str | None = None
     # The CustomProvider auto-managed for this connection so its served models
     # flow into the model picker (points at the daemon's LiteLLM gateway). Kept
     # on this (new) table so CustomProvider needs no migration.
     linked_provider_id: str | None = None
+
+
+class VideoJob(TimestampMixin, table=True):
+    """One audio-video generation submitted to a laios gateway's ``/v1/videos``.
+
+    A clip takes minutes (~44 s per denoise step), so the surface is a job API
+    rather than a completion: submit, poll, download. The gateway remembers which
+    upstream owns a job id only *in memory* and only for the last 1024 jobs, so
+    this table — not the gateway — is the record of what we asked for. Without it
+    a gateway restart mid-generation orphans the clip and there is no history to
+    compare test runs against.
+
+    ``request`` keeps the exact submitted body so a run is reproducible, and
+    ``media_id`` is set once the mp4 has been pulled down into the media store.
+    """
+
+    __tablename__ = "video_jobs"
+
+    connection_id: str = Field(index=True)  # LaiosConnection this was sent to
+    job_id: str = Field(index=True)  # the gateway's id, e.g. "vid_…"
+    model: str = ""  # served name the submission named
+    prompt: str = ""
+    task: str = ""  # "t2va" (prompt only) or "fl2va" (first/last frame)
+    # The submitted body verbatim, so a run can be repeated or diffed. Free-form
+    # because the engine owns this schema — laios relays it unaltered.
+    request: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Mirrors the engine's own vocabulary: queued → in_progress → completed/failed.
+    status: str = "queued"
+    progress: float | None = None
+    error: str | None = None
+    # Content-addressed mp4 in the media store, once downloaded. Null while the
+    # job is still running or if it failed.
+    media_id: str | None = None
 
 
 class AppConfig(TimestampMixin, table=True):

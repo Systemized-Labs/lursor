@@ -1,0 +1,369 @@
+"""Audio-video generation against a laios gateway's ``/v1/videos``.
+
+Chat is one synchronous call; generating a clip is not. MiniMax-H3 (the first
+``capabilities: [video]`` recipe) takes ~44 s per denoise step, so laios exposes
+a job API on the same inference origin as chat — submit, poll, download, cancel —
+and relays the engine's own request schema unaltered.
+
+This module is a proxy in the same spirit: it does not invent a request shape.
+``request`` is passed through to the gateway as sent, so a new engine knob works
+here the day it works there. What it adds is the two things the gateway
+deliberately does not do:
+
+* **Durability.** The gateway binds job id → upstream in memory, capped at the
+  last 1024 jobs, so a restart mid-generation loses the binding. The
+  :class:`~app.db.models.VideoJob` row is the record of what we asked for, which
+  also gives a history of test runs to compare.
+* **The clip.** ``/v1/videos/{id}/content`` is fetched once and stored
+  content-addressed in the media store, so replaying a result does not re-pull
+  it through the tunnel.
+
+Everything is scoped to a :class:`~app.db.models.LaiosConnection` and reaches the
+gateway through :func:`~app.api.laios.gateway_base`, which resolves both direct
+(``:4000``) and lastway-tunnelled (apex root) topologies. Nothing here knows
+which of the two it is talking to.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
+
+from app import media_store
+from app.api.laios import gateway_base, load_connection
+from app.db.models import LaiosConnection, VideoJob
+from app.db.session import get_session
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/laios/connections", tags=["videos"])
+
+# Submitting and polling are fast — the generation itself happens on the box and
+# is observed by polling, so no request here waits on a clip.
+_DEFAULT_TIMEOUT = httpx.Timeout(30.0)
+
+# Downloading the finished mp4 is the one call with a real payload. A 15s 768p
+# H.264 clip is single-digit MB, but through a tunnel on a slow link that is
+# still worth more than 30s.
+_CONTENT_TIMEOUT = httpx.Timeout(300.0, connect=30.0)
+
+# Statuses the engine reports for a job that will not change again.
+TERMINAL = frozenset({"completed", "failed", "cancelled", "canceled"})
+
+
+async def _gateway(
+    conn: LaiosConnection, timeout: httpx.Timeout | None = None
+) -> httpx.AsyncClient:
+    """Client bound to this connection's inference gateway.
+
+    The gateway authenticates the same ``master_key`` the control plane does, and
+    it is held server-side — the browser never sees it.
+    """
+    base = await gateway_base(conn)
+    if not base:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "connection has no usable base URL for its inference gateway",
+        )
+    headers = {"Accept": "application/json"}
+    if conn.master_key:
+        headers["Authorization"] = f"Bearer {conn.master_key}"
+    return httpx.AsyncClient(
+        base_url=base.rstrip("/"), headers=headers, timeout=timeout or _DEFAULT_TIMEOUT
+    )
+
+
+def _unreachable(conn: LaiosConnection, exc: Exception) -> HTTPException:
+    logger.warning("laios gateway for %r unreachable: %s", conn.name, exc)
+    return HTTPException(
+        status.HTTP_502_BAD_GATEWAY,
+        f"could not reach the inference gateway for {conn.name} — "
+        "is the model serving, and the tunnel up?",
+    )
+
+
+def _gateway_error_detail(resp: httpx.Response) -> str:
+    """Unwrap the gateway's OpenAI-shaped ``{error:{code,message}}``."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return f"gateway returned HTTP {resp.status_code}"
+    err = body.get("error") if isinstance(body, dict) else None
+    if isinstance(err, dict):
+        code = err.get("code")
+        msg = err.get("message") or ""
+        return f"{msg} ({code})" if code else msg or f"HTTP {resp.status_code}"
+    return f"gateway returned HTTP {resp.status_code}"
+
+
+def _to_read(job: VideoJob) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "connection_id": job.connection_id,
+        "job_id": job.job_id,
+        "model": job.model,
+        "prompt": job.prompt,
+        "task": job.task,
+        "request": job.request,
+        "status": job.status,
+        "progress": job.progress,
+        "error": job.error,
+        "media_id": job.media_id,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
+
+
+async def _row(cid: str, job_id: str, session: AsyncSession) -> VideoJob:
+    result = await session.execute(
+        select(VideoJob).where(
+            VideoJob.connection_id == cid, VideoJob.job_id == job_id
+        )
+    )
+    job = result.scalars().first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "video job not found")
+    return job
+
+
+@router.get("/{cid}/videos")
+async def list_videos(cid: str, session: AsyncSession = Depends(get_session)):
+    """Every job we've submitted to this connection, newest first.
+
+    Served from our own table rather than the gateway: the engine's own
+    ``GET /v1/videos`` is deliberately not proxied by laios (across several
+    backends it would have to be merged rather than routed), and our rows outlive
+    the gateway's in-memory map anyway.
+    """
+    result = await session.execute(
+        select(VideoJob)
+        .where(VideoJob.connection_id == cid)
+        .order_by(VideoJob.created_at.desc())
+    )
+    return [_to_read(job) for job in result.scalars().all()]
+
+
+@router.post("/{cid}/videos", status_code=status.HTTP_201_CREATED)
+async def create_video(
+    cid: str, body: dict, session: AsyncSession = Depends(get_session)
+):
+    """Submit a generation and record the job the gateway hands back.
+
+    ``body`` is the engine's schema and is relayed as given — ``model``,
+    ``prompt``, ``task``, ``target{short_edge,aspect_ratio,duration_seconds}``,
+    ``num_inference_steps``, ``seed``. We read ``model``/``prompt``/``task`` only
+    to label the row.
+
+    JSON only. A first/last-frame (``fl2va``) submission is ``multipart/form-data``
+    with the model named in the query string; that path is not wired up here yet,
+    so ``t2va`` is what this surface can drive.
+    """
+    model = str(body.get("model") or "").strip()
+    if not model:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "model is required")
+
+    conn = await load_connection(cid, session)
+    try:
+        async with await _gateway(conn) as client:
+            resp = await client.post("/videos", json=body)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT, "submitting the video job timed out"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise _unreachable(conn, exc) from exc
+
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, _gateway_error_detail(resp))
+
+    try:
+        created = resp.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "gateway returned a non-JSON job"
+        ) from exc
+
+    job_id = str(created.get("id") or "").strip()
+    if not job_id:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "gateway accepted the job but returned no id"
+        )
+
+    job = VideoJob(
+        connection_id=cid,
+        job_id=job_id,
+        model=model,
+        prompt=str(body.get("prompt") or ""),
+        task=str(body.get("task") or ""),
+        request=body,
+        status=str(created.get("status") or "queued"),
+        progress=_as_float(created.get("progress")),
+    )
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+    return _to_read(job)
+
+
+@router.get("/{cid}/videos/{job_id}")
+async def video_status(
+    cid: str, job_id: str, session: AsyncSession = Depends(get_session)
+):
+    """Poll the gateway and fold the result into our row.
+
+    A job already in a terminal state is answered from the row without touching
+    the network — polling a finished clip forever is how a page left open becomes
+    load on the box.
+    """
+    job = await _row(cid, job_id, session)
+    if job.status in TERMINAL:
+        return _to_read(job)
+
+    conn = await load_connection(cid, session)
+    try:
+        async with await _gateway(conn) as client:
+            resp = await client.get(f"/videos/{job_id}")
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT, "polling the video job timed out"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise _unreachable(conn, exc) from exc
+
+    # A 404 here is meaningful rather than fatal: the gateway forgot the job (its
+    # map is bounded and in-memory) or the box was restarted. Record it instead
+    # of leaving the row polling forever.
+    if resp.status_code == status.HTTP_404_NOT_FOUND:
+        job.status = "failed"
+        job.error = "the gateway no longer knows this job id"
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        return _to_read(job)
+
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, _gateway_error_detail(resp))
+
+    _apply(job, resp.json())
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+    return _to_read(job)
+
+
+@router.delete("/{cid}/videos/{job_id}")
+async def cancel_video(
+    cid: str, job_id: str, session: AsyncSession = Depends(get_session)
+):
+    """Cancel a running job. Keeps the row so the attempt stays in the history."""
+    job = await _row(cid, job_id, session)
+    conn = await load_connection(cid, session)
+    try:
+        async with await _gateway(conn) as client:
+            resp = await client.delete(f"/videos/{job_id}")
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT, "cancelling the video job timed out"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise _unreachable(conn, exc) from exc
+
+    # Already gone upstream is the outcome we wanted, not an error.
+    if resp.status_code >= 400 and resp.status_code != status.HTTP_404_NOT_FOUND:
+        raise HTTPException(resp.status_code, _gateway_error_detail(resp))
+
+    job.status = "cancelled"
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+    return _to_read(job)
+
+
+@router.get("/{cid}/videos/{job_id}/content")
+async def video_content(
+    cid: str,
+    job_id: str,
+    variant: int = 0,
+    session: AsyncSession = Depends(get_session),
+):
+    """Serve the finished mp4, fetching it from the gateway the first time.
+
+    Stored content-addressed in the media store, so a reload — or a second look
+    at an old run — is served from disk instead of re-pulling the clip through
+    the tunnel. Returned as a file response so the browser can range-request it
+    and the ``<video>`` element can seek.
+    """
+    job = await _row(cid, job_id, session)
+
+    if job.media_id:
+        path = media_store.video_path(job.media_id)
+        if path.is_file():
+            return FileResponse(
+                path,
+                media_type=media_store.mime_for_path(path),
+                filename=f"{job_id}.mp4",
+            )
+
+    conn = await load_connection(cid, session)
+    try:
+        async with await _gateway(conn, timeout=_CONTENT_TIMEOUT) as client:
+            resp = await client.get(
+                f"/videos/{job_id}/content", params={"variant": variant}
+            )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT, "downloading the clip timed out"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise _unreachable(conn, exc) from exc
+
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, _gateway_error_detail(resp))
+
+    content_type = resp.headers.get("content-type", "video/mp4")
+    try:
+        media_id = media_store.save_video(resp.content, content_type)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    # Only variant 0 is remembered on the row: it is the one the UI plays, and a
+    # media_id is a single column rather than a per-variant map.
+    if variant == 0 and job.media_id != media_id:
+        job.media_id = media_id
+        session.add(job)
+        await session.commit()
+
+    return Response(
+        content=resp.content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{job_id}.mp4"'},
+    )
+
+
+def _apply(job: VideoJob, payload: Any) -> None:
+    """Fold a gateway status body into the row, leaving unknown fields alone."""
+    if not isinstance(payload, dict):
+        return
+    if (state := payload.get("status")) is not None:
+        job.status = str(state)
+    if (progress := _as_float(payload.get("progress"))) is not None:
+        job.progress = progress
+    # The engine reports failure detail under either key depending on the stage.
+    error = payload.get("error") or payload.get("failure_reason")
+    if isinstance(error, dict):
+        error = error.get("message")
+    if error:
+        job.error = str(error)
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None

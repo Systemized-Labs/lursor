@@ -47,6 +47,7 @@ def _to_read(conn: LaiosConnection) -> LaiosConnectionRead:
         id=conn.id,
         name=conn.name,
         base_url=conn.base_url,
+        gateway_url=conn.gateway_url,
         has_master_key=bool(conn.master_key),
         created_at=conn.created_at,
         updated_at=conn.updated_at,
@@ -134,16 +135,48 @@ def _daemon_error_detail(resp: httpx.Response) -> str:
 # provider is created/updated/removed alongside the connection and excluded from
 # the manual Providers tab so it is managed only from the laios surface.
 
+# Path prefix lastway publishes a box's *control* plane under, mirroring
+# ``lastway_proto::routes::CONTROL_PATH_PREFIX``. A connection whose base URL
+# ends in this is reached through a tunnel rather than directly, which changes
+# where its inference gateway lives (see :func:`_derive_gateway_base`).
+TUNNEL_CONTROL_PREFIX = "/control"
+
 
 async def _derive_gateway_base(conn: LaiosConnection) -> str | None:
-    """Best-effort OpenAI-compatible gateway base URL for a connection.
+    """OpenAI-compatible gateway base URL for a connection.
 
-    Host comes from the control-plane URL; the gateway port from ``/v1/route``
-    (``gateway_listen``), defaulting to 4000 when the daemon is unreachable.
+    The control plane and the inference gateway are **independent**: managing a
+    box (serve/stop/inventory) is a LAN-side operation on ``:7420``, while
+    reaching its models can go somewhere else entirely — over a lastway tunnel,
+    say, where the box is published on a public hostname but its control plane
+    stays closed. So this resolves in three steps, most explicit first:
+
+    1. ``gateway_url`` if set. Whatever the operator entered wins; nothing is
+       inferred from the control-plane URL, because the two need not be related.
+    2. Otherwise, if the control base is itself tunnelled (path ends in
+       ``/control``, lastway's ``CONTROL_PATH_PREFIX``), the gateway is that same
+       origin with the prefix stripped — the tunnel publishes both origins on one
+       hostname split by path. Deriving a port there would be actively wrong:
+       nothing listens on ``:4000`` at the tunnel edge, and the daemon's
+       ``gateway_listen`` reports a box-local address.
+    3. Otherwise the historical derivation: the control host, with the port from
+       ``/v1/route`` (``gateway_listen``), defaulting to 4000 when the daemon is
+       unreachable.
+
+    The scheme is carried over rather than assumed, since a tunnel is https.
     """
-    host = urlparse(conn.base_url).hostname
-    if not host:
+    if conn.gateway_url and conn.gateway_url.strip():
+        return _normalize_gateway_url(conn.gateway_url)
+
+    parsed = urlparse(conn.base_url)
+    if not parsed.hostname:
         return None
+
+    control_path = parsed.path.rstrip("/")
+    if control_path.endswith(TUNNEL_CONTROL_PREFIX):
+        root = control_path[: -len(TUNNEL_CONTROL_PREFIX)]
+        return f"{parsed.scheme}://{parsed.netloc}{root}/v1"
+
     port = 4000
     try:
         async with _client(conn, timeout=httpx.Timeout(3.0)) as client:
@@ -155,7 +188,18 @@ async def _derive_gateway_base(conn: LaiosConnection) -> str | None:
                 port = int(tail)
     except (httpx.RequestError, ValueError):
         pass
-    return f"http://{host}:{port}/v1"
+    return f"{parsed.scheme or 'http'}://{parsed.hostname}:{port}/v1"
+
+
+def _normalize_gateway_url(raw: str) -> str:
+    """Coerce an operator-entered gateway URL to an OpenAI base ending in ``/v1``.
+
+    Both ``https://host`` and ``https://host/v1`` are things a person reasonably
+    types for the same endpoint, and every caller downstream appends paths
+    relative to ``/v1``.
+    """
+    trimmed = raw.strip().rstrip("/")
+    return trimmed if trimmed.endswith("/v1") else f"{trimmed}/v1"
 
 
 def _same_endpoint(a: str, b: str) -> bool:
@@ -221,6 +265,17 @@ async def managed_provider_ids(session: AsyncSession) -> set[str]:
         )
     )
     return {pid for (pid,) in result.all() if pid}
+
+
+# --- Shared with api/videos.py --------------------------------------------------
+#
+# The video surface is connection-scoped in exactly the same way as everything
+# here, but it talks to the *inference* gateway rather than the control plane. It
+# needs connection lookup and gateway-base derivation; re-deriving either there
+# would be two ways to answer "where is this box".
+
+load_connection = _get_conn
+gateway_base = _derive_gateway_base
 
 
 # --- Connection CRUD ------------------------------------------------------------
@@ -648,23 +703,28 @@ async def _ensure_schema() -> None:
     """Add columns introduced after a table was first created.
 
     ``create_all`` never alters existing tables and the app has no migration
-    framework, so a DB that predates ``linked_provider_id`` would be missing it.
-    This is a narrow, idempotent backfill for our own (new) table.
+    framework, so a DB that predates ``linked_provider_id`` or ``gateway_url``
+    would be missing them. This is a narrow, idempotent backfill for our own
+    (new) table.
     """
     from sqlalchemy import text
 
+    added = ("linked_provider_id", "gateway_url")
     try:
         async with async_session_factory() as session:
             info = await session.execute(text("PRAGMA table_info(laios_connections)"))
             columns = {row[1] for row in info}
-            if columns and "linked_provider_id" not in columns:
-                await session.execute(
-                    text(
-                        "ALTER TABLE laios_connections ADD COLUMN linked_provider_id VARCHAR"
+            if not columns:
+                return
+            for column in added:
+                if column not in columns:
+                    await session.execute(
+                        text(
+                            f"ALTER TABLE laios_connections ADD COLUMN {column} VARCHAR"
+                        )
                     )
-                )
-                await session.commit()
-                logger.info("added laios_connections.linked_provider_id column")
+                    logger.info("added laios_connections.%s column", column)
+            await session.commit()
     except Exception as exc:  # pragma: no cover - startup must not fail on this
         logger.warning("laios schema check skipped: %s", exc)
 

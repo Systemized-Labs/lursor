@@ -31,6 +31,7 @@ from app.api import (
     terminal,
     threads,
     tools,
+    videos,
     workspace_folders,
     workspaces,
 )
@@ -152,6 +153,7 @@ for module in (
     github,
     integrations,
     laios,
+    videos,
     preview,
     settings_api,
 ):
