@@ -40,7 +40,8 @@ backend/          FastAPI + pydantic-deepagents + SQLite      (backend/README.md
 frontend/         Vite + React 19 + Tailwind v4 + shadcn/ui  (frontend/README.md)
   src/agui/       transport + chat store + engine
   src/api/        typed REST client + TanStack Query hooks, one file per resource
-  src/components/ chat/, shell/ (dock panels), layout/ (rail+panel nav), ui/
+  src/components/ chat/, panes/ (the pane layer), layout/ (shell + sidebar),
+                  settings/ (the settings dialog), shell/ (pane bodies), ui/
   src/pages/      one dir per destination
   electron/       desktop main + preload
 docs/             INSTALL / ELECTRON / DISTRIBUTION
@@ -79,7 +80,7 @@ changing, that is a signal the change altered behaviour it shouldn't have.
 - Never absolute colours (`text-white`, `bg-gray-*`). 87 theme blocks in
   `index.css` define the full semantic token set; use it. Adding a new
   `--custom` token means 87 edits — derive from existing tokens instead
-  (the nav rail does this: `bg-sidebar-accent/40`).
+  (the sessions sidebar does this: `bg-sidebar-accent/40`).
 - Never the `container` class. Copy the surrounding page's padding
   (`px-4 py-6 sm:px-0`).
 - No emoji anywhere.
@@ -677,49 +678,95 @@ No agent tools and no capability probe — this is an operator surface, so there
 rail beside Video, by Video's own argument for being pinned: you leave a clip and come
 back to it, while an image finishes while you watch.
 
-### The right dock
+### The pane layer
 
-`hooks/use-dock-state.ts` owns the tab list (persisted per workspace in
-`localStorage`); `components/shell/right-dock.tsx` renders it. **Any kind can be
-open more than once** — two previews on different ports, two editors, two shells
-— which forces three rules:
+`components/panes/` — every surface is a pane, and panes are tabs inside zones of
+a dockview grid. It replaced a router `Outlet` that owned exactly one surface plus
+a right dock with its own tab strip and its own four panel kinds: a chat and a
+terminal are the same kind of thing to a user, and the app used to model them as
+different kinds of thing.
 
-- **Tab ids are persisted and globally unique** (not per-session counters).
-  Panel state that used to hang off the workspace id has to be keyed per tab or
-  duplicates fight over one value: `lib/tab-storage.ts` namespaces it under
-  `lursor:tab:<id>:*`, and `closeTab` purges that namespace. A preview also
-  writes the workspace-wide key as the *default* a newly opened preview starts
-  on; an explicit clear stores `""`, so a cleared tab doesn't re-inherit it.
-- **Only the visible panel takes app-wide open requests** (`lib/open-file`,
-  `lib/open-preview`). Hidden dock tabs stay mounted, so an unguarded panel
-  would swallow the request and open the file where nobody can see it — the
-  original single-tab bug, back in a new shape.
-- **`ensureTab` targets active → most recently used → leftmost.** The request
-  displaces whatever that tab held, so picking the leftmost would navigate a
-  preview the user forgot about while the one they were working in sits
-  untouched. Focus order (`mru`) is session-only state.
+**`renderer: 'always'` is the load-bearing line.** Dockview renders those panels
+into one shared overlay container tracked to their group's bounding box, so moving
+a pane between zones never reparents its DOM node. That is what keeps a PTY, a
+preview iframe and a Monaco buffer alive across a drag — reparenting an iframe
+reloads it, and `app-shell` used to contort itself around exactly that (maximize
+collapsed the existing panel rather than portaling the dock, for this reason).
+Measured before adopting it, and again in the product: a terminal dragged into a
+new group keeps its shell, with one xterm instance in the DOM throughout.
 
-Tab strips show a panel-reported detail (a port, a filename) *only* while a kind
-is open more than once, with an ordinal for a duplicate that has nothing to
-report yet. Detail is derived from live panel state — never persisted.
+Rules that cost something to rediscover:
 
-**Maximize** (`⤢` in the tab strip, `Esc` to restore) is dock-level state, not
-per-kind: "give this the whole window" is a layout request, and Terminal and
-Preview want it as much as the editor. It works by collapsing the *existing*
-center `ResizablePanel` to zero and closing the app sidebar — never by portaling
-the dock into an overlay, which would remount every panel and take terminal
-sessions and Monaco view state with it. Two consequences worth keeping:
+- **A layout template cannot be a frozen constant.** `fromJSON` destroys any panel
+  the incoming layout does not mention — `reuseExistingPanels: true` preserves the
+  ones it *also* lists, and nothing more. So every template is a function of the
+  live pane set (`layout-templates.ts`), and a saved layout contributes only its
+  *geometry*: its pane ids belong to the workspace it came from, so `reshape`
+  re-deals the live panes and rebuilds the `panels` map from them.
+- **Pane id = dockview panel id, persisted.** Panes key their own state off it via
+  `lib/tab-storage.ts` (`lursor:tab:<id>:*`), and those keys are global, so a
+  recycled id hands a new pane a dead one's preview URL. The `lursor:dock:*`
+  migration carries the old tab ids across for this reason; the old key is left in
+  place.
+- **Never persist a layout on a workspace switch.** `loadedFor` guards the write:
+  on the render where the active workspace changes, a write would land the previous
+  workspace's layout in the new one's key. Same trap the right dock documented.
+- **`ensurePane` targets active → most recently used → leftmost.** An "open this
+  file" request displaces whatever that pane held, so it has to be the pane you are
+  looking at, not one you forgot was open.
+- **A hidden pane keeps running.** That is what `always` buys and what it costs.
+  Every pane gets `active` from `onDidVisibilityChange`; gate expensive work on it.
 
-- `maximized` and `collapsed` are mutually exclusive; every mutation enforces it
-  and `readDockState` normalizes anything already stored (collapsed wins). The
-  `DockRail` only renders while collapsed, so it can never appear maximized.
-- `AppShell` renders `SidebarProvider` itself and so can't call `useSidebar`.
-  `ShellBody` exists purely to sit *inside* the provider and read it; it
-  snapshots the pre-maximize open state in a ref rather than assuming "open",
-  because the provider persists that in a cookie. On the way out it only undoes
-  its own close — a sidebar the user opened while maximized stays open.
-- The dock panel's everyday `maxSize={70}` is lifted to 100 while maximized. Two
-  panels have to sum to 100, so the cap would otherwise refuse the collapse.
+**Chat is a pane, so routing is an address, not an owner.** `?c=` is written *from*
+the focused chat pane and read exactly once per workspace load, to honour a
+bookmark. A sidebar row therefore cannot address a pane through the URL — it parks
+a request on `lib/open-thread.ts`, the same channel `open-file` and `open-preview`
+use, and the shell routes it.
+
+**Outside a workspace there is a global layout** (`lursor:layout:_global`), which
+is what `/analytics`, `/video`, `/image` and `/artifacts` resolve to. Those kinds
+are not workspace-scoped — Usage is cross-workspace, Video and Image are scoped to
+a LAIOS box — and `WORKSPACE_KINDS` keeps a global zone from offering a Terminal
+with no directory to open in. A global layout starts *empty*: the default seeds a
+chat pane, and a chat with no workspace has nothing to talk to.
+
+**Mobile has no pane layer.** A four-zone grid on a 390px screen is not a layout,
+so a phone shows one surface at a time and the bottom bar switches between them —
+reading the workspace's persisted layout (`readLayoutKinds`) so the bar reflects
+what you actually opened rather than a fixed list. Same `PaneContent` map, no
+zones, tabs or drag.
+
+### The shell
+
+`WindowBar` is the frame's own 44px strip: full width, above the sidebar and the
+content. It exists to end a negotiation — on frameless macOS the traffic lights
+float over the top-left, and four surfaces each used to reconstruct that band and
+each decide whether to inset past the buttons. Reserving it once means nothing
+below has to know the buttons exist. On a phone it is the app bar too (hamburger,
+title, `⚙`), which is what let `MobileHeader` go.
+
+The sidebar's box is `position: fixed`, so nothing can push it down: the primitive
+reads `--sidebar-top` and derives `--shell-height: calc(100svh - var(--sidebar-top))`,
+and the shell sets it once. Every `h-svh` that meant "the whole viewport" is
+`h-(--shell-height)`.
+
+**Settings is a dialog, not a page.** One category rail over the existing sections,
+state in `?settings=<category>` so it deep-links and survives a reload while opening
+over whatever route you are on. It absorbed `/settings`, `/customization`, `/laios`
+and `/schedules`; those paths are one-hop redirects now. Two-pane categories
+(Capabilities, Environment, Schedules) get a wider dialog, and `useBrowserBox`
+honours a `data-browser-bounds` ancestor so they size to the modal rather than to
+the fold.
+
+**Watch the entry chunk.** Three things belong behind a lazy boundary and will
+quietly climb back out: dockview (~76KB, behind the pane host), Monaco (~330KB,
+behind both the Files pane and the *skill editor dialog* — the settings dialog
+mounts on every route, so an eager import there puts Monaco in the entry), and the
+media/analytics pages. `use-pane-layout` must stay free of dockview **value**
+imports for the same reason: `Orientation` is a runtime enum, and importing it
+pulls the whole library in. When the entry chunk moves unexpectedly, build the
+previous commit in a worktree and diff the chunk lists — that is how the Monaco
+regression above was found, after two wrong guesses.
 
 ### The file editor
 
@@ -811,11 +858,11 @@ sidebar or dock is useful yet). Four rules hold it together:
 `GitHubRepoPickerDialog` takes `navigateOnClone={false}` here: it otherwise jumps
 straight into the cloned workspace's chat, which would skip the last step.
 
-Finishing hands over to `/workspaces/<id>/chat`, calling **`seedCollapsedDock`**
-first: a closed, empty dock for that workspace, so the first conversation is the
+Finishing hands over to `/workspaces/<id>/chat`, calling **`seedChatOnlyLayout`**
+first: a single chat pane for that workspace, so the first conversation is the
 whole window instead of a chat beside an empty panel. Guarded by
-`hasStoredDockState`, so it is a first-visit default and never overwrites a layout
-the user arranged; the rail still reopens the dock.
+`hasStoredLayout`, so it is a first-visit default and never overwrites a layout the
+user arranged; a zone's `+` adds the rest.
 
 ### Other
 
@@ -842,10 +889,15 @@ the user arranged; the rail still reopens the dock.
 - **Models** — OpenRouter by default (`openrouter:` prefix), plus
   `CustomProvider` rows for OpenAI-compatible endpoints, including ones with no
   `/v1/models` (manual model lists).
-- **Nav** — a 68px destination rail plus a contextual panel. `panelMode` is
-  **sidebar state, not a route** (persisted to `localStorage`), so clicking an
-  Activity row opens the conversation without the panel flipping back under the
-  cursor. Activity has no route by design.
+- **Nav** — one sidebar column (`sessions-pane.tsx`): nav rows, Pinned, and
+  Projects with its folders and the active project's sessions inline. It replaced a
+  68px workspace rail plus a contextual panel, which cost the sidebar two widths,
+  two toggles, and 10px truncated workspace names. Which *view* it shows
+  (projects/activity) and which project it is drilled into are **sidebar state, not
+  a route** — opening a session navigates, and a route-derived view would flip back
+  under the cursor. Clicking a project both switches to it and drills in; ⌘1–⌘9
+  switch without drilling, because a shortcut that re-scopes the list makes the
+  sidebar jump on every hop between two repos.
 
 ## 7. Invariants and traps
 
@@ -870,20 +922,28 @@ Each of these has already cost a debugging session.
 7. **Declare literal routes before parameterized ones** (`/active-runs` before
    `/{thread_id}`).
 8. **`GET /threads/{id}` must stay unfiltered.**
-9. **Unhandled exceptions need hand-set CORS headers.** Starlette's
+9. **A pane's DOM node must never be reparented.** `renderer: 'always'` is what
+   guarantees it; a template applied without `reuseExistingPanels`, or built as a
+   constant that forgets to name an open pane, destroys the panel instead — and
+   with it a live PTY, a scrolled iframe and an unsaved buffer. See The pane layer.
+10. **Nothing outside the pane layer may address a pane through the URL.** `?c=` is
+   written *from* the focused chat pane; a sidebar row parks a request on
+   `lib/open-thread.ts` instead. Reading the URL to position a pane happens in
+   exactly one place — once per workspace load, to honour a bookmark.
+11. **Unhandled exceptions need hand-set CORS headers.** Starlette's
    `ServerErrorMiddleware` sits *outside* `CORSMiddleware`, so a bare 500 carries
    no `access-control-allow-origin` and the browser reports `TypeError: Failed to
    fetch` — every server bug reads as the backend being down. `main.py` has an
    explicit handler; don't remove it.
-10. **Never patch a vendored dependency.** Compose, subclass, or wrap with a
+12. **Never patch a vendored dependency.** Compose, subclass, or wrap with a
    `PrepareTools` / `AbstractCapability`. When a fix belongs upstream, prepare it
    locally as a patch and hand it over — this repo does not open PRs against
    third-party projects.
-11. **Local models are a first-class constraint.** GLM/DeepSeek via vLLM ignore
+13. **Local models are a first-class constraint.** GLM/DeepSeek via vLLM ignore
     tool enums, need the todo board to scaffold, and break on native
     `WebSearchTool` under `OpenAIChatModel`. Anything that narrows the toolset
     should be tested against them, not just against a frontier cloud model.
-12. **Tools are filtered by their real names, and `web_search` is not one.** The
+14. **Tools are filtered by their real names, and `web_search` is not one.** The
     local search tools are `duckduckgo_search` / `tavily_search` / `exa_search`;
     `web_search` only ever names the provider-*native* tool, which is not a
     function tool and never reaches a `PrepareTools` filter. Dropping a local
@@ -929,6 +989,28 @@ thread pagination, and `.cursor/rules` / `AGENTS.md` ingestion alongside skills.
 **Known debt:** `api/chat.py` is ~1900 lines; moving the run engine out of
 `app/api/` into `app/agents/` is the right follow-up. `Skill.scope` is a dormant
 column left in place so a migration didn't have to rewrite the table.
+
+**Shell rewrite leftovers** — the seven-phase rewrite that produced the pane layer
+shipped everything it set out to except these, each deferred with a reason rather
+than forgotten:
+
+- **`GET /workspaces/{id}/artifacts`.** The Artifacts pane covers plan docs and
+  generated media but not agent-written files. The provenance exists per *turn* —
+  a write is a `write_file` / `hashline_edit` tool call and `tool_calls` is
+  persisted, which is how `agui/file-changes.ts` derives it — but there is no way
+  to ask for it across a workspace. Client-side it would mean fetching every
+  thread's messages: N requests for a list whose contents depend on which
+  conversations you happened to open, which looks complete and is not.
+- **Popout panes.** Dockview supports panes in real OS windows and it is a genuine
+  Electron win (a terminal on a second monitor). Deferred because the
+  absolute-overlay positioning we inherit has its sharpest edges there.
+- **`Thread.pinned`.** Pins are client-side under `lursor:pins`. A column can
+  follow if they need to survive a machine change — the app is reachable over the
+  LAN, so that is real.
+- **Rebindable shortcuts.** `lib/shortcuts.ts` is documentation, not a registry:
+  nine call sites bind their own chords and the file lists them. Making them
+  rebindable is when the registry has to exist, and then that file becomes its
+  labels.
 
 **laios UI backlog** — the daemon has shipped features with no client surface.
 The Lursor side of each is the same four layers (proxy route in `api/laios.py`,

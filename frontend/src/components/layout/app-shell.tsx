@@ -1,11 +1,18 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import type { CSSProperties, ReactNode } from "react"
 import { Outlet, useLocation, useSearchParams } from "react-router-dom"
 
 import { useWorkspace } from "@/api/workspaces"
 import { AppSidebar } from "@/components/layout/app-sidebar"
-import { MobileHeader } from "@/components/layout/mobile-header"
-import { destinationFor } from "@/components/layout/rail-items"
+import { destinationFor } from "@/components/layout/destinations"
 import { useSidebarSide } from "@/components/layout/use-sidebar-side"
 import { WINDOW_BAR_HEIGHT, WindowBar } from "@/components/layout/window-bar"
 import { PaneContent } from "@/components/panes/pane-content"
@@ -16,6 +23,7 @@ import {
 } from "@/components/panes/pane-kinds"
 import {
   hasStoredLayout,
+  readLayoutKinds,
   usePaneLayout,
 } from "@/components/panes/use-pane-layout"
 import { SettingsDialog } from "@/components/settings/settings-dialog"
@@ -148,6 +156,21 @@ export function AppShell() {
   // Files editor is desktop-only, so on mobile a plan opens in a read-only
   // Markdown view instead (see the open-file effect below).
   const [mobilePlan, setMobilePlan] = useState<{ path: string } | null>(null)
+
+  /**
+   * The pane kinds this workspace's layout holds, for the bottom bar.
+   *
+   * Read from storage rather than from `layout.api`: the pane layer never mounts
+   * on a phone, so there is no dockview instance to ask. Recomputed when the
+   * workspace changes, which is the only time it can change without a desktop
+   * session in between.
+   */
+  const mobileKinds = useMemo<MobilePaneKind[]>(() => {
+    if (!isMobile || !workspaceId) return []
+    return readLayoutKinds(workspaceId).filter(
+      (kind): kind is MobilePaneKind => kind !== "chat"
+    )
+  }, [isMobile, workspaceId])
 
   const showMobilePaneKind = useCallback((kind: MobilePaneKind) => {
     setVisitedKinds((prev) => (prev.includes(kind) ? prev : [...prev, kind]))
@@ -344,7 +367,11 @@ export function AppShell() {
           <AppSidebar />
           <SidebarInset className="min-w-0">
             <div className="flex h-svh min-h-0 flex-col overflow-hidden">
-              <MobileHeader title={mobileTitle} />
+              <WindowBar
+                onOpenSettings={openSettings}
+                onOpenLayouts={() => setLayoutsOpen(true)}
+                title={mobileTitle}
+              />
 
               {/* Stacked full-screen views — only the active one is shown.
                   Layering (rather than conditional mount) keeps each surface's
@@ -396,6 +423,7 @@ export function AppShell() {
               </div>
               {workspaceId && (
                 <MobileDockBar
+                  kinds={mobileKinds}
                   activeKind={
                     mobileView === "chat" || mobileView === "plan"
                       ? null

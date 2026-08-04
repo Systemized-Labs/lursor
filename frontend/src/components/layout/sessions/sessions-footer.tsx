@@ -12,9 +12,9 @@ import {
 import { ThemePicker } from "@/components/ui/theme-picker"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
-  RAIL_DESTINATIONS,
+  DESTINATIONS,
   matchesRoute,
-} from "@/components/layout/rail-items"
+} from "@/components/layout/destinations"
 import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { cn } from "@/lib/utils"
 
@@ -31,7 +31,7 @@ interface SessionsFooterProps {
  *
  * Small and horizontal because none of it is navigation you do while reading the
  * list — it is the stuff you reach for once and leave. The `⋯` menu holds what is
- * left of `RAIL_DESTINATIONS` after Phase 2 took four of them into the settings
+ * left of `DESTINATIONS` after Phase 2 took four of them into the settings
  * dialog: Usage, Video and Image, which are real pages rather than configuration.
  */
 export function SessionsFooter({ onNavigate }: SessionsFooterProps) {
@@ -40,7 +40,7 @@ export function SessionsFooter({ onNavigate }: SessionsFooterProps) {
   const githubConfig = useGitHubConfig().data
   const { openSettings } = useSettingsParam()
 
-  const routeDestinations = RAIL_DESTINATIONS.filter(
+  const routeDestinations = DESTINATIONS.filter(
     (item) => item.to !== undefined
   )
   const destinationActive = routeDestinations.some(

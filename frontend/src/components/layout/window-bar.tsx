@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import { Gear, SidebarSimple, SquaresFour } from "@phosphor-icons/react"
+import { Gear, List, SidebarSimple, SquaresFour } from "@phosphor-icons/react"
 
 import { useSidebar } from "@/components/ui/sidebar"
 import { isMacElectron } from "@/lib/platform"
@@ -22,9 +22,11 @@ import { cn } from "@/lib/utils"
  * electron/main.cjs insets them 15px from the top and they are ~15px tall, so
  * 44 centres them and puts anything beside them on their line.
  *
- * Desktop only for now. Mobile keeps `MobileHeader` until the mobile pass —
- * mobile is never Electron, so there is no chrome to reserve there, and two
- * stacked bars would cost a phone 88px of nothing.
+ * On a phone it is the app bar too, which is what let `MobileHeader` go: a
+ * hamburger, the route's title, and `⚙`. Layouts is hidden there, because there is
+ * no grid to arrange — a phone shows one surface at a time. Mobile is never
+ * Electron, so the traffic-light reservation and the drag region are both absent,
+ * and `pt-safe` lets the bar extend into the status-bar inset in standalone mode.
  */
 
 /** Matches `h-11`. Exported so the shell can offset the sidebar by it. */
@@ -35,10 +37,16 @@ interface WindowBarProps {
   onOpenSettings: () => void
   /** Open the layouts picker. */
   onOpenLayouts: () => void
+  /** Shown on phones only, where this bar is also the app bar. */
+  title?: string
 }
 
-export function WindowBar({ onOpenSettings, onOpenLayouts }: WindowBarProps) {
-  const { toggleSidebar, open } = useSidebar()
+export function WindowBar({
+  onOpenSettings,
+  onOpenLayouts,
+  title,
+}: WindowBarProps) {
+  const { toggleSidebar, open, isMobile, setOpenMobile } = useSidebar()
 
   // ⌘, — the platform convention for settings, and the shortcut the Settings
   // dialog will keep in Phase 2. Bound here because the bar is the one surface
@@ -63,6 +71,36 @@ export function WindowBar({ onOpenSettings, onOpenLayouts }: WindowBarProps) {
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [onOpenSettings, onOpenLayouts])
+
+  if (isMobile) {
+    return (
+      <header className="shrink-0 border-b border-border/60 bg-sidebar pt-safe">
+        <div className="flex h-12 items-center gap-1 px-1.5">
+          <button
+            type="button"
+            onClick={() => setOpenMobile(true)}
+            aria-label="Open menu"
+            className="flex size-9 shrink-0 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent"
+          >
+            <List className="size-5" />
+          </button>
+          <h1 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-sidebar-foreground">
+            {title}
+          </h1>
+          {/* No Layouts here: a phone shows one surface at a time, so there is no
+              grid to arrange. */}
+          <button
+            type="button"
+            onClick={() => onOpenSettings()}
+            aria-label="Settings"
+            className="flex size-9 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <Gear className="size-5" />
+          </button>
+        </div>
+      </header>
+    )
+  }
 
   return (
     <header

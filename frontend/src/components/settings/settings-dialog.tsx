@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
+import { CaretLeft, CaretRight } from "@phosphor-icons/react"
 
 import {
   Dialog,
@@ -8,6 +9,7 @@ import {
 } from "@/components/ui/dialog"
 import {
   categoryGroups,
+  DEFAULT_CATEGORY,
   findCategory,
 } from "@/components/settings/settings-categories"
 import { useSettingsParam } from "@/components/settings/use-settings-param"
@@ -42,6 +44,19 @@ export function SettingsDialog() {
   const groups = categoryGroups()
   const paneRef = useRef<HTMLDivElement>(null)
   const activeRailRef = useRef<HTMLButtonElement>(null)
+  /**
+   * Phone only: whether a category has been picked.
+   *
+   * Starts true when the dialog is opened straight at a category — a deep link, or
+   * the Capabilities nav row — because those name what you wanted, and landing on
+   * a list you have to re-pick from would be asking twice.
+   */
+  const [mobileDrilled, setMobileDrilled] = useState(
+    () => categoryId !== null && categoryId !== DEFAULT_CATEGORY
+  )
+  useEffect(() => {
+    if (!open) setMobileDrilled(false)
+  }, [open])
 
   // A new category starts at the top of its own content. Without this, opening a
   // long category after a short one lands you mid-page.
@@ -75,7 +90,8 @@ export function SettingsDialog() {
             : "w-[92vw] max-w-[1100px]",
           // The rail stacks above the pane on a phone; below `md` there is not
           // enough width for a column of category names beside content.
-          isMobile && "h-[92dvh] max-h-none w-screen max-w-none flex-col rounded-none"
+          isMobile &&
+            "h-[92dvh] max-h-none w-screen max-w-none flex-col rounded-none"
         )}
       >
         {/* The dialog names itself for screen readers; the visible heading is the
@@ -86,24 +102,45 @@ export function SettingsDialog() {
         </DialogDescription>
 
         {isMobile ? (
-          <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-border bg-sidebar px-2 py-2">
-            {groups.flatMap(({ items }) =>
-              items.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => selectCategory(item.id)}
-                  className={cn(
-                    "shrink-0 rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap",
-                    item.id === category.id
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
-                  )}
-                >
-                  {item.label}
-                </button>
-              ))
+          /* Two levels, not a chip strip.
+             A phone cannot hold a category rail beside content, and a horizontal
+             row of fourteen chips is a thing you scroll past rather than read —
+             it hides the grouping and makes the current category one of fourteen
+             equal-weight scraps. So: the list *is* the screen until you pick
+             something, then the category fills it with a row back. That is the
+             platform convention for settings on a phone, and it costs one tap
+             rather than a horizontal hunt. */
+          <nav
+            className={cn(
+              "min-h-0 flex-1 overflow-y-auto bg-sidebar py-2",
+              mobileDrilled && "hidden"
             )}
+          >
+            {groups.map(({ group, items }) => (
+              <div key={group} className="mb-1 px-2">
+                <p className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider text-sidebar-foreground/50">
+                  {group}
+                </p>
+                {items.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        selectCategory(item.id)
+                        setMobileDrilled(true)
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-md px-2 py-2.5 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent"
+                    >
+                      <Icon className="size-4 shrink-0 text-sidebar-foreground/70" />
+                      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                      <CaretRight className="size-3.5 shrink-0 text-sidebar-foreground/40" />
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </nav>
         ) : (
           <nav className="w-[13.5rem] shrink-0 overflow-y-auto border-r border-border bg-sidebar py-3">
@@ -149,8 +186,21 @@ export function SettingsDialog() {
             list already scrolls in this codebase. */}
         <div
           ref={paneRef}
-          className="scrollbar-hover min-w-0 min-h-0 flex-1 overflow-y-auto"
+          className={cn(
+            "scrollbar-hover min-w-0 min-h-0 flex-1 overflow-y-auto",
+            isMobile && !mobileDrilled && "hidden"
+          )}
         >
+          {isMobile ? (
+            <button
+              type="button"
+              onClick={() => setMobileDrilled(false)}
+              className="sticky top-0 z-10 flex w-full items-center gap-1.5 border-b border-border bg-popover px-3 py-2 text-left text-sm text-muted-foreground"
+            >
+              <CaretLeft className="size-4 shrink-0" />
+              Settings
+            </button>
+          ) : null}
           {/* `pr-12` keeps the first row clear of the close button. Categories are
               keyed so switching remounts rather than reusing the previous one's
               state — two different two-pane browsers sharing a selection would be

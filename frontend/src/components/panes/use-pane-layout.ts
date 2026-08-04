@@ -368,6 +368,25 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   return { api, onReady, openPane, ensurePane, openThread }
 }
 
+/**
+ * The pane kinds a workspace's saved layout holds, in layout order.
+ *
+ * For the mobile bottom bar, which has no dockview instance to ask — a phone shows
+ * one surface at a time, so the pane *layer* never mounts there. Reading the
+ * persisted layout is how the bar reflects what you actually opened rather than a
+ * fixed list of four, which is what §7 asks for.
+ */
+export function readLayoutKinds(workspaceId?: string): PaneKind[] {
+  const layout = readLayout(workspaceId)
+  if (!layout) return []
+  const kinds: PaneKind[] = []
+  for (const state of Object.values(layout.panels ?? {})) {
+    const kind = (state as { params?: PaneParams }).params?.kind
+    if (isPaneKind(kind) && !kinds.includes(kind)) kinds.push(kind)
+  }
+  return kinds
+}
+
 /** Whether this workspace has a saved pane layout (or a legacy dock) yet. */
 export function hasStoredLayout(workspaceId?: string): boolean {
   try {

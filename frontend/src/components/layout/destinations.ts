@@ -10,7 +10,7 @@ import {
 } from "@phosphor-icons/react"
 import type { ComponentType } from "react"
 
-export interface RailDestination {
+export interface Destination {
   key: string
   label: string
   icon: ComponentType<{ className?: string }>
@@ -38,20 +38,19 @@ export interface RailDestination {
 }
 
 /**
- * The whole-page destinations, which live behind the rail's ⋯ tile.
+ * The destinations behind the sidebar footer's ⋯ menu.
  *
- * These used to be tiles of their own — eight of them, stacked down the rail at
- * the same visual weight as the conversation list, two abbreviated past
- * legibility ("Sched", "Custom") and one truncated outright ("Activi…"). That
- * allocation was backwards: every one of these is a page you open, read and
- * leave, maybe once a session, while the workspaces you switch between dozens of
- * times a day had no representation in the rail at all. Labels that don't fit
- * their column are the symptom; the column was being spent on the wrong thing.
+ * Two kinds now, and neither is what this list started as. Four of them open the
+ * settings dialog over wherever you are (Schedules, LAIOS, Customization,
+ * Settings); the rest are `to` paths that the shell answers with a *pane* rather
+ * than a page — see `PANE_ROUTES` in the shell. So a "destination" is a name and an
+ * intent, and what happens when you pick one is decided elsewhere.
  *
- * So they collapse to one tile and a menu, where the labels finally fit, and the
- * rail's height goes to workspaces. ⌘K reaches all of them by name too.
+ * They were tiles down the nav rail once, eight of them, two abbreviated past
+ * legibility ("Sched", "Custom") and one truncated outright ("Activi…"). ⌘K reaches
+ * all of them by name too.
  */
-export const RAIL_DESTINATIONS: RailDestination[] = [
+export const DESTINATIONS: Destination[] = [
   {
     key: "schedules",
     label: "Schedules",
@@ -94,17 +93,17 @@ export function matchesRoute(pathname: string, to: string): boolean {
  * other route, and the header should keep naming the page underneath rather than
  * renaming it because a modal is open.
  */
-export function destinationFor(pathname: string): RailDestination | undefined {
-  return RAIL_DESTINATIONS.find(
+export function destinationFor(pathname: string): Destination | undefined {
+  return DESTINATIONS.find(
     (item) => item.to !== undefined && matchesRoute(pathname, item.to)
   )
 }
 
 /**
- * True while the ⋯ tile is the rail's answer to "where am I".
+ * True while the ⋯ menu is the footer's answer to "where am I".
  *
- * Pinned destinations are excluded: they have a tile of their own, and that tile
- * is the one carrying the active state.
+ * Pinned destinations are excluded: they have a control of their own, and that one
+ * carries the active state.
  */
 export function isDestinationRoute(pathname: string): boolean {
   const destination = destinationFor(pathname)
