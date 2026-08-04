@@ -85,6 +85,11 @@ export const SHORTCUTS: Shortcut[] = [
     description: "Show or hide the sidebar",
     group: "Layout",
   },
+  {
+    keys: chord(SHIFT, MOD, "\\"),
+    description: "Open the layouts picker",
+    group: "Layout",
+  },
 
 
   // ── Files ─────────────────────────────────────────────────────────────────

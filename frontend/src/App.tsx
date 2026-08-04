@@ -1,4 +1,3 @@
-import { lazy, Suspense } from "react"
 import { Navigate, Route, Routes, useParams } from "react-router-dom"
 
 import { DEFAULT_CATEGORY } from "@/components/settings/settings-categories"
@@ -9,10 +8,6 @@ import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
 import { OnboardingGate } from "@/pages/onboarding/onboarding-gate"
 import { WelcomePage } from "@/pages/onboarding/welcome-page"
 import { VideoPage } from "@/pages/video/video-page"
-
-const DockSpikePage = lazy(() =>
-  import("@/pages/spike/dock-spike").then((m) => ({ default: m.DockSpikePage }))
-)
 
 /**
  * Land on the home surface with the settings dialog open at `category`.
@@ -58,19 +53,6 @@ function App() {
           derives each step's state live, so revisiting it just shows what is
           already set up. */}
       <Route path="welcome" element={<WelcomePage />} />
-      {/* THROWAWAY — the Phase 0 dockview spike (docs/PLAN-shell-rewrite.md §8).
-          Outside the shell for the same reason the walkthrough is: it owns the
-          whole viewport. Lazy so dockview stays out of the entry chunk, which is
-          also the arrangement §3.4 asks for in the real thing. Delete with
-          src/pages/spike/. */}
-      <Route
-        path="spike/dock"
-        element={
-          <Suspense fallback={null}>
-            <DockSpikePage />
-          </Suspense>
-        }
-      />
       {/* Everything else renders inside the shell, once setup is done: the gate
           redirects a fresh install to /welcome. */}
       <Route element={<OnboardingGate />}>

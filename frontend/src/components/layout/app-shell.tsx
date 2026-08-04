@@ -6,6 +6,7 @@ import { useWorkspace } from "@/api/workspaces"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { MobileHeader } from "@/components/layout/mobile-header"
 import { destinationFor } from "@/components/layout/rail-items"
+import { useSidebarSide } from "@/components/layout/use-sidebar-side"
 import { WINDOW_BAR_HEIGHT, WindowBar } from "@/components/layout/window-bar"
 import { PaneContent } from "@/components/panes/pane-content"
 import {
@@ -55,6 +56,13 @@ const PaneHost = lazy(() =>
   import("@/components/panes/pane-host").then((m) => ({ default: m.PaneHost }))
 )
 
+/** Same reasoning: it imports dockview types *and* `fromJSON`, so it goes too. */
+const LayoutsDialog = lazy(() =>
+  import("@/components/panes/layouts-dialog").then((m) => ({
+    default: m.LayoutsDialog,
+  }))
+)
+
 /**
  * The persistent app shell: the WindowBar, the sessions sidebar, and — inside a
  * workspace — the pane layer.
@@ -73,6 +81,8 @@ export function AppShell() {
   const { pathname } = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const { openSettings } = useSettingsParam()
+  const [sidebarSide, setSidebarSide] = useSidebarSide()
+  const [layoutsOpen, setLayoutsOpen] = useState(false)
   // The active workspace (from `/workspaces/:id/...`) keys the pane layout, so
   // each workspace remembers its own arrangement.
   const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
@@ -377,9 +387,17 @@ export function AppShell() {
       style={{ "--sidebar-top": WINDOW_BAR_HEIGHT } as CSSProperties}
     >
       <CommandPaletteProvider>
-        <WindowBar onOpenSettings={openSettings} />
+        <WindowBar
+          onOpenSettings={openSettings}
+          onOpenLayouts={() => setLayoutsOpen(true)}
+        />
+        {/* The sidebar swaps sides by DOM order, not `row-reverse`: reversing a
+            flex row leaves tab order and screen-reader order pointing the old way,
+            so the sidebar would be *read* after the content while appearing before
+            it. `side` also has to reach the primitive, which decides whether its
+            fixed box anchors left or right. */}
         <div className="flex min-h-0 w-full flex-1">
-          <AppSidebar />
+          {sidebarSide === "left" ? <AppSidebar side="left" /> : null}
           {/* `min-w-0` lets this flex child shrink below its content's intrinsic
               width; without it, widening a pane grows the whole inset past the
               viewport instead of redistributing space within it.
@@ -403,10 +421,23 @@ export function AppShell() {
               )}
             </div>
           </SidebarInset>
+          {sidebarSide === "right" ? <AppSidebar side="right" /> : null}
         </div>
         {/* Mounted at the shell, not per route: settings opens *over* whatever you
             were doing rather than replacing it. */}
         <SettingsDialog />
+        {layoutsOpen ? (
+          <Suspense fallback={null}>
+            <LayoutsDialog
+              open={layoutsOpen}
+              onOpenChange={setLayoutsOpen}
+              layout={layout}
+              hasPanes={inWorkspace}
+              side={sidebarSide}
+              onSideChange={setSidebarSide}
+            />
+          </Suspense>
+        ) : null}
       </CommandPaletteProvider>
     </SidebarProvider>
   )

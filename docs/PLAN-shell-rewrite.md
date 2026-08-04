@@ -1,6 +1,6 @@
 # Plan: top-level shell rewrite
 
-Status: **approved; Phases 0–4 done.** Open questions resolved in §10.
+Status: **approved; Phases 0–5 done.** Open questions resolved in §10.
 Scope: navigation, window frame, layout system, settings surface. Individual page
 bodies are kept as-is and re-hosted.
 
@@ -488,10 +488,10 @@ and a sidebar side swap. Issue #718 turned out to be fixed upstream in v7
 set, which is the part that stays ours. Bundle delta measured at 79.5KB JS +
 8.3KB CSS gzipped, +213 bytes to the entry chunk once code-split.
 
-The spike lives at `src/pages/spike/dock-spike.tsx` behind `/spike/dock`, lazily
-routed. Deliberately kept rather than deleted until Phase 4 lands: it is the
-regression harness for every claim in §3.8, and re-running it is cheaper than
-re-deriving them. Delete it with the Phase 4 commit.
+The spike lived at `src/pages/spike/dock-spike.tsx` behind `/spike/dock`. Kept as
+the regression harness for §3.8's claims until they were covered in-product, and
+**deleted in Phase 5** once they were. Its removal also surfaced a bundle problem it
+had been masking — see Phase 5.
 
 **Phase 1 — WindowBar. DONE.** `components/layout/window-bar.tsx` is the frame's
 44px strip: full width, above the sidebar and the content both, owning the
@@ -722,10 +722,62 @@ renderer, but not re-driven through the product here — the terminal was. A
 streaming run in particular needs a live model call, so it is a manual check rather
 than a headless one.
 
-**Phase 5 — layouts dialog.** Four built-in templates as serialized layouts,
-custom save/apply, the template-switch survivor diff from §3.7, sidebar side
-swap, `⇧⌘\`. Optional, if Phase 0 liked it: popout a pane into its own Electron
-window.
+**Phase 5 — layouts dialog. DONE.** `panes/layouts-dialog.tsx` behind the
+WindowBar's `▤` and `⇧⌘\`: four built-in shapes, saved arrangements, and the
+sidebar side swap. The Layouts button Phase 1 deliberately left out now has
+something to open.
+
+**Templates are functions, not constants** — Phase 0's finding, now the
+implementation. `buildTemplate(id, livePanes, activeId)` places every open pane
+somewhere, so nothing is dropped; `fromJSON(…, { reuseExistingPanels: true })`
+then keeps every one of them alive. The focused pane stays focused across a
+switch, because a layout picker should rearrange the window, not move the cursor.
+
+**Saved layouts transfer their shape, not their pane ids.** A saved arrangement
+carries the ids of the workspace it came from, so replaying it verbatim elsewhere
+would name panels that do not exist and destroy the ones that do — the §3.7 failure
+in a new hat. So a custom layout's *geometry* is read off the saved tree and the
+live panes are dealt into it, with the `panels` map rebuilt from those panes. Two
+edges are handled out loud rather than silently: more panes than zones tabs the
+extras and says so in a toast; more zones than panes is refused with what it would
+take to use it. Saved layouts are global rather than per workspace, because a way
+of working travels between repos even though a layout does not.
+
+**Sidebar side is DOM order, not `row-reverse`** (resolved question 6). Reversing a
+flex row leaves tab order and screen-reader order pointing the old way, so the
+sidebar would be *read* after the content while appearing before it. The preference
+persists per device, and `side` also reaches the primitive, which decides which edge
+its fixed box anchors to.
+
+**Popout windows stay deferred**, per resolved question 7. `reshape` drops a saved
+layout's `floatingGroups` / `popoutGroups` rather than replaying ids that no longer
+mean anything.
+
+**The Phase 0 spike is deleted**, as §8 always said it would be — its claims are now
+covered in-product: Phase 4 verified the terminal across a drag, and Phase 5
+verified all four templates with a live PTY.
+
+**And deleting it uncovered a latent Phase 2 bundle regression.**
+`skill-editor-dialog` imports `EditorPane` eagerly, and the Skills page is reachable
+from the settings dialog, which the shell mounts on every route — so Monaco was on
+the eager path from the moment settings became a dialog. It never showed up because
+the spike *also* imported `monaco-setup`, which made the bundler hoist it into a
+shared chunk. With the spike gone the entry chunk jumped 296KB, which is how it was
+found. The dialog is lazy now, and the entry chunk is **691KB gzipped — below Phase
+4's 729KB**, with Monaco in its own 332KB chunk that loads when an editor actually
+opens. Worth recording as a method note: the fix was found by building the previous
+commit in a worktree and diffing the chunk lists, rather than by reasoning about the
+bundler.
+
+Verified in Electron/hash-router mode with four panes open and a marker echoed into
+a live PTY: `⇧⌘\` opens the picker; Quad → Terminal deck → Focus → Default moves
+through 4 → 2 → 1 → 2 groups with all four panes present at every step, exactly one
+xterm instance in the DOM throughout, and the marker still in the scrollback. Saving
+an arrangement writes `lursor:layouts:custom`; flattening to Focus and re-applying
+the saved shape restores its zone count with the terminal still alive; the side swap
+moves the sidebar to x=1445 with `data-side="right"`, leaves the panes untouched, and
+survives a reload. The skill editor still opens after being made lazy. Build and lint
+clean.
 
 **Phase 6 — new panes.** Artifacts; Usage / Video / Image re-hosted as panes.
 

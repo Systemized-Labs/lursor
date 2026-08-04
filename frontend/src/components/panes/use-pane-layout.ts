@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type {
-  DockviewApi,
-  IDockviewPanel,
-  Orientation,
-  SerializedDockview,
-  SerializedGridObject,
-} from "dockview-react"
+import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-react"
 
+import {
+  HORIZONTAL,
+  branch,
+  leaf,
+  panelState,
+} from "@/components/panes/layout-shapes"
 import {
   isPaneKind,
   newPaneId,
@@ -24,49 +24,6 @@ const layoutKey = (workspaceId?: string) =>
   `${LAYOUT_PREFIX}${workspaceId ?? "_global"}`
 const legacyKey = (workspaceId?: string) =>
   `${LEGACY_PREFIX}${workspaceId ?? "_global"}`
-
-/**
- * v7 does not re-export `GroupPanelViewState`, so the per-group shape is
- * recovered from the type that *is* public. Two lines, and it keeps an `any` out
- * of the one place that must not have one — see the plan's §3.7.
- */
-type GroupState =
-  SerializedDockview["grid"]["root"] extends SerializedGridObject<infer T>
-    ? T
-    : never
-type Node = SerializedGridObject<GroupState>
-
-const leaf = (id: string, views: string[], size?: number): Node => ({
-  type: "leaf",
-  data: { id, views, activeView: views[0] },
-  size,
-})
-
-const branch = (children: Node[]): Node => ({ type: "branch", data: children })
-
-/**
- * `Orientation.HORIZONTAL`, without importing the enum.
- *
- * It is a *runtime* enum — a value, not just a type — so importing it pulls all of
- * dockview into whatever chunk this module lands in, and this module is reached
- * from the shell on every route. That cost the entry chunk 77KB gzipped even with
- * the pane host lazy-loaded. It is a string enum, so the member's value is
- * literally `"HORIZONTAL"`; the double cast is the price of keeping the import
- * type-only, and it is asserted against the real enum in the type above.
- */
-const HORIZONTAL = "HORIZONTAL" as unknown as Orientation
-
-function panelState(id: string, params: PaneParams) {
-  const def = PANE_KINDS[params.kind]
-  return {
-    id,
-    contentComponent: params.kind,
-    tabComponent: "pane",
-    title: def.title,
-    renderer: def.renderer,
-    params,
-  }
-}
 
 /** A one-chat-pane layout, for a workspace with nothing saved. */
 function defaultLayout(): SerializedDockview {

@@ -5,7 +5,7 @@ import {
   Sparkle,
   UploadSimple,
 } from "@phosphor-icons/react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 
@@ -46,7 +46,19 @@ import { revealSkill, skillLocation } from "@/lib/skill-location"
 import { HeaderActions } from "@/pages/customization/header-actions"
 import { SkillCreateDialog } from "./skill-create-dialog"
 import { SkillDetailPanel } from "./skill-detail-panel"
-import { SkillEditorDialog } from "./skill-editor-dialog"
+/**
+ * Lazy, and load-bearing for the bundle. This dialog embeds `EditorPane`, which
+ * pulls Monaco (~330KB gzipped) — and the Skills page is reachable from the
+ * settings dialog, which the shell mounts on every route. Imported eagerly, that
+ * put the whole editor in the entry chunk for anyone who never opens a skill.
+ *
+ * It was masked until now: the Phase 0 spike also imported `monaco-setup`, so the
+ * bundler hoisted it into a shared chunk and the eager path never showed up in the
+ * entry. Deleting the spike revealed it.
+ */
+const SkillEditorDialog = lazy(() =>
+  import("./skill-editor-dialog").then((m) => ({ default: m.SkillEditorDialog }))
+)
 import {
   ANYWHERE,
   appliesInWorkspace,
@@ -487,12 +499,16 @@ export function SkillsPage() {
         onCreated={(created) => setEditingId(created.id)}
       />
 
-      <SkillEditorDialog
-        open={Boolean(editing)}
-        onOpenChange={(open) => !open && setEditingId(undefined)}
-        skill={editing}
-        onOpenInWorkspace={openInWorkspace}
-      />
+      {editing ? (
+        <Suspense fallback={null}>
+          <SkillEditorDialog
+            open={Boolean(editing)}
+            onOpenChange={(open) => !open && setEditingId(undefined)}
+            skill={editing}
+            onOpenInWorkspace={openInWorkspace}
+          />
+        </Suspense>
+      ) : null}
 
       <ConfirmDialog
         open={Boolean(toPromote)}

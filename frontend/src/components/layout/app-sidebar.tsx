@@ -39,7 +39,7 @@ import { useWorkspaceVisits } from "@/hooks/use-workspace-visits"
  * workspace tree, selection, pins, the run set) lives here and everything else is
  * delegated.
  */
-export function AppSidebar() {
+export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
   const { pathname } = useLocation()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -199,7 +199,7 @@ export function AppSidebar() {
        widths at all. With one column there is nothing to collapse *to*: ⌘B and the
        WindowBar's toggle either show the sidebar or they don't, and ⌘1–⌘9 keep
        projects reachable while it is away. */
-    <Sidebar collapsible="offcanvas">
+    <Sidebar collapsible="offcanvas" side={side}>
       <SessionsPane
         view={view}
         threads={threads}

@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import { Gear, SidebarSimple } from "@phosphor-icons/react"
+import { Gear, SidebarSimple, SquaresFour } from "@phosphor-icons/react"
 
 import { useSidebar } from "@/components/ui/sidebar"
 import { isMacElectron } from "@/lib/platform"
@@ -33,23 +33,36 @@ export const WINDOW_BAR_HEIGHT = "2.75rem"
 interface WindowBarProps {
   /** Open the settings surface. */
   onOpenSettings: () => void
+  /** Open the layouts picker. */
+  onOpenLayouts: () => void
 }
 
-export function WindowBar({ onOpenSettings }: WindowBarProps) {
+export function WindowBar({ onOpenSettings, onOpenLayouts }: WindowBarProps) {
   const { toggleSidebar, open } = useSidebar()
 
   // ⌘, — the platform convention for settings, and the shortcut the Settings
   // dialog will keep in Phase 2. Bound here because the bar is the one surface
   // that is mounted for every route.
+  //
+  // ⇧⌘\ opens the layouts picker, per the plan's §3.7. Matched on `event.code`
+  // rather than `event.key`: with shift held, the backslash key reports "|", so a
+  // key-based match would look for a character the chord never produces.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "," || !(event.metaKey || event.ctrlKey)) return
-      event.preventDefault()
-      onOpenSettings()
+      if (!(event.metaKey || event.ctrlKey)) return
+      if (event.key === "," && !event.shiftKey) {
+        event.preventDefault()
+        onOpenSettings()
+        return
+      }
+      if (event.code === "Backslash" && event.shiftKey) {
+        event.preventDefault()
+        onOpenLayouts()
+      }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onOpenSettings])
+  }, [onOpenSettings, onOpenLayouts])
 
   return (
     <header
@@ -69,10 +82,18 @@ export function WindowBar({ onOpenSettings }: WindowBarProps) {
 
       <div className="min-w-0 flex-1" />
 
-      {/* Deliberately two controls, not the five in the plan's sketch. Layouts
-          and Keyboard shortcuts have nothing behind them until Phases 5 and 2;
-          Notifications was cut outright. A button that opens nothing is worse
-          than a gap where one will go. */}
+      {/* Three controls, not the five in the plan's sketch. Notifications was cut
+          outright (§10), and Keyboard shortcuts is a settings category rather than
+          a glyph of its own — one button for "configure the app" is enough. */}
+      <button
+        type="button"
+        onClick={() => onOpenLayouts()}
+        aria-label="Layouts"
+        title="Layouts (⇧⌘\)"
+        className={actionClass}
+      >
+        <SquaresFour className="h-4 w-4" />
+      </button>
       {/* Wrapped rather than passed straight through: the click event would
           otherwise arrive as the handler's first argument, and the settings
           opener takes an optional category there. */}
