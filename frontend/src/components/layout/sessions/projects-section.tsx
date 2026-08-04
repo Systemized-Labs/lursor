@@ -106,7 +106,6 @@ export function ProjectsSection({
   /** One project row, wherever it sits. */
   const row = (
     workspace: Workspace,
-    slot: number,
     target: Parameters<typeof drag.rowDrag>[1],
     nested: boolean
   ) => {
@@ -118,7 +117,6 @@ export function ProjectsSection({
       <ProjectRow
         key={workspace.id}
         workspace={workspace}
-        slot={slot}
         href={hrefFor(workspace.id)}
         icon={icons.iconFor(workspace)}
         hasIconOverride={icons.hasOverride(workspace.id)}
@@ -249,12 +247,7 @@ export function ProjectsSection({
           if (node.kind === "workspace") {
             return (
               <Fragment key={node.workspace.id}>
-                {row(
-                  node.workspace,
-                  node.slot,
-                  { kind: "root", index: rootIndex },
-                  false
-                )}
+                {row(node.workspace, { kind: "root", index: rootIndex }, false)}
                 {inlineSessions(node.workspace.id)}
               </Fragment>
             )
@@ -325,11 +318,10 @@ export function ProjectsSection({
                 },
               }}
             >
-              {visible.map(({ workspace, slot }) => (
+              {visible.map(({ workspace }) => (
                 <Fragment key={workspace.id}>
                   {row(
                     workspace,
-                    slot,
                     {
                       kind: "folder",
                       folderId: folder.id,
@@ -404,7 +396,7 @@ export function ProjectsSection({
         {studio ? (
           <Fragment key={`studio-${studio.id}`}>
             <li aria-hidden className="mx-2 my-1 h-px shrink-0 bg-sidebar-border" />
-            {row(studio, 0, { kind: "root", index: tree.nodes.length }, false)}
+            {row(studio, { kind: "root", index: tree.nodes.length }, false)}
             {inlineSessions(studio.id)}
           </Fragment>
         ) : null}

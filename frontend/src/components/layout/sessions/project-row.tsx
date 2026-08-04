@@ -26,8 +26,6 @@ import { cn } from "@/lib/utils"
 
 export interface ProjectRowProps {
   workspace: Workspace
-  /** The ⌘N slot, 1-based, or 0 for "past the ninth". */
-  slot: number
   href: string
   icon: WorkspaceIconDef
   hasIconOverride: boolean
@@ -63,7 +61,13 @@ export interface ProjectRowProps {
  * Replaces the 68px `WorkspaceTile`. The tile spent its width on an icon and put
  * the name underneath at 10px, truncated — which is why `cat-adoption` and
  * `cat-landing` could only be told apart by hovering. A full-width row says the
- * name outright and still has room for the icon, the status dot and the ⌘ digit.
+ * name outright and still has room for the icon and the status dot.
+ *
+ * It does not print its ⌘ digit. ⌘1–⌘9 still switch projects
+ * (`use-workspace-switch`); the row just stops advertising it. A chord badge is
+ * worth a slot on a row you are looking for and not on one you are reading past —
+ * and with the caret now also on hover, two hint glyphs were arriving together on
+ * the same edge every time the pointer crossed a project.
  *
  * **Two targets, two intents.** The name switches to the project (resuming the
  * session you were last in) *and* drills the list into it — "show me this
@@ -80,7 +84,6 @@ export interface ProjectRowProps {
  */
 export function ProjectRow({
   workspace,
-  slot,
   href,
   icon,
   hasIconOverride,
@@ -160,17 +163,6 @@ export function ProjectRow({
                   aria-label="Agent working"
                   className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
                 />
-              ) : null}
-
-              {/* Only the addressable ones. A tenth project showing a blank slot
-                  where a digit goes would imply a shortcut that does nothing. */}
-              {slot > 0 && slot <= 9 ? (
-                <span
-                  aria-hidden
-                  className="shrink-0 pr-1 text-[10px] tabular-nums text-sidebar-foreground/35 opacity-0 group-hover/project:opacity-100"
-                >
-                  ⌘{slot}
-                </span>
               ) : null}
             </Link>
 
