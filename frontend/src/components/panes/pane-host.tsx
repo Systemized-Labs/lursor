@@ -19,6 +19,7 @@ import { PaneTab } from "@/components/panes/pane-tab"
 import {
   ADDABLE_KINDS,
   PANE_KINDS,
+  WORKSPACE_KINDS,
   type PaneKind,
   type PaneParams,
 } from "@/components/panes/pane-kinds"
@@ -85,9 +86,13 @@ export function PaneHost({
 
   const rightActions = useCallback(
     (props: IDockviewHeaderActionsProps) => (
-      <AddPaneMenu layout={layout} groupId={props.group.api.id} />
+      <AddPaneMenu
+        layout={layout}
+        groupId={props.group.api.id}
+        hasWorkspace={Boolean(workspaceId)}
+      />
     ),
-    [layout]
+    [layout, workspaceId]
   )
 
   // A layout that ends up with no panes at all would be a window with no way back
@@ -112,7 +117,9 @@ export function PaneHost({
         onReady={handleReady}
         singleTabMode="default"
       />
-      {empty ? <EmptyLayout layout={layout} /> : null}
+      {empty ? (
+        <EmptyLayout layout={layout} hasWorkspace={Boolean(workspaceId)} />
+      ) : null}
     </div>
   )
 }
@@ -206,10 +213,18 @@ function Pane({
 function AddPaneMenu({
   layout,
   groupId,
+  hasWorkspace,
 }: {
   layout: PaneLayout
   groupId: string
+  hasWorkspace: boolean
 }) {
+  // A global layout offers only the kinds that mean something without a workspace.
+  // A terminal with no workspace would open a shell in whatever directory the
+  // backend defaults to, and a Changes pane would have no repo to diff.
+  const kinds = hasWorkspace
+    ? ADDABLE_KINDS
+    : ADDABLE_KINDS.filter((kind) => !WORKSPACE_KINDS.includes(kind))
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -223,7 +238,7 @@ function AddPaneMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {ADDABLE_KINDS.map((kind) => {
+        {kinds.map((kind) => {
           const def = PANE_KINDS[kind]
           const Icon = def.icon
           return (
@@ -242,10 +257,19 @@ function AddPaneMenu({
 }
 
 /** Shown over an empty grid — the dock's empty-state cards, re-homed. */
-function EmptyLayout({ layout }: { layout: PaneLayout }) {
+function EmptyLayout({
+  layout,
+  hasWorkspace,
+}: {
+  layout: PaneLayout
+  hasWorkspace: boolean
+}) {
+  const kinds = hasWorkspace
+    ? ADDABLE_KINDS
+    : ADDABLE_KINDS.filter((kind) => !WORKSPACE_KINDS.includes(kind))
   return (
     <div className="absolute inset-0 grid content-center gap-3 p-6 sm:grid-cols-2">
-      {ADDABLE_KINDS.map((kind) => {
+      {kinds.map((kind) => {
         const def = PANE_KINDS[kind]
         const Icon = def.icon
         return (

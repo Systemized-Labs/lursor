@@ -183,14 +183,26 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
 
   const load = useCallback(
     (target: DockviewApi, ws?: string) => {
-      const layout = readLayout(ws) ?? defaultLayout()
+      const stored = readLayout(ws)
+      if (!stored && !ws) {
+        // A *global* layout has no sensible default. `defaultLayout` seeds a chat
+        // pane, and a chat with no workspace has nothing to talk to — so start
+        // empty and let the route that brought you here ensure its own pane (see
+        // `PANE_ROUTES` in the shell). The empty-state cards cover arriving with no
+        // route at all.
+        target.clear()
+        loadedFor.current = ws
+        mru.current = []
+        return
+      }
+      const layout = stored ?? defaultLayout()
       try {
         target.fromJSON(layout)
       } catch {
         // A layout dockview refuses (a hand-edited key, a shape from a future
         // version) must not leave an empty window with no way back.
         target.clear()
-        target.fromJSON(defaultLayout())
+        if (ws) target.fromJSON(defaultLayout())
       }
       loadedFor.current = ws
       mru.current = target.activePanel ? [target.activePanel.api.id] : []

@@ -4,6 +4,7 @@ import {
   MagnifyingGlass,
   NotePencil,
   SlidersHorizontal,
+  Stack,
   X,
 } from "@phosphor-icons/react"
 import type { Icon } from "@phosphor-icons/react"
@@ -45,6 +46,7 @@ interface SessionsPaneProps {
   onNewChat: () => void
   onSearch: () => void
   onOpenCapabilities: () => void
+  onOpenArtifacts: () => void
   dialogs: WorkspaceDialogs
   handlers: ConversationHandlers
 }
@@ -60,10 +62,9 @@ interface SessionsPaneProps {
  * outright, holds the nav rows the reference UI puts at the top, and leaves ⌘B as
  * the only sidebar shortcut.
  *
- * What is *not* here, deliberately: an Artifacts row. The plan's §5 lists one, but
- * the pane it opens does not exist until Phase 6, and a nav row that opens nothing
- * is worse than a gap where one will go — the same call made for the WindowBar's
- * Layouts button.
+ * All four of §5's nav rows are here now. Artifacts was held back until Phase 6
+ * gave it a pane to open, on the same rule as the WindowBar's Layouts button: a row
+ * that opens nothing is worse than a gap where one will go.
  */
 export function SessionsPane({
   view,
@@ -81,6 +82,7 @@ export function SessionsPane({
   onNewChat,
   onSearch,
   onOpenCapabilities,
+  onOpenArtifacts,
   dialogs,
   handlers,
 }: SessionsPaneProps) {
@@ -144,6 +146,11 @@ export function SessionsPane({
           icon={SlidersHorizontal}
           label="Capabilities"
           onClick={onOpenCapabilities}
+        />
+        <NavRow
+          icon={Stack}
+          label="Artifacts"
+          onClick={onOpenArtifacts}
         />
         <NavRow
           icon={Bell}

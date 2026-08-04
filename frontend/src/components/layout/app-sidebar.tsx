@@ -225,6 +225,16 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
           openSettings("capabilities")
           closeMobile()
         }}
+        onOpenArtifacts={() => {
+          // Navigates to the *global* layout rather than adding a pane to the
+          // workspace you are in. Artifacts, Usage, Video and Image span
+          // workspaces — Usage by nature, Video and Image because they are scoped
+          // to a LAIOS box — so the nav row goes to the surface. Wanting one
+          // beside a chat is a different intent, and that is what a zone's `+` is
+          // for.
+          navigate("/artifacts")
+          closeMobile()
+        }}
         dialogs={dialogs}
         handlers={handlers}
       />

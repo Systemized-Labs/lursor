@@ -6,6 +6,7 @@ import {
   Gear,
   ImageSquare,
   SlidersHorizontal,
+  Stack,
 } from "@phosphor-icons/react"
 import type { ComponentType } from "react"
 
@@ -58,6 +59,7 @@ export const RAIL_DESTINATIONS: RailDestination[] = [
     settings: { category: "schedules" },
   },
   { key: "usage", label: "Usage", icon: ChartBar, to: "/analytics" },
+  { key: "artifacts", label: "Artifacts", icon: Stack, to: "/artifacts" },
   { key: "laios", label: "LAIOS", icon: Cpu, settings: { category: "laios" } },
   { key: "video", label: "Video", icon: FilmSlate, to: "/video" },
   { key: "image", label: "Image", icon: ImageSquare, to: "/image" },

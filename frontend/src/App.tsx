@@ -2,12 +2,9 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom"
 
 import { DEFAULT_CATEGORY } from "@/components/settings/settings-categories"
 import { SETTINGS_PARAM } from "@/components/settings/use-settings-param"
-import { AnalyticsPage } from "@/pages/analytics/analytics-page"
-import { ImagePage } from "@/pages/image/image-page"
 import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
 import { OnboardingGate } from "@/pages/onboarding/onboarding-gate"
 import { WelcomePage } from "@/pages/onboarding/welcome-page"
-import { VideoPage } from "@/pages/video/video-page"
 
 /**
  * Land on the home surface with the settings dialog open at `category`.
@@ -57,7 +54,13 @@ function App() {
           redirects a fresh install to /welcome. */}
       <Route element={<OnboardingGate />}>
         <Route index element={<NewAgentPage />} />
-        <Route path="analytics" element={<AnalyticsPage />} />
+        {/* Addresses, not pages — same as the chat route. The shell mounts the
+            pane layer for these paths and ensures the matching pane; the route
+            exists so links and bookmarks still resolve. Usage is
+            cross-workspace and Video/Image are LAIOS-scoped, so outside a
+            workspace they join the global `_global` layout. */}
+        <Route path="analytics" element={null} />
+        <Route path="artifacts" element={null} />
         {/* Four former destinations are settings-dialog categories now, so their
             routes become redirects onto the home surface with the dialog open.
             They land on `/` rather than staying put because a redirect has to
@@ -76,14 +79,14 @@ function App() {
           path="schedules"
           element={<SettingsRedirect category="schedules" />}
         />
-        {/* Its own destination rather than a LAIOS tab: generating a clip is a
+        {/* Its own pane rather than a LAIOS tab: generating a clip is a
             minutes-long job you come back to, not part of managing the box. */}
-        <Route path="video" element={<VideoPage />} />
-        {/* Its own destination beside Video rather than a tab inside it: they
-            share a gateway and a card grid but nothing else — one is a job API
-            measured in minutes, the other a synchronous call measured in
-            seconds, with different knobs and a different model roster. */}
-        <Route path="image" element={<ImagePage />} />
+        <Route path="video" element={null} />
+        {/* Its own pane beside Video rather than a tab inside it: they share a
+            gateway and a card grid but nothing else — one is a job API measured in
+            minutes, the other a synchronous call measured in seconds, with
+            different knobs and a different model roster. */}
+        <Route path="image" element={null} />
         {/* Back-compat, two generations deep now: these were top-level pages,
             then `?tab=` on Settings or Customization, and are settings categories
             today. Each one still resolves, in one hop rather than a chain. */}

@@ -1,6 +1,7 @@
 # Plan: top-level shell rewrite
 
-Status: **approved; Phases 0–5 done.** Open questions resolved in §10.
+Status: **approved; Phases 0–6 done.** Phase 7 (mobile parity, cleanup) remains.
+Open questions resolved in §10.
 Scope: navigation, window frame, layout system, settings surface. Individual page
 bodies are kept as-is and re-hosted.
 
@@ -779,7 +780,59 @@ moves the sidebar to x=1445 with `data-side="right"`, leaves the panes untouched
 survives a reload. The skill editor still opens after being made lazy. Build and lint
 clean.
 
-**Phase 6 — new panes.** Artifacts; Usage / Video / Image re-hosted as panes.
+**Phase 6 — new panes. DONE.** Four kinds added: `artifacts`, `usage`, `video`,
+`image`. Usage, Video and Image are the existing pages re-hosted — the `embedded`
+convention now lives on `PageHeader` itself, so a pane drops the redundant title
+while keeping the description and the actions (a connection selector, a date
+range) that carry real content.
+
+**A global pane layout, which §3.6 promised and nothing had used yet.** Usage is
+cross-workspace by nature and Video and Image are scoped to a LAIOS box, not a
+repo — so they cannot live only in a workspace's arrangement. `/analytics`,
+`/video`, `/image` and `/artifacts` became *addresses* (the same move Phase 4 made
+for chat: `element={null}`, and the shell answers the path), and outside a
+workspace they join the `_global` layout. Consequences worth recording:
+
+- **A global layout has no sensible default.** `defaultLayout` seeds a chat pane,
+  and a chat with no workspace has nothing to talk to, so a global layout starts
+  empty and the route that brought you there ensures its own pane.
+- **`WORKSPACE_KINDS` gates the `+` menu.** A global zone offers only the four
+  kinds that mean something without a workspace: a Terminal with no workspace
+  would open a shell in whatever directory the backend defaults to, and a Changes
+  pane would have no repo to diff.
+- **The nav row navigates; `+` adds in place.** Two paths with two meanings — the
+  Artifacts row goes to the global surface, while wanting Artifacts *beside* a chat
+  is what a zone's `+` is for. Inside a workspace the `+` offers all nine kinds.
+- **Mobile has no pane layer**, so those four routes render the same
+  kind→component mapping full-screen. One map, two hosts.
+
+**Artifacts ships three of open question 3's four sources, and says so.** Plan docs
+come free off `Thread.plan_path`, which the cross-workspace thread list already
+holds; generated video and images come off the LAIOS list endpoints. **Agent-written
+files are not there**, and the reason is the one I flagged when scoping: the
+provenance exists (a write is a `write_file` / `hashline_edit` tool call, and
+`ThreadMessage.tool_calls` is persisted — `agui/file-changes.ts` already derives
+this for one turn), but there is no way to ask for it across a workspace. Doing it
+client-side would mean fetching every thread's messages and scanning them: N
+requests, and a list whose contents depend on which conversations you happened to
+open. That is worse than an absent section, because it looks complete. The honest
+version is a `GET /workspaces/{id}/artifacts` that scans server-side; the pane's
+own doc comment records this so the next person does not rediscover it.
+
+**Bundle: entry chunk down to 668KB gzipped** (from 691KB after Phase 5, 1,066KB
+before Phase 4). Adding four surfaces made it *smaller*, because re-hosting them as
+lazily-loaded pane kinds split recharts and both media composers out of the entry.
+
+Verified in Electron/hash-router mode: each of the four routes ensures its pane in
+the global layout and they accumulate as tabs (Artifacts → +Usage → +Video →
++Image) with the layout persisted; the global `+` offers exactly Artifacts, Usage,
+Video, Image while a workspace's offers all nine; Artifacts opens beside a chat in a
+workspace layout; the Artifacts nav row reaches the global surface; settings and the
+layouts picker both still open over a global pane layout; Usage keeps its workspace
+and range filters with the title suppressed; and all four routes render full-screen
+on a 390px viewport. One defect found and fixed in review: plan rows for a deleted
+workspace showed a dangling `·` separator, because `workspaceName` returns `""` for
+a workspace that no longer exists.
 
 **Phase 7 — mobile parity, cleanup, deletions.**
 
@@ -819,10 +872,12 @@ things a layout system breaks silently:
 2. **Folders**: **keep**, as collapsible groups inside PROJECTS. The backend and
    the drag logic exist and dropping them would discard user data.
 3. **Artifacts**: **the wide reading** — generated video and image output *and*
-   plan docs and agent-written files. Video and image are the easy half (the API
-   is already there); plan docs have `lib/plan-doc.ts` to build on; agent-written
-   files need a notion of provenance that does not exist yet, so that is the part
-   of Phase 6 to scope first rather than assume.
+   plan docs and agent-written files. Three shipped in Phase 6. Agent-written files
+   did not: the provenance exists per *turn* but not per workspace, and building it
+   client-side would mean N requests for a list that silently depends on which
+   conversations you had opened. **Outstanding work: a
+   `GET /workspaces/{id}/artifacts` endpoint that scans persisted tool calls
+   server-side.**
 4. **Notifications**: **omitted.** Nothing sits behind it today, and an empty
    category is a dead surface. The WindowBar cluster in §2 loses its `🔊` slot
    with it.

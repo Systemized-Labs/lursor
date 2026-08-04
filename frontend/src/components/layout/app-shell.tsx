@@ -12,6 +12,7 @@ import { PaneContent } from "@/components/panes/pane-content"
 import {
   PANE_KINDS,
   type MobilePaneKind,
+  type PaneKind,
 } from "@/components/panes/pane-kinds"
 import {
   hasStoredLayout,
@@ -56,6 +57,21 @@ const PaneHost = lazy(() =>
   import("@/components/panes/pane-host").then((m) => ({ default: m.PaneHost }))
 )
 
+/**
+ * Routes that are *addresses for a pane*, not pages.
+ *
+ * Same move Phase 4 made for chat: the route resolves so links and bookmarks keep
+ * working, and arriving on it ensures the corresponding pane in the layout. Which
+ * layout depends on where you are — inside a workspace these join that workspace's
+ * arrangement, outside one they join the global `_global` layout §3.6 describes.
+ */
+const PANE_ROUTES: { path: string; kind: PaneKind }[] = [
+  { path: "/analytics", kind: "usage" },
+  { path: "/video", kind: "video" },
+  { path: "/image", kind: "image" },
+  { path: "/artifacts", kind: "artifacts" },
+]
+
 /** Same reasoning: it imports dockview types *and* `fromJSON`, so it goes too. */
 const LayoutsDialog = lazy(() =>
   import("@/components/panes/layouts-dialog").then((m) => ({
@@ -94,6 +110,11 @@ export function AppShell() {
   // this query).
   const workspaceForTitle = useWorkspace(workspaceId)
   const inWorkspace = Boolean(workspaceId)
+  const paneRoute = PANE_ROUTES.find((entry) => pathname === entry.path)
+  // The pane layer is the centre for a workspace, and for the four surfaces that
+  // are panes without one. Everything else — the New Agent launcher — is still a
+  // routed page, because a full-bleed launcher is not a pane.
+  const showPanes = inWorkspace || paneRoute !== undefined
 
   /**
    * `?c=` is written *from* the focused chat pane, never read to build the layout
@@ -197,6 +218,24 @@ export function AppShell() {
     if (wanted) layout.openThread(wanted)
   }, [workspaceId, layout, isMobile, searchParams])
 
+  /**
+   * Arriving on a pane route ensures its pane, once.
+   *
+   * Guarded on the path rather than the pane's existence: `ensurePane` already
+   * focuses an open one instead of adding a second, and re-running on every render
+   * would fight the user the moment they focused something else.
+   */
+  const addressedRoute = useRef<string | null>(null)
+  useEffect(() => {
+    if (isMobile || !layout.api || !paneRoute) return
+    if (addressedRoute.current === paneRoute.path) return
+    addressedRoute.current = paneRoute.path
+    layout.ensurePane(paneRoute.kind)
+  }, [paneRoute, layout, isMobile])
+  useEffect(() => {
+    if (!paneRoute) addressedRoute.current = null
+  }, [paneRoute])
+
   // Global "open this file" requests (from the command palette) land here: once
   // we're on the target workspace, ensure a Files pane so the editor mounts and
   // can pick the request up.
@@ -252,6 +291,18 @@ export function AppShell() {
     const mobileCenter = fullBleed ? (
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Outlet />
+      </main>
+    ) : paneRoute ? (
+      // These routes have no element — the desktop shell answers them with a pane.
+      // A phone has no pane layer, so it renders the same surface full-screen
+      // through the same kind→component map.
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <PaneContent
+          kind={paneRoute.kind}
+          workspaceId={workspaceId}
+          paneId={`mobile-route-${paneRoute.kind}`}
+          active
+        />
       </main>
     ) : inWorkspace ? (
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -408,7 +459,7 @@ export function AppShell() {
               needs a real box to measure its zones against. */}
           <SidebarInset className="min-w-0">
             <div className="flex h-(--shell-height) min-h-0 overflow-hidden">
-              {inWorkspace ? (
+              {showPanes ? (
                 <Suspense fallback={<div className="flex-1 bg-background" />}>
                   <PaneHost
                     workspaceId={workspaceId}
@@ -432,7 +483,7 @@ export function AppShell() {
               open={layoutsOpen}
               onOpenChange={setLayoutsOpen}
               layout={layout}
-              hasPanes={inWorkspace}
+              hasPanes={showPanes}
               side={sidebarSide}
               onSideChange={setSidebarSide}
             />

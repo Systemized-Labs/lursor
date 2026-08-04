@@ -25,7 +25,7 @@ const DESCRIPTION =
 // Shared with the LAIOS page so switching connection there carries over here.
 const ACTIVE_KEY = "laios.activeConnectionId"
 
-export function VideoPage() {
+export function VideoPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: connections, isLoading: connectionsLoading } =
     useLaiosConnections()
 
@@ -53,6 +53,7 @@ export function VideoPage() {
     <div className="space-y-6">
       <PageHeader
         title="Video"
+        embedded={embedded}
         description={DESCRIPTION}
         actions={
           connections && connections.length > 1 ? (

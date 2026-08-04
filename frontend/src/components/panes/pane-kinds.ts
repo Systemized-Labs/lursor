@@ -1,8 +1,12 @@
 import {
+  ChartBar,
   ChatCentered,
   FileCode,
+  FilmSlate,
   GitDiff,
   Globe,
+  ImageSquare,
+  Stack,
   Terminal,
   type Icon,
 } from "@phosphor-icons/react"
@@ -11,12 +15,26 @@ import type { DockviewPanelRenderer } from "dockview-react"
 /**
  * The kinds of surface a pane can be.
  *
- * Five for now — the four the right dock had, plus chat. The plan's §3.6 lists
- * artifacts, usage, video and image too; those arrive in Phase 6 with the panes
- * that render them, because a kind in this table with no component behind it is a
- * tab you can open onto nothing.
+ * The five workspace surfaces, plus the four §3.6 promised: artifacts, usage,
+ * video and image. Nothing is listed here without a component behind it — a kind
+ * with nothing to render is a tab you can open onto nothing.
+ *
+ * Note that not every kind is *workspace*-scoped. Usage is cross-workspace by
+ * nature, and Video and Image are scoped to a LAIOS connection rather than to a
+ * repo. They are still panes, and they can sit in a workspace's layout beside a
+ * chat — a pane is a surface, not a claim about what owns it. What they cannot do
+ * is depend on `workspaceId`, and none of them does.
  */
-export type PaneKind = "chat" | "changes" | "file" | "preview" | "terminal"
+export type PaneKind =
+  | "chat"
+  | "changes"
+  | "file"
+  | "preview"
+  | "terminal"
+  | "artifacts"
+  | "usage"
+  | "video"
+  | "image"
 
 /**
  * Our per-pane data, carried in dockview's `params`.
@@ -63,10 +81,44 @@ export const PANE_KINDS: Record<PaneKind, PaneKindDef> = {
   file: { title: "Files", icon: FileCode, renderer: "always" },
   preview: { title: "Preview", icon: Globe, renderer: "always" },
   terminal: { title: "Terminal", icon: Terminal, renderer: "always" },
+  artifacts: { title: "Artifacts", icon: Stack, renderer: "always" },
+  usage: { title: "Usage", icon: ChartBar, renderer: "always" },
+  video: { title: "Video", icon: FilmSlate, renderer: "always" },
+  image: { title: "Image", icon: ImageSquare, renderer: "always" },
 }
 
-/** The kinds offered by a zone's `+` menu, in order. */
+/**
+ * The kinds offered by a zone's `+` menu, in order.
+ *
+ * Every kind is `always`, which means the plan's "except the trivially cheap ones"
+ * never got a taker. Usage is the closest candidate — it is charts derived from
+ * queries, so rebuilding it costs nothing on the server — but it holds a workspace
+ * filter and a date range, and silently resetting those every time the pane is
+ * hidden is a worse trade than the work it keeps doing. If hidden-pane cost ever
+ * shows up in a profile, Usage is where to start, and the fix is
+ * `onlyWhenVisible` plus lifting those two selections out of the component.
+ */
 export const ADDABLE_KINDS: PaneKind[] = [
+  "chat",
+  "changes",
+  "file",
+  "preview",
+  "terminal",
+  "artifacts",
+  "usage",
+  "video",
+  "image",
+]
+
+/**
+ * The kinds that need a workspace to mean anything.
+ *
+ * Used to decide what a *global* pane layout — the one behind `/analytics`,
+ * `/video`, `/image` and `/artifacts`, keyed `_global` — is allowed to hold. A
+ * terminal with no workspace would open a shell in whatever directory the backend
+ * defaults to, which is not a surface anyone asked for.
+ */
+export const WORKSPACE_KINDS: PaneKind[] = [
   "chat",
   "changes",
   "file",

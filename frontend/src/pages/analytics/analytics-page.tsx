@@ -75,7 +75,7 @@ function formatLongDate(iso: string): string {
   })
 }
 
-export function AnalyticsPage() {
+export function AnalyticsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [workspaceId, setWorkspaceId] = useState<string>("all")
   const [range, setRange] = useState<string>("30")
 
@@ -139,6 +139,7 @@ export function AnalyticsPage() {
     <div className="space-y-10">
       <PageHeader
         title="Usage"
+        embedded={embedded}
         actions={
           <div className="flex items-center gap-2">
             <Select value={workspaceId} onValueChange={setWorkspaceId}>
