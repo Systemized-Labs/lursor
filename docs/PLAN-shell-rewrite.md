@@ -1,6 +1,6 @@
 # Plan: top-level shell rewrite
 
-Status: **approved; Phases 0–3 done.** Open questions resolved in §10.
+Status: **approved; Phases 0–4 done.** Open questions resolved in §10.
 Scope: navigation, window frame, layout system, settings surface. Individual page
 bodies are kept as-is and re-hosted.
 
@@ -18,13 +18,16 @@ Concrete failures in today's shell:
   **Addressed across Phases 2 and 3** — four of the seven became settings
   categories, reachable without navigating; the remaining three (Usage, Video,
   Image) are real pages and keep a `⋯` menu, now in the sessions pane's footer.
-- **Two competing tab systems.** The center is a router `Outlet` that owns
+- ~~**Two competing tab systems.** The center is a router `Outlet` that owns
   exactly one surface; the right dock (`right-dock.tsx`) has its own tab strip
   with its own four panel kinds. A chat and a terminal are the same kind of
-  thing to a user, and the app models them as different kinds of thing.
-- **Layout is one hardcoded split.** `app-shell.tsx` offers center + right dock,
+  thing to a user, and the app models them as different kinds of thing.~~ **Fixed
+  in Phase 4** — one tab system; chat is a pane like any other.
+- ~~**Layout is one hardcoded split.** `app-shell.tsx` offers center + right dock,
   a maximize toggle that collapses the center to zero, and nothing else. No
-  bottom zone, no quad, no way to save an arrangement.
+  bottom zone, no quad, no way to save an arrangement.~~ **Fixed in Phase 4** —
+  arbitrary zones, dragged freely, persisted per workspace. *Named* templates and
+  saved custom layouts are Phase 5.
 - ~~**Settings is a page you navigate away from.** Losing your chat to change a
   model is the wrong trade. It is also two pages (`/settings` and
   `/customization`) with two `?tab=` strips and overlapping content.~~ **Fixed in
@@ -646,13 +649,78 @@ moves a project and saves (checked by reading the list order before and after,
 then putting it back); the New folder dialog opens from the section heading; and
 the mobile drawer opens with its close affordance.
 
-**Phase 4 — pane layer.** Dockview mounted as the pane host, pane-kind registry,
-custom `tabComponents` for the Hermes tab look, a theme class over Lursor's
-tokens, per-workspace `toJSON`/`fromJSON` persistence, `ensurePane` ported from
-`use-dock-state.ts`, and the `lursor:dock:*` migration. Chat becomes a pane; the
-right dock's four kinds become pane kinds. Still the big one, but materially
-smaller than the hand-rolled version — no grid template authoring, no resize
-handles, no overlay positioning.
+**Phase 4 — pane layer. DONE.** `components/panes/` — dockview as the pane host,
+a pane-kind registry, a custom tab component for the Hermes look, a theme class
+over Lursor's tokens, per-workspace `toJSON`/`fromJSON`, `ensurePane` ported, and
+the `lursor:dock:*` migration. Chat is a pane; the dock's four kinds are pane
+kinds. `use-dock-state.ts`, `right-dock.tsx` and `dock-rail.tsx` are deleted.
+
+**Losslessness holds in the product, not just the spike.** Opened a Terminal pane,
+set a shell variable, echoed a marker, then dragged the tab to the grid's right
+edge: groups went 1 → 2, the DOM held exactly one xterm instance throughout, and
+the marker was still in the scrollback. That is the guarantee the whole phase
+rests on, now measured against the shipped `TerminalPanel` rather than a stand-in.
+
+**A bug the plan's design implied, found and fixed.** §4 says the URL is written
+*from* the focused pane and never read to build the layout — correct, but it leaves
+no path from a sidebar row to a pane. Clicking a session updated `?c=` and the pane
+carried on showing a new conversation, because panes address themselves through
+their own params. Chat needed the same request channel `open-file` and
+`open-preview` already use, so `lib/open-thread.ts` exists and the row parks a
+request there. Two consequences worth keeping:
+
+- **`openThread` focuses a pane already on that thread** rather than re-addressing
+  another one, or the same conversation ends up open twice.
+- **`?c=` is read exactly once per workspace load**, to honour a bookmark or a
+  reload. After that the panes own their addressing; re-reading it would drag a
+  second chat pane onto the first one's thread.
+
+Other decisions:
+
+- **The route path is unchanged.** §4 proposed `/w/:workspaceId?c=`. Renaming the
+  prefix would break every existing bookmark and in-reply link for no benefit, so
+  `/workspaces/:workspaceId/chat` stays and its route element is `null` — the shell
+  mounts the pane layer for any workspace route. The address survived; only its
+  authority changed.
+- **Five pane kinds, not ten.** §3.6 lists artifacts, usage, video and image; those
+  land in Phase 6 with the components that render them. A kind with nothing behind
+  it is a tab you can open onto nothing.
+- **All five are `renderer: 'always'`.** Every one is either a live session or holds
+  scroll position and unsaved edits. §3.4's visibility gate is wired — each pane
+  gets `active` from `onDidVisibilityChange` — but the expensive-work saving is
+  per-kind behaviour, and Phase 0 is what proved the event fires.
+- **Mobile does not use the pane layer at all.** A four-zone grid on a 390px screen
+  is not a layout. The bottom bar still swaps one full-screen surface for another,
+  rendering the same `PaneContent` the panes do, minus zones, tabs and drag.
+- **`use-pane-layout` must stay free of dockview *value* imports.** `Orientation` is
+  a runtime enum, so importing it pulled all of dockview into the entry chunk even
+  with the host lazy-loaded — 77KB for every route including the ones with no panes.
+  It is a string enum, so the member is recovered from a literal behind a documented
+  double cast.
+
+**Bundle: the entry chunk got 337KB *smaller*.** Code-splitting the host behind the
+workspace route (as §3.4 asks) put dockview in its own 76KB gzipped chunk — and took
+the chat stack and Monaco's setup with it, since nothing outside a workspace needs
+them. Entry chunk 1,066KB → 729KB gzipped; total across all chunks flat at 4.21MB.
+The New Agent home no longer downloads the chat surface to show a launcher.
+
+Verified in Electron/hash-router mode: a legacy `lursor:dock:` key migrates to
+Chat + Terminal + Preview in two groups **carrying the original pane ids**
+(`t-legacy-term`, `t-legacy-prev`) so `lursor:tab:<id>:*` state survives, with the
+old key left in place; the migrated layout is committed immediately rather than
+waiting for a change it may never get; `+` adds a pane; reload restores the
+arrangement; switching workspaces loads that workspace's layout and leaves the
+other's key byte-identical; a sidebar click addresses the focused chat pane and
+writes `?c=`; two chat panes hold two different threads and `?c=` follows focus
+between them; a `?c=` deep link focuses the pane already on that thread; ⌘K
+"open file" produces a Files pane; and the settings dialog still opens over a pane
+layout. Build and lint clean.
+
+**Still open, honestly:** the §9 checklist items for Monaco and a streaming chat
+run were proven in Phase 0's spike against the real components and the same
+renderer, but not re-driven through the product here — the terminal was. A
+streaming run in particular needs a live model call, so it is a manual check rather
+than a headless one.
 
 **Phase 5 — layouts dialog.** Four built-in templates as serialized layouts,
 custom save/apply, the template-switch survivor diff from §3.7, sidebar side

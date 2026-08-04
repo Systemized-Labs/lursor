@@ -12,6 +12,7 @@ import {
 import type { RowHandlers } from "@/components/layout/panel/types"
 import type { SelectMods } from "@/components/layout/use-sidebar-selection"
 import type { ThreadState } from "@/hooks/use-thread-state"
+import { requestOpenThread } from "@/lib/open-thread"
 import { timeAgo } from "@/lib/time-ago"
 import { cn } from "@/lib/utils"
 
@@ -78,6 +79,11 @@ export function ConversationRow({
     } else {
       // Opening a conversation ends bulk selection rather than fighting it.
       if (selection.count > 0) selection.clear()
+      // The `href` still navigates — it has to, since the conversation may live in
+      // another workspace and the pane layer is keyed on that. But the pane itself
+      // is addressed through the request channel, because a pane reads its thread
+      // from its own params rather than from `?c=`.
+      requestOpenThread({ workspaceId: thread.workspace_id, threadId: thread.id })
       onNavigate()
     }
   }

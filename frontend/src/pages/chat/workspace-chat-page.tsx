@@ -1,6 +1,6 @@
 import { Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useLocation, useParams, useSearchParams } from "react-router-dom"
+import { useLocation, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useStore } from "zustand"
@@ -45,17 +45,34 @@ function baseName(path: string): string {
   return i === -1 ? path : path.slice(i + 1)
 }
 
+interface WorkspaceChatPageProps {
+  workspaceId?: string
+  /** The open conversation, or null for a new one. */
+  threadId: string | null
+  /** Report a change of conversation to whoever owns the address. */
+  onThreadChange: (threadId: string | null) => void
+}
+
 /**
  * The chat surface for a workspace. Built on a normalized store + engine
  * ({@link useChatEngine}) and use-stick-to-bottom autoscroll, so streamed tokens
  * re-render only the affected message row and the view pins cleanly to the bottom.
- * Owns a single conversation, selected via the `?c=<threadId>` URL param.
+ *
+ * A **pane**, not a route, since Phase 4. Which conversation is open arrives as a
+ * prop rather than being read from `?c=`, and a change to it is reported back out
+ * — because there can be more than one chat pane open, and two of them cannot both
+ * be `?c=`. The pane host mirrors whichever one is focused; see `pane-host.tsx`.
+ *
+ * `?draft=` is still read from the URL, deliberately: that is a one-shot hand-off
+ * from elsewhere in the app, not state this surface owns.
  */
-export function WorkspaceChatPage() {
-  const { workspaceId } = useParams<{ workspaceId: string }>()
+export function WorkspaceChatPage({
+  workspaceId,
+  threadId: cParam,
+  onThreadChange,
+}: WorkspaceChatPageProps) {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
-  const cParam = searchParams.get("c")
   const qc = useQueryClient()
 
   const workspaceQuery = useWorkspace(workspaceId)
@@ -105,7 +122,7 @@ export function WorkspaceChatPage() {
     reconnect: true,
     onThreadCreated: (thread) => {
       invalidateThreadLists(qc, thread.workspace_id)
-      setSearchParams({ c: thread.id }, { replace: true })
+      onThreadChange(thread.id)
     },
   })
   const { store, loadConversation, reloadMessages, startNewConversation } = chat
@@ -135,7 +152,10 @@ export function WorkspaceChatPage() {
   // Scroll instance owned here so send/interject can re-pin to the bottom.
   const stick = useStickToBottom({ resize: "smooth", initial: "instant" })
 
-  // The URL is the source of truth for which conversation is open.
+  // The `threadId` prop is the source of truth for which conversation is open.
+  // Same shape as when it came from `?c=`, including the "only reset when it was
+  // actually cleared" guard — a prop that is null on the first render is a new
+  // conversation, not a request to discard one.
   const prevCParam = useRef(cParam)
   useEffect(() => {
     const cParamCleared = prevCParam.current !== cParam && !cParam
@@ -143,7 +163,6 @@ export function WorkspaceChatPage() {
     if (cParam) {
       if (cParam !== selectedThreadId) void loadConversation(cParam)
     } else if (cParamCleared && selectedThreadId !== null) {
-      // Only reset when the URL param was actually cleared (New conversation).
       startNewConversation()
     }
   }, [cParam, selectedThreadId, loadConversation, startNewConversation])
@@ -275,7 +294,7 @@ export function WorkspaceChatPage() {
   function handleNewConversation() {
     const chatDefault = defaultAgentFor("chat")
     if (chatDefault) setSelectedAgentId(chatDefault)
-    setSearchParams({})
+    onThreadChange(null)
   }
 
   // Condense the open conversation into a single summary, then reload so the

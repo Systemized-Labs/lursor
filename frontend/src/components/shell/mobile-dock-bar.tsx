@@ -6,7 +6,7 @@ import {
   type Icon,
 } from "@phosphor-icons/react"
 
-import type { DockKind } from "@/hooks/use-dock-state"
+import type { MobilePaneKind, PaneKind } from "@/components/panes/pane-kinds"
 import { cn } from "@/lib/utils"
 
 /**
@@ -19,11 +19,11 @@ import { cn } from "@/lib/utils"
  * workspace surface is the read-only **Plan** view (see {@link MobilePlanView}),
  * which takes that slot instead.
  *
- * Rendered only inside `/workspaces/:id` routes (the dock is workspace-scoped),
- * and only on mobile — desktop keeps the resizable side dock.
+ * Rendered only inside `/workspaces/:id` routes (panes are workspace-scoped), and
+ * only on mobile — desktop gets the real pane layer instead.
  */
 
-type TabKey = "chat" | "plan" | DockKind
+type TabKey = "chat" | "plan" | PaneKind
 
 const TABS: { key: TabKey; title: string; icon: Icon }[] = [
   { key: "chat", title: "Chat", icon: ChatCircle },
@@ -33,14 +33,14 @@ const TABS: { key: TabKey; title: string; icon: Icon }[] = [
 ]
 
 interface MobileDockBarProps {
-  /** The dock kind currently shown in the sheet, or null when chat is active. */
-  activeKind: DockKind | null
+  /** The pane kind currently shown full-screen, or null when chat is active. */
+  activeKind: MobilePaneKind | null
   /** True when the read-only plan view is the active surface. */
   planActive?: boolean
   /** Return to the chat surface (closes the dock sheet). */
   onSelectChat: () => void
   /** Open (or focus) the given dock panel in the bottom sheet. */
-  onSelectKind: (kind: DockKind) => void
+  onSelectKind: (kind: MobilePaneKind) => void
   /** Open (or focus) the read-only plan view. */
   onSelectPlan?: () => void
 }
@@ -77,7 +77,7 @@ export function MobileDockBar({
                 ? onSelectChat()
                 : isPlan
                   ? onSelectPlan?.()
-                  : onSelectKind(tab.key as DockKind)
+                  : onSelectKind(tab.key as MobilePaneKind)
             }
             className={cn(
               "flex min-h-[52px] flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[11px] font-medium transition-colors",

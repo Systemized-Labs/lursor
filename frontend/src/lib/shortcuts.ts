@@ -6,7 +6,7 @@ import { isElectron, isMacElectron } from "@/lib/platform"
  * **This is documentation, not a binding layer.** Every chord below is still
  * registered at its own call site — `ui/sidebar.tsx` owns ⌘B, `command-palette`
  * owns ⌘K, `use-workspace-switch` owns ⌘1–⌘9 and the double-⌘ tap,
- * `editor-pane` owns find/replace, `right-dock` owns Esc. The plan called this
+ * `editor-pane` owns find/replace, dockview owns pane maximize. The plan called this
  * "a table over the keybind registry"; there is no registry, and inventing one
  * would mean rewriting nine unrelated key handlers to serve a help table.
  *
@@ -86,11 +86,6 @@ export const SHORTCUTS: Shortcut[] = [
     group: "Layout",
   },
 
-  {
-    keys: "Esc",
-    description: "Restore a maximized panel",
-    group: "Layout",
-  },
 
   // ── Files ─────────────────────────────────────────────────────────────────
   {

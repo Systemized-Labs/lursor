@@ -1,5 +1,5 @@
 /**
- * localStorage scoped to a single right-dock tab.
+ * localStorage scoped to a single pane.
  *
  * Dock tabs are no longer one-per-kind — a workspace can have two previews or
  * two editors open at once — so panel state that used to hang off the workspace

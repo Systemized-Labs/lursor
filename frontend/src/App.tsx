@@ -4,7 +4,6 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom"
 import { DEFAULT_CATEGORY } from "@/components/settings/settings-categories"
 import { SETTINGS_PARAM } from "@/components/settings/use-settings-param"
 import { AnalyticsPage } from "@/pages/analytics/analytics-page"
-import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { ImagePage } from "@/pages/image/image-page"
 import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
 import { OnboardingGate } from "@/pages/onboarding/onboarding-gate"
@@ -135,10 +134,10 @@ function App() {
           path="workspaces/:workspaceId"
           element={<WorkspaceIndexRedirect />}
         />
-        <Route
-          path="workspaces/:workspaceId/chat"
-          element={<WorkspaceChatPage />}
-        />
+        {/* No element: chat is a *pane* now, and the shell mounts the pane layer
+            for any `/workspaces/:id` route. This route exists so the URL still
+            resolves — it is the address, not the owner (the plan's §4). */}
+        <Route path="workspaces/:workspaceId/chat" element={null} />
         <Route
           path="workspaces/:workspaceId/threads/:threadId"
           element={<LegacyThreadRedirect />}

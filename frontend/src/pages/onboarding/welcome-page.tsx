@@ -7,7 +7,7 @@ import { useOpenRouterSettings } from "@/api/settings"
 import type { Workspace } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
-import { seedCollapsedDock } from "@/hooks/use-dock-state"
+import { seedChatOnlyLayout } from "@/components/panes/use-pane-layout"
 import { AgentStep } from "./agent-step"
 import { GitHubStep } from "./github-step"
 import { ModelStep } from "./model-step"
@@ -72,7 +72,7 @@ export function WelcomePage() {
       // empty chat is noise. Seeded before navigating so the shell reads it on
       // mount rather than flashing an open dock. A workspace that already has a
       // layout keeps it.
-      seedCollapsedDock(workspaceId)
+      seedChatOnlyLayout(workspaceId)
     }
     navigate(workspaceId ? `/workspaces/${workspaceId}/chat` : "/", {
       replace: true,
