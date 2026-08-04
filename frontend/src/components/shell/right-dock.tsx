@@ -17,7 +17,6 @@ import { ChangesPanel } from "@/components/shell/changes-panel"
 import { PreviewPanel } from "@/components/shell/preview-panel"
 import { TerminalPanel } from "@/components/shell/terminal-panel"
 import { DOCK_KINDS, type DockKind, type DockTab } from "@/hooks/use-dock-state"
-import { useMacTitlebar } from "@/hooks/use-mac-titlebar"
 
 // Monaco is heavy (~5MB); load the file editor only when a Files panel opens so
 // it never weighs down the base app.
@@ -138,8 +137,6 @@ export function RightDock({
   // tell duplicates apart, and the strip is narrow enough that a lone "Preview"
   // shouldn't spend width restating what it's pointed at. The ordinal covers a
   // duplicate whose panel has nothing to report yet (a blank preview).
-  const macTitlebar = useMacTitlebar()
-
   const kindTotals = tabs.reduce<Record<string, number>>((acc, t) => {
     acc[t.kind] = (acc[t.kind] ?? 0) + 1
     return acc
@@ -148,24 +145,11 @@ export function RightDock({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-background">
-      {/* Tab strip. It sits at the top of the window beside the chat header, so
-          on macOS it takes that header's chrome line — height and tone both. At
-          36px and `bg-background` it met the header's bottom edge 8px short of
-          it, in a different colour, breaking a band that otherwise runs the full
-          width of the window. */}
-      <div
-        className={cn(
-          "flex shrink-0 items-center gap-1 border-b border-border/40 px-1.5",
-          macTitlebar.enabled ? "h-11 bg-sidebar" : "h-9",
-          // Maximized, this strip is the only thing under the macOS traffic
-          // lights: the dock starts at the sidebar's 68px gutter and the buttons
-          // end around x=84, so the first tab lands beneath the green one. Inset
-          // past them — the same 26px the chat header uses from the same offset.
-          // Only while maximized; unmaximized the dock is over on the right and
-          // the padding would just be a gap.
-          macTitlebar.clearButtons && maximized && "pl-[26px]"
-        )}
-      >
+      {/* Tab strip, level with the chat header beside it. It used to grow to the
+          macOS chrome line and inset past the traffic lights while maximized —
+          maximized, this strip was the only thing under them. The WindowBar owns
+          that band now, so the strip is one height everywhere. */}
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/40 px-1.5">
         <div className="flex-1 flex items-center gap-0.5 overflow-x-auto">
           {tabs.map((t) => {
             const { title, icon: Icon } = TAB_META[t.kind]

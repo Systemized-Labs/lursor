@@ -244,6 +244,14 @@ const SidebarProvider = React.forwardRef<
                 "--sidebar-width": `${width}px`,
                 "--sidebar-width-icon": `${railWidth}px`,
                 "--sidebar-width-total": `${width + railWidth}px`,
+                // How far below the top of the viewport the shell starts. The
+                // sidebar's box is `position: fixed`, so it cannot be pushed
+                // down by a sibling — anything above it (the WindowBar) has to
+                // say so here. Zero unless a caller overrides it, and
+                // `--shell-height` follows automatically because CSS resolves
+                // `var()` lazily, so the override below still reaches it.
+                "--sidebar-top": "0px",
+                "--shell-height": "calc(100svh - var(--sidebar-top))",
                 ...style,
               } as React.CSSProperties
             }
@@ -350,7 +358,9 @@ const Sidebar = React.forwardRef<
         />
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width-total) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]/sidebar-wrapper:transition-none md:flex",
+            // Pinned below whatever the shell reserved at the top rather than to
+            // the viewport, so a full-width WindowBar is not painted over.
+            "fixed bottom-0 top-(--sidebar-top) z-10 hidden h-(--shell-height) w-(--sidebar-width-total) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]/sidebar-wrapper:transition-none md:flex",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width-total)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width-total)*-1)]",
@@ -459,7 +469,10 @@ const SidebarInset = React.forwardRef<
     <main
       ref={ref}
       className={cn(
-        "relative flex min-h-svh flex-1 flex-col bg-background",
+        // `--shell-height` rather than `100svh`: with a WindowBar above, the
+        // inset owns the viewport minus that bar, and a hard `min-h-svh` here
+        // would push the last 44px of every page below the fold.
+        "relative flex min-h-(--shell-height) flex-1 flex-col bg-background",
         "peer-data-[variant=inset]:min-h-[calc(100svh-1rem)] md:peer-data-[variant=inset]:m-2 md:peer-data-[state=collapsed]:peer-data-[variant=inset]:ml-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow",
         className
       )}

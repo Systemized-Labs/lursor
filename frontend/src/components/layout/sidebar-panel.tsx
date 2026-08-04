@@ -9,8 +9,6 @@ import type { ConversationHandlers } from "@/components/layout/panel/types"
 import type { PanelMode } from "@/components/layout/use-panel-mode"
 import type { WorkspaceDialogs } from "@/components/layout/workspace-dialogs"
 import type { AllThreads } from "@/hooks/use-all-threads"
-import { isMacElectron } from "@/lib/platform"
-import { cn } from "@/lib/utils"
 
 interface SidebarPanelProps {
   panelMode: PanelMode
@@ -60,29 +58,20 @@ export function SidebarPanel({
   const isChats = panelMode === "chats"
 
   return (
-    <div
-      className={cn(
-        "flex min-w-0 flex-1 flex-col bg-sidebar",
-        // With the header hoisted into the chrome strip, the first row of the
-        // list would otherwise start hard against it. The header row used to
-        // supply this gap.
-        isMacElectron && "pt-1.5"
-      )}
-    >
-      {/* On macOS the header is rendered by AppSidebar into the traffic-light
-          strip, so the heading shares that line instead of adding a second band
-          under it. Elsewhere there is no strip, and it belongs here. */}
-      {isMacElectron ? null : (
-        <div className="flex h-10 shrink-0 items-center">
-          <PanelHeader
-            panelMode={panelMode}
-            scopedWorkspace={scopedWorkspace}
-            onNewConversation={onNewConversation}
-            onNewChat={onNewChat}
-            onSearch={onSearch}
-          />
-        </div>
-      )}
+    <div className="flex min-w-0 flex-1 flex-col bg-sidebar">
+      {/* The header lives here on every platform now. It used to be hoisted into
+          the sidebar's macOS chrome strip so the heading shared the traffic
+          lights' line; with the WindowBar owning that band there is no strip to
+          hoist it into, and one code path replaces two. */}
+      <div className="flex h-10 shrink-0 items-center">
+        <PanelHeader
+          panelMode={panelMode}
+          scopedWorkspace={scopedWorkspace}
+          onNewConversation={onNewConversation}
+          onNewChat={onNewChat}
+          onSearch={onSearch}
+        />
+      </div>
 
       {/* Bulk-selection toolbar — appears once ⌘/⇧-click selects something.
           Plain clicks keep navigating throughout; "Done" or Esc clears. */}

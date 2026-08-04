@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { ReactNode } from "react"
-import { Outlet, useLocation } from "react-router-dom"
+import type { CSSProperties, ReactNode } from "react"
+import { Outlet, useLocation, useNavigate } from "react-router-dom"
 import type { ImperativePanelHandle } from "react-resizable-panels"
 
 import { useWorkspace } from "@/api/workspaces"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { MobileHeader } from "@/components/layout/mobile-header"
 import { destinationFor } from "@/components/layout/rail-items"
+import { WINDOW_BAR_HEIGHT, WindowBar } from "@/components/layout/window-bar"
 import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
 import { DockRail } from "@/components/shell/dock-rail"
 import { MobileDockBar } from "@/components/shell/mobile-dock-bar"
@@ -55,6 +56,7 @@ const MOBILE_DOCK_TITLES: Record<DockKind, string> = {
  */
 export function AppShell() {
   const isMobile = useIsMobile()
+  const navigate = useNavigate()
   const { pathname } = useLocation()
   // The active workspace (from `/workspaces/:id/...`) keys the dock's persisted
   // layout, so each workspace remembers whether its dock is open and which
@@ -300,12 +302,14 @@ export function AppShell() {
   }
 
   // ── Desktop layout ─────────────────────────────────────────────────────────
-  // Full-bleed surfaces must fill exactly the viewport so their inner regions
-  // (e.g. a chat message list) scroll independently. The sidebar shell is only
-  // `min-h-svh` (a floor that grows with content), so `flex-1`/`min-h-0` have no
-  // definite height to cap against — pin a concrete `h-svh` here instead.
+  // Full-bleed surfaces must fill exactly the space under the WindowBar so their
+  // inner regions (e.g. a chat message list) scroll independently. The sidebar
+  // shell is only `min-h-(--shell-height)` (a floor that grows with content), so
+  // `flex-1`/`min-h-0` have no definite height to cap against — pin a concrete
+  // one here instead. `--shell-height` is the viewport minus the WindowBar; it
+  // falls back to the full viewport wherever no bar is reserved.
   const center = fullBleed ? (
-    <main className="h-svh min-w-0 flex flex-col overflow-hidden">
+    <main className="h-(--shell-height) min-w-0 flex flex-col overflow-hidden">
       <Outlet />
     </main>
   ) : (
@@ -317,15 +321,25 @@ export function AppShell() {
   )
 
   return (
-    <SidebarProvider>
+    /* A column, not the primitive's default row: the WindowBar is the frame's
+       own strip and everything else lives under it. `--sidebar-top` is how the
+       fixed sidebar box and every `--shell-height` consumer learn that the
+       viewport now starts 44px down; nothing below has to know why. */
+    <SidebarProvider
+      className="h-svh flex-col overflow-hidden"
+      style={{ "--sidebar-top": WINDOW_BAR_HEIGHT } as CSSProperties}
+    >
       <CommandPaletteProvider>
-        <AppSidebar />
-        <ShellBody
-          workspaceId={workspaceId}
-          dock={dock}
-          dockVisible={dockVisible}
-          center={center}
-        />
+        <WindowBar onOpenSettings={() => navigate("/settings")} />
+        <div className="flex w-full min-h-0 flex-1">
+          <AppSidebar />
+          <ShellBody
+            workspaceId={workspaceId}
+            dock={dock}
+            dockVisible={dockVisible}
+            center={center}
+          />
+        </div>
       </CommandPaletteProvider>
     </SidebarProvider>
   )
@@ -401,14 +415,14 @@ function ShellBody({ workspaceId, dock, dockVisible, center }: ShellBodyProps) {
           a thin, always-present rail whose toggle governs the dock. The rail
           owns a real column, so its toggle never overlaps page content.
 
-          The row is pinned to a concrete `h-svh` (the sidebar shell is only
-          `min-h-svh`, a floor that grows with content). Without a definite
-          height here, `flex-1`/`min-h-0` descendants have nothing to cap
-          against, so a tall panel — e.g. a large Changes diff in the dock —
-          would grow the whole inset and overflow the viewport instead of
-          scrolling internally. `overflow-hidden` clips at the row so the split
-          below always resolves its own scroll. */}
-      <div className="flex h-svh min-h-0 overflow-hidden">
+          The row is pinned to a concrete `--shell-height` — the viewport minus
+          the WindowBar (the sidebar shell is only a floor that grows with
+          content). Without a definite height here, `flex-1`/`min-h-0`
+          descendants have nothing to cap against, so a tall panel — e.g. a large
+          Changes diff in the dock — would grow the whole inset and overflow the
+          viewport instead of scrolling internally. `overflow-hidden` clips at
+          the row so the split below always resolves its own scroll. */}
+      <div className="flex h-(--shell-height) min-h-0 overflow-hidden">
         <div className="flex flex-1 flex-col min-w-0 min-h-0">
           {dockVisible ? (
             <ResizablePanelGroup
