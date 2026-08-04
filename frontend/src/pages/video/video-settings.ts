@@ -23,11 +23,27 @@ export interface VideoSettings {
 }
 
 /**
+ * The one short edge MiniMax-H3 accepts.
+ *
+ * Not a preference — the engine rejects anything else outright:
+ * ``target.short_edge must be 768 for minimax_h3, got 1080``. This page briefly
+ * offered 480/576/720/768/1080 as chips, four of which were a guaranteed 400,
+ * because the values were guessed from how video is normally named rather than
+ * read off the engine.
+ *
+ * It stays a field in {@link VideoSettings} rather than being inlined at the
+ * call site so a past run still round-trips through "reuse", and so the day the
+ * model inventory carries real per-model constraints there is somewhere for them
+ * to land. Until then the composer states it instead of offering it.
+ */
+export const FIXED_SHORT_EDGE = 768
+
+/**
  * The recipe's own probe values: 8 steps is the fast smoke test at roughly six
  * minutes, against a 50-step default that runs ~35.
  */
 export const DEFAULT_SETTINGS: VideoSettings = {
-  shortEdge: 768,
+  shortEdge: FIXED_SHORT_EDGE,
   aspectRatio: "16:9",
   durationSeconds: 4,
   steps: 8,
@@ -37,34 +53,36 @@ export const DEFAULT_SETTINGS: VideoSettings = {
 export interface AspectOption {
   value: string
   label: string
-  /** Glyph proportions — also what shapes a run card's frame. */
+  /** Glyph proportions. */
   w: number
   h: number
+  /**
+   * The pixel size the engine actually returns for this ratio at
+   * {@link FIXED_SHORT_EDGE}, read off its own responses rather than computed.
+   *
+   * Arithmetic gets this wrong: 768 at 16:9 is 1365 by calculation, and the
+   * engine returns 1344. It snaps the long edge to its patch size, so the only
+   * trustworthy source for these is the engine.
+   */
+  size: string
 }
 
 export const ASPECT_OPTIONS: readonly AspectOption[] = [
-  { value: "16:9", label: "Landscape", w: 16, h: 9 },
-  { value: "9:16", label: "Portrait", w: 9, h: 16 },
-  { value: "1:1", label: "Square", w: 1, h: 1 },
-]
-
-/**
- * Short-edge presets, labelled the way video is usually named.
- *
- * Chips rather than a number field: this is not a free dimension — the engine
- * wants a short edge its patch size divides, and a typo like 767 is a failed
- * six-minute job. The five values here are the ones the recipe is tuned for.
- */
-export const RESOLUTION_OPTIONS: readonly { value: number; label: string }[] = [
-  { value: 480, label: "480p" },
-  { value: 576, label: "576p" },
-  { value: 720, label: "720p" },
-  { value: 768, label: "768p" },
-  { value: 1080, label: "1080p" },
+  { value: "16:9", label: "Landscape", w: 16, h: 9, size: "1344 × 768" },
+  { value: "9:16", label: "Portrait", w: 9, h: 16, size: "768 × 1344" },
+  { value: "1:1", label: "Square", w: 1, h: 1, size: "768 × 768" },
 ]
 
 export const STEP_RANGE = { min: 4, max: 50 } as const
-export const DURATION_RANGE = { min: 2, max: 10, step: 0.5 } as const
+
+/**
+ * Clip length bounds, enforced by the engine:
+ * ``target.duration_seconds must be in [4, 15]``.
+ *
+ * The slider ran 2–10 before, which both offered two seconds of guaranteed
+ * failure at the bottom and hid five usable seconds off the top end.
+ */
+export const DURATION_RANGE = { min: 4, max: 15, step: 0.5 } as const
 
 /** Landmarks under the steps slider: the smoke test and the recipe default. */
 export const STEP_TICKS = [
@@ -74,11 +92,11 @@ export const STEP_TICKS = [
 ]
 
 export const DURATION_TICKS = [
-  { value: 2, label: "2s" },
-  { value: 4 },
-  { value: 6, label: "6s" },
-  { value: 8 },
+  { value: 4, label: "4s" },
+  { value: 7 },
   { value: 10, label: "10s" },
+  { value: 13 },
+  { value: 15, label: "15s" },
 ]
 
 /** Expected wall-clock for a run at this many steps. */
@@ -99,14 +117,17 @@ export function formatEstimate(totalSeconds: number): string {
   return minutes < 1 ? "under a minute" : `~${Math.round(minutes)} min`
 }
 
-/** "768p · 16:9 · 4s · 8 steps" — the composer's one-line summary of its knobs. */
+/** "1344 × 768 · 4s · 8 steps" — the composer's one-line summary. */
 export function summarize(settings: VideoSettings): string {
-  const resolution =
-    RESOLUTION_OPTIONS.find((r) => r.value === settings.shortEdge)?.label ??
-    `${settings.shortEdge}p`
+  // Prefer the size the engine is known to return; fall back to the raw short
+  // edge for a run submitted with something this build doesn't recognise. The
+  // aspect ratio is not listed separately — the dimensions already say it.
+  const size =
+    (settings.shortEdge === FIXED_SHORT_EDGE
+      ? ASPECT_OPTIONS.find((a) => a.value === settings.aspectRatio)?.size
+      : undefined) ?? `${settings.shortEdge}p ${settings.aspectRatio}`
   return [
-    resolution,
-    settings.aspectRatio,
+    size,
     `${formatSeconds(settings.durationSeconds)}s`,
     `${settings.steps} steps`,
     settings.seed !== null ? `seed ${settings.seed}` : null,
@@ -152,6 +173,32 @@ export function settingsFromRequest(
     ),
     steps: asNumber(request.num_inference_steps, DEFAULT_SETTINGS.steps),
     seed: typeof seed === "number" && Number.isFinite(seed) ? seed : null,
+  }
+}
+
+/**
+ * Coerce settings into something the engine will actually accept.
+ *
+ * Used on the "reuse" path, not on display. A run in the history may have been
+ * submitted with values this engine now rejects — a 1080p attempt from before
+ * the constraint was known, or a 2-second clip — and reloading those verbatim
+ * would hand back a form whose only outcome is the same 400. Display still shows
+ * what was really sent (see {@link settingsFromRequest}); this is for the copy
+ * you are about to edit and resubmit.
+ */
+export function toSubmittable(settings: VideoSettings): VideoSettings {
+  const { min, max } = DURATION_RANGE
+  return {
+    ...settings,
+    shortEdge: FIXED_SHORT_EDGE,
+    durationSeconds: Math.min(max, Math.max(min, settings.durationSeconds)),
+    steps: Math.min(
+      STEP_RANGE.max,
+      Math.max(STEP_RANGE.min, Math.round(settings.steps))
+    ),
+    aspectRatio: ASPECT_OPTIONS.some((a) => a.value === settings.aspectRatio)
+      ? settings.aspectRatio
+      : DEFAULT_SETTINGS.aspectRatio,
   }
 }
 

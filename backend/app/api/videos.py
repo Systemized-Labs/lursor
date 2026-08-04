@@ -89,16 +89,52 @@ def _unreachable(conn: LaiosConnection, exc: Exception) -> HTTPException:
 
 
 def _gateway_error_detail(resp: httpx.Response) -> str:
-    """Unwrap the gateway's OpenAI-shaped ``{error:{code,message}}``."""
+    """Unwrap whichever error shape the gateway used.
+
+    There are two, and only one of them used to be handled:
+
+    * ``{"error": {"code", "message"}}`` — the gateway's own OpenAI-shaped errors
+      (no such job, no backend holding it).
+    * ``{"detail": ...}`` — FastAPI's default, which is what the engine's own
+      request validation returns. Every per-model constraint arrives this way:
+      ``target.short_edge must be 768 for minimax_h3, got 1080``.
+
+    Missing the second one turned a precise, actionable message into
+    "gateway returned HTTP 400" — the operator was told a request was rejected
+    but not which knob or what value would work. ``detail`` may also be a list
+    (FastAPI emits one per invalid field), so those are joined rather than
+    stringified as a Python repr.
+    """
     try:
         body = resp.json()
     except ValueError:
         return f"gateway returned HTTP {resp.status_code}"
-    err = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        return f"gateway returned HTTP {resp.status_code}"
+
+    err = body.get("error")
     if isinstance(err, dict):
         code = err.get("code")
         msg = err.get("message") or ""
         return f"{msg} ({code})" if code else msg or f"HTTP {resp.status_code}"
+
+    detail = body.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        return detail
+    if isinstance(detail, list):
+        parts = []
+        for item in detail:
+            if isinstance(item, dict):
+                # Pydantic's shape: locate the field, then say what was wrong.
+                loc = ".".join(str(p) for p in item.get("loc", []) if p != "body")
+                msg = item.get("msg") or ""
+                parts.append(f"{loc}: {msg}" if loc and msg else msg or str(item))
+            else:
+                parts.append(str(item))
+        joined = "; ".join(p for p in parts if p)
+        if joined:
+            return joined
+
     return f"gateway returned HTTP {resp.status_code}"
 
 

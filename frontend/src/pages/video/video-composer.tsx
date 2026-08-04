@@ -21,13 +21,13 @@ import {
 import { Slider } from "@/components/ui/slider"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import { AspectGlyph, ChipRow, Field, Segmented } from "./video-controls"
+import { AspectGlyph, Field, Segmented } from "./video-controls"
 import type { VideoComposer } from "./use-video-composer"
 import {
   ASPECT_OPTIONS,
   DURATION_RANGE,
   DURATION_TICKS,
-  RESOLUTION_OPTIONS,
+  FIXED_SHORT_EDGE,
   STEP_RANGE,
   STEP_TICKS,
   estimateSeconds,
@@ -93,6 +93,9 @@ export function VideoComposer({
   }, [focusTick])
 
   const estimate = estimateSeconds(settings.steps)
+  const activeAspect = ASPECT_OPTIONS.find(
+    (option) => option.value === settings.aspectRatio
+  )
   const canSubmit =
     Boolean(model.trim()) && Boolean(prompt.trim()) && !submit.isPending
 
@@ -220,18 +223,18 @@ export function VideoComposer({
             />
           </Field>
 
-          {/* Deliberately not "1365 × 768". The short edge is the only dimension
-              we send; the box derives the long one and snaps it to its patch
-              size — the recipe's own 768p/16:9 run comes out 1344 wide, not the
-              1365 the arithmetic gives. Printing a computed width would be a
-              precise-looking number that is 21px wrong. */}
-          <Field label="Resolution" value={`${settings.shortEdge} px short edge`}>
-            <ChipRow
-              ariaLabel="Resolution"
-              value={settings.shortEdge}
-              onChange={(value) => update({ shortEdge: value })}
-              options={RESOLUTION_OPTIONS}
-            />
+          {/* Stated, not offered. The engine takes exactly one short edge and
+              rejects the rest outright, so a picker here could only ever hand
+              you four ways to get a 400. The sizes are the engine's own, not
+              arithmetic on the ratio — see ASPECT_OPTIONS. */}
+          <Field
+            label="Output size"
+            value={activeAspect?.size ?? `${settings.shortEdge}px short edge`}
+            hint={`Fixed by ${model || "this model"} — it accepts a ${FIXED_SHORT_EDGE}px short edge only. Use the aspect ratio to change the shape.`}
+          >
+            <div className="flex h-9 items-center rounded-lg bg-muted/60 px-3 text-xs tabular-nums text-muted-foreground">
+              {activeAspect?.size ?? "—"}
+            </div>
           </Field>
 
           <Field

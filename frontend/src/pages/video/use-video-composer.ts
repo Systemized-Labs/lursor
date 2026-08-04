@@ -4,6 +4,7 @@ import type { LaiosVideoJob } from "@/api/types"
 import {
   DEFAULT_SETTINGS,
   settingsFromRequest,
+  toSubmittable,
   type VideoSettings,
 } from "./video-settings"
 
@@ -49,7 +50,10 @@ export function useVideoComposer(): VideoComposer {
   const loadRun = useCallback((job: LaiosVideoJob) => {
     setModel(job.model)
     setPrompt(job.prompt)
-    setSettings(settingsFromRequest(job.request))
+    // Clamped: a run from before a constraint was known would otherwise reload
+    // values the engine rejects, and the reused form would fail exactly as the
+    // original did.
+    setSettings(toSubmittable(settingsFromRequest(job.request)))
     // Open the knobs: you reuse a run to change one of them, and leaving them
     // folded away would hide the thing you came to edit.
     setAdvancedOpen(true)

@@ -249,3 +249,84 @@ def _patch_gateway(monkeypatch, handler) -> None:
 
     monkeypatch.setattr(videos_mod, "gateway_base", fake_base)
     monkeypatch.setattr(videos_mod, "_gateway", fake_gateway)
+
+
+async def test_engine_validation_message_reaches_the_client(
+    client: AsyncClient, monkeypatch
+):
+    """A rejected knob must say which knob and what value would work.
+
+    The gateway speaks two error shapes: its own OpenAI-style
+    ``{"error": {...}}``, and FastAPI's ``{"detail": ...}`` for the engine's
+    per-model request validation. Only the first was unwrapped, so every
+    constraint violation — the common case, since limits like
+    ``short_edge must be 768`` are not published anywhere the UI can read —
+    collapsed to a bare "gateway returned HTTP 400".
+    """
+    conn = await _make_connection(client, name="strict", base_url="http://s:7420")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"detail": "target.short_edge must be 768 for minimax_h3, got 1080"},
+        )
+
+    _patch_gateway(monkeypatch, handler)
+
+    r = await client.post(
+        f"/laios/connections/{conn['id']}/videos",
+        json={"model": "minimax-h3", "prompt": "x"},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == (
+        "target.short_edge must be 768 for minimax_h3, got 1080"
+    )
+
+
+async def test_pydantic_style_validation_list_is_flattened(
+    client: AsyncClient, monkeypatch
+):
+    """``detail`` may be a list of per-field errors; joining beats a Python repr."""
+    conn = await _make_connection(client, name="listerr", base_url="http://l:7420")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422,
+            json={
+                "detail": [
+                    {
+                        "loc": ["body", "target", "duration_seconds"],
+                        "msg": "must be in [4, 15]",
+                    }
+                ]
+            },
+        )
+
+    _patch_gateway(monkeypatch, handler)
+
+    r = await client.post(
+        f"/laios/connections/{conn['id']}/videos",
+        json={"model": "minimax-h3", "prompt": "x"},
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "target.duration_seconds: must be in [4, 15]"
+
+
+async def test_openai_shaped_error_still_unwraps(client: AsyncClient, monkeypatch):
+    """The pre-existing shape must keep working alongside the new one."""
+    conn = await _make_connection(client, name="oai", base_url="http://o:7420")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"error": {"code": "video_not_found", "message": "no such job"}},
+        )
+
+    _patch_gateway(monkeypatch, handler)
+
+    r = await client.post(
+        f"/laios/connections/{conn['id']}/videos",
+        json={"model": "minimax-h3", "prompt": "x"},
+    )
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "no such job (video_not_found)"
