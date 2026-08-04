@@ -9,7 +9,9 @@ import {
   CaretRight,
   Copy,
   DotsThree,
+  FileAudio,
   FileImage,
+  FileVideo,
   FileX,
   FloppyDisk,
   FolderOpen,
@@ -48,7 +50,9 @@ import {
   filesInGroup,
   isImageFile,
   isMarkdownFile,
+  isMediaFile,
   isProseFile,
+  isVideoFile,
   type EditorGroup,
   type FileBuffers,
   type OpenFile,
@@ -521,10 +525,17 @@ function EditorBody({
       </Centered>
     )
   }
-  // Images render inline from the raw endpoint — checked before the binary/size
-  // dead-ends, since `/read` reports images as binary and large ones as too big.
-  if (isImageFile(file.name) && rawUrl) {
-    return <ImagePreview src={rawUrl(file.path)} name={file.name} />
+  // Media renders inline from the raw endpoint — checked before the binary/size
+  // dead-ends, since `/read` reports these as binary and anything past a couple
+  // of megabytes (which is most video) as too big to open.
+  if (rawUrl && isMediaFile(file.name)) {
+    return (
+      <MediaPreview
+        src={rawUrl(file.path)}
+        name={file.name}
+        revision={file.revision}
+      />
+    )
   }
   if (file.isBinary) {
     return (
@@ -712,15 +723,78 @@ function MarkdownPreview({ content }: { content: string }) {
   )
 }
 
-/** Inline image preview, centered on the editor surface with a size hint. */
-function ImagePreview({ src, name }: { src: string; name: string }) {
+/**
+ * Inline preview for a media file: an image, a video player, or an audio player,
+ * centered on the editor surface with the filename beneath it.
+ *
+ * All three share this one frame because they are the same thing from the
+ * editor's point of view — bytes the raw endpoint serves and Monaco can't hold.
+ * What differs is only the element, and what happens when it won't play: a
+ * container we listed but whose codec this browser lacks (an H.265 `.mov`, say)
+ * fires `error` rather than rendering, so the frame swaps in a notice with the
+ * path to work with instead of leaving a black rectangle on screen.
+ *
+ * `revision` counts on-disk changes and rides along as a query parameter, so an
+ * agent regenerating the file replaces what's on screen instead of leaving a
+ * cached copy of the old bytes there.
+ */
+function MediaPreview({
+  src,
+  name,
+  revision,
+}: {
+  src: string
+  name: string
+  revision: number
+}) {
+  const [failed, setFailed] = useState(false)
+  const url =
+    revision > 0 ? `${src}${src.includes("?") ? "&" : "?"}v=${revision}` : src
+  // A new file — or new bytes for this one — must get its own chance to load.
+  useEffect(() => setFailed(false), [url])
+
+  const video = isVideoFile(name)
+
+  if (failed) {
+    return (
+      <Centered icon={video ? FileVideo : FileAudio} title="Can’t play this file">
+        {name} is in a format this browser won’t decode. Open it in a media
+        player, or use the terminal to convert it.
+      </Centered>
+    )
+  }
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 overflow-auto bg-card p-6">
-      <img
-        src={src}
-        alt={name}
-        className="max-h-full max-w-full rounded-md object-contain shadow-sm"
-      />
+      {isImageFile(name) ? (
+        <img
+          src={url}
+          alt={name}
+          onError={() => setFailed(true)}
+          className="max-h-full max-w-full rounded-md object-contain shadow-sm"
+        />
+      ) : video ? (
+        // `preload="metadata"` so opening a tab costs the header and not the
+        // whole file; the raw endpoint answers range requests, so seeking
+        // fetches only what it needs.
+        <video
+          src={url}
+          controls
+          preload="metadata"
+          onError={() => setFailed(true)}
+          className="max-h-full max-w-full rounded-md bg-black/90 object-contain shadow-sm"
+        />
+      ) : (
+        <audio
+          src={url}
+          controls
+          preload="metadata"
+          onError={() => setFailed(true)}
+          // Audio controls have no intrinsic width to speak of, so they'd sit as
+          // a lonely strip in the middle of the pane. Give them a column.
+          className="w-full max-w-lg"
+        />
+      )}
       <p className="font-mono text-[11px] text-muted-foreground">{name}</p>
     </div>
   )

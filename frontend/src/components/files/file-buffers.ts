@@ -69,6 +69,14 @@ export interface OpenFile {
   groups: EditorGroup[]
   /** Where to jump once an editor is up; cleared by `clearReveal` on arrival. */
   reveal?: RevealTarget
+  /**
+   * Bumped each time the file changes on disk. Text buffers don't need it — their
+   * new content *is* the signal — but a media file's bytes never pass through
+   * here, so its preview has nothing else to notice: same path, same URL, same
+   * props, and an agent that regenerates a video would leave the old one on
+   * screen. The preview hangs its cache-buster off this.
+   */
+  revision: number
 }
 
 /** Extras for {@link FileBuffers.openFile} beyond the path and name. */
@@ -90,6 +98,23 @@ const IMAGE_EXTS = new Set([
   "ico",
   "avif",
 ])
+// Formats a browser's own `<video>`/`<audio>` element can be expected to play.
+// Deliberately not every container that exists: an `.avi` or `.wmv` in a media
+// player produces a dead black rectangle, which is a worse answer than the
+// binary notice. A container listed here whose *codec* the browser lacks still
+// fails, and the player reports that itself — see `MediaPreview`.
+const VIDEO_EXTS = new Set(["mp4", "m4v", "webm", "ogv", "mov"])
+const AUDIO_EXTS = new Set([
+  "mp3",
+  "wav",
+  "ogg",
+  "oga",
+  "opus",
+  "m4a",
+  "aac",
+  "flac",
+  "weba",
+])
 const MARKDOWN_EXTS = new Set(["md", "mdx", "markdown"])
 // Prose files wrap by default even when the global Word Wrap toggle is off —
 // long-form text shouldn't run off the right edge like code sometimes wants to.
@@ -100,6 +125,11 @@ function extOf(name: string): string {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : ""
 }
 export const isImageFile = (name: string) => IMAGE_EXTS.has(extOf(name))
+export const isVideoFile = (name: string) => VIDEO_EXTS.has(extOf(name))
+export const isAudioFile = (name: string) => AUDIO_EXTS.has(extOf(name))
+/** Anything the editor shows in a player rather than in Monaco. */
+export const isMediaFile = (name: string) =>
+  isImageFile(name) || isVideoFile(name) || isAudioFile(name)
 export const isMarkdownFile = (name: string) => MARKDOWN_EXTS.has(extOf(name))
 export const isProseFile = (name: string) => PROSE_EXTS.has(extOf(name))
 
@@ -261,6 +291,7 @@ export function useFileBuffers(source: FileSource | undefined): FileBuffers {
               isMarkdownFile(name) && !options?.reveal ? "preview" : "code",
             groups: [group],
             reveal: options?.reveal,
+            revision: 0,
           },
         ]
       })
@@ -468,6 +499,22 @@ export function useFileBuffers(source: FileSource | undefined): FileBuffers {
         patch(path, { status: "deleted" })
         return
       }
+      // A media file has no buffer to reconcile — the preview loads the bytes
+      // itself. Re-reading it would only spend a round trip to be told it's
+      // binary again, so bump the revision (which is what makes the preview
+      // refetch) and stop there. `status` matters for a file that arrived after
+      // being reported deleted.
+      const media = openPathsRef.current.get(path)
+      if (media && isMediaFile(media.name)) {
+        setOpenFiles((prev) =>
+          prev.map((f) =>
+            f.path === path
+              ? { ...f, status: "ready", revision: f.revision + 1 }
+              : f
+          )
+        )
+        return
+      }
       try {
         const file = await source.read(path)
         setOpenFiles((prev) =>
@@ -485,6 +532,7 @@ export function useFileBuffers(source: FileSource | undefined): FileBuffers {
               truncated: file.truncated,
               status: "ready",
               conflict: undefined,
+              revision: f.revision + 1,
             }
           })
         )
