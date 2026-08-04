@@ -54,7 +54,7 @@ function matches(schedule: Schedule, query: string): boolean {
  * The selection lives in the URL (`?schedule=<id>`), so a pane is deep-linkable and
  * survives a reload.
  */
-export function SchedulesPage() {
+export function SchedulesPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState("")
   const containerRef = useRef<HTMLDivElement>(null)
@@ -221,17 +221,28 @@ export function SchedulesPage() {
   )
 
   return (
-    <div className="space-y-6 px-4 py-6 sm:px-0">
-      <PageHeader
-        title="Schedules"
-        description={DESCRIPTION}
-        actions={
+    <div className={embedded ? "space-y-6" : "space-y-6 px-4 py-6 sm:px-0"}>
+      {/* See LaiosPage: embedded, the dialog's category rail is the heading. */}
+      {embedded ? (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <p className="min-w-0 text-sm text-muted-foreground">{DESCRIPTION}</p>
           <Button onClick={() => setCreateOpen(true)} disabled={!canCreate}>
             <Plus className="h-4 w-4" />
             New schedule
           </Button>
-        }
-      />
+        </div>
+      ) : (
+        <PageHeader
+          title="Schedules"
+          description={DESCRIPTION}
+          actions={
+            <Button onClick={() => setCreateOpen(true)} disabled={!canCreate}>
+              <Plus className="h-4 w-4" />
+              New schedule
+            </Button>
+          }
+        />
+      )}
 
       {/* The ref is the two-pane measurement: this element is always mounted and
           always the full width the page has to work with. */}

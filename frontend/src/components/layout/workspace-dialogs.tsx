@@ -154,7 +154,9 @@ export function useWorkspaceDialogs({
     // background with an optimistic cache update (rolled back on failure).
     setDeleteWsTarget(null)
     if (activeWorkspaceId === ws.id) {
-      navigate("/customization")
+      // Home, not the old Customization page: that was only ever "somewhere
+      // that isn't the workspace you just deleted", and it is a dialog now.
+      navigate("/")
     }
     deleteWorkspace.mutate(ws.id, {
       onSuccess: () => {

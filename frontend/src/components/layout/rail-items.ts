@@ -13,7 +13,19 @@ export interface RailDestination {
   key: string
   label: string
   icon: ComponentType<{ className?: string }>
-  to: string
+  /**
+   * A whole-page route. Mutually exclusive with {@link settings}: a destination
+   * is either somewhere you navigate to or a category of the settings dialog,
+   * and the two behave differently everywhere they are consumed.
+   */
+  to?: string
+  /**
+   * Opens the settings dialog at this category (undefined category = its
+   * default). Four former routes live here now — Settings, Customization, LAIOS
+   * and Schedules — because the dialog opens *over* the page you are on instead
+   * of replacing it, which is the whole point of it being a dialog.
+   */
+  settings?: { category?: string }
   /**
    * This destination also has its own tile in the rail footer.
    *
@@ -39,18 +51,23 @@ export interface RailDestination {
  * rail's height goes to workspaces. ⌘K reaches all of them by name too.
  */
 export const RAIL_DESTINATIONS: RailDestination[] = [
-  { key: "schedules", label: "Schedules", icon: Clock, to: "/schedules" },
+  {
+    key: "schedules",
+    label: "Schedules",
+    icon: Clock,
+    settings: { category: "schedules" },
+  },
   { key: "usage", label: "Usage", icon: ChartBar, to: "/analytics" },
-  { key: "laios", label: "LAIOS", icon: Cpu, to: "/laios" },
+  { key: "laios", label: "LAIOS", icon: Cpu, settings: { category: "laios" } },
   { key: "video", label: "Video", icon: FilmSlate, to: "/video" },
   { key: "image", label: "Image", icon: ImageSquare, to: "/image" },
   {
     key: "customization",
     label: "Customization",
     icon: SlidersHorizontal,
-    to: "/customization",
+    settings: { category: "capabilities" },
   },
-  { key: "settings", label: "Settings", icon: Gear, to: "/settings", pinned: true },
+  { key: "settings", label: "Settings", icon: Gear, settings: {}, pinned: true },
 ]
 
 /**
@@ -70,9 +87,15 @@ export function matchesRoute(pathname: string, to: string): boolean {
  * "/customization" and "/settings" and fall through to "New chat" for
  * everything else, so Video — and Schedules, Usage and LAIOS before it — sat
  * under a title for a page you weren't on. One list, one answer.
+ *
+ * Settings categories are never a match, deliberately: the dialog is over some
+ * other route, and the header should keep naming the page underneath rather than
+ * renaming it because a modal is open.
  */
 export function destinationFor(pathname: string): RailDestination | undefined {
-  return RAIL_DESTINATIONS.find((item) => matchesRoute(pathname, item.to))
+  return RAIL_DESTINATIONS.find(
+    (item) => item.to !== undefined && matchesRoute(pathname, item.to)
+  )
 }
 
 /**

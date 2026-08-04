@@ -73,9 +73,12 @@ export function WindowBar({ onOpenSettings }: WindowBarProps) {
           and Keyboard shortcuts have nothing behind them until Phases 5 and 2;
           Notifications was cut outright. A button that opens nothing is worse
           than a gap where one will go. */}
+      {/* Wrapped rather than passed straight through: the click event would
+          otherwise arrive as the handler's first argument, and the settings
+          opener takes an optional category there. */}
       <button
         type="button"
-        onClick={onOpenSettings}
+        onClick={() => onOpenSettings()}
         aria-label="Settings"
         title="Settings (⌘,)"
         className={actionClass}

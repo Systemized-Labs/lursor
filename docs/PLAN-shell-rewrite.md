@@ -1,6 +1,6 @@
 # Plan: top-level shell rewrite
 
-Status: **approved; Phase 0 and Phase 1 done.** Open questions resolved in §10.
+Status: **approved; Phases 0, 1 and 2 done.** Open questions resolved in §10.
 Scope: navigation, window frame, layout system, settings surface. Individual page
 bodies are kept as-is and re-hosted.
 
@@ -15,6 +15,9 @@ Concrete failures in today's shell:
 - **Destinations are buried.** Schedules, Usage, LAIOS, Video, Image and
   Customization all live behind one `⋯` dropdown in the rail footer
   (`rail-items.ts`). Seven whole-page routes share a single unlabelled tile.
+  *Partly addressed in Phase 2* — four of the seven are settings categories now,
+  reachable without navigating. The remaining three (Usage, Video, Image) are real
+  destinations and wait for the sidebar in Phase 3.*
 - **Two competing tab systems.** The center is a router `Outlet` that owns
   exactly one surface; the right dock (`right-dock.tsx`) has its own tab strip
   with its own four panel kinds. A chat and a terminal are the same kind of
@@ -22,9 +25,10 @@ Concrete failures in today's shell:
 - **Layout is one hardcoded split.** `app-shell.tsx` offers center + right dock,
   a maximize toggle that collapses the center to zero, and nothing else. No
   bottom zone, no quad, no way to save an arrangement.
-- **Settings is a page you navigate away from.** Losing your chat to change a
+- ~~**Settings is a page you navigate away from.** Losing your chat to change a
   model is the wrong trade. It is also two pages (`/settings` and
-  `/customization`) with two `?tab=` strips and overlapping content.
+  `/customization`) with two `?tab=` strips and overlapping content.~~ **Fixed in
+  Phase 2** — one dialog, in `?settings=`, over whatever route you are on.
 - ~~**Window chrome is negotiated per surface.** `useMacTitlebar` exists so that
   `app-sidebar`, `workspace-chat-page`, `right-dock` and `dock-rail` can each
   independently reconstruct the same 44px band and each decide whether to inset
@@ -522,10 +526,61 @@ one 44px band on screen where there used to be up to three, zero document
 overflow on every route, and dock maximize/restore (including the sidebar
 snapshot-and-restore) still correct. Entry chunk cost: +130 bytes gzipped.
 
-**Phase 2 — settings dialog.** Build `SettingsDialog` and its categories over
-the existing sections. Point `/settings`, `/customization`, `/laios`,
-`/schedules` at it. Highest ratio of felt improvement to risk, and it shrinks
-the surface the layout work has to carry.
+**Phase 2 — settings dialog. DONE.** `components/settings/` — a fourteen-category
+dialog over the existing sections, state in `?settings=<category>`.
+`settings-page.tsx`, `customization-page.tsx` and `providers-section.tsx` are
+deleted: they were tab shells, and the dialog is the shell now.
+
+What changed beyond the plan's table:
+
+- **Web search and Memory & context are their own categories**, not sub-tabs of
+  Providers. They shared that tab because "one app-wide backend behind a
+  per-agent toggle" is the same shape of decision — a good answer when Settings
+  had four tabs to spend, and pointless once there is a rail. Providers is model
+  sources only.
+- **`/settings`, `/customization`, `/laios`, `/schedules` are redirects**, along
+  with the older `/agents`, `/prompts`, `/skills`, `/tools`, `/providers`,
+  `/github` and `/settings/laios` — each resolving in one hop rather than
+  chaining through the generation of URLs in between. They land on `/` with the
+  dialog open, because a redirect has to pick a path. From inside the app nothing
+  navigates: the rail, ⌘K and ⌘, all set `?settings=` on the route you are
+  already on.
+- **`RailDestination` gained a `settings` variant** beside `to`. Four former
+  destinations have no route now, so route-matching cannot decide their active
+  state — and `destinationFor` deliberately never matches a category, so the
+  mobile header keeps naming the page underneath rather than renaming it because
+  a modal is open.
+- **Keyboard shortcuts is documentation, not a registry.** The plan said "a table
+  over the keybind registry"; there is no registry — nine unrelated call sites
+  bind their own chords, and rewriting all nine to serve a help table would be
+  the tail wagging the dog. `lib/shortcuts.ts` is the labels, with the drift risk
+  stated in the file rather than hidden. When shortcuts become rebindable, that is
+  when the registry has to exist, and this file becomes its labels.
+- **Notifications omitted**, per §10. **Export / import / reset omitted**, per §6.
+- **`useBrowserBox` learned `data-browser-bounds`.** The two-pane pages size
+  themselves against the fold, which inside a modal is far below the modal's own
+  bottom edge — so Skills would have been sized to overflow the dialog by the
+  dialog's top offset. Any ancestor can now declare itself the boundary; one
+  attribute at the one place that needs it, and the standalone pages are
+  untouched.
+
+**§6's width concern is resolved, measured.** In the `wide` variant the Skills
+browser gets 707px of height inside an 860px dialog and its detail pane ~790px of
+width — comfortably more than the rail beside it, which was the actual complaint.
+Mitigation 1 was enough; the named fallback (Capabilities as a pane) is not
+needed. Schedules was given `wide` too, for the same two-pane reason.
+
+Verified: `bun run build` and `bun run lint` clean. Headless pass over all
+fourteen categories at 1600×1000 — each renders, the pane clips and scrolls inside
+the dialog (Memory 1562px and LAIOS 2031px of content in an 858px pane), and the
+dialog never overflows the viewport. Every entry point exercised in
+Electron/hash-router mode from a workspace chat — ⌘,, the rail's ⋯ menu, the rail
+footer tile, and ⌘K — each opening the right category, each staying on the chat
+route, Esc closing and leaving the URL clean. Entry chunk cost: +2.6KB gzipped,
+since the sections were already in the bundle.
+
+**Deferred:** the mobile shape is a horizontal category strip above the pane —
+workable, not designed. The plan's §7 owns it in Phase 7.
 
 **Phase 3 — sidebar.** `SessionsPane` with nav rows, search, Pinned, Projects,
 drill-down, folders-as-groups, `⌘1`–`⌘9`. Delete the rail and the panel.

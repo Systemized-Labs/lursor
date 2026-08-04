@@ -37,6 +37,7 @@ import {
   isDestinationRoute,
   matchesRoute,
 } from "@/components/layout/rail-items"
+import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { RailFolder } from "@/components/layout/rail-folder"
 import { WorkspaceTile } from "@/components/layout/workspace-tile"
 import type { WorkspaceIcons } from "@/components/layout/use-workspace-icons"
@@ -236,6 +237,7 @@ export function NavRail({
   }
 
   const destinationActive = isDestinationRoute(pathname)
+  const { openSettings } = useSettingsParam()
 
   /** One member or loose workspace, with everything both widths need. */
   const tile = (
@@ -614,11 +616,16 @@ export function NavRail({
                 <DropdownMenuItem
                   key={item.key}
                   onSelect={() => {
-                    navigate(item.to)
+                    // A settings category opens the dialog over the current
+                    // route; a route navigates. Only one of the two is set.
+                    if (item.settings) openSettings(item.settings.category)
+                    else if (item.to) navigate(item.to)
                     onNavigate()
                   }}
                   className={cn(
-                    matchesRoute(pathname, item.to) && "font-medium"
+                    item.to !== undefined &&
+                      matchesRoute(pathname, item.to) &&
+                      "font-medium"
                   )}
                 >
                   <Icon className="size-4" />
@@ -654,18 +661,25 @@ export function NavRail({
             ⋯ menu above; this is the one you aim at without reading. */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" asChild className={FOOTER_TILE}>
-              <Link to="/settings" onClick={onNavigate} aria-label="Settings">
-                {githubConfig?.avatar_url ? (
-                  <img
-                    src={githubConfig.avatar_url}
-                    alt=""
-                    className="size-7 rounded-full border border-sidebar-border object-cover"
-                  />
-                ) : (
-                  <Gear className="size-5" />
-                )}
-              </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={FOOTER_TILE}
+              aria-label="Settings"
+              onClick={() => {
+                openSettings()
+                onNavigate()
+              }}
+            >
+              {githubConfig?.avatar_url ? (
+                <img
+                  src={githubConfig.avatar_url}
+                  alt=""
+                  className="size-7 rounded-full border border-sidebar-border object-cover"
+                />
+              ) : (
+                <Gear className="size-5" />
+              )}
             </Button>
           </TooltipTrigger>
           <TooltipContent side="right" hidden={isMobile}>

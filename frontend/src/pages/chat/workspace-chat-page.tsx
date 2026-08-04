@@ -1,6 +1,6 @@
 import { Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Link, useLocation, useParams, useSearchParams } from "react-router-dom"
+import { useLocation, useParams, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useStore } from "zustand"
@@ -27,6 +27,7 @@ import { GoalRunPanel } from "@/components/chat/GoalPanel"
 import { parseSlashCommand } from "@/components/chat/commands/registry"
 import type { AgentScope, CommandAction } from "@/components/chat/commands/types"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
+import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { requestOpenFile } from "@/lib/open-file"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
@@ -82,6 +83,7 @@ export function WorkspaceChatPage() {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
   const { data: defaultAgents } = useDefaultAgents()
+  const { openSettings } = useSettingsParam()
   // A manual per-turn override of the agent a queued slash command would switch
   // to. Null unless the user picks a different agent from the composer while a
   // command is in the draft; reset whenever the draft's command changes so it
@@ -583,15 +585,11 @@ export function WorkspaceChatPage() {
                 variant="ghost"
                 size="sm"
                 className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
-                asChild
+                onClick={() => openSettings("capabilities")}
+                title="Manage and assign skills — new ones land unassigned"
               >
-                <Link
-                  to="/customization?tab=skills"
-                  title="Manage and assign skills — new ones land unassigned"
-                >
-                  <SquaresFour className="h-4 w-4" />
-                  <span className="hidden sm:inline">Manage skills</span>
-                </Link>
+                <SquaresFour className="h-4 w-4" />
+                <span className="hidden sm:inline">Manage skills</span>
               </Button>
             ) : null}
             <Button
@@ -633,7 +631,7 @@ export function WorkspaceChatPage() {
                   </p>
                   <p className="mx-auto max-w-[18rem] text-xs text-muted-foreground">
                     {noAgents
-                      ? "Create an agent in Customization to start chatting."
+                      ? "Create an agent in Settings → Capabilities to start chatting."
                       : workspace?.is_system
                         ? "Ask for a skill and it gets written into your catalog — SKILL.md, references and scripts. Every existing skill is in the file tree to crib from, and the terminal runs their scripts."
                         : "Pick an agent above and send the first message."}
@@ -641,12 +639,13 @@ export function WorkspaceChatPage() {
                   {workspace?.is_system && !noAgents ? (
                     <p className="mx-auto max-w-[18rem] pt-1 text-xs text-muted-foreground">
                       New skills arrive unassigned — pick where they apply in{" "}
-                      <Link
-                        to="/customization?tab=skills"
+                      <button
+                        type="button"
+                        onClick={() => openSettings("capabilities")}
                         className="font-medium text-foreground underline underline-offset-2"
                       >
                         Skills
-                      </Link>
+                      </button>
                       .
                     </p>
                   ) : null}

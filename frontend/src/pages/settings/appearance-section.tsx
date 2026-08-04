@@ -35,7 +35,7 @@ export function AppearanceSection() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Appearance</CardTitle>
+        <CardTitle>Theme and typography</CardTitle>
         <CardDescription>
           Choose your theme and how text is rendered across the app.
         </CardDescription>

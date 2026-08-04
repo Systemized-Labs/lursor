@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { CSSProperties, ReactNode } from "react"
-import { Outlet, useLocation, useNavigate } from "react-router-dom"
+import { Outlet, useLocation } from "react-router-dom"
 import type { ImperativePanelHandle } from "react-resizable-panels"
 
 import { useWorkspace } from "@/api/workspaces"
@@ -8,6 +8,8 @@ import { AppSidebar } from "@/components/layout/app-sidebar"
 import { MobileHeader } from "@/components/layout/mobile-header"
 import { destinationFor } from "@/components/layout/rail-items"
 import { WINDOW_BAR_HEIGHT, WindowBar } from "@/components/layout/window-bar"
+import { SettingsDialog } from "@/components/settings/settings-dialog"
+import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
 import { DockRail } from "@/components/shell/dock-rail"
 import { MobileDockBar } from "@/components/shell/mobile-dock-bar"
@@ -56,8 +58,8 @@ const MOBILE_DOCK_TITLES: Record<DockKind, string> = {
  */
 export function AppShell() {
   const isMobile = useIsMobile()
-  const navigate = useNavigate()
   const { pathname } = useLocation()
+  const { openSettings } = useSettingsParam()
   // The active workspace (from `/workspaces/:id/...`) keys the dock's persisted
   // layout, so each workspace remembers whether its dock is open and which
   // panels were up.
@@ -185,10 +187,7 @@ export function AppShell() {
    * stretches three cards across two feet of desk. The cap is high enough that any
    * ordinary laptop is already below it and simply gets the full width.
    */
-  const columnClass = cn(
-    "mx-auto w-full",
-    pathname.startsWith("/customization") ? "max-w-[100rem]" : "max-w-6xl"
-  )
+  const columnClass = "mx-auto w-full max-w-6xl"
 
   // ── Mobile layout ──────────────────────────────────────────────────────────
   // A single column under a global top header: the routed content fills the
@@ -295,6 +294,9 @@ export function AppShell() {
                 />
               )}
             </div>
+            {/* Reachable on a phone through the sidebar's Settings tile — there
+                is no WindowBar here until the mobile pass. */}
+            <SettingsDialog />
           </SidebarInset>
         </CommandPaletteProvider>
       </SidebarProvider>
@@ -330,7 +332,7 @@ export function AppShell() {
       style={{ "--sidebar-top": WINDOW_BAR_HEIGHT } as CSSProperties}
     >
       <CommandPaletteProvider>
-        <WindowBar onOpenSettings={() => navigate("/settings")} />
+        <WindowBar onOpenSettings={openSettings} />
         <div className="flex w-full min-h-0 flex-1">
           <AppSidebar />
           <ShellBody
@@ -340,6 +342,9 @@ export function AppShell() {
             center={center}
           />
         </div>
+        {/* Mounted at the shell, not per route: settings opens *over* whatever
+            you were doing rather than replacing it. */}
+        <SettingsDialog />
       </CommandPaletteProvider>
     </SidebarProvider>
   )
