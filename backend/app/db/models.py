@@ -363,6 +363,12 @@ class Agent(TimestampMixin, table=True):
     # run time by the app-wide ``settings.browser_qa_enabled`` master switch and to
     # non-read-only, workspace-scoped runs.
     browser_qa: bool = True
+    # Let this agent generate video clips on a connected laios box (see
+    # ``agents/video_tools.py``). Off by default and deliberately: one clip is
+    # minutes of GPU time on someone's box, so it deserves an explicit checkbox
+    # rather than arriving with an upgrade. Also gated at run time on a connection
+    # actually serving a video-capable model.
+    include_video: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     # Force or forbid tool calls (see ToolChoice); "auto" leaves it to the model.
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
@@ -418,6 +424,12 @@ class Subagent(TimestampMixin, table=True):
     include_memory: bool = False
     include_plan: bool = False
     web_search: bool = False
+    # Video generation, same flag as on :class:`Agent` and off for the same reason.
+    # A subagent only ever *receives* it when its parent has it too: the parent
+    # resolves the box once and passes the runtime down (see ``agents/builder.py``),
+    # so this flag decides whether a specialist may spend the parent's GPU budget,
+    # not whether one can be found.
+    include_video: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
 

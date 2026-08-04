@@ -1,4 +1,11 @@
-import { Browser, Globe, Pencil, Plus, Trash } from "@phosphor-icons/react"
+import {
+  Browser,
+  FilmSlate,
+  Globe,
+  Pencil,
+  Plus,
+  Trash,
+} from "@phosphor-icons/react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -153,6 +160,12 @@ export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
                   <Badge variant="outline" className="gap-1 font-normal">
                     <Browser className="h-3 w-3" />
                     browser
+                  </Badge>
+                ) : null}
+                {agent.include_video ? (
+                  <Badge variant="outline" className="gap-1 font-normal">
+                    <FilmSlate className="h-3 w-3" />
+                    video
                   </Badge>
                 ) : null}
                 {agent.include_skills ? (

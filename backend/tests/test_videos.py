@@ -14,6 +14,8 @@ The gateway is an httpx MockTransport, so no box (and no clip) is needed.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 from httpx import AsyncClient
 
@@ -149,15 +151,15 @@ async def test_submit_poll_and_play(client: AsyncClient, monkeypatch):
     assert b"paper boat" in captured["body"]
 
     # The list is served from our table, so the job survives independently of
-    # the gateway's in-memory map.
+    # the gateway's in-memory map — and it reconciles the active rows on the way
+    # out (see ``_refresh_active``), which is what advances a job whose submitter
+    # went away. That reconcile is this listing's poll.
     listed = (await client.get(f"/laios/connections/{cid}/videos")).json()
     assert [j["job_id"] for j in listed] == ["vid_1"]
+    assert listed[0]["status"] == "in_progress"
+    assert listed[0]["progress"] == 0.5
 
     # Polling folds the gateway's status into the row.
-    r = await client.get(f"/laios/connections/{cid}/videos/vid_1")
-    assert r.json()["status"] == "in_progress"
-    assert r.json()["progress"] == 0.5
-
     r = await client.get(f"/laios/connections/{cid}/videos/vid_1")
     assert r.json()["status"] == "completed"
 
@@ -330,3 +332,115 @@ async def test_openai_shaped_error_still_unwraps(client: AsyncClient, monkeypatc
     )
     assert r.status_code == 404, r.text
     assert r.json()["detail"] == "no such job (video_not_found)"
+
+
+async def test_fl2va_keyframes_relay_as_json_and_are_not_stored_inline(
+    client: AsyncClient, monkeypatch
+):
+    """First/last-frame conditioning goes over the ordinary JSON path.
+
+    The engine resolves a condition's ``uri`` as a local path, an http(s) URL *or*
+    an inline base64 payload, so an off-box Lursor needs no multipart branch — it
+    inlines the frame. What must not happen is the megabyte of base64 landing in the
+    row: ``request`` is read back by the history list on every poll, and the pixels
+    are the one part of the submission nothing here needs to keep.
+    """
+    conn = await _make_connection(client, name="frames", base_url="http://f:7420")
+    cid = conn["id"]
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["content_type"] = request.headers.get("content-type")
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "vid_fl", "status": "queued"})
+
+    _patch_gateway(monkeypatch, handler)
+
+    inline = "data:image/png;base64," + ("A" * 4096)
+    body = {
+        "model": "minimax-h3",
+        "prompt": "the frame continues with calm, natural motion",
+        "task": "fl2va",
+        "conditions": [
+            {"type": "image", "uri": inline, "role": "keyframe", "frame_index": 0}
+        ],
+        "target": {
+            "short_edge": 768,
+            "aspect_ratio": "auto",
+            "duration_seconds": 5.0,
+        },
+        "num_inference_steps": 8,
+    }
+    r = await client.post(f"/laios/connections/{cid}/videos", json=body)
+    assert r.status_code == 201, r.text
+
+    # Relayed verbatim, JSON, keyframe intact: the engine gets the pixels.
+    assert captured["content_type"] == "application/json"
+    assert captured["body"]["conditions"][0]["uri"] == inline
+    assert captured["body"]["task"] == "fl2va"
+
+    # Stored with the payload elided but the entry — and its frame_index — kept, so
+    # the history still says what was asked for.
+    stored = r.json()["request"]["conditions"][0]
+    assert stored["frame_index"] == 0
+    assert stored["role"] == "keyframe"
+    assert "AAAA" not in stored["uri"]
+    assert "image/png" in stored["uri"]
+    assert r.json()["task"] == "fl2va"
+
+
+async def test_listing_reconciles_a_job_nobody_is_polling(
+    client: AsyncClient, monkeypatch
+):
+    """An orphaned job must not sit at ``queued`` forever.
+
+    Nothing advances a job server-side: the browser polls per active job, and the
+    backend refreshes a row only when asked. An agent that submitted and was then
+    stopped leaves a row queued while the box happily finishes the render — a silent
+    stall. Opening the history is what reconciles it.
+    """
+    conn = await _make_connection(client, name="orphan", base_url="http://orp:7420")
+    cid = conn["id"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "vid_orphan", "status": "queued"})
+        return httpx.Response(200, json={"status": "completed", "progress": 1.0})
+
+    _patch_gateway(monkeypatch, handler)
+
+    r = await client.post(
+        f"/laios/connections/{cid}/videos",
+        json={"model": "minimax-h3", "prompt": "x", "num_inference_steps": 8},
+    )
+    assert r.json()["status"] == "queued"
+
+    listed = (await client.get(f"/laios/connections/{cid}/videos")).json()
+    assert listed[0]["status"] == "completed"
+    assert listed[0]["progress"] == 1.0
+
+
+async def test_listing_survives_an_unreachable_box(client: AsyncClient, monkeypatch):
+    """The reconcile is best-effort: a box that is down leaves the rows alone.
+
+    The history is exactly the surface an operator opens when a box is misbehaving,
+    so it must not be the thing that 502s.
+    """
+    conn = await _make_connection(client, name="listdown", base_url="http://ld:7420")
+    cid = conn["id"]
+
+    def submit(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "vid_down", "status": "queued"})
+
+    _patch_gateway(monkeypatch, submit)
+    await client.post(
+        f"/laios/connections/{cid}/videos", json={"model": "minimax-h3", "prompt": "x"}
+    )
+
+    def dead(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route", request=request)
+
+    _patch_gateway(monkeypatch, dead)
+    r = await client.get(f"/laios/connections/{cid}/videos")
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["status"] == "queued"

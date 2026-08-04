@@ -58,8 +58,14 @@ type BooleanFieldKey =
   | "include_memory"
   | "include_plan"
   | "web_search"
+  | "include_video"
 
-const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
+const BOOLEAN_FIELDS: {
+  key: BooleanFieldKey
+  label: string
+  /** Shown under the label. For a toggle whose cost isn't obvious from its name. */
+  hint?: string
+}[] = [
   { key: "include_todo", label: "Include todo" },
   { key: "include_subagents", label: "Include subagents" },
   { key: "include_skills", label: "Include skills" },
@@ -69,6 +75,11 @@ const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
   { key: "include_memory", label: "Memory" },
   { key: "include_plan", label: "Include plan" },
   { key: "web_search", label: "Web search" },
+  {
+    key: "include_video",
+    label: "Video generation",
+    hint: "Only takes effect when the delegating agent has video on too — it spends that agent's box.",
+  },
 ]
 
 interface FormState {
@@ -82,6 +93,7 @@ interface FormState {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   // Whole-percent text; "" means no override (see ``CompactionFields``).
@@ -103,6 +115,7 @@ function emptyState(): FormState {
     include_memory: false,
     include_plan: false,
     web_search: false,
+    include_video: false,
     thinking: "off",
     tool_choice: "auto",
     compactionThresholdText: "",
@@ -124,6 +137,7 @@ function fromSubagent(subagent: Subagent): FormState {
     include_memory: subagent.include_memory,
     include_plan: subagent.include_plan,
     web_search: subagent.web_search,
+    include_video: subagent.include_video,
     thinking: subagent.thinking,
     tool_choice: subagent.tool_choice ?? "auto",
     compactionThresholdText: fractionToPercentText(subagent.compaction_threshold),
@@ -249,6 +263,7 @@ export function SubagentFormDialog({
       include_memory: form.include_memory,
       include_plan: form.include_plan,
       web_search: form.web_search,
+      include_video: form.include_video,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
       compaction_threshold: threshold.value,
@@ -416,6 +431,9 @@ export function SubagentFormDialog({
                     <Label htmlFor={`subagent-${field.key}`}>{field.label}</Label>
                     {field.key === "include_memory" && memoryHint ? (
                       <p className="text-xs text-muted-foreground">{memoryHint}</p>
+                    ) : null}
+                    {field.hint ? (
+                      <p className="text-xs text-muted-foreground">{field.hint}</p>
                     ) : null}
                   </div>
                   <Switch

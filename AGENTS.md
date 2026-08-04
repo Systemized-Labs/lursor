@@ -301,6 +301,23 @@ Rules that are load-bearing:
 - `tests/conftest.py` pins `USER_SKILL_ROOTS=[]`, or the suite indexes whatever
   is in the developer's own `~/.claude/skills`.
 
+**Bundled skills** are the fifth source, and the only one Lursor itself authors:
+folders under `backend/app/skills/bundled/` (they ride in the wheel, so they reach the
+frozen desktop bundle too) are copied into the catalog by `app/skills/seed.py` on every
+start, *before* `reconcile` so the same pass indexes them. They then behave as ordinary
+managed skills — editable, assignable, switchable.
+
+The whole design is the upgrade path, since the destination is a directory the user can
+edit. Each seeded folder carries a `.bundled` stamp holding the digest of exactly what
+was installed, which separates three states: **absent** → install (and globalize once,
+because the catalog indexes a new folder as *parked* and a shipped skill in scope
+nowhere does nothing); **stamp still matches the contents** → ours and untouched, so a
+newer bundled version replaces it; **stamp missing or stale** → a user skill that
+happens to share the slug, or ours with their edits in it, so hands off and log the
+skip. The globalize step runs only for slugs a pass *installed*, so parking a bundled
+skill survives the next release. Copies go via a staging directory and a rename, or an
+interrupted write would leave a `SKILL.md` the agent library then fails to parse.
+
 **Skill Studio** is the catalog registered as a system `Workspace`
 (`is_system` is *computed* from `path == settings.skills_dir` — no column, no
 migration). Delete and path-change are refused by the API; rename is allowed.
@@ -506,6 +523,70 @@ server-side and forwards to the daemon's `/v1/*` API on `:7420`. All
 restart/update logic lives in the daemon — Lursor stays a pure proxy. Restart is
 special: the daemon dies mid-request, so a dropped connection shortly after a
 `202` is expected, surfaced as `202 {restarting: true}`.
+
+A box's *inference* gateway is a separate plane from its control plane
+(`gateway_url` decouples them: LAN-side management, tunnelled model traffic), and
+the two are joined in one place only — `non_chat_served_names` /
+`video_served_names` read the control plane's per-recipe `capabilities` and map them
+onto the gateway's flat `/v1/models` list. Same join, opposite failure policies, on
+purpose: the chat picker **fails open** (a box we cannot classify shows all its
+models rather than none), the video tools **fail closed** (no classification means
+no tools, because a tool that 400s on every call is worse than an absent one).
+
+### Video generation
+
+`api/videos.py` proxies a laios gateway's `/v1/videos` job API: submit, poll,
+cancel, download-once into the content-addressed media store. It **does not invent a
+request shape** — the body is relayed as sent, so a new engine knob works here the
+day it works there. MiniMax-H3 is the only `capabilities: [video]` recipe today:
+~44 s per denoise step (8 steps ≈ 6 min, 50 ≈ 35), `short_edge` fixed at 768,
+4-15 s clips, and audio-video out in one mp4.
+
+`fl2va` (first/last-frame conditioning) is **not** multipart, despite what an early
+docstring guessed. It is the same JSON body plus `conditions: [{type: "image", uri,
+role: "keyframe", frame_index}]`, where `frame_index` is `0`, `-1`, or both in that
+order, and `uri` may be a `data:` URI — which is the only transport that works from
+an off-box Lursor, since a path would name a file the engine cannot see. The
+inlined base64 is stripped from the *stored* row (`_storable_request`): the pixels
+are the one part of a submission nothing here needs to keep, and the history list
+reads `request` on every poll.
+
+Two measured numbers that are not in any doc and are invisible until they bite:
+
+1. **The gateway caps a request body at 2 MiB** (axum's default; 2,090,000 bytes went
+   through, 2,200,000 got `413 Failed to buffer the request body`). A keyframe is
+   base64 in that body — a real 1344x768 frame is 587 KB as PNG against 31 KB as
+   JPEG, and an incompressible one is 2.9 MB, so PNG is the format that gets you
+   near the edge rather than one that always fails. `generate_video` checks the
+   *assembled* body, not each frame (two keyframes share the budget), and answers
+   with the `-q:v 3` JPEG remedy.
+2. **The delivered duration is not the requested one.** The engine aligns frames to
+   17n+5 at 24 fps, so `duration_seconds=4` returns a 4.5 s clip. Every fade/concat
+   calculation must come from `ffprobe`, never from what was submitted.
+
+Agents reach it through four deferred tools (`agents/video_tools.py`):
+`generate_video` (submit, never wait — a 35-minute tool call makes a run look hung),
+`video_status` (poll with a **bounded** wait, then materialize the clip into
+`<workspace>/.agents/video/gen/` because ffmpeg and `read_file` live inside the
+workspace and the media store does not), `cancel_video` (a wrong render otherwise
+holds the GPU for its full estimate), and `view_video` (ffprobe + a tiled contact
+sheet + one vision call — and it says plainly that it cannot hear the audio track).
+Gated on `Agent.include_video` (default off; a clip is minutes of someone's GPU) plus
+a resolved `VideoRuntime`. A subagent inherits the parent's runtime — it has no
+session to resolve one with — but only when its own `include_video` is on, so a
+video-enabled agent does not silently hand every specialist a GPU.
+
+Everything ffmpeg — trim, concat, xfade, captions — is the `video-production` skill
+instead, because a tool is only justified when the work needs a credential, a DB row
+or app state, and ffmpeg needs none of the three. **ffmpeg is a real dependency**
+(declared in the cask template, checked by the skill's preflight) and is deliberately
+not vendored. Homebrew's formula ships without libfreetype, so `drawtext` is absent
+there; the skill carries an `overlay` fallback. `scripts/verify_video_tools.py` is the
+one check that needs a real box, and is a script rather than a test for that reason.
+
+Nothing advances a job server-side, so `list_videos` reconciles every non-terminal
+row on the way out. Without it an agent that submits and is then stopped leaves a row
+at `queued` forever while the box finishes the render — a silent stall.
 
 ### The right dock
 

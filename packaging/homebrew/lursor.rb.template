@@ -30,6 +30,14 @@ cask "lursor" do
 
   auto_updates true
   depends_on arch: :arm64
+  # ffmpeg is a real runtime dependency, not a nicety: the video tools materialize
+  # clips that the ``video-production`` skill then cuts with ffmpeg, and
+  # ``view_video`` cannot see a clip at all without ffmpeg/ffprobe. It is
+  # deliberately not vendored — ~80 MB, plus a GPL-vs-LGPL and encoder-patent
+  # question this project has no business answering to ship a convenience. Note
+  # that Homebrew's formula is built without libfreetype, so ``drawtext`` is
+  # absent; the skill carries an ``overlay`` fallback for burned-in text.
+  depends_on formula: "ffmpeg"
 
   app "Lursor.app"
 

@@ -15,6 +15,7 @@ export interface Agent {
   include_plan: boolean
   web_search: boolean
   browser_qa: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   /** Fraction of the context window at which this agent compacts, or null to use
@@ -41,6 +42,7 @@ export interface AgentInput {
   include_plan: boolean
   web_search: boolean
   browser_qa: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   // Null clears the override and reverts to the app-wide default.
@@ -232,6 +234,7 @@ export interface Subagent {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   /** Compaction overrides for this subagent's own context; null uses the app-wide
@@ -257,6 +260,7 @@ export interface SubagentInput {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   compaction_threshold: number | null
@@ -325,6 +329,7 @@ export interface AgentPromptContext {
   include_plan: boolean
   web_search: boolean
   browser_qa: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   skill_names: string[]
   tool_names: string[]
@@ -1274,7 +1279,13 @@ export interface LaiosVideoJob {
 export interface LaiosVideoInput {
   model: string
   prompt: string
-  /** `t2va` (prompt only) — `fl2va` needs a multipart upload, not wired up yet. */
+  /**
+   * `t2va` — prompt only, which is all this page sends.
+   *
+   * `fl2va` (first/last-frame conditioning) goes through the same JSON body with a
+   * `conditions` array, and is driven by the agent tools rather than from here; the
+   * composer has no frame picker.
+   */
   task: string
   target: {
     short_edge: number

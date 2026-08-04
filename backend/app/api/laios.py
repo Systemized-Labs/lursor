@@ -333,6 +333,53 @@ async def non_chat_served_names(conn: LaiosConnection) -> set[str]:
     return excluded
 
 
+async def video_served_names(conn: LaiosConnection) -> set[str]:
+    """Served names on this box that declare the ``video`` capability.
+
+    The sibling of :func:`non_chat_served_names`, over the same control-plane
+    inventory join, and deliberately not the same question: that one asks "what
+    must the chat picker hide" and answers by the *absence* of ``chat``; this asks
+    "is there something here that can generate a clip" and answers by the
+    *presence* of ``video``.
+
+    **Fails closed**, which is the opposite of its sibling and is the point. The
+    picker hides on a guess and so must guess generously; a video tool built for a
+    box we cannot classify would 400 on every call, and an absent tool is strictly
+    better than one that always fails.
+    """
+    try:
+        async with _client(conn, timeout=httpx.Timeout(5.0)) as client:
+            resp = await client.get("/v1/models")
+        if resp.status_code >= 400:
+            return set()
+        inventory = resp.json()
+    except (httpx.RequestError, ValueError):
+        return set()
+
+    if not isinstance(inventory, list):
+        return set()
+
+    served: set[str] = set()
+    for model in inventory:
+        if not isinstance(model, dict):
+            continue
+        capabilities = model.get("capabilities")
+        if not isinstance(capabilities, list) or "video" not in capabilities:
+            continue
+        # Only a *serving* model can take a job. ``running_instance`` is present
+        # for any active instance (the daemon counts pending/pulling/starting as
+        # active), so the status is checked too: a box 20 minutes into loading 95 GB
+        # of weights has an instance but no gateway route yet, and a tool built on
+        # that is the always-400 tool this function exists to avoid.
+        instance = model.get("running_instance")
+        if not isinstance(instance, dict) or instance.get("status") != "running":
+            continue
+        name = instance.get("served_name") or model.get("served_model_name")
+        if isinstance(name, str) and name:
+            served.add(name)
+    return served
+
+
 # --- Connection CRUD ------------------------------------------------------------
 
 

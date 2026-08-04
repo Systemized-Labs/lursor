@@ -75,6 +75,7 @@ from app.agents.hindsight import resolve_hindsight_config
 from app.agents.preview_service import preview_service
 from app.agents.skill_runtime import load_skill_runtime
 from app.agents.titler import generate_title
+from app.agents.video_runtime import load_video_runtime
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
 from app.db.models import (
@@ -850,6 +851,14 @@ async def _build_agent_and_context(
         workspace_id=workspace.id,
         include_skills=agent_row.include_skills,
     )
+    # Which box (if any) this run can generate clips on. Resolved here for the same
+    # reason as the skills: it needs this session, and the builder is synchronous.
+    # Skipped entirely in read-only mode — the read-only tool filter would drop the
+    # tools anyway, so resolving them would spend a control-plane round trip per
+    # ``/ask`` turn for nothing.
+    video_runtime = await load_video_runtime(
+        session, include_video=agent_row.include_video and not read_only
+    )
     agent, deps = build_deep_agent(
         agent_row,
         workspace.path,
@@ -860,6 +869,7 @@ async def _build_agent_and_context(
         workspace_description=workspace.description or None,
         workspace_id=workspace.id,
         skill_runtime=skill_runtime,
+        video_runtime=video_runtime,
         read_only=read_only,
         plan_mode=plan_mode,
         web_search_provider=app_config.web_search_provider if app_config else None,

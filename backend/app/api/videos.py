@@ -27,10 +27,11 @@ which of the two it is talking to.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -156,6 +157,43 @@ def _to_read(job: VideoJob) -> dict[str, Any]:
     }
 
 
+def _storable_request(body: dict[str, Any]) -> dict[str, Any]:
+    """The request as submitted, minus any inlined frame bytes.
+
+    A ``fl2va`` submission carries its keyframes inside the body as base64 ``data:``
+    URIs — a megabyte or two each. The row exists to record *what was asked for* and
+    to feed the page's "reuse", and neither needs the pixels: the engine has them,
+    and the workspace file they came from is where the operator would look. Storing
+    them would put a multi-megabyte string in every history response.
+
+    The elision is a visible descriptor rather than a dropped key, because a
+    ``conditions`` entry with no ``uri`` would read as a request that never had one.
+    """
+    conditions = body.get("conditions")
+    if not isinstance(conditions, list):
+        return body
+
+    stored: list[Any] = []
+    elided = False
+    for entry in conditions:
+        if not isinstance(entry, dict):
+            stored.append(entry)
+            continue
+        uri = entry.get("uri")
+        if isinstance(uri, str) and uri.startswith(("data:", "base64://")):
+            elided = True
+            head = uri.split(",", 1)[0]
+            media_type = head[5:].split(";", 1)[0] if head.startswith("data:") else ""
+            entry = {
+                **entry,
+                "uri": f"<inline {media_type or 'image'}, {len(uri)} chars not stored>",
+            }
+        stored.append(entry)
+    if not elided:
+        return body
+    return {**body, "conditions": stored}
+
+
 async def _row(cid: str, job_id: str, session: AsyncSession) -> VideoJob:
     result = await session.execute(
         select(VideoJob).where(
@@ -176,13 +214,64 @@ async def list_videos(cid: str, session: AsyncSession = Depends(get_session)):
     ``GET /v1/videos`` is deliberately not proxied by laios (across several
     backends it would have to be merged rather than routed), and our rows outlive
     the gateway's in-memory map anyway.
+
+    Non-terminal rows are refreshed first (see :func:`_refresh_active`). Nothing
+    advances a job server-side, so without this a run whose submitter went away —
+    an agent that was stopped, a browser tab that was closed — sits at ``queued``
+    forever while the box happily finishes the render. Opening this list is what
+    reconciles it.
     """
     result = await session.execute(
         select(VideoJob)
         .where(VideoJob.connection_id == cid)
         .order_by(VideoJob.created_at.desc())
     )
-    return [_to_read(job) for job in result.scalars().all()]
+    jobs = list(result.scalars().all())
+    await _refresh_active(cid, jobs, session)
+    return [_to_read(job) for job in jobs]
+
+
+async def _refresh_active(
+    cid: str, jobs: list[VideoJob], session: AsyncSession
+) -> None:
+    """Poll every non-terminal row on this connection and fold in what came back.
+
+    Bounded by the rows themselves rather than by a cap: a job runs for minutes, so
+    "active" is a handful at most, and a silent cap here would read as "these are
+    up to date" when some of them weren't. Every failure leaves the row alone —
+    an unreachable box means we don't know yet, not that the job died.
+    """
+    active = [job for job in jobs if job.status not in TERMINAL]
+    if not active:
+        return
+
+    try:
+        conn = await load_connection(cid, session)
+        client = await _gateway(conn)
+    except HTTPException:
+        # No such connection, or no usable gateway base. Listing the history must
+        # still work — that is the surface where the operator would notice.
+        return
+
+    changed = False
+    async with client:
+        for job in active:
+            try:
+                resp = await client.get(f"/videos/{job.job_id}")
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                logger.debug("refreshing %s: gateway unreachable: %s", job.job_id, exc)
+                break  # the box is down; the rest would fail the same way
+            if resp.status_code == status.HTTP_404_NOT_FOUND:
+                job.status = "failed"
+                job.error = "the gateway no longer knows this job id"
+            elif resp.status_code >= 400:
+                continue
+            else:
+                _apply(job, resp.json())
+            session.add(job)
+            changed = True
+    if changed:
+        await session.commit()
 
 
 @router.post("/{cid}/videos", status_code=status.HTTP_201_CREATED)
@@ -196,9 +285,11 @@ async def create_video(
     ``num_inference_steps``, ``seed``. We read ``model``/``prompt``/``task`` only
     to label the row.
 
-    JSON only. A first/last-frame (``fl2va``) submission is ``multipart/form-data``
-    with the model named in the query string; that path is not wired up here yet,
-    so ``t2va`` is what this surface can drive.
+    First/last-frame conditioning (``task: "fl2va"``) rides the same JSON path: the
+    keyframes are ``conditions`` entries whose ``uri`` may be a ``data:`` URI, so
+    nothing here needs a multipart branch and an off-box Lursor can still supply
+    frames the engine never had on disk. Only the *stored* body differs — see
+    :func:`_storable_request`.
     """
     model = str(body.get("model") or "").strip()
     if not model:
@@ -237,7 +328,7 @@ async def create_video(
         model=model,
         prompt=str(body.get("prompt") or ""),
         task=str(body.get("task") or ""),
-        request=body,
+        request=_storable_request(body),
         status=str(created.get("status") or "queued"),
         progress=_as_float(created.get("progress")),
     )
@@ -321,39 +412,30 @@ async def cancel_video(
     return _to_read(job)
 
 
-@router.get("/{cid}/videos/{job_id}/content")
-async def video_content(
-    cid: str,
-    job_id: str,
-    variant: int = 0,
-    session: AsyncSession = Depends(get_session),
-):
-    """Serve the finished mp4, fetching it from the gateway the first time.
+async def stored_clip(
+    job: VideoJob, session: AsyncSession, variant: int = 0
+) -> Path:
+    """Local path to this job's finished clip, fetching it once if needed.
 
-    Stored content-addressed in the media store, so a reload — or a second look
-    at an old run — is served from disk instead of re-pulling the clip through
-    the tunnel. Returned as a file response so the browser can range-request it
-    and the ``<video>`` element can seek.
+    The clip is stored content-addressed in the media store, so a reload — or a
+    second look at an old run — is served from disk instead of re-pulling it
+    through the tunnel.
+
+    Shared with the agent tools (``agents/video_tools.py``), which materialize the
+    same file into the workspace. Raises :class:`HTTPException`, so both callers
+    surface the gateway's own message: an HTTP status for the route, and text for
+    the tool.
     """
-    job = await _row(cid, job_id, session)
-
-    if job.media_id:
+    if variant == 0 and job.media_id:
         path = media_store.video_path(job.media_id)
         if path.is_file():
-            return FileResponse(
-                path,
-                media_type=media_store.mime_for_path(path),
-                filename=f"{job_id}.mp4",
-                # Passing `filename` alone would make this an attachment, which
-                # is wrong for the <video> element that is the main consumer.
-                content_disposition_type="inline",
-            )
+            return path
 
-    conn = await load_connection(cid, session)
+    conn = await load_connection(job.connection_id, session)
     try:
         async with await _gateway(conn, timeout=_CONTENT_TIMEOUT) as client:
             resp = await client.get(
-                f"/videos/{job_id}/content", params={"variant": variant}
+                f"/videos/{job.job_id}/content", params={"variant": variant}
             )
     except httpx.TimeoutException as exc:
         raise HTTPException(
@@ -378,10 +460,30 @@ async def video_content(
         session.add(job)
         await session.commit()
 
-    return Response(
-        content=resp.content,
-        media_type=content_type,
-        headers={"Content-Disposition": f'inline; filename="{job_id}.mp4"'},
+    return media_store.video_path(media_id)
+
+
+@router.get("/{cid}/videos/{job_id}/content")
+async def video_content(
+    cid: str,
+    job_id: str,
+    variant: int = 0,
+    session: AsyncSession = Depends(get_session),
+):
+    """Serve the finished mp4, fetching it from the gateway the first time.
+
+    Returned as a file response so the browser can range-request it and the
+    ``<video>`` element can seek.
+    """
+    job = await _row(cid, job_id, session)
+    path = await stored_clip(job, session, variant)
+    return FileResponse(
+        path,
+        media_type=media_store.mime_for_path(path),
+        filename=f"{job_id}.mp4",
+        # Passing `filename` alone would make this an attachment, which is wrong
+        # for the <video> element that is the main consumer.
+        content_disposition_type="inline",
     )
 
 

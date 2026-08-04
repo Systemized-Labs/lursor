@@ -268,3 +268,108 @@ async def test_discovered_tools_are_still_vetted_in_ask_mode(tmp_path, monkeypat
             "task",
         } & set(offered)
         assert set(offered) <= _READONLY_TOOL_ALLOWLIST
+
+
+# --- video tools -------------------------------------------------------------
+#
+# The three video tools are the case the deferral design is *for*: most turns never
+# touch them, and the guidance that names them lives in a skill body rather than in
+# an injected directive, so they can be deferred without stranding an agent that was
+# told to use them (``_SEARCH_TOOL_DESCRIPTION`` teaches the search-if-missing rule).
+
+_VIDEO_TOOLS = {"generate_video", "video_status", "cancel_video", "view_video"}
+
+
+def _video_runtime():
+    from app.agents.video_runtime import VideoRuntime
+
+    return VideoRuntime(
+        connection_id="c1", connection_name="spark-head", model="minimax-h3"
+    )
+
+
+async def test_no_video_runtime_means_no_video_tools(tmp_path):
+    """The flag being off (or no box serving one) is absence, not a failing tool."""
+    steps = await _rosters(_row(**_ALL_ON), tmp_path, search="video generate clip")
+    for offered in steps:
+        assert not _VIDEO_TOOLS & set(offered)
+
+
+async def test_video_tools_are_deferred_and_discoverable(tmp_path):
+    """Built, hidden on the opening step, and revealed by one obvious search."""
+    steps = await _rosters(
+        _row(**_ALL_ON),
+        tmp_path,
+        video_runtime=_video_runtime(),
+        search="video",
+    )
+    assert not _VIDEO_TOOLS & set(steps[0]), "three tools must not sit in every prompt"
+    assert _VIDEO_TOOLS <= set(steps[1]), "searching 'video' has to find all three"
+
+
+async def test_video_tools_are_dropped_in_ask_mode(tmp_path, monkeypatch):
+    """Generating a clip mutates a GPU box and writes a file; /ask does neither."""
+    monkeypatch.setattr(tool_loading, "_MIN_DEFERRABLE", 1)
+    steps = await _rosters(
+        _row(**_ALL_ON),
+        tmp_path,
+        read_only=True,
+        video_runtime=_video_runtime(),
+        search="video",
+    )
+    for offered in steps:
+        assert not _VIDEO_TOOLS & set(offered)
+
+
+async def test_a_subagent_only_gets_video_when_it_opts_in(tmp_path):
+    """Inherited, but opt-in twice.
+
+    A subagent has no session to resolve a box with, so it can only ever use its
+    parent's runtime — and it should not receive it merely because the parent has
+    video on, or a video-enabled agent would silently hand every specialist minutes
+    of GPU time. Its own ``include_video`` is the second gate.
+    """
+    from app.agents.builder import _subagent_config
+    from app.db.models import Subagent as SubagentRow
+
+    async def offered(*, include_video: bool) -> set[str]:
+        """Every tool name a subagent with this flag sees, discovery included."""
+        steps: list[list[str]] = []
+
+        def respond(_messages, info: AgentInfo):
+            steps.append([t.name for t in info.function_tools])
+            if len(steps) == 1:
+                return ModelResponse(
+                    parts=[ToolCallPart("search_tools", {"queries": ["video"]})]
+                )
+            return ModelResponse(parts=[TextPart("ok")])
+
+        sub = SubagentRow(
+            name="shots", instructions="make shots", include_video=include_video
+        )
+        config = _subagent_config(
+            sub,
+            workspace_path=str(tmp_path),
+            workspace_name=None,
+            workspace_description=None,
+            custom_providers={},
+            subagents=[sub],
+            deep_defaults=None,
+            parent_model="openrouter:test/model",
+            web_search_provider=None,
+            tavily_api_key=None,
+            exa_api_key=None,
+            child_depth=1,
+            skill_runtime=None,
+            video_runtime=_video_runtime(),
+        )
+        agent = config["agent_factory"]({})
+        # The factory hands back only the agent; deps come from an equivalent build
+        # of the same row in the same workspace (same backend, same everything).
+        _, deps = build_deep_agent(sub, str(tmp_path))
+        with agent.override(model=FunctionModel(respond, profile=_NO_NATIVE)):
+            await agent.run("hi", deps=deps)
+        return {name for step in steps for name in step}
+
+    assert not _VIDEO_TOOLS & await offered(include_video=False)
+    assert _VIDEO_TOOLS <= await offered(include_video=True)
