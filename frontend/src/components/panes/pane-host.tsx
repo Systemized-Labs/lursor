@@ -267,23 +267,29 @@ function EmptyLayout({
   const kinds = hasWorkspace
     ? ADDABLE_KINDS
     : ADDABLE_KINDS.filter((kind) => !WORKSPACE_KINDS.includes(kind))
+  // The cards are sized, not shaped. `aspect-square` here meant a card in a wide
+  // grid grew as tall as the column, so nine kinds overflowed the pane in both
+  // directions with nothing to scroll — hence the fixed height, the capped width
+  // and the scroll container around it.
   return (
-    <div className="absolute inset-0 grid content-center gap-3 p-6 sm:grid-cols-2">
-      {kinds.map((kind) => {
-        const def = PANE_KINDS[kind]
-        const Icon = def.icon
-        return (
-          <button
-            key={kind}
-            type="button"
-            onClick={() => layout.openPane(kind)}
-            className="flex aspect-square flex-col items-center justify-center gap-2 rounded-xl bg-muted/40 text-sm text-foreground shadow-sm transition-all hover:bg-muted hover:shadow-md"
-          >
-            <Icon className="size-6 text-muted-foreground" />
-            {def.title}
-          </button>
-        )
-      })}
+    <div className="absolute inset-0 overflow-auto">
+      <div className="mx-auto grid min-h-full max-w-2xl grid-cols-2 content-center gap-3 p-6 sm:grid-cols-3">
+        {kinds.map((kind) => {
+          const def = PANE_KINDS[kind]
+          const Icon = def.icon
+          return (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => layout.openPane(kind)}
+              className="flex h-28 flex-col items-center justify-center gap-2 rounded-xl bg-muted/40 text-sm text-foreground shadow-sm transition-all hover:bg-muted hover:shadow-md"
+            >
+              <Icon className="size-6 text-muted-foreground" />
+              {def.title}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
