@@ -9,6 +9,7 @@ upstream declines.
 | Patch | Target | Verified against | Status |
 | --- | --- | --- | --- |
 | [`hashline-anchors.patch`](hashline-anchors.patch) | [`vstorm-co/pydantic-ai-backend`](https://github.com/vstorm-co/pydantic-ai-backend) | `058b8aa` (2026-08-03) | not submitted |
+| [`laios-video-profile.patch`](laios-video-profile.patch) | [`cgrohman/laios`](https://github.com/cgrohman/laios) | `7ffe860`, branch `feat/minimax-h3-video` (2026-08-03) | not submitted |
 
 ## hashline-anchors.patch
 
@@ -142,3 +143,116 @@ no fresh anchors and no proximity search, so every miss costs a full re-read of
 the file — which is the token saving the format is sold on. That is a larger
 change and a separate conversation; we currently do it in a capability on our
 side and would be glad to contribute it if you want it in the library.
+
+---
+
+## laios-video-profile.patch
+
+Two changes a client of `/v1/videos` cannot make for itself. Both found while
+building Lursor's agent-facing video tools against a real box (`AGENTS.md` §6).
+
+Verified, not just written:
+
+```
+git clone git@github.com:cgrohman/laios
+cd laios && git checkout 7ffe860        # feat/minimax-h3-video
+git apply /path/to/laios-video-profile.patch
+cargo check -p laios-core -p laios-daemon -p laios-gateway    # clean
+cargo test -p laios-core --lib          # 112 passed (110 existing + 2 new)
+cargo test -p laios-gateway             # passed
+```
+
+---
+
+## PR text
+
+**Title:** `feat(video): declare a model's request shape, and stop 413-ing keyframe submissions`
+
+**Body:**
+
+Two problems that only show up once something other than a curl one-liner drives
+`/v1/videos`. Independent hunks; happy to split.
+
+### 1. `POST /v1/videos` rejects a legitimate first/last-frame submission
+
+`create_video` buffers with `body: axum::body::Bytes`, which inherits axum's
+`DefaultBodyLimit` of **2 MiB**. An `fl2va` request inlines its keyframes in the
+JSON body as base64 `data:` URIs — which is the only transport available to a
+client that is not running on the box, since a `file://` path names a file the
+engine cannot see. Measured against a Spark serving `minimax-h3`:
+
+```
+2,090,000 byte body  -> 400 target.short_edge must be 768 ...   (reached the engine)
+2,200,000 byte body  -> 413 Failed to buffer the request body: length limit exceeded
+```
+
+One 1344x768 frame is ~587 KB as PNG (~780 KB base64) and ~31 KB as JPEG, and
+`fl2va` accepts **two** keyframes, so the ceiling is reachable with ordinary inputs.
+The 413 names neither the frame nor the limit, so from the client side it reads as
+the gateway being broken.
+
+The patch layers `DefaultBodyLimit::max(32 MiB)` on that one route. Still bounded —
+the body is held in memory before being relayed — but above what a real
+two-keyframe request needs. Nothing else changes; `/v1/videos/{id}` and `/content`
+are untouched.
+
+### 2. `capabilities: [video]` says a model generates video, but not how to ask it
+
+The capability flag is enough to keep a generator out of a chat picker. It is not
+enough to *drive* one, because the request surface is per-model rather than
+per-engine: MiniMax-H3 takes its own canonical body (`task` / `target` /
+`conditions`), while the generic SGLang video API takes `seconds` / `size` /
+`input_reference`.
+
+Guessing wrong does not fail loudly. In SGLang, the base
+`SamplingParams::lower_video_request_kwargs` is `del request; return kwargs` and
+`video_request_extra_fields` returns an empty set, so a non-H3 model **silently
+discards** `task`, `target` and `conditions`, then falls back to
+`DEFAULT_VIDEO_SECONDS = 4` and its own default resolution. The caller pays full
+GPU time (minutes) for a clip of the wrong length and aspect with its conditioning
+frames ignored, and gets HTTP 200.
+
+So today a client has exactly two options: hardcode one model, or risk that. The
+patch adds an optional `video_profile` block to the recipe, carries it through the
+manifest, and surfaces it on `/v1/models`:
+
+```yaml
+capabilities: [video]
+video_profile:
+  request_schema: minimax_h3.request/v1
+  short_edge: 768
+  aspect_ratios: ["16:9", "9:16", "1:1"]
+  sizes:                      # what the engine returns, not what arithmetic says
+    "16:9": 1344x768          # 768 at 16:9 computes to 1365; H3 snaps to 1344
+    "9:16": 768x1344
+    "1:1": 768x768
+  duration_seconds: { min: 4.0, max: 15.0 }
+  num_inference_steps: { min: 4, max: 50 }
+  seconds_per_step: 44        # the only progress signal for a model that
+  keyframes: true             #   reports `queued` until it is done
+  audio: true
+```
+
+`request_schema` is the one field with no default: it is the difference between a
+correct clip and a silently wrong one. The rest lets a client reject an
+out-of-range knob locally instead of spending a tunnel round trip to learn that
+`short_edge` must be 768.
+
+Deliberately **not** inferred from the engine or the recipe id. An operator writing
+a recipe already knows which body the model wants; this is where that stops being
+tribal knowledge. Absent means undeclared, which a client should read as "do not
+drive this automatically" rather than as permission to guess — that is how Lursor
+consumes it, and the reason a video model with no profile gets no tools there
+rather than a hopeful request.
+
+### Compatibility
+
+- Additive and optional. `#[serde(default)]` on the recipe field and
+  `skip_serializing_if` on the manifest and API fields, so old recipes parse, old
+  manifests load, and `/v1/models` is byte-identical for every model without a
+  profile.
+- `Recipe` gained a field, so the nine struct literals in the existing tests gained
+  `video_profile: None`. That is the whole of the churn.
+- No recipe in-tree declares a profile yet: the H3 recipe is operator-supplied
+  (`~/.laios/recipes/sglang/minimax-h3-fl2va.yaml`), so the block above is what to
+  paste into it.
