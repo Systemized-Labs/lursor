@@ -16,15 +16,20 @@ export type WorkspaceStatus = (workspaceId: string) => WorkspaceStatusValue
 const IDLE: WorkspaceStatusValue = { running: false, unread: 0 }
 
 /**
- * Per-workspace status for the rail, rolled up from every conversation in one
- * pass.
+ * Per-workspace status for the project rows, rolled up from every conversation
+ * in one pass.
  *
- * Rolled up here rather than per tile because the alternative is each tile
+ * Rolled up here rather than per row because the alternative is each row
  * filtering the whole cross-workspace list for itself — N passes over the same
  * array on every poll, and `use-thread-state`'s selector is the kind of thing
- * that has to agree with itself: the Activity badge counts unread threads across
- * all workspaces, and the sum of the tiles has to be that number or the two
- * visibly disagree.
+ * that has to agree with itself: a folder's rolled-up count has to match the
+ * sessions under the projects inside it, or the badge and the rows disagree in
+ * plain sight.
+ *
+ * `running` is what a project row shows. `unread` now only reaches a *folder*
+ * header, because a project's sessions are listed directly beneath it carrying
+ * their own marks — a number restating them was noise — while a shut folder hides
+ * its projects entirely and has nothing else to say it with.
  */
 export function useWorkspaceStatus(
   threads: Thread[],

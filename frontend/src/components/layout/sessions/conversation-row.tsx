@@ -9,7 +9,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
-import type { RowHandlers } from "@/components/layout/panel/types"
+import type { RowHandlers } from "@/components/layout/sessions/types"
 import type { SelectMods } from "@/components/layout/use-sidebar-selection"
 import type { ThreadState } from "@/hooks/use-thread-state"
 import { requestOpenThread } from "@/lib/open-thread"
@@ -23,9 +23,10 @@ export interface ConversationRowProps
   thread: Thread
   state: ThreadState
   /**
-   * `compact` is one line for a workspace's own list. `stacked` gives the
-   * `workspace · time` metadata its own line, which is why Activity reads better
-   * in a 256px panel than a single-line row would.
+   * `compact` is one line, for sessions listed under the project they belong to.
+   * `stacked` gives the `workspace · time` metadata its own line, which is what
+   * Pinned uses: those rows come from anywhere, so they have to name their
+   * project, and that does not fit beside a title in a 256px column.
    */
   variant?: "compact" | "stacked"
   /** Which workspace it belongs to; only cross-workspace lists pass it. */

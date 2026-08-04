@@ -890,14 +890,27 @@ user arranged; a zone's `+` adds the rest.
   `CustomProvider` rows for OpenAI-compatible endpoints, including ones with no
   `/v1/models` (manual model lists).
 - **Nav** — one sidebar column (`sessions-pane.tsx`): nav rows, Pinned, and
-  Projects with its folders and the active project's sessions inline. It replaced a
-  68px workspace rail plus a contextual panel, which cost the sidebar two widths,
-  two toggles, and 10px truncated workspace names. Which *view* it shows
-  (projects/activity) and which project it is drilled into are **sidebar state, not
-  a route** — opening a session navigates, and a route-derived view would flip back
-  under the cursor. Clicking a project both switches to it and drills in; ⌘1–⌘9
-  switch without drilling, because a shortcut that re-scopes the list makes the
-  sidebar jump on every hop between two repos.
+  Projects with its folders and **every** project's recent sessions inline
+  (`INLINE_SESSIONS`). It replaced a 68px workspace rail plus a contextual panel,
+  which cost the sidebar two widths, two toggles, and 10px truncated workspace
+  names. It also replaced an Activity feed — a second cross-workspace list of the
+  same conversations in time order, with its own filters, reachable only by leaving
+  the projects behind. What it was good for is in the list itself now: sessions
+  from every project are on screen at once, and a running agent shows as a dot on
+  its project row (`use-workspace-status`). Unread counts survive only on *folder*
+  headers, which hide their projects when shut; a project's own sessions are right
+  underneath it, so a number over them just restated the rows.
+- A project row is **two targets**: the **name** switches to the project and
+  drills the list into it, the **caret** shows/hides its sessions in place
+  (`use-collapsed-projects`, persisted; shut projects are stored, so a new project
+  arrives expanded). They are siblings, not nested — a button inside an anchor is
+  invalid HTML — and the row div owns the hover background and the drag handlers,
+  with `draggable={false}` on the link so an anchor drag can't beat filing a
+  project into a folder. Which project the list is **drilled into** is sidebar
+  state, not a route (`use-project-drill`) — opening a session navigates, and a
+  route-derived scope would snap back under the cursor. ⌘1–⌘9 switch without
+  drilling, because a shortcut that re-scopes the list makes the sidebar jump on
+  every hop between two repos.
 
 ## 7. Invariants and traps
 
@@ -917,8 +930,8 @@ Each of these has already cost a debugging session.
 5. **The goal evaluator fails closed** (not met), never open.
 6. **Cross-cache invalidation.** `threadKeys.all()` is a separate TanStack Query
    entry from `threadKeys.byWorkspace(id)`. Every invalidation and optimistic
-   setter must touch both, or ATTENTION and Activity show conversations the
-   workspace sections have already dropped.
+   setter must touch both, or Pinned and the project status marks count
+   conversations the sessions under those projects have already dropped.
 7. **Declare literal routes before parameterized ones** (`/active-runs` before
    `/{thread_id}`).
 8. **`GET /threads/{id}` must stay unfiltered.**

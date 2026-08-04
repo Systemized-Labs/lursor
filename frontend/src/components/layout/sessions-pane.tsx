@@ -1,6 +1,5 @@
 import { useEffect, useMemo } from "react"
 import {
-  Bell,
   MagnifyingGlass,
   NotePencil,
   SlidersHorizontal,
@@ -12,15 +11,14 @@ import type { Icon } from "@phosphor-icons/react"
 import type { Workspace } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import { useSidebar } from "@/components/ui/sidebar"
-import { ActivityPanel } from "@/components/layout/panel/activity-panel"
-import { ConversationRow } from "@/components/layout/panel/conversation-row"
-import type { ConversationHandlers } from "@/components/layout/panel/types"
+import { ConversationRow } from "@/components/layout/sessions/conversation-row"
+import type { ConversationHandlers } from "@/components/layout/sessions/types"
 import {
   ProjectsSection,
   SectionHeading,
 } from "@/components/layout/sessions/projects-section"
 import { SessionsFooter } from "@/components/layout/sessions/sessions-footer"
-import type { SessionsViewState } from "@/components/layout/use-sessions-view"
+import type { ProjectDrill } from "@/components/layout/use-project-drill"
 import type { WorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import type { WorkspaceStatus } from "@/components/layout/use-workspace-status"
 import type { WorkspaceTree } from "@/components/layout/use-workspace-tree"
@@ -28,10 +26,9 @@ import type { WorkspaceDialogs } from "@/components/layout/workspace-dialogs"
 import type { AllThreads } from "@/hooks/use-all-threads"
 import type { Pins } from "@/components/layout/use-pins"
 import { isElectron } from "@/lib/platform"
-import { cn } from "@/lib/utils"
 
 interface SessionsPaneProps {
-  view: SessionsViewState
+  drill: ProjectDrill
   threads: AllThreads
   tree: WorkspaceTree
   studio: Workspace | undefined
@@ -39,7 +36,6 @@ interface SessionsPaneProps {
   status: WorkspaceStatus
   pins: Pins
   activeWorkspaceId: string | undefined
-  unreadCount: number
   hrefFor: (workspaceId: string) => string
   onOpenWorkspace: (workspaceId: string) => void
   onNewConversation: (workspaceId: string) => void
@@ -52,7 +48,7 @@ interface SessionsPaneProps {
 }
 
 /**
- * The sidebar: one column, no icon rail.
+ * The sidebar: one column, one list.
  *
  * Replaces `nav-rail` (68px of workspace tiles) plus `sidebar-panel` (a
  * contextual list beside it). Two columns existed because the rail had to survive
@@ -62,12 +58,16 @@ interface SessionsPaneProps {
  * outright, holds the nav rows the reference UI puts at the top, and leaves ⌘B as
  * the only sidebar shortcut.
  *
- * All four of §5's nav rows are here now. Artifacts was held back until Phase 6
- * gave it a pane to open, on the same rule as the WindowBar's Layouts button: a row
- * that opens nothing is worse than a gap where one will go.
+ * The list is the projects, and nothing else: the Activity feed that used to be
+ * the alternative *view* is gone. It was a second cross-workspace list of the
+ * same conversations, with its own filters and its own time buckets, reachable
+ * only by leaving the projects behind — and everything it told you the list can
+ * say in place. Projects now carry their recent sessions inline, so scanning
+ * across them is the default state rather than a mode, and the running dot and
+ * unread count ride on each project row.
  */
 export function SessionsPane({
-  view,
+  drill,
   threads,
   tree,
   studio,
@@ -75,7 +75,6 @@ export function SessionsPane({
   status,
   pins,
   activeWorkspaceId,
-  unreadCount,
   hrefFor,
   onOpenWorkspace,
   onNewConversation,
@@ -153,15 +152,6 @@ export function SessionsPane({
           onClick={onOpenArtifacts}
         />
         <NavRow
-          icon={Bell}
-          label="Activity"
-          badge={unreadCount}
-          active={view.view === "activity"}
-          onClick={() =>
-            view.setView(view.view === "activity" ? "projects" : "activity")
-          }
-        />
-        <NavRow
           icon={MagnifyingGlass}
           label="Search sessions…"
           shortcut="⌘K"
@@ -176,69 +166,56 @@ export function SessionsPane({
 
       {/* ── The list ─────────────────────────────────────────────────────── */}
       <div className="scrollbar-hover min-h-0 flex-1 overflow-y-auto pb-2">
-        {view.view === "activity" ? (
-          <ActivityPanel
-            allThreads={threads.threads}
-            workspaceName={threads.workspaceName}
-            isLoading={threads.isLoading}
-            {...handlers}
-          />
-        ) : (
-          <>
-            {/* Pinned only exists once something is pinned. An always-present
-                empty section would spend two rows telling you about a feature
-                instead of showing you your projects. The hint goes in the
-                conversation context menu, where the action is. */}
-            {pinnedThreads.length > 0 ? (
-              <section className="min-w-0 px-2 pb-1">
-                <SectionHeading label="Pinned" />
-                <ul className="flex min-w-0 flex-col">
-                  {pinnedThreads.map((thread) => (
-                    <ConversationRow
-                      key={thread.id}
-                      thread={thread}
-                      state={handlers.threadState(thread)}
-                      variant="stacked"
-                      workspaceName={threads.workspaceName(thread.workspace_id)}
-                      isSelected={handlers.selection.isThreadSelected(thread.id)}
-                      isPinned
-                      onTogglePin={() => pins.toggle(thread.id)}
-                      selection={handlers.selection}
-                      onSelect={(mods) =>
-                        handlers.selection.selectThread(
-                          thread,
-                          mods,
-                          pinnedThreads
-                        )
-                      }
-                      onNavigate={handlers.onNavigate}
-                      onRename={handlers.onRename}
-                      onDelete={handlers.onDelete}
-                    />
-                  ))}
-                </ul>
-              </section>
-            ) : null}
+        {/* Pinned only exists once something is pinned, and only at the top
+            level: drilled into one project, a cross-workspace section above its
+            sessions would contradict the scope the heading just declared. An
+            always-present empty section would also spend two rows telling you
+            about a feature instead of showing you your projects — the hint goes
+            in the conversation context menu, where the action is. */}
+        {pinnedThreads.length > 0 && !drill.drilledId ? (
+          <section className="min-w-0 px-2 pb-1">
+            <SectionHeading label="Pinned" />
+            <ul className="flex min-w-0 flex-col">
+              {pinnedThreads.map((thread) => (
+                <ConversationRow
+                  key={thread.id}
+                  thread={thread}
+                  state={handlers.threadState(thread)}
+                  variant="stacked"
+                  workspaceName={threads.workspaceName(thread.workspace_id)}
+                  isSelected={handlers.selection.isThreadSelected(thread.id)}
+                  isPinned
+                  onTogglePin={() => pins.toggle(thread.id)}
+                  selection={handlers.selection}
+                  onSelect={(mods) =>
+                    handlers.selection.selectThread(thread, mods, pinnedThreads)
+                  }
+                  onNavigate={handlers.onNavigate}
+                  onRename={handlers.onRename}
+                  onDelete={handlers.onDelete}
+                />
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
-            <ProjectsSection
-              tree={tree}
-              studio={studio}
-              icons={icons}
-              status={status}
-              activeWorkspaceId={activeWorkspaceId}
-              threadsFor={threadsFor}
-              threadsLoading={threads.isLoading}
-              hrefFor={hrefFor}
-              onOpenWorkspace={onOpenWorkspace}
-              onNewConversation={onNewConversation}
-              dialogs={dialogs}
-              handlers={handlers}
-              drilledId={view.drilledId}
-              onDrillInto={view.drillInto}
-              onDrillOut={view.drillOut}
-            />
-          </>
-        )}
+        <ProjectsSection
+          tree={tree}
+          studio={studio}
+          icons={icons}
+          status={status}
+          activeWorkspaceId={activeWorkspaceId}
+          threadsFor={threadsFor}
+          threadsLoading={threads.isLoading}
+          hrefFor={hrefFor}
+          onOpenWorkspace={onOpenWorkspace}
+          onNewConversation={onNewConversation}
+          dialogs={dialogs}
+          handlers={handlers}
+          drilledId={drill.drilledId}
+          onDrillInto={drill.drillInto}
+          onDrillOut={drill.drillOut}
+        />
       </div>
 
       {/* ── Bulk selection ───────────────────────────────────────────────── */}
@@ -275,44 +252,36 @@ export function SessionsPane({
   )
 }
 
-/** One of the pane's top rows: an icon, a label, and either a chord or a count. */
+/**
+ * One of the pane's top rows: an icon, a label, and its chord on hover.
+ *
+ * Every row here now *does* something and comes straight back — a dialog, the
+ * palette, a route. None of them is a state the pane sits in, so the row has no
+ * active styling and no badge; those existed for Activity, which was the one row
+ * that changed what the list below it showed.
+ */
 function NavRow({
   icon: RowIcon,
   label,
   shortcut,
-  badge,
-  active,
   onClick,
 }: {
   icon: Icon
   label: string
   shortcut?: string
-  badge?: number
-  active?: boolean
   onClick: () => void
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        "group/nav flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sidebar-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2",
-        active && "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-      )}
+      className="group/nav flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sidebar-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2"
     >
       <RowIcon className="size-4 shrink-0 text-sidebar-foreground/70" />
       <span className="min-w-0 flex-1 truncate text-[13px] leading-5">
         {label}
       </span>
-      {badge && badge > 0 ? (
-        <span
-          aria-label={`${badge} unread`}
-          className="min-w-4 shrink-0 rounded-full bg-sidebar-primary px-1 text-[10px] font-medium leading-4 tabular-nums text-sidebar-primary-foreground"
-        >
-          {badge > 9 ? "9+" : badge}
-        </span>
-      ) : shortcut ? (
+      {shortcut ? (
         // Only on hover: a column of chords down the pane competes with the
         // labels for the same glance, and you either know them or you don't.
         <span

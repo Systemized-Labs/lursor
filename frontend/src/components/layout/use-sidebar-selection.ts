@@ -61,9 +61,9 @@ export function useSidebarSelection(): SidebarSelection {
         }
       }
 
-      // Range requested but the anchor isn't in this list (e.g. it's in another
-      // workspace's list, reached via Activity) — extend the selection with the
-      // clicked item rather than discarding everything already selected.
+      // Range requested but the anchor isn't in this list (e.g. it's under
+      // another project, or in Pinned) — extend the selection with the clicked
+      // item rather than discarding everything already selected.
       if (mods.range && threads.size > 0) {
         setThreads((prev) => new Map(prev).set(thread.id, thread))
         setThreadAnchor(thread.id)

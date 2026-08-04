@@ -6,16 +6,28 @@ import { Button } from "@/components/ui/button"
 import { FolderRow } from "@/components/layout/sessions/folder-row"
 import { ProjectRow } from "@/components/layout/sessions/project-row"
 import { useTreeDrag } from "@/components/layout/sessions/use-tree-drag"
-import { WorkspaceConversations } from "@/components/layout/panel/workspace-conversations"
-import type { ConversationHandlers } from "@/components/layout/panel/types"
+import { WorkspaceConversations } from "@/components/layout/sessions/workspace-conversations"
+import type { ConversationHandlers } from "@/components/layout/sessions/types"
+import { useCollapsedProjects } from "@/components/layout/use-collapsed-projects"
 import type { WorkspaceDialogs } from "@/components/layout/workspace-dialogs"
 import type { WorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import type { WorkspaceTree } from "@/components/layout/use-workspace-tree"
 import type { WorkspaceStatus } from "@/components/layout/use-workspace-status"
 import { cn } from "@/lib/utils"
 
-/** How many of a project's sessions show inline beneath it, undrilled. */
-const INLINE_SESSIONS = 6
+/**
+ * How many of a project's sessions show inline beneath it, undrilled.
+ *
+ * Four, because every project shows them now rather than only the active one: at
+ * six, three busy projects fill the column and the fourth project name is below
+ * the fold. Four is a recognisable slice — the ones you would have gone looking
+ * for — and the whole list is one click away on the project's name.
+ *
+ * The slice is silent about what it left out. A `N more…` row said so explicitly
+ * and was cut: it spent a row per project restating the cap, and it pointed at the
+ * drill, which the project name above it already does.
+ */
+const INLINE_SESSIONS = 4
 
 interface ProjectsSectionProps {
   tree: WorkspaceTree
@@ -41,14 +53,26 @@ interface ProjectsSectionProps {
 /**
  * The PROJECTS section: every project, its folders, and the sessions inside.
  *
- * Two shapes. **Undrilled**, it is the list of projects, with the active one's
- * most recent sessions inline beneath it — which is what the reference
- * screenshot shows, and it means the thing you are working on is always two rows
- * from the thing you are working *in*. **Drilled**, one project fills the
- * section: its name becomes the heading, `← All projects` goes back, and every
- * session is listed rather than the first {@link INLINE_SESSIONS}.
+ * Two shapes, and they are the sidebar's two modes of working.
  *
- * The drill is sidebar state, not a route (see `use-sessions-view`). Opening a
+ * **Undrilled** is the list of projects with each one's most recent sessions
+ * inline beneath it — every project's, not just the active one's. That is the
+ * whole point of the top level: the sessions you would hop between are already on
+ * screen, in the project that explains them, so crossing from one repo's
+ * conversation to another's costs one click. It is also what replaced the
+ * Activity feed, which showed the same rows in time order but only as a mode you
+ * had to leave the projects to enter. A project's caret shuts its sessions here
+ * (`use-collapsed-projects`, remembered), which is how a list of twenty repos
+ * stays a list you can read.
+ *
+ * **Drilled**, one project fills the section: its name becomes the heading,
+ * `← All projects` goes back, and every session is listed rather than the first
+ * {@link INLINE_SESSIONS}. That is the mode for working *in* a project, where the
+ * other fifteen repos are noise. Collapsing is ignored here — you asked for this
+ * project specifically, so a shut caret from last week shouldn't answer with an
+ * empty pane.
+ *
+ * The drill is sidebar state, not a route (see `use-project-drill`). Opening a
  * session navigates, and a route-derived scope would drop you back out to the
  * list under the cursor.
  */
@@ -70,6 +94,9 @@ export function ProjectsSection({
   onDrillOut,
 }: ProjectsSectionProps) {
   const drag = useTreeDrag(tree)
+  // Section-local, like the drag state: nothing outside this list cares which
+  // projects are shut, and the answer survives a remount in localStorage anyway.
+  const collapsedProjects = useCollapsedProjects()
 
   const folderTargets = tree.folders.map((folder) => ({
     id: folder.id,
@@ -83,7 +110,10 @@ export function ProjectsSection({
     target: Parameters<typeof drag.rowDrag>[1],
     nested: boolean
   ) => {
-    const { running, unread } = status(workspace.id)
+    const { running } = status(workspace.id)
+    // No caret on a project with nothing to show: an arrow that toggles between
+    // empty and empty is a control that lies about having an effect.
+    const hasSessions = !threadsLoading && threadsFor(workspace.id).length > 0
     return (
       <ProjectRow
         key={workspace.id}
@@ -94,8 +124,11 @@ export function ProjectsSection({
         hasIconOverride={icons.hasOverride(workspace.id)}
         isActive={activeWorkspaceId === workspace.id}
         running={running}
-        unreadCount={unread}
         nested={nested}
+        collapsed={collapsedProjects.isCollapsed(workspace.id)}
+        onToggleCollapsed={
+          hasSessions ? () => collapsedProjects.toggle(workspace.id) : undefined
+        }
         folders={folderTargets}
         onOpen={() => {
           onOpenWorkspace(workspace.id)
@@ -114,27 +147,23 @@ export function ProjectsSection({
     )
   }
 
-  /** The active project's sessions, inline under its row. */
+  /** A project's most recent sessions, inline under its row. */
   const inlineSessions = (workspaceId: string) => {
-    if (workspaceId !== activeWorkspaceId) return null
     const threads = threadsFor(workspaceId)
+    // Nothing at all for a project with no sessions, and nothing while the list
+    // is still loading. Both used to render a line of text, which was right when
+    // one project at a time showed its sessions and reads as noise now that all
+    // of them do: a column of "No sessions yet" says nothing, and a project with
+    // an empty gap under it is already legible as empty.
+    if (threadsLoading || threads.length === 0) return null
+    if (collapsedProjects.isCollapsed(workspaceId)) return null
     return (
       <li key={`sessions-${workspaceId}`} className="min-w-0 pl-3">
         <WorkspaceConversations
           threads={threads.slice(0, INLINE_SESSIONS)}
-          isLoading={threadsLoading}
-          emptyLabel="No sessions yet"
+          isLoading={false}
           {...handlers}
         />
-        {threads.length > INLINE_SESSIONS ? (
-          <button
-            type="button"
-            onClick={() => onDrillInto(workspaceId)}
-            className="w-full rounded-md px-2.5 py-1 text-left text-[11px] text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-          >
-            {threads.length - INLINE_SESSIONS} more…
-          </button>
-        ) : null}
       </li>
     )
   }

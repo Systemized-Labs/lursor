@@ -214,9 +214,9 @@ export function useWorkspaceDialogs({
     }
     const ids = new Set(threads.map((t) => t.id))
     const affected = [...new Set(threads.map((t) => t.workspace_id))]
-    // Both cache shapes hold these rows: the per-workspace lists the panel reads,
-    // and the cross-workspace list Activity and the rail's status marks read. Drop
-    // them from every one, or the deleted conversations linger in the panel.
+    // Both cache shapes hold these rows: the per-workspace lists a project's
+    // sessions come from, and the cross-workspace list Pinned and the status
+    // marks read. Drop them from every one, or the deleted conversations linger.
     const previous = affected.map((wsId) => ({
       wsId,
       data: qc.getQueryData<Thread[]>(threadKeys.byWorkspace(wsId)),

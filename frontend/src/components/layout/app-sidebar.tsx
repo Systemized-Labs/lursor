@@ -7,7 +7,7 @@ import { Sidebar, SidebarRail, useSidebar } from "@/components/ui/sidebar"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
 import { SessionsPane } from "@/components/layout/sessions-pane"
 import { usePins } from "@/components/layout/use-pins"
-import { useSessionsView } from "@/components/layout/use-sessions-view"
+import { useProjectDrill } from "@/components/layout/use-project-drill"
 import { useSidebarSelection } from "@/components/layout/use-sidebar-selection"
 import { useWorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import { useWorkspaceStatus } from "@/components/layout/use-workspace-status"
@@ -35,7 +35,13 @@ import { useWorkspaceVisits } from "@/hooks/use-workspace-visits"
  * together, and four of those buried destinations became settings categories in
  * Phase 2 rather than menu items here.
  *
- * This component is the wiring: shared state (the view, visit memory, the
+ * It also used to have two *lists* — the projects, and an Activity feed of the
+ * same conversations sorted by time — behind a nav row that swapped one for the
+ * other. There is one list now: projects, each showing its recent sessions, and
+ * drilling into one scopes the list to it. Navigating across conversations is
+ * what the top level is for; working inside one project is what the drill is for.
+ *
+ * This component is the wiring: shared state (the drill scope, visit memory, the
  * workspace tree, selection, pins, the run set) lives here and everything else is
  * delegated.
  */
@@ -67,7 +73,7 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
   const threadState = useThreadState(activeThreadId, activeRuns)
   const status = useWorkspaceStatus(threads.threads, threadState)
 
-  const view = useSessionsView()
+  const drill = useProjectDrill()
   const selection = useSidebarSelection()
   const pins = usePins()
   const visits = useWorkspaceVisits(threads.workspaceIds)
@@ -110,21 +116,19 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
     visits,
     byWorkspace: threads.byWorkspace,
     activeWorkspaceId,
-    onNavigate: () => {
-      // Going to a project is a request for that project, so the pane follows the
-      // switch out of Activity. Without this, one click on Activity left the pane
-      // showing it for good — a persisted view, so across restarts too.
-      view.setView("projects")
-      closeMobile()
-    },
+    onNavigate: closeMobile,
   })
 
   // ⌘1–⌘9 switch projects but do not drill: the shortcut's whole value is that it
   // is one keystroke, and re-scoping the list underneath would make the sidebar
   // jump on every hop between two repos.
   useEffect(() => {
-    if (activeWorkspaceId && view.drilledId && view.drilledId !== activeWorkspaceId) {
-      view.drillOut()
+    if (
+      activeWorkspaceId &&
+      drill.drilledId &&
+      drill.drilledId !== activeWorkspaceId
+    ) {
+      drill.drillOut()
     }
     // Only when the active workspace changes — not when `drilledId` does, or
     // drilling into a project you are not in would immediately undo itself.
@@ -163,13 +167,6 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
     if (openThread) markThreadRead(openThread.id, openThread.updated_at)
   }, [threads.threads, activeThreadId])
 
-  // "You have N things waiting", on the Activity row. The per-project marks say
-  // where; this says how many, in total, without opening anything.
-  const unreadCount = useMemo(
-    () => threads.threads.filter((t) => threadState(t).unread).length,
-    [threads.threads, threadState]
-  )
-
   const newConversation = (workspaceId: string) => {
     navigate(`/workspaces/${workspaceId}/chat`)
     closeMobile()
@@ -201,7 +198,7 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
        projects reachable while it is away. */
     <Sidebar collapsible="offcanvas" side={side}>
       <SessionsPane
-        view={view}
+        drill={drill}
         threads={threads}
         tree={tree}
         studio={threads.studio}
@@ -209,7 +206,6 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
         status={status}
         pins={pins}
         activeWorkspaceId={activeWorkspaceId}
-        unreadCount={unreadCount}
         hrefFor={hrefFor}
         onOpenWorkspace={switchTo}
         onNewConversation={newConversation}

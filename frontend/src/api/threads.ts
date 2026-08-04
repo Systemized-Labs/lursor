@@ -16,8 +16,9 @@ export const threadsApi = {
       signal
     ),
   /** Every conversation in every workspace, newest activity first. One request
-   *  for the cross-workspace surfaces (the sidebar's Attention/Activity panels,
-   *  the command palette) that would otherwise fan out per workspace. */
+   *  for the cross-workspace surfaces (the sidebar's whole list — every project's
+   *  sessions, Pinned, the status marks — and the command palette) that would
+   *  otherwise fan out per workspace. */
   listAll: (signal?: AbortSignal) => api.get<Thread[]>("/threads", signal),
   /** Conversations one schedule's fires opened, newest activity first. These are
    *  excluded from `listByWorkspace` so a daily job doesn't bury a workspace's

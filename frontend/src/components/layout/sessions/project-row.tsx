@@ -1,5 +1,6 @@
 import {
   ArrowCounterClockwise,
+  CaretDown,
   CaretRight,
   FolderOpen,
   GitBranch,
@@ -32,11 +33,14 @@ export interface ProjectRowProps {
   hasIconOverride: boolean
   isActive: boolean
   running: boolean
-  unreadCount: number
   /** Indented, because it sits inside a folder. */
   nested?: boolean
+  /** Its sessions are hidden. Undefined where the row has none to hide. */
+  collapsed?: boolean
   folders: { id: string; name: string }[]
   onOpen: () => void
+  /** Show or hide this project's sessions, without going to the project. */
+  onToggleCollapsed?: () => void
   onSetIcon: (key: string | null) => void
   onMoveToFolder: (folderId: string | null) => void
   onNewConversation: () => void
@@ -61,11 +65,18 @@ export interface ProjectRowProps {
  * `cat-landing` could only be told apart by hovering. A full-width row says the
  * name outright and still has room for the icon, the status dot and the ⌘ digit.
  *
- * Clicking it does two things: switches to the project (resuming the session you
- * were last in) *and* drills the section into it. The plan's §5 described only the
- * drill, but the rail this replaces earned its keep as a one-click switcher and
- * losing that would be a downgrade dressed as a redesign. "Show me this project"
- * is one intent, so it is one click.
+ * **Two targets, two intents.** The name switches to the project (resuming the
+ * session you were last in) *and* drills the list into it — "show me this
+ * project" is one intent, so it is one click, and the rail this replaces earned
+ * its keep as a one-click switcher. The caret only shows or hides this project's
+ * sessions where they sit. Wanting a look at what is in a repo you are not in is
+ * not the same as wanting to go there, and while the whole row was one link the
+ * cheaper of those two asks cost a navigation, a drill, and a click back.
+ *
+ * They are siblings rather than nested, because a button inside an anchor is
+ * invalid HTML and browsers resolve it by giving the click to whichever they feel
+ * like. The row's box is a plain div: it carries the hover background and the drag
+ * handlers, so both halves still read as one row.
  */
 export function ProjectRow({
   workspace,
@@ -75,10 +86,11 @@ export function ProjectRow({
   hasIconOverride,
   isActive,
   running,
-  unreadCount,
   nested,
+  collapsed,
   folders,
   onOpen,
+  onToggleCollapsed,
   onSetIcon,
   onMoveToFolder,
   onNewConversation,
@@ -88,72 +100,102 @@ export function ProjectRow({
   drag,
 }: ProjectRowProps) {
   const Icon = icon.Icon
+  const Caret = collapsed ? CaretRight : CaretDown
 
   return (
     <li>
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <Link
-            to={href}
-            onClick={(event) => {
-              // Let ⌘/ctrl-click and middle-click do what they do everywhere
-              // else; anything else is a switch-and-drill.
-              if (event.metaKey || event.ctrlKey || event.shiftKey) return
-              event.preventDefault()
-              onOpen()
-            }}
-            aria-current={isActive ? "page" : undefined}
+          <div
             draggable={drag?.draggable}
             onDragStart={drag?.onDragStart}
             onDragOver={drag?.onDragOver}
             onDrop={drag?.onDrop}
             onDragEnd={drag?.onDragEnd}
             className={cn(
-              "group/project flex h-8 w-full min-w-0 select-none items-center gap-2 rounded-md pl-2 pr-1.5 text-sidebar-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2",
-              nested && "pl-5",
+              "group/project flex h-8 w-full min-w-0 select-none items-center rounded-md pr-1 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
               isActive &&
                 "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
               drag?.isDropTarget && "ring-1 ring-sidebar-ring"
             )}
           >
-            <Icon
-              className="size-4 shrink-0 text-sidebar-foreground/70"
-              weight={isActive ? "fill" : "regular"}
-            />
-            <span className="min-w-0 flex-1 truncate text-[13px] leading-5 tracking-tight">
-              {workspace.name}
-            </span>
-
-            {/* Status, then count, then the digit — in the order you ask for
-                them. A working agent outranks an unread reply for the same
-                reason it does on a conversation row: it is the live fact. */}
-            {running ? (
-              <span
-                aria-label="Agent working"
-                className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+            <Link
+              to={href}
+              onClick={(event) => {
+                // Let ⌘/ctrl-click and middle-click do what they do everywhere
+                // else; anything else is a switch-and-drill.
+                if (event.metaKey || event.ctrlKey || event.shiftKey) return
+                event.preventDefault()
+                onOpen()
+              }}
+              aria-current={isActive ? "page" : undefined}
+              // An anchor is a drag source by default, and the thing it drags is
+              // its href — which would beat the row's own drag to filing a
+              // project into a group. The row is the handle; the link is not.
+              draggable={false}
+              className={cn(
+                "group/name flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 outline-none ring-sidebar-ring focus-visible:ring-2",
+                nested && "pl-5"
+              )}
+            >
+              <Icon
+                className="size-4 shrink-0 text-sidebar-foreground/70"
+                weight={isActive ? "fill" : "regular"}
               />
-            ) : unreadCount > 0 ? (
-              <span
-                aria-label={`${unreadCount} unread`}
-                className="min-w-4 shrink-0 rounded-full bg-sidebar-primary px-1 text-[10px] font-medium leading-4 tabular-nums text-sidebar-primary-foreground"
-              >
-                {unreadCount > 9 ? "9+" : unreadCount}
+              {/* Underlined on hover, because this half of the row goes
+                  somewhere and the other half does not. Without it the two
+                  targets look identical and you learn the difference by
+                  being taken to a project you only wanted to peek at. */}
+              <span className="min-w-0 flex-1 truncate text-[13px] leading-5 tracking-tight group-hover/name:underline">
+                {workspace.name}
               </span>
-            ) : null}
 
-            {/* Only the addressable ones. A tenth project showing a blank slot
-                where a digit goes would imply a shortcut that does nothing. */}
-            {slot > 0 && slot <= 9 ? (
-              <span
-                aria-hidden
-                className="shrink-0 text-[10px] tabular-nums text-sidebar-foreground/35 opacity-0 group-hover/project:opacity-100"
+              {/* The live fact, and the only mark left on the row: an agent is
+                  working in here. The unread count that used to sit beside it is
+                  gone — the sessions it was counting are listed directly below,
+                  each carrying its own mark, so the number was restating what the
+                  rows already showed. */}
+              {running ? (
+                <span
+                  aria-label="Agent working"
+                  className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+                />
+              ) : null}
+
+              {/* Only the addressable ones. A tenth project showing a blank slot
+                  where a digit goes would imply a shortcut that does nothing. */}
+              {slot > 0 && slot <= 9 ? (
+                <span
+                  aria-hidden
+                  className="shrink-0 pr-1 text-[10px] tabular-nums text-sidebar-foreground/35 opacity-0 group-hover/project:opacity-100"
+                >
+                  ⌘{slot}
+                </span>
+              ) : null}
+            </Link>
+
+            {/* On hover only, and it keeps its slot when hidden: a caret that
+                appeared out of nowhere would shift the name under the cursor.
+                Which way it points is not the state indicator — whether the
+                sessions are there is. */}
+            {onToggleCollapsed ? (
+              <button
+                type="button"
+                onClick={onToggleCollapsed}
+                aria-expanded={!collapsed}
+                aria-label={
+                  collapsed
+                    ? `Show ${workspace.name} sessions`
+                    : `Hide ${workspace.name} sessions`
+                }
+                className="flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 outline-none ring-sidebar-ring hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 group-hover/project:opacity-100"
               >
-                ⌘{slot}
-              </span>
-            ) : null}
-
-            <CaretRight className="size-3 shrink-0 text-sidebar-foreground/30" />
-          </Link>
+                <Caret className="size-3" />
+              </button>
+            ) : (
+              <span aria-hidden className="size-5 shrink-0" />
+            )}
+          </div>
         </ContextMenuTrigger>
 
         {/* Ported wholesale from WorkspaceTile: the icon grid, filing without
