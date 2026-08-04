@@ -1,0 +1,344 @@
+diff --git a/crates/laios-core/src/drivers/cluster.rs b/crates/laios-core/src/drivers/cluster.rs
+index 2223ad3..af727ad 100644
+--- a/crates/laios-core/src/drivers/cluster.rs
++++ b/crates/laios-core/src/drivers/cluster.rs
+@@ -783,6 +783,7 @@ mod tests {
+             build_args: vec![],
+             served_model_name: None,
+             ready_timeout_secs: None,
++            video_profile: None,
+         }
+     }
+ 
+diff --git a/crates/laios-core/src/drivers/placement.rs b/crates/laios-core/src/drivers/placement.rs
+index e0f9ce6..b63eb58 100644
+--- a/crates/laios-core/src/drivers/placement.rs
++++ b/crates/laios-core/src/drivers/placement.rs
+@@ -488,6 +488,7 @@ mod tests {
+             build_args: vec![],
+             served_model_name: Some("minimax-h3".into()),
+             ready_timeout_secs: None,
++            video_profile: None,
+         };
+         recipe.defaults.tensor_parallel = Some(1);
+ 
+diff --git a/crates/laios-core/src/drivers/sglang.rs b/crates/laios-core/src/drivers/sglang.rs
+index 0332ae9..ea3578c 100644
+--- a/crates/laios-core/src/drivers/sglang.rs
++++ b/crates/laios-core/src/drivers/sglang.rs
+@@ -314,6 +314,7 @@ mod tests {
+             build_args: vec![],
+             served_model_name: Some("minimax-m3".into()),
+             ready_timeout_secs: None,
++            video_profile: None,
+         }
+     }
+ 
+diff --git a/crates/laios-core/src/drivers/vllm.rs b/crates/laios-core/src/drivers/vllm.rs
+index e4f8923..6496d48 100644
+--- a/crates/laios-core/src/drivers/vllm.rs
++++ b/crates/laios-core/src/drivers/vllm.rs
+@@ -338,6 +338,7 @@ mod tests {
+             build_args: vec![],
+             served_model_name: None,
+             ready_timeout_secs: None,
++            video_profile: None,
+         }
+     }
+ 
+diff --git a/crates/laios-core/src/model_registry.rs b/crates/laios-core/src/model_registry.rs
+index f263e66..34673e0 100644
+--- a/crates/laios-core/src/model_registry.rs
++++ b/crates/laios-core/src/model_registry.rs
+@@ -14,7 +14,7 @@ use crate::catalog::Catalog;
+ use crate::download::{dir_nonempty, DownloadReport};
+ use crate::error::Result;
+ use crate::paths::Paths;
+-use crate::recipe::{Recipe, SourceKind};
++use crate::recipe::{Recipe, SourceKind, VideoProfile};
+ 
+ /// Bump when the manifest layout changes incompatibly.
+ pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+@@ -104,6 +104,11 @@ pub struct ModelManifest {
+     pub engine: String,
+     pub source: String,
+     pub capabilities: Vec<String>,
++    /// Copied from the recipe: how a client should shape a `/v1/videos` request for
++    /// this model. Absent on every manifest written before the field existed, and on
++    /// every model that does not generate video.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub video_profile: Option<VideoProfile>,
+     pub defaults: ManifestDefaults,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub vram_estimate_mb: Option<u64>,
+@@ -135,6 +140,7 @@ impl ModelManifest {
+             .collect();
+         ModelManifest {
+             schema_version: MANIFEST_SCHEMA_VERSION,
++            video_profile: recipe.video_profile.clone(),
+             id: recipe.recipe_id().to_string(),
+             recipe_id: recipe.recipe_id().to_string(),
+             model_id: recipe.model.clone(),
+@@ -559,6 +565,7 @@ mod tests {
+             build_args: vec![],
+             served_model_name: None,
+             ready_timeout_secs: None,
++            video_profile: None,
+         }
+     }
+ 
+@@ -722,6 +729,7 @@ mod tests {
+             build_args: vec![],
+             served_model_name: None,
+             ready_timeout_secs: None,
++            video_profile: None,
+         }
+     }
+ 
+diff --git a/crates/laios-core/src/recipe.rs b/crates/laios-core/src/recipe.rs
+index 3c18069..28e5d3b 100644
+--- a/crates/laios-core/src/recipe.rs
++++ b/crates/laios-core/src/recipe.rs
+@@ -82,6 +82,62 @@ pub enum Capability {
+     Image,
+ }
+ 
++/// An inclusive numeric range a client may submit for one knob.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VideoRange<T> {
++    pub min: T,
++    pub max: T,
++}
++
++/// What a `capabilities: [video]` recipe accepts, for clients that drive
++/// `/v1/videos`.
++///
++/// The capability flag says a model generates video; it says nothing about *how to
++/// ask*. That matters because the request surface is per-model, not per-engine:
++/// MiniMax-H3 takes its own canonical body (`task` / `target` / `conditions`) while
++/// the generic SGLang video API takes `seconds` / `size` / `input_reference`. A
++/// client that guesses wrong does not get an error — the engine drops the fields it
++/// does not know and generates something at its own defaults, so the caller pays
++/// full GPU time for a clip of the wrong length with its conditioning frames
++/// silently ignored.
++///
++/// Nothing here is inferred. An operator writing a recipe knows which body the
++/// model wants and what it will reject; this is where that knowledge stops being
++/// tribal. Omitted entirely means "undeclared", which a client should treat as
++/// "do not drive this automatically" rather than guessing.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VideoProfile {
++    /// Identifier of the request body a client must build, e.g.
++    /// `minimax_h3.request/v1` or `sglang.video/v1`. The one field with no sensible
++    /// default: it is the difference between a correct clip and a silently wrong one.
++    pub request_schema: String,
++    /// The only short edge the model accepts, when it is fixed (H3: 768).
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub short_edge: Option<u32>,
++    /// Accepted aspect ratios. Empty means the model does not constrain them.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub aspect_ratios: Vec<String>,
++    /// Output pixel size per aspect ratio, as the engine actually returns it —
++    /// arithmetic gets this wrong when the model snaps the long edge to a patch
++    /// size (768 at 16:9 is 1365 by calculation and 1344 in practice).
++    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
++    pub sizes: HashMap<String, String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub duration_seconds: Option<VideoRange<f32>>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub num_inference_steps: Option<VideoRange<u32>>,
++    /// Measured wall clock for one denoise step, which is the only progress signal
++    /// a client has for a model that reports `queued` until it is done.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub seconds_per_step: Option<f32>,
++    /// Whether first/last-frame conditioning is supported at all.
++    #[serde(default)]
++    pub keyframes: bool,
++    /// Whether the output carries an audio track.
++    #[serde(default)]
++    pub audio: bool,
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+ pub struct RecipeDefaults {
+     #[serde(default = "default_port")]
+@@ -225,6 +281,11 @@ pub struct Recipe {
+     /// Optional served model alias for the gateway.
+     #[serde(default)]
+     pub served_model_name: Option<String>,
++    /// How to ask this model for a clip, when it generates video. Absent for every
++    /// other kind of model, and absent for a video model whose operator has not
++    /// declared it — which a client should read as "not driveable automatically".
++    #[serde(default)]
++    pub video_profile: Option<VideoProfile>,
+     /// Seconds to wait for the engine to report ready before failing the serve.
+     /// Large MoE / long-context models on Spark can exceed the 600s default
+     /// (weight load + torch.compile + CUDA-graph capture). `None` → 600.
+@@ -364,6 +425,55 @@ fn yaml_value_to_string(v: &serde_yaml::Value) -> Option<String> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn a_video_recipe_declares_how_to_ask_for_a_clip() {
++        // The point of the profile is that a client does not have to hardcode one
++        // model: it reads the request schema and the accepted ranges off the recipe.
++        let yaml = r#"
++recipe_version: "1"
++name: MiniMax-H3 FL2VA
++model: MiniMaxAI/MiniMax-H3
++engine: sglang
++source: hf
++served_model_name: minimax-h3
++capabilities: [video]
++video_profile:
++  request_schema: minimax_h3.request/v1
++  short_edge: 768
++  aspect_ratios: ["16:9", "9:16", "1:1"]
++  sizes:
++    "16:9": 1344x768
++  duration_seconds: { min: 4.0, max: 15.0 }
++  num_inference_steps: { min: 4, max: 50 }
++  seconds_per_step: 44
++  keyframes: true
++  audio: true
++"#;
++        let r: Recipe = serde_yaml::from_str(yaml).unwrap();
++        let p = r.video_profile.expect("profile should parse");
++        assert_eq!(p.request_schema, "minimax_h3.request/v1");
++        assert_eq!(p.short_edge, Some(768));
++        assert_eq!(p.duration_seconds.as_ref().map(|d| (d.min, d.max)), Some((4.0, 15.0)));
++        assert_eq!(p.num_inference_steps.as_ref().map(|s| (s.min, s.max)), Some((4, 50)));
++        assert_eq!(p.sizes.get("16:9").map(String::as_str), Some("1344x768"));
++        assert!(p.keyframes && p.audio);
++    }
++
++    #[test]
++    fn a_recipe_without_a_video_profile_still_parses() {
++        // Every existing recipe, and every video recipe whose operator has not
++        // declared a profile yet. Absent is a state, not an error.
++        let yaml = r#"
++recipe_version: "1"
++name: Plain
++engine: vllm
++source: hf
++capabilities: [chat]
++"#;
++        let r: Recipe = serde_yaml::from_str(yaml).unwrap();
++        assert!(r.video_profile.is_none());
++    }
++
+     #[test]
+     fn parse_spark_style_recipe() {
+         let yaml = r#"
+@@ -425,6 +535,7 @@ command: |
+             build_args: vec![],
+             served_model_name: None,
+             ready_timeout_secs: None,
++            video_profile: None,
+         };
+         let err = r.render_command(&HashMap::new()).unwrap_err();
+         assert!(err.to_string().contains("unresolved"));
+@@ -456,6 +567,7 @@ command: |
+             build_args: vec![],
+             served_model_name: None,
+             ready_timeout_secs: None,
++            video_profile: None,
+         };
+         assert_eq!(r.estimate_vram_mb(10), 1010);
+     }
+diff --git a/crates/laios-core/src/scheduler.rs b/crates/laios-core/src/scheduler.rs
+index 69e95d6..12899b1 100644
+--- a/crates/laios-core/src/scheduler.rs
++++ b/crates/laios-core/src/scheduler.rs
+@@ -180,6 +180,7 @@ mod tests {
+             build_args: vec![],
+             served_model_name: None,
+             ready_timeout_secs: None,
++            video_profile: None,
+         }
+     }
+ 
+diff --git a/crates/laios-daemon/src/api.rs b/crates/laios-daemon/src/api.rs
+index 7163886..a19304f 100644
+--- a/crates/laios-daemon/src/api.rs
++++ b/crates/laios-daemon/src/api.rs
+@@ -16,7 +16,7 @@ use laios_core::error::ErrorBody;
+ use laios_core::instance::InstanceRecord;
+ use laios_core::job::JobRecord;
+ use laios_core::platform::{run_doctor, DoctorReport};
+-use laios_core::recipe::Recipe;
++use laios_core::recipe::{Recipe, VideoProfile};
+ use laios_core::scheduler::VramBudget;
+ use laios_core::AiosError;
+ 
+@@ -312,6 +312,12 @@ struct ModelSummary {
+     engine: String,
+     source: String,
+     capabilities: Vec<String>,
++    /// How to shape a `/v1/videos` request for this model, when its recipe declares
++    /// it. This is the join a client cannot make for itself: the gateway's own
++    /// `/v1/models` is a flat OpenAI list with no capability field, let alone a
++    /// request schema, so without this the client has to hardcode one model.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    video_profile: Option<VideoProfile>,
+     installed: bool,
+     recipe_present: bool,
+     path: String,
+@@ -359,6 +365,7 @@ async fn list_models(State(st): State<SharedState>) -> Result<Json<Vec<ModelSumm
+                 engine: m.engine.clone(),
+                 source: m.source.clone(),
+                 capabilities: m.capabilities.clone(),
++                video_profile: m.video_profile.clone(),
+                 installed: true,
+                 recipe_present,
+                 path: m.local.path.clone(),
+diff --git a/crates/laios-gateway/src/http.rs b/crates/laios-gateway/src/http.rs
+index 2ade835..2dd0e15 100644
+--- a/crates/laios-gateway/src/http.rs
++++ b/crates/laios-gateway/src/http.rs
+@@ -33,7 +33,7 @@
+ use std::sync::Arc;
+ 
+ use axum::body::Body;
+-use axum::extract::State;
++use axum::extract::{DefaultBodyLimit, State};
+ use axum::http::{HeaderMap, StatusCode};
+ use axum::response::{IntoResponse, Response};
+ use axum::routing::{get, post};
+@@ -44,6 +44,12 @@ use crate::keys::{AuthError, KeyGuard, Principal};
+ use crate::meters::{usage_from, Meters};
+ use crate::routing::{RouteTable, Target};
+ 
++/// Ceiling on a `/v1/videos` submission body, which may inline keyframe images.
++///
++/// axum's default is 2 MiB, which is below what a legitimate two-keyframe `fl2va`
++/// request needs once base64 has added a third to each image (see the route).
++const VIDEO_SUBMISSION_BODY_LIMIT: usize = 32 * 1024 * 1024;
++
+ /// Total lifetime backstop for one proxied request.
+ ///
+ /// Deliberately enormous. It exists so a wedged upstream is eventually reclaimed,
+@@ -106,7 +112,22 @@ pub fn router(state: Arc<GatewayState>) -> Router {
+         .route("/v1/chat/completions", post(chat_completions))
+         // Audio-video generation is a submit/poll/download trio rather than one
+         // call; the handlers live in `video.rs`.
+-        .route("/v1/videos", post(crate::video::create_video))
++        //
++        // The submission carries its own body limit. `create_video` buffers with a
++        // `Bytes` extractor, which inherits axum's 2 MiB default — and a
++        // first/last-frame (`fl2va`) request inlines its keyframes in that body as
++        // base64 `data:` URIs, which is the only transport open to a client that is
++        // not running on this box. A single 768p frame is a few hundred KB as JPEG
++        // but megabytes as PNG, and two keyframes share the budget, so the default
++        // rejects ordinary requests with `413 Failed to buffer the request body` —
++        // a message that names neither the frame nor the limit. Sized for two
++        // generous frames plus the prompt; still bounded, because this body is held
++        // in memory before it is relayed.
++        .route(
++            "/v1/videos",
++            post(crate::video::create_video)
++                .layer(DefaultBodyLimit::max(VIDEO_SUBMISSION_BODY_LIMIT)),
++        )
+         .route(
+             "/v1/videos/{id}",
+             get(crate::video::video_status).delete(crate::video::cancel_video),

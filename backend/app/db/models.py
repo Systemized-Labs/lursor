@@ -363,6 +363,12 @@ class Agent(TimestampMixin, table=True):
     # run time by the app-wide ``settings.browser_qa_enabled`` master switch and to
     # non-read-only, workspace-scoped runs.
     browser_qa: bool = True
+    # Let this agent generate video clips on a connected laios box (see
+    # ``agents/video_tools.py``). Off by default and deliberately: one clip is
+    # minutes of GPU time on someone's box, so it deserves an explicit checkbox
+    # rather than arriving with an upgrade. Also gated at run time on a connection
+    # actually serving a video-capable model.
+    include_video: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     # Force or forbid tool calls (see ToolChoice); "auto" leaves it to the model.
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
@@ -418,6 +424,12 @@ class Subagent(TimestampMixin, table=True):
     include_memory: bool = False
     include_plan: bool = False
     web_search: bool = False
+    # Video generation, same flag as on :class:`Agent` and off for the same reason.
+    # A subagent only ever *receives* it when its parent has it too: the parent
+    # resolves the box once and passes the runtime down (see ``agents/builder.py``),
+    # so this flag decides whether a specialist may spend the parent's GPU budget,
+    # not whether one can be found.
+    include_video: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
 
@@ -493,10 +505,94 @@ class LaiosConnection(TimestampMixin, table=True):
     name: str = Field(index=True)  # display name, e.g. "local" or "spark-head"
     base_url: str = ""  # daemon control-plane base, e.g. "http://127.0.0.1:7420"
     master_key: str | None = None  # Bearer token for /v1/*; kept server-side
+    # Where this box's *inference* gateway lives, when it is somewhere other than
+    # the control plane's host on :4000. The two planes are independent: managing
+    # a box (serve/stop/inventory) is a LAN-side operation, while reaching its
+    # models can go over a lastway tunnel. Setting this routes all model traffic
+    # — chat and /v1/videos alike — through the given base, e.g.
+    # "https://spark-1bf6.lastway.lursor.com/v1". Null derives it as before.
+    gateway_url: str | None = None
     # The CustomProvider auto-managed for this connection so its served models
     # flow into the model picker (points at the daemon's LiteLLM gateway). Kept
     # on this (new) table so CustomProvider needs no migration.
     linked_provider_id: str | None = None
+
+
+class VideoJob(TimestampMixin, table=True):
+    """One audio-video generation submitted to a laios gateway's ``/v1/videos``.
+
+    A clip takes minutes (~44 s per denoise step), so the surface is a job API
+    rather than a completion: submit, poll, download. The gateway remembers which
+    upstream owns a job id only *in memory* and only for the last 1024 jobs, so
+    this table — not the gateway — is the record of what we asked for. Without it
+    a gateway restart mid-generation orphans the clip and there is no history to
+    compare test runs against.
+
+    ``request`` keeps the exact submitted body so a run is reproducible, and
+    ``media_id`` is set once the mp4 has been pulled down into the media store.
+    """
+
+    __tablename__ = "video_jobs"
+
+    connection_id: str = Field(index=True)  # LaiosConnection this was sent to
+    job_id: str = Field(index=True)  # the gateway's id, e.g. "vid_…"
+    model: str = ""  # served name the submission named
+    prompt: str = ""
+    task: str = ""  # "t2va" (prompt only) or "fl2va" (first/last frame)
+    # The submitted body verbatim, so a run can be repeated or diffed. Free-form
+    # because the engine owns this schema — laios relays it unaltered.
+    request: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Mirrors the engine's own vocabulary: queued → in_progress → completed/failed.
+    status: str = "queued"
+    progress: float | None = None
+    error: str | None = None
+    # Content-addressed mp4 in the media store, once downloaded. Null while the
+    # job is still running or if it failed.
+    media_id: str | None = None
+
+
+class ImageGeneration(TimestampMixin, table=True):
+    """One image generated through a laios gateway's ``/v1/images/generations``.
+
+    The counterpart to :class:`VideoJob`, and deliberately *not* shaped like it:
+    the image API is **synchronous**. There is no upstream job to poll, no cancel,
+    and no id to bind — one POST returns the image, in ~6.5 s for
+    ``z-image-turbo`` and ~116 s for ``qwen-image-2512`` at its 50-step CFG
+    default.
+
+    So the row is the only record of a generation in flight. ``status`` tracks our
+    own request rather than an engine state: ``running`` while the backend task
+    holds the call open, then ``completed`` or ``failed``. A ``running`` row with
+    no live task behind it was orphaned by a restart, which ``api/images.py``
+    reaps on the next list rather than leaving it spinning forever.
+
+    ``request`` keeps the submitted body so a run is reproducible and the page can
+    reload it into the composer. ``inference_time_s`` and ``peak_memory_mb`` are
+    the engine's own measurements, reported in every response — worth a column on
+    a page whose whole purpose is comparing models and step counts.
+    """
+
+    __tablename__ = "image_generations"
+
+    connection_id: str = Field(index=True)  # LaiosConnection this was sent to
+    model: str = ""  # served name the submission named
+    prompt: str = ""
+    # The gateway's id for the generated image. Only load-bearing on the
+    # ``response_format: "url"`` path (which we do not ask for) — kept because it
+    # is what correlates a row with the gateway's own logs.
+    upstream_id: str | None = None
+    # The submitted body verbatim, so a run can be repeated or diffed. Free-form
+    # because the engine owns this schema — laios relays it unaltered.
+    request: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Ours, not the engine's: running → completed/failed.
+    status: str = "running"
+    error: str | None = None
+    # Content-addressed image in the media store, once stored. Null while running
+    # or if it failed.
+    media_id: str | None = None
+    # The engine's own numbers, straight off the response.
+    inference_time_s: float | None = None
+    peak_memory_mb: float | None = None
 
 
 class AppConfig(TimestampMixin, table=True):

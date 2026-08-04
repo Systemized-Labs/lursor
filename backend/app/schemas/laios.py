@@ -19,18 +19,24 @@ class LaiosConnectionCreate(BaseModel):
     name: str
     base_url: str
     master_key: str | None = None
+    # Optional override for where this box's models are reached (see
+    # ``LaiosConnection.gateway_url``). Not a secret, so unlike ``master_key``
+    # it is echoed back on reads.
+    gateway_url: str | None = None
 
 
 class LaiosConnectionUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
     master_key: str | None = None
+    gateway_url: str | None = None
 
 
 class LaiosConnectionRead(BaseModel):
     id: str
     name: str
     base_url: str
+    gateway_url: str | None = None
     has_master_key: bool
     created_at: UTCDatetime
     updated_at: UTCDatetime

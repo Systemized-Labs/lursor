@@ -53,6 +53,8 @@ from app.agents.skill_runtime import SkillRuntime
 from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.agents.tool_errors import ToolErrorsAsText
 from app.agents.tool_loading import build_tool_loading_capabilities
+from app.agents.video_runtime import VideoRuntime
+from app.agents.video_tools import make_video_tools
 from app.agents.vision import make_view_image_tool
 from app.agents.web_fetch import build_web_fetch_capability
 from app.agents.web_search import (
@@ -826,6 +828,7 @@ def _subagent_config(
     exa_api_key: str | None,
     child_depth: int,
     skill_runtime: SkillRuntime | None,
+    video_runtime: VideoRuntime | None = None,
     hindsight: HindsightConfig | None = None,
     compaction_model: str | None = None,
 ) -> dict:
@@ -864,6 +867,12 @@ def _subagent_config(
             # they carry; a subagent works in the same workspace, so it inherits
             # both rather than re-resolving (it has no session anyway).
             skill_runtime=skill_runtime,
+            # Video is inherited but opt-in *twice*: the parent resolved the box
+            # (a subagent has no session to resolve one with), and this row's own
+            # ``include_video`` decides whether this specialist may spend it. Off
+            # by default, so a video-enabled parent does not silently hand every
+            # subagent minutes of GPU time.
+            video_runtime=video_runtime if getattr(sa, "include_video", False) else None,
             # Same reasoning for memory: a subagent works in the parent's
             # workspace, so it shares the parent's bank, connection, and scope
             # tags rather than resolving its own.
@@ -899,6 +908,7 @@ def build_deep_agent(
     workspace_description: str | None = None,
     workspace_id: str | None = None,
     skill_runtime: SkillRuntime | None = None,
+    video_runtime: VideoRuntime | None = None,
     hindsight: HindsightConfig | None = None,
     compaction_model: str | None = None,
     _subagent_depth: int = 0,
@@ -946,6 +956,12 @@ def build_deep_agent(
     default (DuckDuckGo) is handled by the library's own ``web_search=`` flag; any
     other provider is built here as an explicit ``WebSearch`` capability and the
     library flag is suppressed so there is no duplicate ``web_search`` tool.
+
+    ``video_runtime`` is the box and model this run's video tools would submit to
+    (see ``agents/video_runtime.py``), resolved by the caller because it needs a
+    session *and* the network. ``None`` — the default, and what the agent's
+    ``include_video`` flag being off resolves to — means no video tools at all,
+    rather than tools that fail at call time.
 
     ``hindsight`` is the resolved app-wide memory configuration (see
     ``AppConfig.memory_provider`` and ``agents/hindsight.py``), passed as one
@@ -1044,6 +1060,7 @@ def build_deep_agent(
                 exa_api_key=exa_api_key,
                 child_depth=child_depth,
                 skill_runtime=skill_runtime,
+                video_runtime=video_runtime,
                 hindsight=hindsight,
                 compaction_model=compaction_model,
             )
@@ -1092,6 +1109,16 @@ def build_deep_agent(
     # whether its own chat model supports image input.
     tools = list(extra_config.pop("tools", []) or [])
     tools.append(make_view_image_tool(workspace_path))
+
+    # Video generation, when the caller resolved a box that can do it. Both gates
+    # (the agent's ``include_video`` flag and a connection serving a video-capable
+    # model) are already spent by the time this is not None — see
+    # ``load_video_runtime``. All three tools are deferred like every other non-core
+    # tool, so an agent that never generates a clip pays nothing for having them
+    # (``agents/tool_loading.py``); the skill's opening line tells the model to
+    # ``search_tools("video")`` if they are not in its list.
+    if video_runtime is not None:
+        tools.extend(make_video_tools(video_runtime, workspace_path))
 
     # Read-only ("ask") mode filters the mutating tools via a PrepareTools
     # capability. Merge with any capabilities supplied through the escape hatch

@@ -50,6 +50,7 @@ from app.agents.context_budget import resolve_compaction_ratio
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     PLAN_DIR,
+    UNATTENDED_RUN_INSTRUCTION,
     TurnResult,
     build_continuation_adapter,
     build_goal_evaluator,
@@ -68,6 +69,7 @@ from app.agents.goal_loop import (
     read_plan_doc,
     refine_instruction,
     scan_plan_dir,
+    scheduled_goal_kickoff,
     unique_plan_doc_path,
     write_plan_doc,
 )
@@ -75,6 +77,7 @@ from app.agents.hindsight import resolve_hindsight_config
 from app.agents.preview_service import preview_service
 from app.agents.skill_runtime import load_skill_runtime
 from app.agents.titler import generate_title
+from app.agents.video_runtime import load_video_runtime
 from app.agents.vision import model_supports_vision
 from app.config import get_settings
 from app.db.models import (
@@ -850,6 +853,14 @@ async def _build_agent_and_context(
         workspace_id=workspace.id,
         include_skills=agent_row.include_skills,
     )
+    # Which box (if any) this run can generate clips on. Resolved here for the same
+    # reason as the skills: it needs this session, and the builder is synchronous.
+    # Skipped entirely in read-only mode — the read-only tool filter would drop the
+    # tools anyway, so resolving them would spend a control-plane round trip per
+    # ``/ask`` turn for nothing.
+    video_runtime = await load_video_runtime(
+        session, include_video=agent_row.include_video and not read_only
+    )
     agent, deps = build_deep_agent(
         agent_row,
         workspace.path,
@@ -860,6 +871,7 @@ async def _build_agent_and_context(
         workspace_description=workspace.description or None,
         workspace_id=workspace.id,
         skill_runtime=skill_runtime,
+        video_runtime=video_runtime,
         read_only=read_only,
         plan_mode=plan_mode,
         web_search_provider=app_config.web_search_provider if app_config else None,
@@ -968,6 +980,13 @@ async def _run_goal_execution(
     started and ``"cron"`` for one a :class:`Schedule` fired, so unattended spend
     can be broken out in Analytics — the loop itself is identical either way.
     """
+    # Every turn this function drives is unattended (``/goal``, "Execute plan", a
+    # fired schedule), so the no-stopping-to-ask instruction belongs here rather
+    # than at each call site: the kickoff seed only reaches turn one, and it is the
+    # later turns that park on "do you approve...?".
+    media_instructions = _join_instructions(
+        media_instructions, UNATTENDED_RUN_INSTRUCTION
+    )
     todos_state: dict = {"json": None}
     run_id = uuid.uuid4().hex
     publish_status = _goal_status_publisher(thread_id, condition, max_turns)
@@ -1193,6 +1212,11 @@ async def start_scheduled_run(
         )
         condition = (thread.success_criteria or thread.goal or prompt).strip()
         max_turns = thread.max_iterations
+        # No history means the seed is the *only* place the objective can enter
+        # context — a bare AUTONOMOUS_KICKOFF would leave turn one to infer the
+        # work from recalled memory and the last fire's leftovers. See
+        # ``scheduled_goal_kickoff``.
+        kickoff = scheduled_goal_kickoff(prompt)
 
         async def driver() -> None:
             await _run_goal_execution(
@@ -1206,7 +1230,7 @@ async def start_scheduled_run(
                 media_instructions=None,
                 initial_history=[],
                 workspace_id=workspace_id,
-                kickoff=AUTONOMOUS_KICKOFF,
+                kickoff=kickoff,
                 kind="cron",
             )
     else:

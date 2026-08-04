@@ -194,6 +194,9 @@ async def _apply_lightweight_migrations(conn) -> None:
         ),
         "include_plan": "ALTER TABLE subagents ADD COLUMN include_plan BOOLEAN DEFAULT 0",
         "web_search": "ALTER TABLE subagents ADD COLUMN web_search BOOLEAN DEFAULT 0",
+        "include_video": (
+            "ALTER TABLE subagents ADD COLUMN include_video BOOLEAN DEFAULT 0"
+        ),
         "thinking": "ALTER TABLE subagents ADD COLUMN thinking VARCHAR DEFAULT 'off'",
         "tool_choice": "ALTER TABLE subagents ADD COLUMN tool_choice VARCHAR DEFAULT 'auto'",
         "extra_config": "ALTER TABLE subagents ADD COLUMN extra_config JSON DEFAULT '{}'",
@@ -234,6 +237,13 @@ async def _apply_lightweight_migrations(conn) -> None:
     if "browser_qa" not in agent_cols:
         await conn.execute(
             text("ALTER TABLE agents ADD COLUMN browser_qa BOOLEAN DEFAULT 1")
+        )
+    # Per-agent video generation toggle (see ``agents/video_tools.py``). Defaults to
+    # 0: existing agents must opt in, because a clip is minutes of GPU time on a
+    # connected box and nobody should discover that by accident after an upgrade.
+    if "include_video" not in agent_cols:
+        await conn.execute(
+            text("ALTER TABLE agents ADD COLUMN include_video BOOLEAN DEFAULT 0")
         )
     # Per-agent context-compaction overrides (see ``agents/context_budget.py``).
     # NULL means "use the app-wide default", so an upgrade changes nothing.

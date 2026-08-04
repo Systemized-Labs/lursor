@@ -222,7 +222,14 @@ def planning_instruction() -> str:
         "of concrete steps plus any key decisions or assumptions, and ALWAYS "
         "include a `## Success Criteria` section spelling out, as a checklist, "
         "what must be true for the plan to count as fully implemented — this is "
-        "what the agent will be judged against when the plan is later executed. "
+        "what the agent will be judged against when the plan is later executed.\n"
+        "Write the plan for **unattended execution**: once the user presses "
+        "\"Execute plan\" it runs to completion with no human in the loop. So do "
+        "not include steps like \"get user approval\", \"confirm before "
+        "proceeding\" or \"check in with the user\" — that approval is the button, "
+        "and a step waiting on a human can never be completed. Where a step has a "
+        "real choice to make, decide it in the plan (record it under a decisions "
+        "or assumptions heading) so execution has nothing to ask about. "
         "In your chat reply, briefly summarise the plan and invite the user to "
         "request changes — you'll refine it together until they're happy with it.\n"
         "Do NOT start doing the work yet: this is a planning conversation. Beyond "
@@ -243,8 +250,11 @@ def refine_instruction(plan_doc: str) -> str:
         f"The user is giving feedback on the plan you already wrote to "
         f"`{plan_doc}`. Read the current `{plan_doc}` with your file tools, apply "
         "the requested changes, and save the updated plan. Keep the "
-        "`## Success Criteria` section accurate as the plan changes. In your chat "
-        "reply, briefly say what you changed and invite further edits.\n"
+        "`## Success Criteria` section accurate as the plan changes, and keep the "
+        "plan executable unattended — no \"get user approval\" or \"confirm "
+        "first\" steps, since execution runs with no human in the loop and cannot "
+        "complete a step that waits on one. In your chat reply, briefly say what "
+        "you changed and invite further edits.\n"
         "Do NOT start doing the work yet: this is still the planning conversation. "
         "The user keeps refining by sending more messages; nothing runs until they "
         "press \"Execute plan\"."
@@ -342,12 +352,81 @@ def extract_plan_title(doc_text: str) -> str:
     return ""
 
 
+# Run-scoped instruction for every turn of an autonomous run (``/goal``,
+# "Execute plan", a fired schedule). The loop drives itself: nothing between turns
+# reads the agent's reply, and a message the user does send arrives as a mid-run
+# interjection, never as an answer the agent is waiting on. Models nonetheless
+# park mid-run to ask permission before something long or expensive — and, worse,
+# write that checkpoint into the todo board ("Get user approval before the final
+# render"), which reads as legitimate remaining work to every later turn. Both
+# behaviours burn turns on a question nobody will answer, so the run has to say
+# plainly that it is unattended and that approval already happened.
+UNATTENDED_RUN_INSTRUCTION = (
+    "## Unattended run — never stop to ask\n"
+    "You are running autonomously until the goal is met. No human is reading "
+    "your replies mid-run, so a question is not a checkpoint — it is a wasted "
+    "turn. Approval for this work was given when the goal (or plan) was accepted, "
+    "and it covers every step needed to reach it, including steps that are slow, "
+    "expensive, or hard to undo within this workspace.\n"
+    "- Never ask for approval, confirmation, a decision, or a preference, and "
+    "never end a turn waiting for a reply.\n"
+    "- When something is genuinely ambiguous, choose the most reasonable option, "
+    "state in one line which you chose and why, and continue. Flag it in your "
+    "final summary if the user should revisit it.\n"
+    "- Never write a todo whose completion depends on a human (\"get approval\", "
+    "\"confirm with the user\", \"wait for sign-off\"). Todos are your own work "
+    "items; a run cannot complete one that waits on somebody else.\n"
+    "- Only genuinely destructive actions outside the workspace (force-pushing a "
+    "shared branch, deleting remote data, spending real money outside the "
+    "agreed task) are out of scope. Skip those, do everything else, and note "
+    "what you skipped at the end.\n"
+    "Stop only when the goal is met, or when you have hit a blocker you cannot "
+    "work around — and then say what the blocker is rather than asking a question."
+)
+
+
 # Seeds the first turn of the autonomous goal loop (``/goal`` — no plan step).
 AUTONOMOUS_KICKOFF = (
     "Work toward the goal now. Break it into steps with the write_todos tool, "
     "then carry them out, surfacing concrete evidence (command output, exit "
-    "codes, test results, file state) as you go so completion can be verified."
+    "codes, test results, file state) as you go so completion can be verified. "
+    "Run unattended: do not stop to ask for approval or confirmation — decide, "
+    "act, and keep going until the goal is met."
 )
+
+
+def scheduled_goal_kickoff(prompt: str) -> str:
+    """Seed for a schedule's goal fire: state the objective, then work it.
+
+    A ``/goal`` turn can seed the loop with ``AUTONOMOUS_KICKOFF`` alone because
+    the objective is already in the replayed transcript. A fired schedule has no
+    transcript — every fire opens a brand-new thread — so that same seed asks the
+    model to "work toward the goal" without the goal ever being in context: the
+    schedule's prompt otherwise only reaches the *evaluator*, and only from turn
+    two does a continue directive name the success criteria.
+
+    A model with no objective reconstructs one from what it can see, which is
+    recalled long-term memory plus whatever the last fire left in the workspace.
+    That is how "research a *recent* news event and make a new skit" turns into
+    resuming last night's video on turn one. So the prompt is stated up front, and
+    prior work is framed as the record it is — reuse the tooling, don't repeat a
+    subject, don't pick the work back up.
+    """
+    objective = prompt.strip()
+    if not objective:
+        return AUTONOMOUS_KICKOFF
+    return (
+        "This is a scheduled run on a fresh conversation. The objective below is "
+        "the whole of the work — nothing before it is an unfinished task.\n\n"
+        f"--- OBJECTIVE ---\n{objective}\n--- END OBJECTIVE ---\n\n"
+        "This schedule may have run before, leaving files in the workspace and "
+        "facts in your long-term memory. Treat those as a record of what is "
+        "already done: reuse the scripts and conventions, and avoid repeating a "
+        "subject you have already covered. Do not resume, revise, or finish that "
+        "earlier work unless the objective above asks for it — start this "
+        "objective from scratch.\n\n"
+        f"{AUTONOMOUS_KICKOFF}"
+    )
 
 
 def plan_execute_kickoff(plan_path: str, plan_body: str = "") -> str:
@@ -373,7 +452,13 @@ def plan_execute_kickoff(plan_path: str, plan_body: str = "") -> str:
         f"implemented. {lead} Break it into steps with the write_todos tool and "
         "carry them out, surfacing concrete evidence (command output, exit codes, "
         "test results, file state) as you go so completion can be verified against "
-        f"the plan's Success Criteria.{inlined}"
+        "the plan's Success Criteria.\n"
+        "Pressing \"Execute plan\" *was* the approval, and it covers the whole "
+        "plan — including any step that is slow, expensive or marked as needing a "
+        "check. Nobody will answer a question from here: if the plan itself "
+        "contains an approval or confirmation checkpoint, treat it as already "
+        "satisfied and carry straight on. Run it end to end without stopping to "
+        f"ask.{inlined}"
     )
 
 # Mid-run steering: messages the user sends while the autonomous loop is running.
@@ -613,6 +698,77 @@ def rounds_exhausted_directive(condition: str, reason: str) -> str:
     )
 
 
+# Phrases that mark a turn as having handed control back to the user. Matched
+# against the *tail* of the reply only (see :func:`looks_like_awaiting_user`) —
+# an agent that mentions approval mid-turn and then keeps working has not stopped,
+# and it is the closing paragraph that says whether it did.
+_AWAITING_USER_PHRASES = (
+    "do you approve",
+    "do you want me to",
+    "would you like me to",
+    "should i proceed",
+    "shall i proceed",
+    "may i proceed",
+    "let me know",
+    "please confirm",
+    "your approval",
+    "awaiting approval",
+    "awaiting your",
+    "waiting for your",
+    "waiting on your",
+    "go-ahead",
+    "go ahead and confirm",
+    "confirm and i",
+    "confirm before i",
+    "say the word",
+)
+
+# How much of the reply's end to inspect. Long enough to cover a closing
+# paragraph, short enough that a question asked early in a turn the agent then
+# answered itself doesn't count.
+_AWAITING_USER_TAIL_CHARS = 400
+
+
+def looks_like_awaiting_user(text: str) -> bool:
+    """True when a turn's reply ends by handing control back to the user.
+
+    The behavioural failure this catches: mid-run, a model asks permission before
+    something slow or expensive ("Do you approve starting the three final
+    renders?") and stops. In an unattended run nobody answers, so the plain
+    continue directive spends the next turn re-asking the same question. Detecting
+    it lets the loop answer instead (see :func:`awaiting_user_directive`).
+
+    Deliberately loose: a false positive only adds a "nobody is going to answer,
+    decide and continue" note to a directive that already says keep working.
+    """
+    tail = text.strip()[-_AWAITING_USER_TAIL_CHARS:].lower()
+    if not tail:
+        return False
+    if tail.endswith("?") or tail.endswith("?**") or tail.endswith('?"'):
+        return True
+    return any(phrase in tail for phrase in _AWAITING_USER_PHRASES)
+
+
+def awaiting_user_directive(condition: str, reason: str) -> str:
+    """Continue directive for a turn that stopped to ask the user something.
+
+    Grants the approval explicitly rather than repeating "keep working" — the
+    model stopped *because* it believed a human gate existed, so the next turn
+    only moves if that belief is corrected.
+    """
+    return (
+        f"{goal_continue_directive(condition, reason)}\n\n"
+        "Note: your previous turn ended by asking the user something. This run is "
+        "unattended — nobody is going to answer, and the approval you are waiting "
+        "for was already given when this goal was started; it covers every step "
+        "needed to reach it, including slow or expensive ones. Do not ask again. "
+        "Choose the most sensible option, state in one line which you chose, and "
+        "carry it out now. If a todo item is itself a request for approval, mark "
+        "it done and move on — a human checkpoint is not work this run can "
+        "complete."
+    )
+
+
 async def _evaluate_resiliently(
     evaluate: Callable[[str, list[ModelMessage]], Awaitable[GoalEvaluation]],
     condition: str,
@@ -713,8 +869,11 @@ async def drive_goal_loop(
             return GoalOutcome(ThreadStatus.blocked, state.turns, evaluation.reason)
         if state.exhausted:
             return GoalOutcome(ThreadStatus.failed, state.turns, evaluation.reason)
-        seed = (
-            rounds_exhausted_directive(condition, evaluation.reason)
-            if turn.rounds_exhausted
-            else goal_continue_directive(condition, evaluation.reason)
-        )
+        if turn.rounds_exhausted:
+            seed = rounds_exhausted_directive(condition, evaluation.reason)
+        elif looks_like_awaiting_user(turn.text):
+            # The turn parked on a question. Answer it in the directive, or the
+            # next turn just asks it again (and the one after that).
+            seed = awaiting_user_directive(condition, evaluation.reason)
+        else:
+            seed = goal_continue_directive(condition, evaluation.reason)

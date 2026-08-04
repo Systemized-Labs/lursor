@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom"
 
 import type { Thread } from "@/api/types"
 import type { WorkspaceVisits } from "@/hooks/use-workspace-visits"
+import { isElectron } from "@/lib/platform"
 import { resumeHref } from "@/lib/workspace-resume"
 
 /** How long a second ⌘ tap still counts as a double-tap. */
@@ -43,6 +44,9 @@ export interface WorkspaceSwitch {
  * mouse trip to a 68px column:
  *
  * - **⌘1…⌘9** — the Nth tile, by rail position. Stable, so it can be learned.
+ *   Desktop only: in a browser those keys are the browser's own tab switcher,
+ *   and a web app stealing them is worse than not having the shortcut. See
+ *   `isElectron` below — `workspace-tile` hides the hint on the same condition.
  * - **Double-⌘** — the workspace you were in before this one, ⌘-tab style.
  *   Because switching rewrites the MRU chain, tapping it again comes straight
  *   back, so the gesture ping-pongs without any special-casing.
@@ -77,6 +81,9 @@ export function useWorkspaceSwitch({
   target.current = { orderedIds, switchTo }
 
   useEffect(() => {
+    // ⌘/ctrl + digit is the browser's tab switcher, and it isn't ours to take.
+    if (!isElectron) return
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
       const digit = Number(e.key)

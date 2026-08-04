@@ -36,6 +36,7 @@ class AgentCreate(BaseModel):
     include_plan: bool = False
     web_search: bool = False
     browser_qa: bool = True
+    include_video: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     tool_choice: ToolChoice = ToolChoice.auto
     compaction_threshold: CompactionFraction = None
@@ -56,6 +57,7 @@ class AgentUpdate(BaseModel):
     include_plan: bool | None = None
     web_search: bool | None = None
     browser_qa: bool | None = None
+    include_video: bool | None = None
     thinking: ThinkingLevel | None = None
     tool_choice: ToolChoice | None = None
     # Unlike the other fields here, ``None`` is a meaningful *value* rather than
@@ -94,6 +96,7 @@ class AgentRead(BaseModel):
     include_plan: bool
     web_search: bool
     browser_qa: bool
+    include_video: bool
     thinking: ThinkingLevel
     tool_choice: ToolChoice
     compaction_threshold: float | None
@@ -118,6 +121,7 @@ class AgentRead(BaseModel):
             include_plan=agent.include_plan,
             web_search=agent.web_search,
             browser_qa=agent.browser_qa,
+            include_video=agent.include_video,
             thinking=agent.thinking,
             tool_choice=agent.tool_choice,
             compaction_threshold=agent.compaction_threshold,

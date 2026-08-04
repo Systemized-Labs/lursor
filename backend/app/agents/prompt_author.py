@@ -34,6 +34,7 @@ class AgentPromptContext(BaseModel):
     include_plan: bool = False
     web_search: bool = False
     browser_qa: bool = False
+    include_video: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     skill_names: list[str] = []
     tool_names: list[str] = []
@@ -93,6 +94,12 @@ def _capability_lines(ctx: AgentPromptContext) -> str:
         caps.append(
             "browser QA (open the app in a headless browser to view and test it, "
             "read console/network errors, and verify the UI you build)"
+        )
+    if ctx.include_video:
+        caps.append(
+            "video generation (generate clips with synchronised audio on a "
+            "connected laios box, then assemble them with ffmpeg; each render "
+            "takes minutes of GPU time, so draft cheap before committing)"
         )
     if ctx.tool_names:
         caps.append("tools: " + ", ".join(ctx.tool_names))

@@ -306,6 +306,31 @@ def _rel(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix() if path != root else ""
 
 
+# Extensions ``mimetypes`` names in a form browsers don't accept for media
+# playback. The stdlib table carries some genuinely old registrations —
+# ``audio/mp4a-latm`` for ``.m4a``, and the ``x-`` experimental forms that were
+# standardized years ago — and a ``<video>``/``<audio>`` element handed one of
+# those may refuse the source outright rather than sniff past it. Everything not
+# listed here is whatever ``guess_type`` says, as before.
+_MEDIA_TYPE_OVERRIDES = {
+    ".m4a": "audio/mp4",
+    ".m4v": "video/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".wav": "audio/wav",
+    ".weba": "audio/webm",
+}
+
+
+def _media_type(target: Path) -> str:
+    """Content type to serve ``target`` as, for the two raw-bytes endpoints."""
+    override = _MEDIA_TYPE_OVERRIDES.get(target.suffix.lower())
+    if override:
+        return override
+    guessed, _ = mimetypes.guess_type(target.name)
+    return guessed or "application/octet-stream"
+
+
 @router.get("/list", response_model=list[DirEntry])
 async def list_directory(
     workspace_id: str,
@@ -785,16 +810,19 @@ async def read_raw(
 ) -> FileResponse:
     """Serve a file's raw bytes with a guessed content type.
 
-    Used for inline previews the JSON ``/read`` endpoint can't carry — chiefly
-    images, which ``/read`` reports as binary. Path safety is identical to
-    ``/read``: the client-supplied path is confined to the workspace root.
+    Used for inline previews the JSON ``/read`` endpoint can't carry — images,
+    video and audio, all of which ``/read`` reports as binary (and video, as
+    oversize). :class:`FileResponse` honours ``Range``, so a video player seeks
+    by fetching the byte window it needs rather than the whole file.
+
+    Path safety is identical to ``/read``: the client-supplied path is confined
+    to the workspace root.
     """
     root = await _workspace_root(workspace_id, session)
     target = _safe_join(root, path)
     if not target.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
-    media_type, _ = mimetypes.guess_type(target.name)
-    return FileResponse(target, media_type=media_type or "application/octet-stream")
+    return FileResponse(target, media_type=_media_type(target))
 
 
 @router.get("/serve/{file_path:path}")
@@ -821,8 +849,7 @@ async def serve_file(
     target = _safe_join(root, file_path)
     if not target.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
-    media_type, _ = mimetypes.guess_type(target.name)
-    return FileResponse(target, media_type=media_type or "application/octet-stream")
+    return FileResponse(target, media_type=_media_type(target))
 
 
 @router.put("/write", response_model=WriteFileResponse)

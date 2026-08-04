@@ -49,6 +49,7 @@ import {
   parsePercentText,
 } from "@/components/compaction-fields"
 import { useMemoryHint } from "@/pages/settings/memory-hint"
+import { useVideoHint } from "@/pages/agents/video-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
 
@@ -66,8 +67,14 @@ type BooleanFieldKey =
   | "include_plan"
   | "web_search"
   | "browser_qa"
+  | "include_video"
 
-const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
+const BOOLEAN_FIELDS: {
+  key: BooleanFieldKey
+  label: string
+  /** Shown under the label. For a toggle whose cost isn't obvious from its name. */
+  hint?: string
+}[] = [
   { key: "include_todo", label: "Include todo" },
   { key: "include_subagents", label: "Include subagents" },
   { key: "include_skills", label: "Include skills" },
@@ -78,6 +85,13 @@ const BOOLEAN_FIELDS: { key: BooleanFieldKey; label: string }[] = [
   { key: "include_plan", label: "Include plan" },
   { key: "web_search", label: "Web search" },
   { key: "browser_qa", label: "Browser QA" },
+  {
+    key: "include_video",
+    label: "Video generation",
+    // The live hint underneath names the model (or why there is none); this is
+    // what shows while that resolves.
+    hint: "Generate clips on a connected laios box.",
+  },
 ]
 
 interface FormState {
@@ -92,6 +106,7 @@ interface FormState {
   include_plan: boolean
   web_search: boolean
   browser_qa: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   // Compaction overrides are edited as whole-percent text; "" means "no override,
@@ -117,6 +132,9 @@ function emptyState(): FormState {
     // On by default — matches the backend default and prior behaviour where every
     // executing agent got browser tools.
     browser_qa: true,
+    // Off by default: a clip is minutes of GPU time on someone's box, so it is an
+    // explicit choice rather than something an agent quietly arrives with.
+    include_video: false,
     thinking: "off",
     tool_choice: "auto",
     compactionThresholdText: "",
@@ -139,6 +157,7 @@ function fromAgent(agent: Agent): FormState {
     include_plan: agent.include_plan,
     web_search: agent.web_search,
     browser_qa: agent.browser_qa,
+    include_video: agent.include_video,
     thinking: agent.thinking,
     tool_choice: agent.tool_choice ?? "auto",
     compactionThresholdText: fractionToPercentText(agent.compaction_threshold),
@@ -174,6 +193,8 @@ export function AgentFormDialog({
   // Where memory goes if the toggle below is on — an app-wide provider choice, so
   // it's read here rather than being part of the agent's own config.
   const memoryHint = useMemoryHint()
+  // Only resolved while the dialog is open: it reaches the box behind a cache.
+  const videoHint = useVideoHint(open)
 
   // Prompt-authoring UI state: an inline brief box, and a pending destructive
   // replace guarded by a confirm dialog when the field already has content.
@@ -236,6 +257,7 @@ export function AgentFormDialog({
       include_plan: form.include_plan,
       web_search: form.web_search,
       browser_qa: form.browser_qa,
+      include_video: form.include_video,
       thinking: form.thinking,
       // Skills are scope-discovered; when enabled the agent sees every global
       // skill (plus its workspace's own at run time), so surface the global set.
@@ -347,6 +369,7 @@ export function AgentFormDialog({
       include_plan: form.include_plan,
       web_search: form.web_search,
       browser_qa: form.browser_qa,
+      include_video: form.include_video,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
       compaction_threshold: threshold.value,
@@ -569,6 +592,12 @@ export function AgentFormDialog({
                     <Label htmlFor={`agent-${field.key}`}>{field.label}</Label>
                     {field.key === "include_memory" && memoryHint ? (
                       <p className="text-xs text-muted-foreground">{memoryHint}</p>
+                    ) : null}
+                    {field.hint ? (
+                      <p className="text-xs text-muted-foreground">{field.hint}</p>
+                    ) : null}
+                    {field.key === "include_video" && videoHint ? (
+                      <p className="text-xs text-muted-foreground">{videoHint}</p>
                     ) : null}
                   </div>
                   <Switch

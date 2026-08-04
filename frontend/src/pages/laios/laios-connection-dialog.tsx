@@ -21,10 +21,16 @@ import { Label } from "@/components/ui/label"
 interface FormState {
   name: string
   baseUrl: string
+  gatewayUrl: string
   masterKey: string
 }
 
-const EMPTY: FormState = { name: "", baseUrl: "", masterKey: "" }
+const EMPTY: FormState = {
+  name: "",
+  baseUrl: "",
+  gatewayUrl: "",
+  masterKey: "",
+}
 
 interface LaiosConnectionDialogProps {
   open: boolean
@@ -47,7 +53,12 @@ export function LaiosConnectionDialog({
     if (open) {
       setForm(
         connection
-          ? { name: connection.name, baseUrl: connection.base_url, masterKey: "" }
+          ? {
+              name: connection.name,
+              baseUrl: connection.base_url,
+              gatewayUrl: connection.gateway_url ?? "",
+              masterKey: "",
+            }
           : EMPTY
       )
     }
@@ -68,6 +79,9 @@ export function LaiosConnectionDialog({
     const input: Partial<LaiosConnectionInput> = {
       name: form.name.trim(),
       base_url: form.baseUrl.trim(),
+      // Empty means "derive it from the daemon URL", which is the null the
+      // backend expects rather than an empty string.
+      gateway_url: form.gatewayUrl.trim() || null,
     }
     if (!isEdit || trimmedKey) {
       input.master_key = trimmedKey || null
@@ -129,7 +143,28 @@ export function LaiosConnectionDialog({
             />
             <p className="text-xs text-muted-foreground">
               The control-plane base URL — the <code>laios daemon</code> address,
-              not the OpenAI gateway on <code>:4000</code>.
+              not the OpenAI gateway on <code>:4000</code>. Used for managing the
+              box: inventory, serve and stop.
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="laios-gateway">Gateway URL (optional)</Label>
+            <Input
+              id="laios-gateway"
+              placeholder="derived from the daemon URL on :4000"
+              value={form.gatewayUrl}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, gatewayUrl: e.target.value }))
+              }
+              className="font-mono text-sm"
+              spellCheck={false}
+            />
+            <p className="text-xs text-muted-foreground">
+              Where this box's <em>models</em> are reached — chat and video both.
+              Set this to send model traffic somewhere other than the daemon's
+              host, e.g. a lastway tunnel at{" "}
+              <code>https://your-box.lastway.lursor.com</code>, while management
+              above stays on the LAN. Leave empty to derive it.
             </p>
           </div>
           <div className="grid gap-2">

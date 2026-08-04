@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -47,6 +47,7 @@ def _to_read(conn: LaiosConnection) -> LaiosConnectionRead:
         id=conn.id,
         name=conn.name,
         base_url=conn.base_url,
+        gateway_url=conn.gateway_url,
         has_master_key=bool(conn.master_key),
         created_at=conn.created_at,
         updated_at=conn.updated_at,
@@ -134,16 +135,48 @@ def _daemon_error_detail(resp: httpx.Response) -> str:
 # provider is created/updated/removed alongside the connection and excluded from
 # the manual Providers tab so it is managed only from the laios surface.
 
+# Path prefix lastway publishes a box's *control* plane under, mirroring
+# ``lastway_proto::routes::CONTROL_PATH_PREFIX``. A connection whose base URL
+# ends in this is reached through a tunnel rather than directly, which changes
+# where its inference gateway lives (see :func:`_derive_gateway_base`).
+TUNNEL_CONTROL_PREFIX = "/control"
+
 
 async def _derive_gateway_base(conn: LaiosConnection) -> str | None:
-    """Best-effort OpenAI-compatible gateway base URL for a connection.
+    """OpenAI-compatible gateway base URL for a connection.
 
-    Host comes from the control-plane URL; the gateway port from ``/v1/route``
-    (``gateway_listen``), defaulting to 4000 when the daemon is unreachable.
+    The control plane and the inference gateway are **independent**: managing a
+    box (serve/stop/inventory) is a LAN-side operation on ``:7420``, while
+    reaching its models can go somewhere else entirely — over a lastway tunnel,
+    say, where the box is published on a public hostname but its control plane
+    stays closed. So this resolves in three steps, most explicit first:
+
+    1. ``gateway_url`` if set. Whatever the operator entered wins; nothing is
+       inferred from the control-plane URL, because the two need not be related.
+    2. Otherwise, if the control base is itself tunnelled (path ends in
+       ``/control``, lastway's ``CONTROL_PATH_PREFIX``), the gateway is that same
+       origin with the prefix stripped — the tunnel publishes both origins on one
+       hostname split by path. Deriving a port there would be actively wrong:
+       nothing listens on ``:4000`` at the tunnel edge, and the daemon's
+       ``gateway_listen`` reports a box-local address.
+    3. Otherwise the historical derivation: the control host, with the port from
+       ``/v1/route`` (``gateway_listen``), defaulting to 4000 when the daemon is
+       unreachable.
+
+    The scheme is carried over rather than assumed, since a tunnel is https.
     """
-    host = urlparse(conn.base_url).hostname
-    if not host:
+    if conn.gateway_url and conn.gateway_url.strip():
+        return _normalize_gateway_url(conn.gateway_url)
+
+    parsed = urlparse(conn.base_url)
+    if not parsed.hostname:
         return None
+
+    control_path = parsed.path.rstrip("/")
+    if control_path.endswith(TUNNEL_CONTROL_PREFIX):
+        root = control_path[: -len(TUNNEL_CONTROL_PREFIX)]
+        return f"{parsed.scheme}://{parsed.netloc}{root}/v1"
+
     port = 4000
     try:
         async with _client(conn, timeout=httpx.Timeout(3.0)) as client:
@@ -155,7 +188,18 @@ async def _derive_gateway_base(conn: LaiosConnection) -> str | None:
                 port = int(tail)
     except (httpx.RequestError, ValueError):
         pass
-    return f"http://{host}:{port}/v1"
+    return f"{parsed.scheme or 'http'}://{parsed.hostname}:{port}/v1"
+
+
+def _normalize_gateway_url(raw: str) -> str:
+    """Coerce an operator-entered gateway URL to an OpenAI base ending in ``/v1``.
+
+    Both ``https://host`` and ``https://host/v1`` are things a person reasonably
+    types for the same endpoint, and every caller downstream appends paths
+    relative to ``/v1``.
+    """
+    trimmed = raw.strip().rstrip("/")
+    return trimmed if trimmed.endswith("/v1") else f"{trimmed}/v1"
 
 
 def _same_endpoint(a: str, b: str) -> bool:
@@ -221,6 +265,146 @@ async def managed_provider_ids(session: AsyncSession) -> set[str]:
         )
     )
     return {pid for (pid,) in result.all() if pid}
+
+
+# --- Shared with api/videos.py --------------------------------------------------
+#
+# The video surface is connection-scoped in exactly the same way as everything
+# here, but it talks to the *inference* gateway rather than the control plane. It
+# needs connection lookup and gateway-base derivation; re-deriving either there
+# would be two ways to answer "where is this box".
+
+load_connection = _get_conn
+gateway_base = _derive_gateway_base
+
+
+async def non_chat_served_names(conn: LaiosConnection) -> set[str]:
+    """Served names on this box that are **not** chat models.
+
+    The gateway's ``/v1/models`` is a flat OpenAI list with no capability field,
+    so a generative-media model — MiniMax-H3, which speaks ``/v1/videos`` and has
+    no chat surface at all — is indistinguishable from an LLM there. Left alone it
+    lands in the chat picker, where selecting it makes every message fail.
+
+    The control plane's inventory *does* carry ``capabilities`` per recipe plus
+    the live instance's served name, so the join belongs here rather than in the
+    picker: this module already owns talking to the daemon.
+
+    Keyed on the absence of ``chat`` rather than the presence of ``video``, since
+    the same bug applies to any non-conversational surface (embeddings next), and
+    a model declaring both stays selectable.
+
+    **Fails open.** An unreachable or unauthorised control plane — a tunnelled box
+    without ``expose_control`` — returns an empty set, so a box we cannot classify
+    shows all of its models rather than none of them.
+    """
+    try:
+        async with _client(conn, timeout=httpx.Timeout(5.0)) as client:
+            resp = await client.get("/v1/models")
+        if resp.status_code >= 400:
+            return set()
+        inventory = resp.json()
+    except (httpx.RequestError, ValueError):
+        return set()
+
+    if not isinstance(inventory, list):
+        return set()
+
+    excluded: set[str] = set()
+    for model in inventory:
+        if not isinstance(model, dict):
+            continue
+        capabilities = model.get("capabilities")
+        # Unknown or unstated capabilities are unclassifiable, and hiding a model
+        # on a guess is worse than showing one that might not chat.
+        if not isinstance(capabilities, list) or not capabilities:
+            continue
+        if "chat" in capabilities:
+            continue
+        # The gateway advertises the *served* name, which is what the picker sees.
+        instance = model.get("running_instance") or {}
+        candidates = (
+            instance.get("served_name") if isinstance(instance, dict) else None,
+            model.get("served_model_name"),
+        )
+        for name in candidates:
+            if isinstance(name, str) and name:
+                excluded.add(name)
+    return excluded
+
+
+class VideoServedModel(NamedTuple):
+    """One video-capable model a box is actually serving.
+
+    ``served_name`` is what the gateway routes on. ``profile`` is the recipe's
+    ``video_profile`` block when the operator declared one (see
+    ``docs/upstream/laios-video-profile.patch``) — the only thing that says *how* to
+    ask this model for a clip. ``model_id``/``recipe_id`` are identity, used to
+    recognise a model whose profile is missing.
+    """
+
+    served_name: str
+    model_id: str
+    recipe_id: str
+    profile: dict[str, Any] | None
+
+
+async def video_served_models(conn: LaiosConnection) -> list[VideoServedModel]:
+    """Video-capable models this box is serving, with their request profiles.
+
+    The sibling of :func:`non_chat_served_names`, over the same control-plane
+    inventory join, and deliberately not the same question: that one asks "what must
+    the chat picker hide" and answers by the *absence* of ``chat``; this asks "is
+    there something here we can drive" and answers by the *presence* of ``video``
+    plus a running instance.
+
+    **Fails closed**, which is the opposite of its sibling and is the point. The
+    picker hides on a guess and so must guess generously; a video tool built for a
+    box we cannot classify would 400 on every call, and an absent tool is strictly
+    better than one that always fails.
+
+    Sorted by served name so the caller's choice among several is stable.
+    """
+    try:
+        async with _client(conn, timeout=httpx.Timeout(5.0)) as client:
+            resp = await client.get("/v1/models")
+        if resp.status_code >= 400:
+            return []
+        inventory = resp.json()
+    except (httpx.RequestError, ValueError):
+        return []
+
+    if not isinstance(inventory, list):
+        return []
+
+    served: list[VideoServedModel] = []
+    for model in inventory:
+        if not isinstance(model, dict):
+            continue
+        capabilities = model.get("capabilities")
+        if not isinstance(capabilities, list) or "video" not in capabilities:
+            continue
+        # Only a *serving* model can take a job. ``running_instance`` is present
+        # for any active instance (the daemon counts pending/pulling/starting as
+        # active), so the status is checked too: a box 20 minutes into loading 95 GB
+        # of weights has an instance but no gateway route yet, and a tool built on
+        # that is the always-400 tool this function exists to avoid.
+        instance = model.get("running_instance")
+        if not isinstance(instance, dict) or instance.get("status") != "running":
+            continue
+        name = instance.get("served_name") or model.get("served_model_name")
+        if not isinstance(name, str) or not name:
+            continue
+        profile = model.get("video_profile")
+        served.append(
+            VideoServedModel(
+                served_name=name,
+                model_id=str(model.get("model_id") or ""),
+                recipe_id=str(model.get("recipe_id") or model.get("id") or ""),
+                profile=profile if isinstance(profile, dict) else None,
+            )
+        )
+    return sorted(served, key=lambda m: m.served_name)
 
 
 # --- Connection CRUD ------------------------------------------------------------
@@ -648,23 +832,28 @@ async def _ensure_schema() -> None:
     """Add columns introduced after a table was first created.
 
     ``create_all`` never alters existing tables and the app has no migration
-    framework, so a DB that predates ``linked_provider_id`` would be missing it.
-    This is a narrow, idempotent backfill for our own (new) table.
+    framework, so a DB that predates ``linked_provider_id`` or ``gateway_url``
+    would be missing them. This is a narrow, idempotent backfill for our own
+    (new) table.
     """
     from sqlalchemy import text
 
+    added = ("linked_provider_id", "gateway_url")
     try:
         async with async_session_factory() as session:
             info = await session.execute(text("PRAGMA table_info(laios_connections)"))
             columns = {row[1] for row in info}
-            if columns and "linked_provider_id" not in columns:
-                await session.execute(
-                    text(
-                        "ALTER TABLE laios_connections ADD COLUMN linked_provider_id VARCHAR"
+            if not columns:
+                return
+            for column in added:
+                if column not in columns:
+                    await session.execute(
+                        text(
+                            f"ALTER TABLE laios_connections ADD COLUMN {column} VARCHAR"
+                        )
                     )
-                )
-                await session.commit()
-                logger.info("added laios_connections.linked_provider_id column")
+                    logger.info("added laios_connections.%s column", column)
+            await session.commit()
     except Exception as exc:  # pragma: no cover - startup must not fail on this
         logger.warning("laios schema check skipped: %s", exc)
 

@@ -6,6 +6,7 @@ provider so the frontend model picker can render it directly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -14,8 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.api.laios import non_chat_served_names
 from app.config import get_settings
-from app.db.models import CustomProvider
+from app.db.models import CustomProvider, LaiosConnection
 from app.db.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -158,16 +160,76 @@ async def list_models(
     ]
 
     # Custom (locally-hosted) providers listed first so they're easy to find.
-    custom_groups = [g for p in custom_providers if (g := await _custom_group(p))]
+    # A laios-managed provider mirrors a box's inference gateway, and that
+    # gateway's model list cannot say which entries are chat models. Ask the
+    # matching control plane so a video generator never reaches the picker.
+    hidden = await _non_chat_models_by_provider(session)
+
+    custom_groups = [
+        g
+        for p in custom_providers
+        if (g := await _custom_group(p, hidden.get(p.id, frozenset())))
+    ]
 
     return custom_groups + cloud_groups
 
 
-async def _custom_group(provider: CustomProvider) -> dict[str, Any] | None:
+async def _non_chat_models_by_provider(
+    session: AsyncSession,
+) -> dict[str, set[str]]:
+    """Per laios-managed provider, the served names that are not chat models.
+
+    Only auto-managed providers are considered: a manually-added one has no
+    control plane to ask, so its list is taken at face value.
+    """
+    connections = (
+        (
+            await session.execute(
+                select(LaiosConnection).where(
+                    LaiosConnection.linked_provider_id.is_not(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # Concurrently: this runs on every picker open, and each probe carries its own
+    # timeout, so serially one unreachable box would stall the whole catalogue for
+    # its full timeout before the next was even tried.
+    probes = await asyncio.gather(
+        *(non_chat_served_names(conn) for conn in connections),
+        return_exceptions=True,
+    )
+
+    hidden: dict[str, set[str]] = {}
+    for conn, names in zip(connections, probes, strict=True):
+        if isinstance(names, BaseException):
+            logger.warning(
+                "models: capability probe for %r failed: %s", conn.name, names
+            )
+            continue
+        if names:
+            logger.info(
+                "models: hiding %d non-chat model(s) from %r: %s",
+                len(names),
+                conn.name,
+                ", ".join(sorted(names)),
+            )
+            hidden[conn.linked_provider_id] = names
+    return hidden
+
+
+async def _custom_group(
+    provider: CustomProvider, hidden: set[str] | frozenset[str] = frozenset()
+) -> dict[str, Any] | None:
     """Fetch a custom provider's model list via its OpenAI-compatible ``/models``.
 
     Returns a picker group, or ``None`` if the endpoint is unreachable so one
     dead provider can't blank out the whole catalogue.
+
+    ``hidden`` drops served names that are not chat models — a box serving only a
+    video generator yields no group at all rather than one unusable entry.
 
     Discovery is best-effort: some endpoints serve ``/chat/completions`` happily
     while ``/models`` is auth-gated or unimplemented (e.g. an inference server
@@ -201,6 +263,10 @@ async def _custom_group(provider: CustomProvider) -> dict[str, Any] | None:
                 provider.name,
                 len(model_ids),
             )
+
+    # Applied after the manual fallback too: a hand-listed video model is just as
+    # unchattable as a discovered one.
+    model_ids = [model_id for model_id in model_ids if model_id not in hidden]
 
     if not model_ids:
         return None

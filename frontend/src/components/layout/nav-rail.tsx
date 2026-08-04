@@ -539,9 +539,9 @@ export function NavRail({
       <div
         className={cn(
           "flex shrink-0 border-t border-sidebar-border py-2",
-          // Five controls stack in a 68px column and fit on one line at 232px,
-          // which is the point of the extra width: spending five rows of a
-          // labelled rail on settings would push the workspaces off the screen.
+          // The controls stack in a 68px column and wrap to two rows at 232px,
+          // which is the point of the extra width: spending a row apiece on them
+          // in a labelled rail would push the workspaces off the screen.
           railExpanded && !isMobile
             ? "flex-row flex-wrap items-center justify-center gap-1 px-1.5"
             : "flex-col items-center gap-1"
@@ -674,7 +674,6 @@ export function NavRail({
               : "Settings"}
           </TooltipContent>
         </Tooltip>
-
       </div>
 
       {/* The width toggle, moved onto the rail's own edge — a collapse handle

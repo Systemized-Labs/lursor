@@ -44,10 +44,10 @@ async def _legacy_db(path: Path, *, with_app_config: bool) -> None:
     con.executemany(
         "INSERT INTO subagents (id, created_at, updated_at, name, description,"
         " instructions, include_todo, include_subagents, include_skills,"
-        " include_memory, include_plan, web_search, thinking, tool_choice,"
-        " enabled, extra_config, builtin_name)"
+        " include_memory, include_plan, web_search, include_video, thinking,"
+        " tool_choice, enabled, extra_config, builtin_name)"
         " VALUES (?, datetime('now'), datetime('now'), ?, ?, ?,"
-        " 1, 0, 1, 0, 0, 0, 'off', 'auto', 1, '{}', ?)",
+        " 1, 0, 1, 0, 0, 0, 0, 'off', 'auto', 1, '{}', ?)",
         [
             ("o1", "general-purpose", "my gp", "do it my way", "general-purpose"),
             ("u1", "writer", "a writer", "write", None),

@@ -15,6 +15,7 @@ export interface Agent {
   include_plan: boolean
   web_search: boolean
   browser_qa: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   /** Fraction of the context window at which this agent compacts, or null to use
@@ -41,6 +42,7 @@ export interface AgentInput {
   include_plan: boolean
   web_search: boolean
   browser_qa: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   // Null clears the override and reverts to the app-wide default.
@@ -232,6 +234,7 @@ export interface Subagent {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   /** Compaction overrides for this subagent's own context; null uses the app-wide
@@ -257,6 +260,7 @@ export interface SubagentInput {
   include_memory: boolean
   include_plan: boolean
   web_search: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   compaction_threshold: number | null
@@ -325,6 +329,7 @@ export interface AgentPromptContext {
   include_plan: boolean
   web_search: boolean
   browser_qa: boolean
+  include_video: boolean
   thinking: ThinkingLevel
   skill_names: string[]
   tool_names: string[]
@@ -867,6 +872,14 @@ export interface LaiosConnection {
   id: string
   name: string
   base_url: string
+  /**
+   * Where this box's models are reached, when that differs from the control
+   * plane's host on `:4000` — a lastway tunnel, typically. Managing a box and
+   * calling its models are independent paths: management stays on the LAN while
+   * inference (chat and `/v1/videos`) can go over the tunnel. Null derives it
+   * from `base_url`.
+   */
+  gateway_url: string | null
   // The master_key is never returned to the browser; only whether one is set.
   has_master_key: boolean
   created_at: string
@@ -877,6 +890,7 @@ export interface LaiosConnectionInput {
   name: string
   base_url: string
   master_key?: string | null
+  gateway_url?: string | null
 }
 
 /** Result of probing a daemon's `/health` (+ `/v1/route`). */
@@ -1213,6 +1227,160 @@ export interface LaiosJob {
   bytes_total?: number | null
   created_at: string
   updated_at: string
+}
+
+/**
+ * Where an audio-video generation has got to. The engine's own vocabulary,
+ * relayed as-is; `cancelled` is set by us when a job is cancelled.
+ */
+export type LaiosVideoStatus =
+  | "queued"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+/**
+ * One clip we asked a laios gateway to generate.
+ *
+ * Persisted by Lursor rather than read back from the gateway: the gateway's
+ * job → upstream map is in-memory and bounded, so this row is what survives a
+ * restart and what gives the page a history of runs.
+ */
+export interface LaiosVideoJob {
+  /** Our row id. */
+  id: string
+  connection_id: string
+  /** The gateway's job id (`vid_…`) — what every follow-up call routes on. */
+  job_id: string
+  model: string
+  prompt: string
+  task: string
+  /** The submitted body verbatim, so a run can be repeated or diffed. */
+  request: Record<string, unknown>
+  status: LaiosVideoStatus
+  /**
+   * Percent, 0–100 — not a 0–1 fraction.
+   *
+   * MiniMax-H3 only ever reports 0 or 100: it sits at `queued`/0 for the whole
+   * run (denoising starts immediately regardless) and flips straight to
+   * `completed`/100. So this is a completion flag in practice, not a progress
+   * bar, and elapsed-vs-estimate is the only live signal available.
+   */
+  progress: number | null
+  error: string | null
+  /** Content-addressed mp4 in the media store, once downloaded. */
+  media_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Whether anything connected can generate video, and what would be used.
+ *
+ * The `include_video` agent toggle is gated on a box actually serving a model the
+ * backend knows how to drive, so the editor states the outcome rather than leaving
+ * a checkbox that silently does nothing.
+ */
+export interface VideoCapability {
+  available: boolean
+  /** Served name of the model that would be used, when one resolves. */
+  model: string | null
+  connection_name: string | null
+  /** The request shape was inferred from the model's identity, not declared by its
+   *  recipe — the one case where the backend trusts a measurement. */
+  assumed: boolean
+  /** One sentence: which model, or why none. */
+  reason: string
+}
+
+/** The knobs the video page sends. Relayed to the engine unaltered. */
+export interface LaiosVideoInput {
+  model: string
+  prompt: string
+  /**
+   * `t2va` — prompt only, which is all this page sends.
+   *
+   * `fl2va` (first/last-frame conditioning) goes through the same JSON body with a
+   * `conditions` array, and is driven by the agent tools rather than from here; the
+   * composer has no frame picker.
+   */
+  task: string
+  target: {
+    short_edge: number
+    aspect_ratio: string
+    duration_seconds: number
+  }
+  num_inference_steps: number
+  seed?: number
+}
+
+/**
+ * Where an image generation has got to.
+ *
+ * Ours, not the engine's — `/v1/images/generations` is synchronous and reports no
+ * states at all. `running` means the backend is holding that call open; there is
+ * deliberately no `cancelled`, because the engine has no cancel and a generation
+ * already on a GPU keeps it until it finishes.
+ */
+export type LaiosImageStatus = "running" | "completed" | "failed"
+
+/**
+ * One image we asked a laios gateway to generate.
+ *
+ * The row is the only record of a generation: unlike a clip there is no upstream
+ * job to poll, so if this is `running` it is because a backend task is waiting on
+ * the gateway. A `running` row with no task behind it (a restart mid-generation)
+ * is failed on the next list rather than left spinning.
+ */
+export interface LaiosImageRun {
+  /** Our row id — what every route here is keyed by. */
+  id: string
+  connection_id: string
+  model: string
+  prompt: string
+  /**
+   * The gateway's id for the image. Only load-bearing on the `response_format:
+   * "url"` path, which the backend does not ask for; kept because it is what
+   * correlates a run with the gateway's own logs.
+   */
+  upstream_id: string | null
+  /** The submitted body verbatim, so a run can be repeated or diffed. */
+  request: Record<string, unknown>
+  status: LaiosImageStatus
+  error: string | null
+  /** Content-addressed image in the media store, once stored. */
+  media_id: string | null
+  /** The engine's own measurement, straight off the response. */
+  inference_time_s: number | null
+  peak_memory_mb: number | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * The knobs the image page sends. Relayed to the engine unaltered, except that
+ * the backend forces `response_format: "b64_json"` and `n: 1` — see
+ * `api/images.py`.
+ *
+ * Every field past `prompt` is optional because the two image recipes do not take
+ * the same ones: `negative_prompt` and `true_cfg_scale` only mean anything to
+ * `qwen-image-2512` (they are what turn CFG on and off), and sending them to
+ * `z-image-turbo` would enable guidance a distilled turbo checkpoint does not
+ * want. The composer decides per model; this type just carries the result.
+ */
+export interface LaiosImageInput {
+  model: string
+  prompt: string
+  /** `"1024x1024"` — the engine also accepts `width`/`height` separately. */
+  size?: string
+  num_inference_steps?: number
+  seed?: number
+  negative_prompt?: string
+  /** Set to 1 to disable classifier-free guidance outright. */
+  true_cfg_scale?: number
+  /** `"png" | "jpeg" | "webp"`. The engine defaults to jpeg. */
+  output_format?: string
 }
 
 /**
