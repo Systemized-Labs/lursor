@@ -395,6 +395,40 @@ AUTONOMOUS_KICKOFF = (
 )
 
 
+def scheduled_goal_kickoff(prompt: str) -> str:
+    """Seed for a schedule's goal fire: state the objective, then work it.
+
+    A ``/goal`` turn can seed the loop with ``AUTONOMOUS_KICKOFF`` alone because
+    the objective is already in the replayed transcript. A fired schedule has no
+    transcript — every fire opens a brand-new thread — so that same seed asks the
+    model to "work toward the goal" without the goal ever being in context: the
+    schedule's prompt otherwise only reaches the *evaluator*, and only from turn
+    two does a continue directive name the success criteria.
+
+    A model with no objective reconstructs one from what it can see, which is
+    recalled long-term memory plus whatever the last fire left in the workspace.
+    That is how "research a *recent* news event and make a new skit" turns into
+    resuming last night's video on turn one. So the prompt is stated up front, and
+    prior work is framed as the record it is — reuse the tooling, don't repeat a
+    subject, don't pick the work back up.
+    """
+    objective = prompt.strip()
+    if not objective:
+        return AUTONOMOUS_KICKOFF
+    return (
+        "This is a scheduled run on a fresh conversation. The objective below is "
+        "the whole of the work — nothing before it is an unfinished task.\n\n"
+        f"--- OBJECTIVE ---\n{objective}\n--- END OBJECTIVE ---\n\n"
+        "This schedule may have run before, leaving files in the workspace and "
+        "facts in your long-term memory. Treat those as a record of what is "
+        "already done: reuse the scripts and conventions, and avoid repeating a "
+        "subject you have already covered. Do not resume, revise, or finish that "
+        "earlier work unless the objective above asks for it — start this "
+        "objective from scratch.\n\n"
+        f"{AUTONOMOUS_KICKOFF}"
+    )
+
+
 def plan_execute_kickoff(plan_path: str, plan_body: str = "") -> str:
     """Seed for executing an approved plan doc: implement it in full.
 

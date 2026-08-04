@@ -13,6 +13,7 @@ import time
 from pydantic_deep import GoalEvaluation
 
 from app.agents.goal_loop import (
+    AUTONOMOUS_KICKOFF,
     EVALUATOR_ERROR_REASON,
     EVALUATOR_UNAVAILABLE_REASON,
     PLAN_DIR,
@@ -29,6 +30,7 @@ from app.agents.goal_loop import (
     planning_instruction,
     queue_interjection,
     refine_instruction,
+    scheduled_goal_kickoff,
     turn_failed_reason,
     unique_plan_doc_path,
     write_plan_doc,
@@ -381,6 +383,28 @@ def test_plan_instructions_forbid_approval_checkpoints():
         assert "get user approval" in text.lower()
     assert "unattended" in planning_instruction().lower()
     assert "already satisfied" in plan_execute_kickoff(f"{PLAN_DIR}/PLAN-x.md", "# X\n")
+
+
+def test_scheduled_kickoff_states_the_objective_and_disowns_earlier_fires():
+    """A fired goal schedule has no transcript, so the seed carries the objective.
+
+    Without it turn one has no goal in context at all and reconstructs one from
+    recalled memory and the previous fire's files — a "research a recent event"
+    schedule resumes last night's video instead.
+    """
+    seed = scheduled_goal_kickoff("Research a recent news event\nMake a 6s skit")
+    assert "Research a recent news event" in seed
+    assert "Make a 6s skit" in seed
+    lowered = seed.lower()
+    assert "do not resume" in lowered
+    assert "long-term memory" in lowered
+    # Still an unattended run: the kickoff's own directives survive.
+    assert AUTONOMOUS_KICKOFF in seed
+
+
+def test_scheduled_kickoff_of_a_blank_prompt_is_the_plain_seed():
+    """Nothing to state, so no framing that pretends there is."""
+    assert scheduled_goal_kickoff("   ") == AUTONOMOUS_KICKOFF
 
 
 # --- aborted agent turns ------------------------------------------------------

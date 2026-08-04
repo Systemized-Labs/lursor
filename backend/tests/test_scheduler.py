@@ -366,3 +366,40 @@ async def test_start_scheduled_run_persists_a_cron_turn_and_registers_the_run(
     # Spend is attributed to the schedule, so Analytics can break it out.
     usage = (await client.get("/analytics/summary?kind=cron")).json()
     assert usage["total_tokens"] > 0
+
+
+async def test_a_goal_fire_seeds_turn_one_with_its_own_prompt(
+    client: AsyncClient, monkeypatch
+):
+    """The objective must reach the model, not just the evaluator.
+
+    A goal fire opens a fresh thread and seeds the loop with no history, so the
+    kickoff is the only channel the schedule's prompt has into turn one. When it
+    was a bare ``AUTONOMOUS_KICKOFF`` the model had no stated goal and inferred one
+    from recalled memory and the last fire's files.
+    """
+    captured: dict = {}
+
+    async def fake_goal_execution(thread_id, agent, deps, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.api.chat.build_deep_agent", _fake_deep_agent)
+    monkeypatch.setattr("app.api.chat._run_goal_execution", fake_goal_execution)
+    row = await _make_schedule(
+        client,
+        "GoalSeed",
+        run_type=ScheduleRunType.goal,
+        prompt="research a recent news event, then make a 6 second skit of it",
+        success_criteria="the video is finished",
+    )
+
+    assert await scheduler.tick() == 1
+    thread_id = (await _runs(row.id))[0].thread_id
+    task = chat_run_manager._tasks.get(thread_id)
+    if task is not None:
+        await task
+
+    assert "research a recent news event" in captured["kickoff"]
+    assert captured["initial_history"] == []
+    # The evaluator still judges the schedule's own success criteria.
+    assert captured["condition"] == "the video is finished"

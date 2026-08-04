@@ -69,6 +69,7 @@ from app.agents.goal_loop import (
     read_plan_doc,
     refine_instruction,
     scan_plan_dir,
+    scheduled_goal_kickoff,
     unique_plan_doc_path,
     write_plan_doc,
 )
@@ -1211,6 +1212,11 @@ async def start_scheduled_run(
         )
         condition = (thread.success_criteria or thread.goal or prompt).strip()
         max_turns = thread.max_iterations
+        # No history means the seed is the *only* place the objective can enter
+        # context — a bare AUTONOMOUS_KICKOFF would leave turn one to infer the
+        # work from recalled memory and the last fire's leftovers. See
+        # ``scheduled_goal_kickoff``.
+        kickoff = scheduled_goal_kickoff(prompt)
 
         async def driver() -> None:
             await _run_goal_execution(
@@ -1224,7 +1230,7 @@ async def start_scheduled_run(
                 media_instructions=None,
                 initial_history=[],
                 workspace_id=workspace_id,
-                kickoff=AUTONOMOUS_KICKOFF,
+                kickoff=kickoff,
                 kind="cron",
             )
     else:
