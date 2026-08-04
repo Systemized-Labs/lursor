@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash } from "@phosphor-icons/react"
+import { Check, Copy, Pencil, Plus, Trash } from "@phosphor-icons/react"
 import { useState } from "react"
 import { toast } from "sonner"
 
@@ -15,6 +15,7 @@ import {
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
+import { copyToClipboard } from "@/lib/utils"
 import { ProviderFormDialog } from "./provider-form-dialog"
 import { ProviderHealthBadge } from "./provider-health-badge"
 
@@ -28,6 +29,20 @@ export function ProvidersPage({ embedded = false }: { embedded?: boolean } = {})
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<CustomProvider | undefined>(undefined)
   const [toDelete, setToDelete] = useState<CustomProvider | undefined>(undefined)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  async function copyKey(provider: CustomProvider) {
+    if (!provider.api_key) return
+    if (await copyToClipboard(provider.api_key)) {
+      setCopiedId(provider.id)
+      window.setTimeout(
+        () => setCopiedId((prev) => (prev === provider.id ? null : prev)),
+        1500
+      )
+    } else {
+      toast.error("Could not copy the API key")
+    }
+  }
 
   function openCreate() {
     setEditing(undefined)
@@ -115,9 +130,31 @@ export function ProvidersPage({ embedded = false }: { embedded?: boolean } = {})
               </CardHeader>
               <CardContent className="mt-auto space-y-3">
                 <ProviderHealthBadge providerId={provider.id} />
-                <span className="text-xs text-muted-foreground">
-                  {provider.api_key ? "API key set" : "No API key"}
-                </span>
+                {provider.api_key ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-muted-foreground">
+                      API key set
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      onClick={() => void copyKey(provider)}
+                      aria-label="Copy API key"
+                      title="Copy API key"
+                    >
+                      {copiedId === provider.id ? (
+                        <Check className="h-4 w-4 text-success" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    No API key
+                  </span>
+                )}
               </CardContent>
             </Card>
           ))}

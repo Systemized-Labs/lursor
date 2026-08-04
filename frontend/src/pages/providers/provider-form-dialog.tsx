@@ -1,4 +1,11 @@
-import { WarningCircle, CheckCircle } from "@phosphor-icons/react"
+import {
+  Check,
+  Copy,
+  Eye,
+  EyeSlash,
+  WarningCircle,
+  CheckCircle,
+} from "@phosphor-icons/react"
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
@@ -25,6 +32,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { copyToClipboard } from "@/lib/utils"
 
 interface FormState {
   name: string
@@ -52,6 +60,8 @@ export function ProviderFormDialog({
   provider,
 }: ProviderFormDialogProps) {
   const [form, setForm] = useState<FormState>(EMPTY)
+  const [showKey, setShowKey] = useState(false)
+  const [keyCopied, setKeyCopied] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<ProviderHealth | null>(null)
   const createProvider = useCreateProvider()
@@ -62,6 +72,8 @@ export function ProviderFormDialog({
   useEffect(() => {
     if (open) {
       setTestResult(null)
+      setShowKey(false)
+      setKeyCopied(false)
       setForm(
         provider
           ? {
@@ -74,6 +86,16 @@ export function ProviderFormDialog({
       )
     }
   }, [open, provider])
+
+  async function handleCopyKey() {
+    if (!form.apiKey) return
+    if (await copyToClipboard(form.apiKey)) {
+      setKeyCopied(true)
+      window.setTimeout(() => setKeyCopied(false), 1500)
+    } else {
+      toast.error("Could not copy the API key")
+    }
+  }
 
   async function handleTest() {
     if (!form.baseUrl.trim()) {
@@ -173,16 +195,52 @@ export function ProviderFormDialog({
           </div>
           <div className="grid gap-2">
             <Label htmlFor="provider-key">API key (optional)</Label>
-            <Input
-              id="provider-key"
-              type="password"
-              placeholder="Leave blank for local servers"
-              value={form.apiKey}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, apiKey: e.target.value }))
-              }
-              autoComplete="off"
-            />
+            <div className="relative">
+              <Input
+                id="provider-key"
+                type={showKey ? "text" : "password"}
+                placeholder="Leave blank for local servers"
+                value={form.apiKey}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, apiKey: e.target.value }))
+                }
+                autoComplete="off"
+                spellCheck={false}
+                className={showKey ? "pr-20 font-mono" : "pr-20"}
+              />
+              <div className="absolute right-1 top-1 flex items-center gap-0.5">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setShowKey((prev) => !prev)}
+                  disabled={!form.apiKey}
+                  aria-label={showKey ? "Hide API key" : "Show API key"}
+                >
+                  {showKey ? (
+                    <EyeSlash className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={handleCopyKey}
+                  disabled={!form.apiKey}
+                  aria-label="Copy API key"
+                >
+                  {keyCopied ? (
+                    <Check className="h-4 w-4 text-success" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
           </div>
           <div className="grid gap-2">
             <Label htmlFor="provider-models">Model IDs (optional)</Label>
