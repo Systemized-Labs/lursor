@@ -46,7 +46,11 @@ export function ActivityPanel({
   isLoading,
   ...handlers
 }: ActivityPanelProps) {
-  const { threadState, selection } = handlers
+  // `isPinned` / `onTogglePin` arrive here keyed by thread id, while a row takes
+  // a plain boolean and a bound callback. Destructured out of the spread rather
+  // than passed through it, so the two shapes cannot collide.
+  const { threadState, selection, isPinned, onTogglePin, ...rowHandlers } =
+    handlers
   const [filter, setFilter] = useState<ActivityFilter>("all")
 
   const rows = useMemo(() => {
@@ -132,11 +136,14 @@ export function ActivityPanel({
                   state={threadState(thread)}
                   variant="stacked"
                   workspaceName={workspaceName(thread.workspace_id)}
+                  {...rowHandlers}
+                  selection={selection}
                   isSelected={selection.isThreadSelected(thread.id)}
+                  isPinned={isPinned(thread.id)}
+                  onTogglePin={() => onTogglePin(thread.id)}
                   onSelect={(mods) =>
                     selection.selectThread(thread, mods, group.threads)
                   }
-                  {...handlers}
                 />
               ))}
             </ul>

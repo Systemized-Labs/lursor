@@ -14,7 +14,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 /**
  * The shell primitive: a provider, the fixed sidebar box, its drag handle and
  * the content inset. What the box *contains* is the app's business — see
- * `layout/nav-rail.tsx` and `layout/sidebar-panel.tsx`.
+ * `layout/sessions-pane.tsx`.
  *
  * This was vendored from shadcn with a full menu API (SidebarMenu, MenuButton,
  * MenuSub, GroupLabel, …). The rail-and-panel redesign left every one of them
@@ -22,29 +22,22 @@ import { TooltipProvider } from "@/components/ui/tooltip"
  * exists — a 3rem icon strip — so keeping them would have meant a second, dead
  * definition of how a sidebar row looks. They're gone; the file is no longer a
  * clean `shadcn add` target and hasn't been since it grew drag-to-resize.
+ *
+ * One column, one width. There used to be two: a 68px icon rail that survived
+ * collapsing, plus a resizable panel beside it, with ⇧⌘B trading the rail's
+ * labels for room. SessionsPane is a single column that says the workspace names
+ * outright, so collapsing is now offcanvas — the sidebar is there or it is not —
+ * and ⌘B is the only toggle.
  */
 
 const SIDEBAR_COOKIE_NAME = "sidebar:state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 // Fluid on phones: fill most of the viewport but cap on larger handsets so it
-// never becomes an awkwardly wide panel. Sized for the rail *and* the panel —
-// 68px of rail plus ~300px of list, which on a 390px phone still leaves a
-// dismiss gutter.
+// never becomes an awkwardly wide panel.
 const SIDEBAR_WIDTH_MOBILE = "min(23rem, 92vw)"
-// The destination rail, always on screen. Collapsing the sidebar hides the
-// panel and leaves this — a better collapsed state than a 3rem icon strip,
-// because the rail's labels stay readable at this width.
-const SIDEBAR_GUTTER_WIDTH = 68
-// The rail's other width, where a tile shows its name beside its icon. Wide
-// enough for ~20 characters of the shell font, which is what it takes for names
-// like `cat-adoption` and `cat-landing` to be told apart by reading rather than
-// by hovering — the thing 68px cannot do at any font size.
-const SIDEBAR_RAIL_WIDTH_EXPANDED = 232
-const SIDEBAR_RAIL_STORAGE_KEY = "sidebar:rail"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
-// Drag-to-resize bounds (px) for the *panel*; the rail is fixed. The default
-// matches SIDEBAR_WIDTH (16rem).
+// Drag-to-resize bounds (px). The default matches the old SIDEBAR_WIDTH (16rem).
 const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar:width"
 const SIDEBAR_WIDTH_DEFAULT = 256
 const SIDEBAR_WIDTH_MIN = 200
@@ -62,11 +55,6 @@ type SidebarContextProps = {
   setWidth: (width: number) => void
   isResizing: boolean
   setIsResizing: (resizing: boolean) => void
-  /** Whether the rail is showing names beside its icons. */
-  railExpanded: boolean
-  toggleRail: () => void
-  /** The rail's current width in px — what `--sidebar-width-icon` resolves to. */
-  railWidth: number
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -120,29 +108,6 @@ const SidebarProvider = React.forwardRef<
       window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped))
     }, [])
 
-    // The rail's width is a second, independent axis: ⌘B decides whether the
-    // *panel* is there, ⇧⌘B decides whether the rail carries names. Two toggles
-    // because they answer different questions — "do I need the conversation
-    // list" and "can I read my workspaces" — and collapsing one to the other
-    // would mean you cannot have a labelled rail without a panel beside it.
-    const [railExpanded, setRailExpanded] = React.useState(() => {
-      if (typeof window === "undefined") return false
-      return window.localStorage.getItem(SIDEBAR_RAIL_STORAGE_KEY) === "expanded"
-    })
-    const toggleRail = React.useCallback(() => {
-      setRailExpanded((expanded) => {
-        const next = !expanded
-        try {
-          window.localStorage.setItem(
-            SIDEBAR_RAIL_STORAGE_KEY,
-            next ? "expanded" : "icons"
-          )
-        } catch {
-          // Ignore quota / disabled-storage errors — this is a preference.
-        }
-        return next
-      })
-    }, [])
 
     // Internal open state; `openProp`/`setOpenProp` allow external control.
     const [_open, _setOpen] = React.useState(defaultOpen)
@@ -178,22 +143,13 @@ const SidebarProvider = React.forwardRef<
           return
         }
         event.preventDefault()
-        if (event.shiftKey) toggleRail()
-        else toggleSidebar()
+        toggleSidebar()
       }
       window.addEventListener("keydown", handleKeyDown)
       return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [toggleSidebar, toggleRail])
+    }, [toggleSidebar])
 
     const state = open ? "expanded" : "collapsed"
-    // Names cost the panel width it does not have on a phone: the drawer holds
-    // the rail *and* the list in ~368px, so an expanded rail would leave the
-    // conversations about 130px. The preference is remembered either way and
-    // takes effect on a wider screen.
-    const railWidth =
-      railExpanded && !isMobile
-        ? SIDEBAR_RAIL_WIDTH_EXPANDED
-        : SIDEBAR_GUTTER_WIDTH
 
     const contextValue = React.useMemo<SidebarContextProps>(
       () => ({
@@ -208,9 +164,6 @@ const SidebarProvider = React.forwardRef<
         setWidth,
         isResizing,
         setIsResizing,
-        railExpanded,
-        toggleRail,
-        railWidth,
       }),
       [
         state,
@@ -223,9 +176,6 @@ const SidebarProvider = React.forwardRef<
         width,
         setWidth,
         isResizing,
-        railExpanded,
-        toggleRail,
-        railWidth,
       ]
     )
 
@@ -236,14 +186,13 @@ const SidebarProvider = React.forwardRef<
             data-resizing={isResizing}
             style={
               {
-                // The panel; `--sidebar-width-total` adds the rail beside it.
-                // Both are live values: the rail widens to carry names, and
-                // everything sized off these tokens — the collapsed sidebar, the
-                // content inset, the fixed overlay — follows without a second
-                // definition of how wide the rail is.
+                // One width for the whole sidebar. It used to be two — an icon
+                // rail plus a panel, with `--sidebar-width-icon` and
+                // `--sidebar-width-total` derived from both — because the rail
+                // was a separate column that survived collapsing. SessionsPane is
+                // a single column, so there is one number and everything sizes
+                // off it.
                 "--sidebar-width": `${width}px`,
-                "--sidebar-width-icon": `${railWidth}px`,
-                "--sidebar-width-total": `${width + railWidth}px`,
                 // How far below the top of the viewport the shell starts. The
                 // sidebar's box is `position: fixed`, so it cannot be pushed
                 // down by a sibling — anything above it (the WindowBar) has to
@@ -296,7 +245,7 @@ const Sidebar = React.forwardRef<
       return (
         <div
           className={cn(
-            "flex h-full w-(--sidebar-width-total) flex-col bg-sidebar text-sidebar-foreground",
+            "flex h-full w-(--sidebar-width) flex-col bg-sidebar text-sidebar-foreground",
             className
           )}
           ref={ref}
@@ -347,26 +296,23 @@ const Sidebar = React.forwardRef<
         {/* Handles the sidebar gap on desktop. */}
         <div
           className={cn(
-            "relative w-(--sidebar-width-total) bg-transparent transition-[width] duration-200 ease-linear",
+            "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
             "group-data-[resizing=true]/sidebar-wrapper:transition-none",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
-            variant === "floating" || variant === "inset"
-              ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)_+_1rem)]"
-              : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)"
           )}
         />
         <div
           className={cn(
             // Pinned below whatever the shell reserved at the top rather than to
             // the viewport, so a full-width WindowBar is not painted over.
-            "fixed bottom-0 top-(--sidebar-top) z-10 hidden h-(--shell-height) w-(--sidebar-width-total) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]/sidebar-wrapper:transition-none md:flex",
+            "fixed bottom-0 top-(--sidebar-top) z-10 hidden h-(--shell-height) w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]/sidebar-wrapper:transition-none md:flex",
             side === "left"
-              ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width-total)*-1)]"
-              : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width-total)*-1)]",
+              ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
+              : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
             variant === "floating" || variant === "inset"
-              ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)_+_1rem_+2px)]"
-              : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
+              ? "p-2"
+              : "group-data-[side=left]:border-r group-data-[side=right]:border-l",
             className
           )}
           {...props}
@@ -388,8 +334,7 @@ const SidebarRail = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button">
 >(({ className, ...props }, ref) => {
-  const { toggleSidebar, state, setWidth, setIsResizing, railWidth } =
-    useSidebar()
+  const { toggleSidebar, state, setWidth, setIsResizing } = useSidebar()
 
   // The rail doubles as a drag handle: dragging resizes (when expanded), while
   // a plain click (no meaningful movement) still toggles the sidebar.
@@ -408,15 +353,10 @@ const SidebarRail = React.forwardRef<
         if (Math.abs(e.clientX - startX) > 3) moved = true
         if (!resizable) return
         // The sidebar is anchored to the viewport edge, so the pointer's
-        // distance from that edge is the total width — less the rail, which
-        // sits between the edge and the resizable panel. Read from context
-        // rather than the collapsed constant: with a labelled rail the panel
-        // starts 232px in, and subtracting 68 there made the panel jump wider
-        // than the cursor by the difference the moment you grabbed the handle.
-        setWidth(
-          (side === "left" ? e.clientX : window.innerWidth - e.clientX) -
-            railWidth
-        )
+        // distance from that edge *is* the width. It used to have the rail's
+        // width subtracted, because the resizable panel started where the rail
+        // ended; with one column the handle and the width measure the same thing.
+        setWidth(side === "left" ? e.clientX : window.innerWidth - e.clientX)
       }
       const onUp = () => {
         document.removeEventListener("mousemove", onMove)
@@ -435,7 +375,7 @@ const SidebarRail = React.forwardRef<
       document.addEventListener("mousemove", onMove)
       document.addEventListener("mouseup", onUp)
     },
-    [state, setWidth, setIsResizing, toggleSidebar, railWidth]
+    [state, setWidth, setIsResizing, toggleSidebar]
   )
 
   return (

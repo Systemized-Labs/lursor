@@ -46,6 +46,12 @@ const chord = (...parts: string[]) => parts.join("")
 export const SHORTCUTS: Shortcut[] = [
   // ── Navigation ────────────────────────────────────────────────────────────
   {
+    keys: chord(MOD, "N"),
+    description: "Start a new session",
+    group: "Navigation",
+    desktopOnly: true,
+  },
+  {
     keys: chord(MOD, "K"),
     description: "Open the command palette",
     group: "Navigation",
@@ -79,11 +85,7 @@ export const SHORTCUTS: Shortcut[] = [
     description: "Show or hide the sidebar",
     group: "Layout",
   },
-  {
-    keys: chord(SHIFT, MOD, "B"),
-    description: "Show or hide workspace names on the rail",
-    group: "Layout",
-  },
+
   {
     keys: "Esc",
     description: "Restore a maximized panel",

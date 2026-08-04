@@ -1,4 +1,4 @@
-import { Clock, Pencil, Trash } from "@phosphor-icons/react"
+import { Clock, Pencil, PushPin, PushPinSlash, Trash } from "@phosphor-icons/react"
 import type { MouseEvent } from "react"
 import { Link } from "react-router-dom"
 
@@ -15,7 +15,10 @@ import type { ThreadState } from "@/hooks/use-thread-state"
 import { timeAgo } from "@/lib/time-ago"
 import { cn } from "@/lib/utils"
 
-export interface ConversationRowProps extends RowHandlers {
+export interface ConversationRowProps
+  // The pin pair is re-declared below with a row's shape: `RowHandlers` carries
+  // them keyed by thread id, because a *list* has to answer for many rows.
+  extends Omit<RowHandlers, "isPinned" | "onTogglePin"> {
   thread: Thread
   state: ThreadState
   /**
@@ -28,6 +31,9 @@ export interface ConversationRowProps extends RowHandlers {
   workspaceName?: string
   isSelected: boolean
   onSelect: (mods: SelectMods) => void
+  /** Pinned to the top of the sidebar. Undefined where pinning has no meaning. */
+  isPinned?: boolean
+  onTogglePin?: () => void
 }
 
 /**
@@ -56,6 +62,8 @@ export function ConversationRow({
   onNavigate,
   onRename,
   onDelete,
+  isPinned,
+  onTogglePin,
 }: ConversationRowProps) {
   const { isActive, running, unread } = state
   const stacked = variant === "stacked"
@@ -118,6 +126,16 @@ export function ConversationRow({
               {title}
             </span>
 
+            {isPinned ? (
+              <PushPin
+                aria-label="Pinned"
+                className={cn(
+                  "size-3 shrink-0 text-sidebar-foreground/45",
+                  stacked && "absolute right-2 top-2"
+                )}
+              />
+            ) : null}
+
             {stacked ? (
               // Metadata in its own line, with the workspace given the room to
               // be read — it is the only thing distinguishing `cat-adoption`'s
@@ -155,6 +173,19 @@ export function ConversationRow({
           </Link>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          {/* Pinning lives here rather than on ⇧-click, which the plan's §5
+              suggested: ⇧-click already extends a range in the bulk selection,
+              and a modifier cannot mean two things on the same row. */}
+          {onTogglePin ? (
+            <ContextMenuItem onSelect={onTogglePin}>
+              {isPinned ? (
+                <PushPinSlash className="size-4" />
+              ) : (
+                <PushPin className="size-4" />
+              )}
+              {isPinned ? "Unpin" : "Pin"}
+            </ContextMenuItem>
+          ) : null}
           <ContextMenuItem onSelect={() => onRename(thread)}>
             <Pencil className="size-4" />
             Rename

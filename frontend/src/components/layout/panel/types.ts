@@ -12,6 +12,9 @@ export interface RowHandlers {
   onNavigate: () => void
   onRename: (thread: Thread) => void
   onDelete: (thread: Thread) => void
+  /** Whether a conversation is pinned, and how to flip it. */
+  isPinned: (threadId: string) => boolean
+  onTogglePin: (threadId: string) => void
 }
 
 /**

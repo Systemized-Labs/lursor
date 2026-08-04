@@ -5,15 +5,16 @@ import { useQueryClient } from "@tanstack/react-query"
 import { invalidateThreadLists, threadKeys, useActiveRuns } from "@/api/threads"
 import { Sidebar, SidebarRail, useSidebar } from "@/components/ui/sidebar"
 import { useCommandPalette } from "@/components/command-palette/command-palette"
-import { NavRail } from "@/components/layout/nav-rail"
-import { SidebarPanel } from "@/components/layout/sidebar-panel"
-import { usePanelMode } from "@/components/layout/use-panel-mode"
+import { SessionsPane } from "@/components/layout/sessions-pane"
+import { usePins } from "@/components/layout/use-pins"
+import { useSessionsView } from "@/components/layout/use-sessions-view"
 import { useSidebarSelection } from "@/components/layout/use-sidebar-selection"
 import { useWorkspaceIcons } from "@/components/layout/use-workspace-icons"
 import { useWorkspaceStatus } from "@/components/layout/use-workspace-status"
 import { useWorkspaceTree } from "@/components/layout/use-workspace-tree"
 import { useWorkspaceSwitch } from "@/components/layout/use-workspace-switch"
 import { useWorkspaceDialogs } from "@/components/layout/workspace-dialogs"
+import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { useAllThreads } from "@/hooks/use-all-threads"
 import { useOptimisticRuns } from "@/hooks/use-optimistic-runs"
 import { markThreadRead, seedThreadReads } from "@/hooks/use-thread-reads"
@@ -21,31 +22,30 @@ import { useThreadState } from "@/hooks/use-thread-state"
 import { useWorkspaceVisits } from "@/hooks/use-workspace-visits"
 
 /**
- * The left navigation: a workspace rail and a contextual panel beside it.
+ * The left navigation: one column, {@link SessionsPane}.
  *
- * The rail holds workspaces, which is the change everything else follows from.
- * It used to hold destinations — eight of them, including four pages you open
- * once a session — while workspaces lived as collapsible folders inside the
- * panel. That made returning to a workspace a four-step operation (reopen the
- * panel, find the folder, expand it, guess the conversation), and impossible
- * without the mouse. Switching between a couple of repos all day is the actual
- * workload, so it gets the always-visible column, ⌘1…⌘9, and a double-⌘ MRU
- * toggle; the pages that were there before collapse into one ⋯ menu.
+ * It used to be two — a 68px workspace rail plus a contextual panel — and before
+ * that, destinations in the rail with workspaces as folders inside the panel. The
+ * rail fixed the real problem (getting back to a workspace was a four-step
+ * operation) but paid for it with a second column that had its own width, its own
+ * toggle, and no room for anything but tiles: every whole-page destination ended
+ * up behind one unlabelled `⋯`, and workspace names were 10px and truncated.
  *
- * The rail has two widths — icons at 68px, icons and names at 232px (⇧⌘B) — and
- * its workspaces can be filed into folders, which are groups in the list and
- * nothing on disk. Both are in `use-workspace-tree` and `nav-rail`.
+ * One column of full-width rows carries the names, the nav rows and the sessions
+ * together, and four of those buried destinations became settings categories in
+ * Phase 2 rather than menu items here.
  *
- * This component wires them together: shared state (panel mode, visit memory,
- * the workspace tree, selection, the run set) lives here, everything else is
+ * This component is the wiring: shared state (the view, visit memory, the
+ * workspace tree, selection, pins, the run set) lives here and everything else is
  * delegated.
  */
 export function AppSidebar() {
   const { pathname } = useLocation()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const { isMobile, setOpenMobile, open } = useSidebar()
+  const { isMobile, setOpenMobile } = useSidebar()
   const { open: openCommandPalette } = useCommandPalette()
+  const { openSettings } = useSettingsParam()
   const qc = useQueryClient()
 
   const activeRunsQuery = useActiveRuns()
@@ -67,11 +67,19 @@ export function AppSidebar() {
   const threadState = useThreadState(activeThreadId, activeRuns)
   const status = useWorkspaceStatus(threads.threads, threadState)
 
-  const [panelMode, setPanelMode] = usePanelMode()
+  const view = useSessionsView()
   const selection = useSidebarSelection()
+  const pins = usePins()
   const visits = useWorkspaceVisits(threads.workspaceIds)
   const tree = useWorkspaceTree(threads.workspaces)
   const icons = useWorkspaceIcons(threads.workspaceIds)
+
+  // Drop pins whose conversation is gone. Same guard as the icon overrides: wait
+  // for a non-empty list, or the first render wipes the record.
+  const { prune } = pins
+  useEffect(() => {
+    prune(threads.threads.map((thread) => thread.id))
+  }, [threads.threads, prune])
 
   // Remember where you are, so switching back here later resumes it. Recorded
   // from the route rather than on click: arriving by ⌘K, by a link in a reply or
@@ -85,24 +93,13 @@ export function AppSidebar() {
     if (activeWorkspaceId) record(activeWorkspaceId, activeThreadId)
   }, [activeWorkspaceId, activeThreadId, record])
 
-  // The panel is a sheet on mobile, where it is the whole navigation and always
-  // shows. On desktop it is whatever the collapse state says.
-  //
-  // Note what is *not* here any more: the rule that collapsed the panel on
-  // whole-page routes and restored it on the way out. It existed because a
-  // conversation list beside a usage chart is clutter — but it also meant those
-  // routes had no way back to a workspace, which is the problem this redesign
-  // exists to fix. The rail now answers that from everywhere, and ⌘B is still
-  // there when you want the room.
-  const panelVisible = isMobile || open
-
   const closeMobile = () => {
     if (isMobile) setOpenMobile(false)
   }
 
   const { switchTo, hrefFor } = useWorkspaceSwitch({
     // Tree order — groups' members counted where they sit — then the studio, so
-    // ⌘N matches the numbers on the tiles, including the studio's at the end.
+    // ⌘1…⌘9 match the digits shown on the rows, including the studio's at the end.
     orderedIds: useMemo(
       () => [
         ...tree.ordered.map((ws) => ws.id),
@@ -114,48 +111,25 @@ export function AppSidebar() {
     byWorkspace: threads.byWorkspace,
     activeWorkspaceId,
     onNavigate: () => {
-      // Going to a workspace is a request for that workspace's conversations, so
-      // the panel follows the switch. It is also the only way back to Chats:
-      // Activity is a rail toggle, and with nothing setting the mode the other
-      // way, one click on it left the panel showing Activity for good — a
-      // persisted mode, so across restarts too.
-      //
-      // Unlike Activity this does not expand a collapsed panel. Activity exists
-      // *to* be the panel, so a click that left it collapsed did nothing; a tile
-      // is navigation, and re-opening a panel you put away on every workspace
-      // switch would be taking that decision back.
-      setPanelMode("chats")
+      // Going to a project is a request for that project, so the pane follows the
+      // switch out of Activity. Without this, one click on Activity left the pane
+      // showing it for good — a persisted view, so across restarts too.
+      view.setView("projects")
       closeMobile()
     },
   })
 
-  // Which workspace the Chats list is showing: the one you're in, or — on a page
-  // that isn't a workspace — the one you were in most recently, so the panel is
-  // still a way back rather than an empty column.
-  const scopedWorkspace = useMemo(() => {
-    const byId = new Map(threads.allWorkspaces.map((ws) => [ws.id, ws]))
-    if (activeWorkspaceId) {
-      const active = byId.get(activeWorkspaceId)
-      if (active) return active
+  // ⌘1–⌘9 switch projects but do not drill: the shortcut's whole value is that it
+  // is one keystroke, and re-scoping the list underneath would make the sidebar
+  // jump on every hop between two repos.
+  useEffect(() => {
+    if (activeWorkspaceId && view.drilledId && view.drilledId !== activeWorkspaceId) {
+      view.drillOut()
     }
-    for (const id of visits.mru) {
-      const recent = byId.get(id)
-      if (recent) return recent
-    }
-    return tree.ordered[0] ?? threads.studio
-  }, [
-    threads.allWorkspaces,
-    threads.studio,
-    activeWorkspaceId,
-    visits.mru,
-    tree.ordered,
-  ])
-
-  const scopedThreads = useMemo(
-    () =>
-      scopedWorkspace ? (threads.byWorkspace.get(scopedWorkspace.id) ?? []) : [],
-    [threads.byWorkspace, scopedWorkspace]
-  )
+    // Only when the active workspace changes — not when `drilledId` does, or
+    // drilling into a project you are not in would immediately undo itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspaceId])
 
   // When a background run finishes (its id leaves the active set), refresh the
   // conversation lists so they reorder by recency and pick up the new
@@ -189,7 +163,7 @@ export function AppSidebar() {
     if (openThread) markThreadRead(openThread.id, openThread.updated_at)
   }, [threads.threads, activeThreadId])
 
-  // "You have N things waiting", on the Activity bell. The per-tile marks say
+  // "You have N things waiting", on the Activity row. The per-project marks say
   // where; this says how many, in total, without opening anything.
   const unreadCount = useMemo(
     () => threads.threads.filter((t) => threadState(t).unread).length,
@@ -212,65 +186,48 @@ export function AppSidebar() {
     activeRuns,
     threadState,
     selection,
+    isPinned: pins.has,
+    onTogglePin: pins.toggle,
     onNavigate: closeMobile,
     onRename: dialogs.openRenameThread,
     onDelete: dialogs.openDeleteThread,
   }
 
   return (
-    /* No chrome handling here any more. The traffic lights used to land on this
-       sidebar's top-left, which forced it to reserve a 44px strip, host the
-       panel heading inside that strip, and suppress its own right border across
-       it so the window's boundary was not drawn through the green button. The
-       WindowBar sits above the whole shell now, so none of that reaches this
-       component: the sidebar starts below the lights and is an ordinary column
-       again. */
-    <Sidebar collapsible="icon">
-      <div className="flex min-h-0 w-full flex-1">
-        <NavRail
-          tree={tree}
-          studio={threads.studio}
-          activeWorkspaceId={activeWorkspaceId}
-          status={status}
-          icons={icons}
-          hrefFor={hrefFor}
-          onOpenWorkspace={switchTo}
-          panelMode={panelMode}
-          onPanelMode={setPanelMode}
-          panelVisible={panelVisible}
-          unreadCount={unreadCount}
-          onNavigate={closeMobile}
-          onNewWorkspace={dialogs.openNewWorkspace}
-          onNewFolder={dialogs.openNewFolder}
-          onRenameFolder={dialogs.openRenameFolder}
-          onDeleteFolder={dialogs.openDeleteFolder}
-          onNewConversation={newConversation}
-          onRenameWorkspace={dialogs.openRenameWorkspace}
-          onCloneWorkspace={dialogs.openCloneWorkspace}
-          onDeleteWorkspace={dialogs.openDeleteWorkspace}
-        />
-        {/* Not merely hidden: a CSS-hidden panel still mounts its list, so a
-            collapsed sidebar would keep building rows nobody can see. */}
-        {panelVisible ? (
-          <SidebarPanel
-            panelMode={panelMode}
-            threads={threads}
-            scopedWorkspace={scopedWorkspace}
-            scopedThreads={scopedThreads}
-            handlers={handlers}
-            dialogs={dialogs}
-            onNewConversation={newConversation}
-            onNewChat={() => {
-              navigate("/")
-              closeMobile()
-            }}
-            onSearch={() => {
-              openCommandPalette()
-              closeMobile()
-            }}
-          />
-        ) : null}
-      </div>
+    /* `offcanvas`, not `icon`. The collapsed state used to be the 68px rail —
+       a better answer than a 3rem icon strip, and the reason the sidebar had two
+       widths at all. With one column there is nothing to collapse *to*: ⌘B and the
+       WindowBar's toggle either show the sidebar or they don't, and ⌘1–⌘9 keep
+       projects reachable while it is away. */
+    <Sidebar collapsible="offcanvas">
+      <SessionsPane
+        view={view}
+        threads={threads}
+        tree={tree}
+        studio={threads.studio}
+        icons={icons}
+        status={status}
+        pins={pins}
+        activeWorkspaceId={activeWorkspaceId}
+        unreadCount={unreadCount}
+        hrefFor={hrefFor}
+        onOpenWorkspace={switchTo}
+        onNewConversation={newConversation}
+        onNewChat={() => {
+          navigate("/")
+          closeMobile()
+        }}
+        onSearch={() => {
+          openCommandPalette()
+          closeMobile()
+        }}
+        onOpenCapabilities={() => {
+          openSettings("capabilities")
+          closeMobile()
+        }}
+        dialogs={dialogs}
+        handlers={handlers}
+      />
 
       <SidebarRail />
 

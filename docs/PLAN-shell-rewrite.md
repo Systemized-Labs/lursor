@@ -1,6 +1,6 @@
 # Plan: top-level shell rewrite
 
-Status: **approved; Phases 0, 1 and 2 done.** Open questions resolved in §10.
+Status: **approved; Phases 0–3 done.** Open questions resolved in §10.
 Scope: navigation, window frame, layout system, settings surface. Individual page
 bodies are kept as-is and re-hosted.
 
@@ -15,9 +15,9 @@ Concrete failures in today's shell:
 - **Destinations are buried.** Schedules, Usage, LAIOS, Video, Image and
   Customization all live behind one `⋯` dropdown in the rail footer
   (`rail-items.ts`). Seven whole-page routes share a single unlabelled tile.
-  *Partly addressed in Phase 2* — four of the seven are settings categories now,
-  reachable without navigating. The remaining three (Usage, Video, Image) are real
-  destinations and wait for the sidebar in Phase 3.*
+  **Addressed across Phases 2 and 3** — four of the seven became settings
+  categories, reachable without navigating; the remaining three (Usage, Video,
+  Image) are real pages and keep a `⋯` menu, now in the sessions pane's footer.
 - **Two competing tab systems.** The center is a router `Outlet` that owns
   exactly one surface; the right dock (`right-dock.tsx`) has its own tab strip
   with its own four panel kinds. A chat and a terminal are the same kind of
@@ -35,10 +35,11 @@ Concrete failures in today's shell:
   past the traffic lights. Four surfaces solving one problem.~~ **Fixed in
   Phase 1** — `WindowBar` reserves the band once and `use-mac-titlebar.ts` is
   gone.
-- **The rail spends its width on the wrong axis.** It is 68px of workspace
+- ~~**The rail spends its width on the wrong axis.** It is 68px of workspace
   tiles, which is good, but it forced every destination into the footer and left
   no room for the global actions (new session, search, settings) that a user
-  reaches for constantly.
+  reaches for constantly.~~ **Fixed in Phase 3** — one column of full-width rows,
+  with the nav rows at the top and the rail's second width axis deleted.
 
 Reference UX: Hermes Agent. Screenshots supplied cover the sidebar, project
 drill-down, the settings dialog, the layouts dialog, and sidebar-side swapping.
@@ -582,8 +583,68 @@ since the sections were already in the bundle.
 **Deferred:** the mobile shape is a horizontal category strip above the pane —
 workable, not designed. The plan's §7 owns it in Phase 7.
 
-**Phase 3 — sidebar.** `SessionsPane` with nav rows, search, Pinned, Projects,
-drill-down, folders-as-groups, `⌘1`–`⌘9`. Delete the rail and the panel.
+**Phase 3 — sidebar. DONE.** `components/layout/sessions-pane.tsx` plus
+`layout/sessions/` — one column of full-width rows: nav rows, search, Pinned,
+Projects with folders and drill-down, and a footer. `nav-rail.tsx`,
+`rail-folder.tsx`, `workspace-tile.tsx`, `use-panel-mode.ts`,
+`sidebar-panel.tsx`, `panel/chats-panel.tsx` and `panel/panel-header.tsx` are
+deleted.
+
+**The sidebar primitive lost an axis.** It had two widths and two toggles — ⌘B for
+the panel, ⇧⌘B for whether the 68px rail carried names — because the rail was a
+separate column that survived collapsing. With one column there is nothing to
+collapse *to*, so `collapsible` is `offcanvas`, ⌘B is the only sidebar shortcut,
+and `--sidebar-width-icon` / `--sidebar-width-total` / `railWidth` / `toggleRail`
+are gone. The drag handle got simpler too: it no longer subtracts a rail width
+from the pointer's distance to the viewport edge, because the handle and the width
+now measure the same thing.
+
+Where this deviates from §5, and why:
+
+- **A project row navigates *and* drills.** §5 described only the drill. But the
+  rail this replaces earned its keep as a one-click switcher, and losing that
+  would be a downgrade dressed as a redesign — "show me this project" is one
+  intent, so it is one click. `⌘1`–`⌘9` deliberately switch *without* drilling:
+  the shortcut's value is that it is one keystroke, and re-scoping the list
+  underneath would make the sidebar jump on every hop between two repos.
+- **Pinning is on the context menu, not ⇧-click.** §5 says shift-click. ⇧-click
+  already extends a range in the bulk selection, and a modifier cannot mean two
+  things on the same row — taking it would have broken bulk delete. The PINNED
+  section also only appears once something *is* pinned, rather than standing there
+  empty explaining itself.
+- **No Artifacts nav row.** §5 lists one; the pane it opens does not exist until
+  Phase 6. Same call as the WindowBar's Layouts button.
+- **`⌘N` is bound, Electron-only.** §5's sketch shows the chord but nothing bound
+  it. In a browser ⌘N is "new window" and is not ours to take — the same reason
+  `use-workspace-switch` refuses ⌘1–⌘9 there — so the chord is shown only where it
+  works.
+
+Kept against §5.1's delete list, each for a reason:
+
+- **`use-workspace-icons`** — deleting it would discard icon choices users have
+  made, and a full-width row has room for the icon that makes ten repos scannable.
+- **`panel/activity-panel.tsx`** — §5's own mapping table makes Activity a nav
+  row, so the *view* survives; this component is that view. Deleting it would mean
+  rewriting it.
+- **`rail-items.ts`** — still the destination registry for the footer's `⋯` menu
+  and the mobile header's title. Reduced to three real routes (Usage, Video,
+  Image) now that Phase 2 took the other four.
+- **`dock-rail.tsx` and `mobile-header.tsx`** — listed in §5.1 but neither is a
+  sidebar concern: dock-rail is the only way to reopen a collapsed dock (Phase 4),
+  and mobile-header is the only top bar on a phone (Phase 7). Deleting either now
+  would remove a working affordance with nothing to replace it.
+
+Verified: `bun run build` and `bun run lint` clean, entry chunk within 200 bytes
+of Phase 2. Headless pass in Electron/hash-router mode: one 255px column at y=44
+under the WindowBar; nav rows, per-project icons, ⌘ digits and the active
+project's sessions inline; drill in from a project row (heading becomes its name,
+`← All projects` returns) and out again; Activity toggles the view and back; ⌘4
+switches project without re-scoping; pin via the context menu creates the PINNED
+section and persists to `lursor:pins`, with Unpin offered on a pinned row; ⌘B
+slides the column fully off-canvas to x=-256 and back; drag-to-reorder still
+moves a project and saves (checked by reading the list order before and after,
+then putting it back); the New folder dialog opens from the section heading; and
+the mobile drawer opens with its close affordance.
 
 **Phase 4 — pane layer.** Dockview mounted as the pane host, pane-kind registry,
 custom `tabComponents` for the Hermes tab look, a theme class over Lursor's

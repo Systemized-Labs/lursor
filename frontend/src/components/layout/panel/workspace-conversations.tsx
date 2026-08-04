@@ -24,6 +24,8 @@ export function WorkspaceConversations({
   emptyLabel = "No conversations",
   threadState,
   selection,
+  isPinned,
+  onTogglePin,
   ...rowHandlers
 }: WorkspaceConversationsProps) {
   if (isLoading) {
@@ -42,12 +44,14 @@ export function WorkspaceConversations({
       {threads.map((thread) => (
         <ConversationRow
           key={thread.id}
+          {...rowHandlers}
           thread={thread}
           state={threadState(thread)}
           isSelected={selection.isThreadSelected(thread.id)}
+          isPinned={isPinned(thread.id)}
+          onTogglePin={() => onTogglePin(thread.id)}
           selection={selection}
           onSelect={(mods) => selection.selectThread(thread, mods, threads)}
-          {...rowHandlers}
         />
       ))}
     </ul>
