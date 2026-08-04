@@ -551,6 +551,50 @@ class VideoJob(TimestampMixin, table=True):
     media_id: str | None = None
 
 
+class ImageGeneration(TimestampMixin, table=True):
+    """One image generated through a laios gateway's ``/v1/images/generations``.
+
+    The counterpart to :class:`VideoJob`, and deliberately *not* shaped like it:
+    the image API is **synchronous**. There is no upstream job to poll, no cancel,
+    and no id to bind — one POST returns the image, in ~6.5 s for
+    ``z-image-turbo`` and ~116 s for ``qwen-image-2512`` at its 50-step CFG
+    default.
+
+    So the row is the only record of a generation in flight. ``status`` tracks our
+    own request rather than an engine state: ``running`` while the backend task
+    holds the call open, then ``completed`` or ``failed``. A ``running`` row with
+    no live task behind it was orphaned by a restart, which ``api/images.py``
+    reaps on the next list rather than leaving it spinning forever.
+
+    ``request`` keeps the submitted body so a run is reproducible and the page can
+    reload it into the composer. ``inference_time_s`` and ``peak_memory_mb`` are
+    the engine's own measurements, reported in every response — worth a column on
+    a page whose whole purpose is comparing models and step counts.
+    """
+
+    __tablename__ = "image_generations"
+
+    connection_id: str = Field(index=True)  # LaiosConnection this was sent to
+    model: str = ""  # served name the submission named
+    prompt: str = ""
+    # The gateway's id for the generated image. Only load-bearing on the
+    # ``response_format: "url"`` path (which we do not ask for) — kept because it
+    # is what correlates a row with the gateway's own logs.
+    upstream_id: str | None = None
+    # The submitted body verbatim, so a run can be repeated or diffed. Free-form
+    # because the engine owns this schema — laios relays it unaltered.
+    request: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Ours, not the engine's: running → completed/failed.
+    status: str = "running"
+    error: str | None = None
+    # Content-addressed image in the media store, once stored. Null while running
+    # or if it failed.
+    media_id: str | None = None
+    # The engine's own numbers, straight off the response.
+    inference_time_s: float | None = None
+    peak_memory_mb: float | None = None
+
+
 class AppConfig(TimestampMixin, table=True):
     """App-wide settings editable from the UI (single row for this single-user app).
 

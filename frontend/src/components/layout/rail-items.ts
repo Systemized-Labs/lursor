@@ -4,6 +4,7 @@ import {
   Cpu,
   FilmSlate,
   Gear,
+  ImageSquare,
   SlidersHorizontal,
 } from "@phosphor-icons/react"
 import type { ComponentType } from "react"
@@ -42,6 +43,12 @@ export const RAIL_DESTINATIONS: RailDestination[] = [
   { key: "usage", label: "Usage", icon: ChartBar, to: "/analytics" },
   { key: "laios", label: "LAIOS", icon: Cpu, to: "/laios" },
   { key: "video", label: "Video", icon: FilmSlate, to: "/video", pinned: true },
+  // Not pinned, unlike Video — and by Video's own argument for being pinned. That
+  // tile exists because a clip is a minutes-long job you submit, leave, and come
+  // back to, so the return trip is frequent enough to be worth a permanent tile.
+  // An image is ~7s on the default model: you watch it finish. Nothing to come
+  // back to, so it stays in the menu with the other destinations.
+  { key: "image", label: "Image", icon: ImageSquare, to: "/image" },
   {
     key: "customization",
     label: "Customization",

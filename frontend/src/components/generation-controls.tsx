@@ -1,3 +1,11 @@
+/**
+ * The knob primitives the generation composers share.
+ *
+ * Lifted out of `pages/video/` when the image page arrived: both pages are the
+ * same problem — a prompt, a handful of engine parameters, and a wait measured in
+ * seconds of GPU — so they want the same controls rather than two drifting copies
+ * of them.
+ */
 import type { ReactNode } from "react"
 
 import { Label } from "@/components/ui/label"

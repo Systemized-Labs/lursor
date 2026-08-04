@@ -627,6 +627,56 @@ Nothing advances a job server-side, so `list_videos` reconciles every non-termin
 row on the way out. Without it an agent that submits and is then stopped leaves a row
 at `queued` forever while the box finishes the render — a silent stall.
 
+### Image generation
+
+`api/images.py` + `pages/image/` drive the gateway's `/v1/images` surface. It reads
+like the video page and is architecturally the opposite, because **the image API is
+synchronous**: one POST returns the pixels, so there is no job id to bind, nothing to
+poll and nothing to cancel. Two `capabilities: [image]` recipes today, and they are
+*not* interchangeable — `z-image-turbo` (6B, distilled to 9 steps, no CFG) is ~6.5 s
+an image; `qwen-image-2512` (20B) is 58 s at 25 steps and 116 s at 50, because its
+default `negative_prompt` is `" "` (a space, not None) which switches CFG on and runs
+the transformer twice per step. ~37× the cost for better glyphs, which measured
+head-to-head is a narrower win than its reputation.
+
+**The wait lives on the backend, not in the browser.** `create_image` writes the row,
+hands the gateway call to an `asyncio` task and returns `201` immediately; the page
+polls the row. Holding the request open would be a truer relay and would lose two
+minutes of someone's GPU to any reload. The cost of that choice is orphans: a
+`running` row is only meaningful while this process holds a task for it, so
+`_reap_orphans` fails any `running` row absent from the `_active` map on the next
+read. That map — not a timeout heuristic — is what makes the repair exact, and it is
+why the backend being single-process is load-bearing here.
+
+Two fields are **not** relayed, against the video module's strict pass-through stance:
+`response_format` is forced to `b64_json` (the engine's `url` default returns a
+relative `/v1/images/{id}/content` whose bytes live in the container and die with it,
+so a durable history is impossible on that path), and `n` is pinned to 1 (one row,
+one `media_id`). Everything else is the engine's schema, relayed as sent.
+
+The stored MIME is **sniffed from the bytes**, never taken from `output_format` — that
+field is a request the engine may ignore, and a `b64_json` payload carries no content
+type, so trusting it mislabels the file the browser is later handed. Fixing this
+surfaced a latent bug in `media_store`: `_MIME_BY_EXT` is built by inverting
+`_EXT_BY_MIME`, where two types map to `.jpg`, so every served jpeg — chat attachment
+included — was labelled `image/jpg`, which is not a real type. Now overridden
+explicitly rather than by dict order.
+
+Per-model knobs live in `pages/image/image-settings.ts` as a table keyed on served
+name, **not** in a recipe block like video's `video_profile`. The distinction is
+real: video needed a declaration because H3's request *shape* is unlike any other
+engine's and guessing returns HTTP 200 with silently wrong output. Here both models
+take the same fields and only the sensible *values* differ, so a table is enough — and
+an unrecognised image model still works, it just gets conservative defaults and no
+time estimate rather than a confident wrong one. Switching model deliberately resets
+steps and guidance: 9 steps is right for a distilled turbo checkpoint and undercooked
+on Qwen, so a number that is right for one is wrong for the other.
+
+No agent tools and no capability probe — this is an operator surface, so there is no
+`include_image` toggle to gate. The page is in the ⋯ menu rather than pinned to the
+rail beside Video, by Video's own argument for being pinned: you leave a clip and come
+back to it, while an image finishes while you watch.
+
 ### The right dock
 
 `hooks/use-dock-state.ts` owns the tab list (persisted per workspace in

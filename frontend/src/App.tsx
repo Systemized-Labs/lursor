@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom"
 import { AnalyticsPage } from "@/pages/analytics/analytics-page"
 import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
 import { CustomizationPage } from "@/pages/customization/customization-page"
+import { ImagePage } from "@/pages/image/image-page"
 import { LaiosPage } from "@/pages/laios/laios-page"
 import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
 import { OnboardingGate } from "@/pages/onboarding/onboarding-gate"
@@ -54,6 +55,11 @@ function App() {
         {/* Its own destination rather than a LAIOS tab: generating a clip is a
             minutes-long job you come back to, not part of managing the box. */}
         <Route path="video" element={<VideoPage />} />
+        {/* Its own destination beside Video rather than a tab inside it: they
+            share a gateway and a card grid but nothing else — one is a job API
+            measured in minutes, the other a synchronous call measured in
+            seconds, with different knobs and a different model roster. */}
+        <Route path="image" element={<ImagePage />} />
         {/* Back-compat: LAIOS graduated from a Providers sub-tab to a top-level
             destination; the old deep link still lands on the page. */}
         <Route

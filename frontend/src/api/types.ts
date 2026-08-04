@@ -1316,6 +1316,74 @@ export interface LaiosVideoInput {
 }
 
 /**
+ * Where an image generation has got to.
+ *
+ * Ours, not the engine's — `/v1/images/generations` is synchronous and reports no
+ * states at all. `running` means the backend is holding that call open; there is
+ * deliberately no `cancelled`, because the engine has no cancel and a generation
+ * already on a GPU keeps it until it finishes.
+ */
+export type LaiosImageStatus = "running" | "completed" | "failed"
+
+/**
+ * One image we asked a laios gateway to generate.
+ *
+ * The row is the only record of a generation: unlike a clip there is no upstream
+ * job to poll, so if this is `running` it is because a backend task is waiting on
+ * the gateway. A `running` row with no task behind it (a restart mid-generation)
+ * is failed on the next list rather than left spinning.
+ */
+export interface LaiosImageRun {
+  /** Our row id — what every route here is keyed by. */
+  id: string
+  connection_id: string
+  model: string
+  prompt: string
+  /**
+   * The gateway's id for the image. Only load-bearing on the `response_format:
+   * "url"` path, which the backend does not ask for; kept because it is what
+   * correlates a run with the gateway's own logs.
+   */
+  upstream_id: string | null
+  /** The submitted body verbatim, so a run can be repeated or diffed. */
+  request: Record<string, unknown>
+  status: LaiosImageStatus
+  error: string | null
+  /** Content-addressed image in the media store, once stored. */
+  media_id: string | null
+  /** The engine's own measurement, straight off the response. */
+  inference_time_s: number | null
+  peak_memory_mb: number | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * The knobs the image page sends. Relayed to the engine unaltered, except that
+ * the backend forces `response_format: "b64_json"` and `n: 1` — see
+ * `api/images.py`.
+ *
+ * Every field past `prompt` is optional because the two image recipes do not take
+ * the same ones: `negative_prompt` and `true_cfg_scale` only mean anything to
+ * `qwen-image-2512` (they are what turn CFG on and off), and sending them to
+ * `z-image-turbo` would enable guidance a distilled turbo checkpoint does not
+ * want. The composer decides per model; this type just carries the result.
+ */
+export interface LaiosImageInput {
+  model: string
+  prompt: string
+  /** `"1024x1024"` — the engine also accepts `width`/`height` separately. */
+  size?: string
+  num_inference_steps?: number
+  seed?: number
+  negative_prompt?: string
+  /** Set to 1 to disable classifier-free guidance outright. */
+  true_cfg_scale?: number
+  /** `"png" | "jpeg" | "webp"`. The engine defaults to jpeg. */
+  output_format?: string
+}
+
+/**
  * What Lursor can see of a local Hermes install and of our plugin inside it.
  *
  * Detection only: Lursor reads another tool's directory and never writes to it,

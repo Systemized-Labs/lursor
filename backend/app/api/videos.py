@@ -170,6 +170,13 @@ def _gateway_error_detail(resp: httpx.Response) -> str:
     return f"gateway returned HTTP {resp.status_code}"
 
 
+# Public name for the unwrapper above: ``api/images.py`` proxies the same gateway
+# and gets the same two error shapes back, so it wants the same translation. Aliased
+# rather than moved because the tests monkeypatch this module's ``_gateway`` seam and
+# the two proxies are otherwise independent (same idiom as ``laios.load_connection``).
+gateway_error_detail = _gateway_error_detail
+
+
 def _to_read(job: VideoJob) -> dict[str, Any]:
     return {
         "id": job.id,

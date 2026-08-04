@@ -13,7 +13,9 @@ serving or for the ``view_image`` tool to read.
 Generated clips use the same layout with :data:`VIDEO_FOLDER` in place of a
 thread id — they belong to a :class:`~app.db.models.VideoJob`, not a
 conversation, but they want the same content-addressing and the same
-traversal guard.
+traversal guard. Generated *images* do the same under
+:data:`GEN_IMAGE_FOLDER`, kept separate from attachments so a generation and a
+chat upload of the same bytes never collide on a thread's folder.
 """
 
 from __future__ import annotations
@@ -43,6 +45,12 @@ _EXT_BY_MIME: dict[str, str] = {
     "video/webm": ".webm",
 }
 _MIME_BY_EXT: dict[str, str] = {v: k for k, v in _EXT_BY_MIME.items()}
+# Two MIME types map to ``.jpg`` above, so inverting the table picks whichever came
+# last — which was ``image/jpg``, a type that does not exist. Browsers tolerate it,
+# but it is what every served jpeg (chat attachment and generated image alike) was
+# labelled, so the canonical name is restored explicitly rather than by relying on
+# the order of the dict above.
+_MIME_BY_EXT[".jpg"] = "image/jpeg"
 
 # Reject oversized payloads before they hit disk / the vision endpoint (base64
 # inflates ~33%, and vision APIs reject very large images).
@@ -55,6 +63,10 @@ VIDEO_FOLDER = "videos"
 # A 15s 768p H.264 clip is single-digit MB, so this is a sanity bound on a
 # runaway or mis-decoded response body rather than a real constraint.
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
+
+# Folder generated images live under, in place of a thread id — they belong to an
+# image generation rather than a conversation.
+GEN_IMAGE_FOLDER = "generated-images"
 
 
 def ext_for_mime(mime_type: str) -> str:
@@ -118,3 +130,23 @@ def save_video(data: bytes, mime_type: str = "video/mp4") -> str:
 def video_path(media_id: str) -> Path:
     """Absolute path for a stored clip. Caller must validate against MEDIA_ID_RE."""
     return media_path(VIDEO_FOLDER, media_id)
+
+
+def save_generated_image(data: bytes, mime_type: str = "image/jpeg") -> str:
+    """Persist a generated image under :data:`GEN_IMAGE_FOLDER`.
+
+    Its own folder rather than a thread's: a generation belongs to an
+    :class:`~app.db.models.ImageGeneration`, not a conversation. Otherwise
+    identical to an attachment — same content-addressing, so re-storing the same
+    bytes is a no-op write, and the same :data:`MAX_IMAGE_BYTES` bound.
+
+    The default mime is jpeg because that is what the SGLang diffusion server
+    returns unless ``output_format`` asks otherwise; callers that know better
+    (a sniffed magic number, a response ``content-type``) should say so.
+    """
+    return save_image(GEN_IMAGE_FOLDER, data, mime_type)
+
+
+def generated_image_path(media_id: str) -> Path:
+    """Absolute path for a stored generation. Validate against MEDIA_ID_RE first."""
+    return media_path(GEN_IMAGE_FOLDER, media_id)

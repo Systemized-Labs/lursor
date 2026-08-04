@@ -1,5 +1,15 @@
 import type { LaiosVideoInput, LaiosVideoJob } from "@/api/types"
 
+// Moved to a shared module when the image page arrived — both generation pages
+// stamp runs the same way. Re-exported so this module stays the one import for
+// everything the video page's own components need.
+export {
+  formatDuration,
+  formatEstimate,
+  parseUtc,
+  relativeTime,
+} from "@/lib/generation-time"
+
 /**
  * Wall-clock cost of one denoise step, measured at 1344×768×107f in the recipe
  * header (docs/inference-matrix.md).
@@ -102,19 +112,6 @@ export const DURATION_TICKS = [
 /** Expected wall-clock for a run at this many steps. */
 export function estimateSeconds(steps: number): number | null {
   return Number.isFinite(steps) && steps > 0 ? steps * SECONDS_PER_STEP : null
-}
-
-/** "48s" / "6m 12s" — for elapsed times, where the seconds matter. */
-export function formatDuration(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = Math.round(totalSeconds % 60)
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
-}
-
-/** "under a minute" / "~6 min" — for estimates, where precision would be a lie. */
-export function formatEstimate(totalSeconds: number): string {
-  const minutes = totalSeconds / 60
-  return minutes < 1 ? "under a minute" : `~${Math.round(minutes)} min`
 }
 
 /** "1344 × 768 · 4s · 8 steps" — the composer's one-line summary. */
@@ -220,30 +217,6 @@ export function toVideoInput(
     num_inference_steps: settings.steps,
     ...(settings.seed !== null ? { seed: settings.seed } : {}),
   }
-}
-
-/**
- * Parse a timestamp the API serialized without an offset.
- *
- * The backend's datetimes are UTC but carry no `Z`, which the browser reads as
- * local time — an hours-wrong "elapsed" on any machine that isn't on UTC. Marked
- * explicitly here; a string that already has an offset is left alone.
- */
-export function parseUtc(iso: string): number {
-  return Date.parse(/[Zz+]|-\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`)
-}
-
-/** Compact "3s" / "5m" / "2h" / "4d" for a run's age. */
-export function relativeTime(iso: string, now: number): string {
-  const then = parseUtc(iso)
-  if (Number.isNaN(then)) return ""
-  const s = Math.max(0, Math.floor((now - then) / 1000))
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
 }
 
 /** The settings a run was submitted with, for its meta line. */

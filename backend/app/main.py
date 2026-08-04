@@ -19,6 +19,7 @@ from app.api import (
     files,
     git,
     github,
+    images,
     integrations,
     laios,
     models,
@@ -166,6 +167,7 @@ for module in (
     integrations,
     laios,
     videos,
+    images,
     preview,
     settings_api,
 ):
