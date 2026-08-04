@@ -114,8 +114,9 @@ The `release` workflow then runs `build` per platform:
 
 Then a single `publish` job assembles the release: it downloads every platform's
 artifacts, checks the set against the list of assets a release must contain,
-generates one `SHA256SUMS.txt` over all of them, and creates **one** draft
-release. Finally `homebrew` would bump the cask — currently a no-op, see above.
+generates one `SHA256SUMS.txt` over all of them, and creates **one** published
+release, marked `--latest`. Finally `homebrew` would bump the cask — currently a
+no-op, see above.
 
 One writer, running only after every platform succeeded, is what guarantees a
 release is either complete or absent. When the build jobs each published for
@@ -125,25 +126,39 @@ concurrent uploads (even within a single job) each made their own. A build that
 fails on one platform would likewise have left a half-populated release that
 looked installable. Do not move publishing back into the matrix.
 
-The release is created as a draft on purpose. Check the assets, then ship it:
+**A tag push ships.** The release is published immediately, with no manual step —
+so tag only when you intend to release. The asset check above is the gate, and it
+runs on every release rather than relying on someone remembering to look.
 
-```bash
-gh release edit v0.2.0 --repo JonathanConn/lursor --draft=false
-```
+This used to be a draft requiring `gh release edit <tag> --draft=false`, and that
+step was missed repeatedly: v0.1.1, v0.1.3, and v0.1.4 all sat drafted and
+unreleased, v0.1.4 for hours after a fully green build. A draft is invisible to
+every delivery path, and each one fails in a way that looks like a different bug:
 
-Until that runs, the anonymous API returns 404 and `install.sh` cannot find the
-release — which looks exactly like a broken installer.
+- `install.sh` — the anonymous `releases/latest` API returns the previous
+  version, or 404s if there is no published release at all. Looks like a broken
+  installer.
+- `update.sh` and `electron-updater` — `releases/latest` skips drafts, so they
+  resolve the last *published* version, find it already installed, and report
+  "already up to date". A fix can sit undelivered for days while every user is
+  told they are current; the sidebar-logo fix in v0.1.1 looked like it had failed
+  to install.
 
-`update.sh` fails more quietly still: `releases/latest` skips drafts, so it
-resolves the last *published* version, finds it already installed, and reports
-"already up to date". A fix can sit in a drafted release for days while every
-user is told they are current. v0.1.1 and v0.1.2 both sat drafted this way, and
-the sidebar-logo fix in v0.1.1 looked like it had failed to install. When a fix
-does not appear to land, check `gh release list` for a stuck draft first.
+If a fix does not appear to land, still check `gh release list` for a stuck draft
+first — and check that the newest release is tagged `Latest`. Flipping a release
+out of draft does *not* make GitHub re-evaluate which one is latest, so a release
+published by hand can be live yet still not served by `releases/latest`. The
+workflow now passes `--latest` explicitly for this reason.
 
-`workflow_dispatch` runs the build jobs without publishing at all (the `publish`
-and `homebrew` jobs are tag-gated) — use it to test a pipeline change without
-burning a version number.
+`workflow_dispatch` runs the build jobs without publishing — use it to test a
+pipeline change without burning a version number. This holds even when you
+dispatch against a tag: `publish` and `homebrew` are gated on
+`github.event_name == 'push'`, not merely on the ref. They were previously
+ref-gated only, so dispatching a tag re-ran publishing and created a second
+release for it — the cause of the duplicate v0.1.4 drafts.
+
+Re-running a failed `publish` job is safe: it re-uploads assets with `--clobber`
+and publishes the existing release rather than failing on "already exists".
 
 ### Verify after publishing
 
