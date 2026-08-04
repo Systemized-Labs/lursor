@@ -86,3 +86,16 @@
 .dockview-theme-lursor .dv-tabs-and-actions-container {
   border-bottom: 1px solid var(--border);
 }
+
+/**
+ * Dockview's own empty-grid watermark, retired.
+ *
+ * `PaneHost` draws the empty state — the "open one of these" cards — as an overlay
+ * on top of the grid. The watermark is `absolute; inset: 0; z-index: 1`, and it is
+ * *transparent*: left in place it is invisible but still on top, so every click on
+ * a card lands on the watermark instead. Hiding it is the honest fix; there is no
+ * arrangement in which we want both empty states.
+ */
+.dockview-theme-lursor .dv-watermark-container {
+  display: none;
+}

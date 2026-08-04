@@ -272,7 +272,9 @@ function EmptyLayout({
   // directions with nothing to scroll — hence the fixed height, the capped width
   // and the scroll container around it.
   return (
-    <div className="absolute inset-0 overflow-auto">
+    // `z-10` clears anything dockview stacks over its own grid; see the watermark
+    // note in `pane-theme.css`.
+    <div className="absolute inset-0 z-10 overflow-auto">
       <div className="mx-auto grid min-h-full max-w-2xl grid-cols-2 content-center gap-3 p-6 sm:grid-cols-3">
         {kinds.map((kind) => {
           const def = PANE_KINDS[kind]
