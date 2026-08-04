@@ -897,9 +897,19 @@ user arranged; a zone's `+` adds the rest.
   same conversations in time order, with its own filters, reachable only by leaving
   the projects behind. What it was good for is in the list itself now: sessions
   from every project are on screen at once, and a running agent shows as a dot on
-  its project row (`use-workspace-status`). Unread counts survive only on *folder*
-  headers, which hide their projects when shut; a project's own sessions are right
-  underneath it, so a number over them just restated the rows.
+  its project row (`use-workspace-status`). Rolled-up marks survive only on a
+  **shut** folder header, which is hiding the rows that would carry their own; open
+  it and the header goes quiet. No member count — it restated the list directly
+  below and read as a session count while counting projects.
+- A **folder** (`folder-row.tsx`) is a root row like a project, so it takes a
+  project row's geometry — `pl-2`, one 16px glyph, 13px name, caret trailing on
+  hover (held open while shut, the one state with no rows to imply it). Its members
+  hang off a **guide rail** rather than being padded in: each carries four session
+  rows of its own, and indentation alone left the group's contents at the same left
+  edge as everything else. Filing into a shut group **opens** it
+  (`use-workspace-tree`) — otherwise the drop looked like a delete. The studio gets
+  **no** drag target, since `tree` never sees it and the server would happily file
+  it somewhere nothing renders.
 - A project row is **two targets**: the **name** switches to the project and
   drills the list into it, the **caret** shows/hides its sessions in place
   (`use-collapsed-projects`, persisted; shut projects are stored, so a new project

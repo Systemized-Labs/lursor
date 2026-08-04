@@ -31,8 +31,6 @@ export interface ProjectRowProps {
   hasIconOverride: boolean
   isActive: boolean
   running: boolean
-  /** Indented, because it sits inside a folder. */
-  nested?: boolean
   /** Its sessions are hidden. Undefined where the row has none to hide. */
   collapsed?: boolean
   folders: { id: string; name: string }[]
@@ -89,7 +87,6 @@ export function ProjectRow({
   hasIconOverride,
   isActive,
   running,
-  nested,
   collapsed,
   folders,
   onOpen,
@@ -136,10 +133,10 @@ export function ProjectRow({
               // its href — which would beat the row's own drag to filing a
               // project into a group. The row is the handle; the link is not.
               draggable={false}
-              className={cn(
-                "group/name flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 outline-none ring-sidebar-ring focus-visible:ring-2",
-                nested && "pl-5"
-              )}
+              // No indent of its own inside a folder: the group draws a rail and
+              // measures its members from that (`folder-row.tsx`). A row that
+              // padded itself as well sat further in than the sessions it owns.
+              className="group/name flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 outline-none ring-sidebar-ring focus-visible:ring-2"
             >
               <Icon
                 className="size-4 shrink-0 text-sidebar-foreground/70"

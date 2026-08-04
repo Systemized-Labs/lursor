@@ -103,11 +103,18 @@ export function ProjectsSection({
     name: folder.name,
   }))
 
-  /** One project row, wherever it sits. */
+  /**
+   * One project row, wherever it sits.
+   *
+   * `target` is where a drop landing on this row would go — null for a row that
+   * takes no part in the arrangement, which is the studio: it is app-owned, it is
+   * pinned below the divider, and `tree` never sees it. Handing it the drag
+   * handlers anyway let it be dragged into a folder, which the server accepted and
+   * nothing rendered — a project filed somewhere invisible.
+   */
   const row = (
     workspace: Workspace,
-    target: Parameters<typeof drag.rowDrag>[1],
-    nested: boolean
+    target: Parameters<typeof drag.rowDrag>[1] | null
   ) => {
     const { running } = status(workspace.id)
     // No caret on a project with nothing to show: an arrow that toggles between
@@ -122,7 +129,6 @@ export function ProjectsSection({
         hasIconOverride={icons.hasOverride(workspace.id)}
         isActive={activeWorkspaceId === workspace.id}
         running={running}
-        nested={nested}
         collapsed={collapsedProjects.isCollapsed(workspace.id)}
         onToggleCollapsed={
           hasSessions ? () => collapsedProjects.toggle(workspace.id) : undefined
@@ -140,7 +146,11 @@ export function ProjectsSection({
         onRename={() => dialogs.openRenameWorkspace(workspace)}
         onClone={() => dialogs.openCloneWorkspace(workspace)}
         onDelete={() => dialogs.openDeleteWorkspace(workspace)}
-        drag={drag.rowDrag({ kind: "workspace", id: workspace.id }, target)}
+        drag={
+          target
+            ? drag.rowDrag({ kind: "workspace", id: workspace.id }, target)
+            : undefined
+        }
       />
     )
   }
@@ -247,7 +257,7 @@ export function ProjectsSection({
           if (node.kind === "workspace") {
             return (
               <Fragment key={node.workspace.id}>
-                {row(node.workspace, { kind: "root", index: rootIndex }, false)}
+                {row(node.workspace, { kind: "root", index: rootIndex })}
                 {inlineSessions(node.workspace.id)}
               </Fragment>
             )
@@ -274,7 +284,6 @@ export function ProjectsSection({
               key={folder.id}
               folder={folder}
               collapsed={collapsed}
-              childCount={children.length}
               running={rollup.running}
               unreadCount={rollup.unread}
               containsActive={children.some(
@@ -320,17 +329,13 @@ export function ProjectsSection({
             >
               {visible.map(({ workspace }) => (
                 <Fragment key={workspace.id}>
-                  {row(
-                    workspace,
-                    {
-                      kind: "folder",
-                      folderId: folder.id,
-                      index: children.findIndex(
-                        (c) => c.workspace.id === workspace.id
-                      ),
-                    },
-                    true
-                  )}
+                  {row(workspace, {
+                    kind: "folder",
+                    folderId: folder.id,
+                    index: children.findIndex(
+                      (c) => c.workspace.id === workspace.id
+                    ),
+                  })}
                   {inlineSessions(workspace.id)}
                 </Fragment>
               ))}
@@ -392,11 +397,12 @@ export function ProjectsSection({
         ) : null}
 
         {/* The studio is app-owned and can't be deleted, reordered or filed, so
-            it sits below the ones that can, behind a divider. */}
+            it sits below the ones that can, behind a divider — and takes no drag
+            target, which is what makes the second half of that sentence true. */}
         {studio ? (
           <Fragment key={`studio-${studio.id}`}>
             <li aria-hidden className="mx-2 my-1 h-px shrink-0 bg-sidebar-border" />
-            {row(studio, { kind: "root", index: tree.nodes.length }, false)}
+            {row(studio, null)}
             {inlineSessions(studio.id)}
           </Fragment>
         ) : null}

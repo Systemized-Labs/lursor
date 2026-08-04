@@ -153,7 +153,7 @@ export function SessionsPane({
         />
         <NavRow
           icon={MagnifyingGlass}
-          label="Search sessions…"
+          label="Search"
           shortcut="⌘K"
           onClick={onSearch}
         />

@@ -284,6 +284,19 @@ export function useWorkspaceTree(workspaces: Workspace[]): WorkspaceTree {
         })
       }
 
+      // Filing into a shut group opens it. Otherwise the project you just moved
+      // is gone from the list with nothing to say where it went — the drop
+      // succeeded and looked like a delete. Only on the way *in*: a group you
+      // dragged something out of stays as you left it.
+      if (to.kind === "folder") {
+        setCollapsed((current) => {
+          if (!current.has(to.folderId)) return current
+          const next = new Set(current)
+          next.delete(to.folderId)
+          return next
+        })
+      }
+
       // Renumber everything rather than sending a delta: one drop can move a row
       // between groups *and* reorder both, and a complete picture is idempotent.
       const layout: SidebarLayout = { folders: [], workspaces: [] }
