@@ -236,6 +236,19 @@ terminate. Terminal states: `completed` (evaluator confirmed), `blocked`
   completion is judged on what actually rendered, not on the transcript.
 - Steering: plain messages during a run buffer as interjections and are woven
   into the next seed.
+- **An autonomous run never has a human in it.** Nothing reads the agent's reply
+  between turns, so a turn that ends "do you approve...?" is a dead turn — and a
+  model that writes *"get user approval"* into the todo board poisons every later
+  turn with work no run can complete. Three layers stop it, and all three are
+  needed: `UNATTENDED_RUN_INSTRUCTION` is joined into the run-scoped instructions
+  inside `_run_goal_execution` (so it lands on *every* turn, not just the kickoff,
+  and covers `/goal`, Execute plan and cron alike); the plan-mode and
+  execute-plan prompts say approval already happened (pressing the button *was*
+  the approval — a plan must not contain checkpoint steps); and if a turn parks
+  anyway, `looks_like_awaiting_user(turn.text)` swaps the plain continue directive
+  for `awaiting_user_directive`, which grants the approval and forbids re-asking.
+  The detector reads only the reply's closing ~400 chars, so mentioning approval
+  mid-turn and then working on doesn't trigger it.
 
 ### Compaction — two mechanisms, one pair of knobs
 

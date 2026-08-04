@@ -16,14 +16,19 @@ from app.agents.goal_loop import (
     EVALUATOR_ERROR_REASON,
     EVALUATOR_UNAVAILABLE_REASON,
     PLAN_DIR,
+    UNATTENDED_RUN_INSTRUCTION,
     TurnResult,
     _enqueue_interjections,
     detect_plan_doc_anywhere,
     drain_interjections,
     drive_goal_loop,
     extract_success_criteria,
+    looks_like_awaiting_user,
     plan_doc_has_content,
+    plan_execute_kickoff,
+    planning_instruction,
     queue_interjection,
+    refine_instruction,
     turn_failed_reason,
     unique_plan_doc_path,
     write_plan_doc,
@@ -276,6 +281,106 @@ async def test_transient_evaluator_error_recovers_and_continues():
     assert outcome.status == ThreadStatus.completed
     assert outcome.turns == 1
     assert outcome.last_reason == "done"
+
+
+# --- turns that stop to ask the user ------------------------------------------
+
+
+def test_looks_like_awaiting_user_spots_a_parked_turn():
+    """A reply that ends on a question or a hand-off is awaiting the user."""
+    assert looks_like_awaiting_user(
+        "Storyboard is ready and the three shots are queued.\n\n"
+        "**Do you approve starting the three 50-step final renders (~105 min total)?**"
+    )
+    assert looks_like_awaiting_user("I can go either way here — let me know.")
+    assert looks_like_awaiting_user("Waiting for your go-ahead before I render.")
+
+
+def test_looks_like_awaiting_user_ignores_work_that_carried_on():
+    """Mentioning approval mid-turn isn't stopping; only the closing lines count."""
+    assert not looks_like_awaiting_user(
+        "Do you approve? I'll assume yes since this run is unattended.\n\n"
+        + "Rendered shot 1 (50 steps, exit 0). Rendered shot 2 (50 steps, exit 0). "
+        "Rendered shot 3 (50 steps, exit 0). Assembled local-ai-will-win.mp4 — "
+        "ffprobe reports 42s, 1920x1080, h264. All three renders are on disk and "
+        "the crossfades line up with the storyboard timings, so the plan's "
+        "Success Criteria are met and nothing is left outstanding here."
+    )
+    assert not looks_like_awaiting_user("")
+    assert not looks_like_awaiting_user("Tests pass: 41 passed, 0 failed.")
+
+
+async def test_turn_that_asks_for_approval_is_told_to_proceed():
+    """The loop answers the question instead of letting the next turn re-ask it.
+
+    Without this the agent parks on "do you approve...?" every turn — nobody is
+    reading the transcript mid-run, so the generic continue directive just gets the
+    same question back.
+    """
+    seeds: list[str | None] = []
+
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        seeds.append(seed)
+        return TurnResult(
+            messages=[f"turn-{turn_no}"],
+            text="Do you approve starting the three 50-step final renders?",
+        )
+
+    outcome = await drive_goal_loop(
+        condition="the final mp4 exists",
+        max_turns=2,
+        run_turn=run_turn,
+        evaluate=_scripted_evaluator(
+            [
+                GoalEvaluation(met=False, reason="no mp4 yet"),
+                GoalEvaluation(met=True, reason="mp4 on disk"),
+            ]
+        ),
+        initial_seed="kick off",
+    )
+
+    assert outcome.status == ThreadStatus.completed
+    # The continue directive grants the approval and forbids asking again, rather
+    # than repeating a bare "keep working".
+    assert "nobody is going to answer" in seeds[1]
+    assert "Do not ask again" in seeds[1]
+    assert "no mp4 yet" in seeds[1]
+
+
+async def test_ordinary_turn_keeps_the_plain_continue_directive():
+    """A turn that didn't park gets the normal directive — no spurious grant."""
+    seeds: list[str | None] = []
+
+    async def run_turn(turn_no: int, seed: str | None) -> TurnResult:
+        seeds.append(seed)
+        return TurnResult(messages=[f"turn-{turn_no}"], text="Wrote the renderer.")
+
+    await drive_goal_loop(
+        condition="the final mp4 exists",
+        max_turns=2,
+        run_turn=run_turn,
+        evaluate=_scripted_evaluator([GoalEvaluation(met=False, reason="keep going")]),
+        initial_seed="kick off",
+    )
+
+    assert "keep going" in seeds[1]
+    assert "nobody is going to answer" not in seeds[1]
+
+
+def test_unattended_instruction_bans_human_gated_todos():
+    """The run-scoped instruction closes both holes: asking, and todo checkpoints."""
+    text = UNATTENDED_RUN_INSTRUCTION.lower()
+    assert "never ask for approval" in text
+    assert "get approval" in text  # the todo the model used to write
+    assert "unattended" in text
+
+
+def test_plan_instructions_forbid_approval_checkpoints():
+    """A plan is authored for unattended execution, so no human-gate steps."""
+    for text in (planning_instruction(), refine_instruction(f"{PLAN_DIR}/PLAN-x.md")):
+        assert "get user approval" in text.lower()
+    assert "unattended" in planning_instruction().lower()
+    assert "already satisfied" in plan_execute_kickoff(f"{PLAN_DIR}/PLAN-x.md", "# X\n")
 
 
 # --- aborted agent turns ------------------------------------------------------

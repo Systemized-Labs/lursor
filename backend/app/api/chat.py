@@ -50,6 +50,7 @@ from app.agents.context_budget import resolve_compaction_ratio
 from app.agents.goal_loop import (
     AUTONOMOUS_KICKOFF,
     PLAN_DIR,
+    UNATTENDED_RUN_INSTRUCTION,
     TurnResult,
     build_continuation_adapter,
     build_goal_evaluator,
@@ -978,6 +979,13 @@ async def _run_goal_execution(
     started and ``"cron"`` for one a :class:`Schedule` fired, so unattended spend
     can be broken out in Analytics — the loop itself is identical either way.
     """
+    # Every turn this function drives is unattended (``/goal``, "Execute plan", a
+    # fired schedule), so the no-stopping-to-ask instruction belongs here rather
+    # than at each call site: the kickoff seed only reaches turn one, and it is the
+    # later turns that park on "do you approve...?".
+    media_instructions = _join_instructions(
+        media_instructions, UNATTENDED_RUN_INSTRUCTION
+    )
     todos_state: dict = {"json": None}
     run_id = uuid.uuid4().hex
     publish_status = _goal_status_publisher(thread_id, condition, max_turns)
