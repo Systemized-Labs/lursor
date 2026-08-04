@@ -51,6 +51,8 @@ interface WorkspaceChatPageProps {
   threadId: string | null
   /** Report a change of conversation to whoever owns the address. */
   onThreadChange: (threadId: string | null) => void
+  /** Report the open conversation's name, for the pane's tab to label itself with. */
+  onDetail?: (detail: string | null) => void
 }
 
 /**
@@ -70,6 +72,7 @@ export function WorkspaceChatPage({
   workspaceId,
   threadId: cParam,
   onThreadChange,
+  onDetail,
 }: WorkspaceChatPageProps) {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
@@ -94,8 +97,6 @@ export function WorkspaceChatPage({
     () => new Map(agents.map((a) => [a.id, a.name])),
     [agents]
   )
-  const [isEditingTitle, setIsEditingTitle] = useState(false)
-  const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
@@ -148,6 +149,16 @@ export function WorkspaceChatPage({
     selectedThreadId && !listedThread ? selectedThreadId : undefined
   ).data
   const currentThread = listedThread ?? unlistedThread
+
+  // Hand the conversation's name to the pane so its tab can wear it instead of
+  // "Chat". Reported as it becomes known and as it changes: a fresh conversation
+  // has no name until the backend titles it from the first turn (which the
+  // list-refresh below picks up), and a rename in the header should reach the tab
+  // without a reload. Null while there is no conversation, which is what puts the
+  // kind's own label back.
+  useEffect(() => {
+    onDetail?.(currentThread?.title || null)
+  }, [currentThread?.title, onDetail])
 
   // Scroll instance owned here so send/interject can re-pin to the bottom.
   const stick = useStickToBottom({ resize: "smooth", initial: "instant" })
@@ -336,36 +347,6 @@ export function WorkspaceChatPage({
   async function runCommandAction(action: CommandAction) {
     if (action === "new-conversation") handleNewConversation()
     else if (action === "compact") await handleCompact()
-  }
-
-  function startEditingTitle() {
-    if (!currentThread) return
-    setTitleDraft(currentThread.title)
-    setIsEditingTitle(true)
-  }
-
-  async function commitTitle() {
-    setIsEditingTitle(false)
-    const next = titleDraft.trim()
-    if (!currentThread || !next || next === currentThread.title) return
-    try {
-      await updateThread.mutateAsync({
-        id: currentThread.id,
-        input: { title: next },
-      })
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to rename conversation")
-    }
-  }
-
-  function handleTitleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") {
-      e.preventDefault()
-      void commitTitle()
-    } else if (e.key === "Escape") {
-      e.preventDefault()
-      setIsEditingTitle(false)
-    }
   }
 
   async function handleSend() {
@@ -560,31 +541,11 @@ export function WorkspaceChatPage({
             under the traffic lights. The WindowBar reserves that band above the
             whole shell now, so this is an ordinary content header again. */}
         <div className="flex h-9 shrink-0 items-center gap-3 bg-background/70 px-3 backdrop-blur-sm">
+          {/* No conversation name here. The tab carries it (`pane-tab.tsx`), and
+              printing it again one line below the tab that just said it spent a
+              row on nothing. Renaming moved with it: the sidebar row's menu owns
+              that now, via `workspace-dialogs.tsx`. */}
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            {isEditingTitle ? (
-              <input
-                autoFocus
-                value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onBlur={() => void commitTitle()}
-                onKeyDown={handleTitleKeyDown}
-                aria-label="Conversation title"
-                className="min-w-0 flex-1 rounded-md bg-accent px-1.5 py-0.5 text-sm font-medium text-foreground outline-none ring-1 ring-primary/40 focus:ring-primary"
-              />
-            ) : currentThread ? (
-              <button
-                type="button"
-                onClick={startEditingTitle}
-                title="Rename conversation"
-                className="min-w-0 truncate rounded-md px-1.5 py-0.5 text-left text-sm font-medium text-foreground hover:bg-accent"
-              >
-                {currentThread.title}
-              </button>
-            ) : (
-              <span className="truncate px-1.5 text-sm font-medium text-foreground">
-                New conversation
-              </span>
-            )}
             {isStreaming && (
               <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
                 <span className="relative flex h-1.5 w-1.5">
@@ -611,16 +572,6 @@ export function WorkspaceChatPage({
                 <span className="hidden sm:inline">Manage skills</span>
               </Button>
             ) : null}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-muted-foreground hover:text-foreground"
-              onClick={handleNewConversation}
-              aria-label="New conversation"
-              title="New conversation"
-            >
-              <NotePencil className="h-4 w-4" />
-            </Button>
           </div>
         </div>
 

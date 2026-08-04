@@ -20,6 +20,12 @@ import { cn } from "@/lib/utils"
  * not spend width restating what a lone "Preview" is already pointed at. Same rule
  * the right dock's strip used, and the detail is still derived from live pane state
  * rather than persisted.
+ *
+ * Chat is the exception, and takes the detail as its *label*. A conversation has a
+ * name of its own — the one the header renames and the sidebar lists — so a strip
+ * of tabs all reading "CHAT" is the one case where the kind is the least useful
+ * thing we could print. Two chats side by side need telling apart whether or not
+ * they are "duplicates", and the icon still says what the pane is.
  */
 export function PaneTab(props: IDockviewPanelHeaderProps) {
   const params = props.params as PaneParams | undefined
@@ -50,19 +56,26 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
     return () => sub.dispose()
   }, [props.containerApi, kind])
 
-  const [detail, setDetail] = useState<string | null>(null)
+  // A pane reports its detail by setting its own title. Seeded from the current
+  // title rather than from null, so a tab that mounts against a pane which already
+  // reported one — a remount, a restored layout — shows it immediately instead of
+  // waiting for the next change event that may never come.
+  const [detail, setDetail] = useState<string | null>(() =>
+    props.api.title && props.api.title !== def?.title ? props.api.title : null
+  )
   useEffect(() => {
-    setDetail(null)
-    const sub = props.api.onDidTitleChange((event) => {
-      // A pane reports its detail by setting its own title; the label below stays
-      // the kind's name, so the tab never loses track of what it *is*.
-      setDetail(event.title === def?.title ? null : (event.title ?? null))
-    })
+    const sync = (title: string | null | undefined) =>
+      setDetail(!title || title === def?.title ? null : title)
+    sync(props.api.title)
+    const sub = props.api.onDidTitleChange((event) => sync(event.title))
     return () => sub.dispose()
   }, [props.api, def?.title])
 
   const Icon = def?.icon
-  const label = def?.title ?? props.api.title ?? "Pane"
+  // A named conversation labels its own tab; an unnamed one falls back to the kind,
+  // which is also what a chat shows while its first turn is still being titled.
+  const named = kind === "chat" && detail ? shorten(detail) : null
+  const label = named ?? def?.title ?? props.api.title ?? "Pane"
 
   return (
     <div
@@ -74,10 +87,18 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
       )}
     >
       {Icon ? <Icon className="size-3.5 shrink-0" /> : null}
-      <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-[0.08em]">
+      <span
+        title={named && named !== detail ? (detail ?? undefined) : undefined}
+        className={cn(
+          "min-w-0 truncate text-[11px] font-medium uppercase tracking-[0.08em]",
+          // A kind's name is two syllables and can size to content; a conversation's
+          // is a sentence, and is held to a share of the strip.
+          named && "max-w-[10rem]"
+        )}
+      >
         {label}
       </span>
-      {duplicated && detail ? (
+      {!named && duplicated && detail ? (
         <span className="min-w-0 max-w-[7rem] truncate text-[10px] normal-case tracking-normal opacity-70">
           {detail}
         </span>
@@ -106,4 +127,26 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
       />
     </div>
   )
+}
+
+/** How many characters of a conversation name a tab will print. */
+const NAME_LIMIT = 24
+
+/**
+ * A conversation name, cut to tab length.
+ *
+ * Truncation happens here as well as in CSS on purpose: `truncate` alone would let
+ * one long name push every other tab's label down to a few letters, since dockview
+ * sizes tabs to content and only the overflow gets clipped. Cutting the string caps
+ * the tab's *width*; the class then handles whatever still doesn't fit.
+ *
+ * The cut prefers the last word boundary so it lands between words rather than
+ * mid-word, unless that would throw away more than half the budget.
+ */
+function shorten(name: string): string {
+  const clean = name.trim().replace(/\s+/g, " ")
+  if (clean.length <= NAME_LIMIT) return clean
+  const cut = clean.slice(0, NAME_LIMIT)
+  const space = cut.lastIndexOf(" ")
+  return `${space > NAME_LIMIT / 2 ? cut.slice(0, space) : cut.trimEnd()}…`
 }

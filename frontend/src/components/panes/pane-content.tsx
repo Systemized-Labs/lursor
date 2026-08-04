@@ -38,7 +38,7 @@ export interface PaneContentProps {
   paneId: string
   /** Whether this pane is the visible one in its group. */
   active: boolean
-  /** A pane-reported detail for the tab (a port, a filename). */
+  /** A pane-reported detail for the tab (a port, a filename, a conversation name). */
   onDetail?: (detail: string | null) => void
   /** Chat only: the open conversation, and how to report a change to it. */
   threadId?: string | null
@@ -75,6 +75,7 @@ export function PaneContent({
         workspaceId={workspaceId}
         threadId={threadId ?? null}
         onThreadChange={onThreadChange ?? (() => undefined)}
+        onDetail={onDetail}
       />
     )
   }
