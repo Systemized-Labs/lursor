@@ -36,6 +36,7 @@ import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,12 @@ from typing import Any
 from fastapi import HTTPException
 from sqlmodel import select
 
-from app.agents.video_runtime import VideoConstraints, VideoRuntime
+from app.agents.video_runtime import (
+    SCHEMA_MINIMAX_H3,
+    SCHEMA_SGLANG_VIDEO,
+    VideoConstraints,
+    VideoRuntime,
+)
 from app.agents.vision import describe_image_bytes
 from app.api import videos as videos_api
 from app.db.models import VideoJob
@@ -132,7 +138,7 @@ def make_video_tools(
             last_frame: Image file (workspace path) to land on as the final frame.
         """
         try:
-            body, notes = _build_request(
+            submission = _build_request(
                 runtime,
                 root,
                 prompt=prompt,
@@ -149,7 +155,7 @@ def make_video_tools(
         try:
             async with async_session_factory() as session:
                 row = await videos_api.create_video(
-                    runtime.connection_id, body, session
+                    runtime.connection_id, submission.body, session
                 )
         except HTTPException as exc:
             # The engine is the authority on its own constraints, so its rejection
@@ -161,17 +167,16 @@ def make_video_tools(
             return f"Error: could not submit the video job: {exc}"
 
         job_id = str(row.get("job_id") or "")
-        target = body["target"]
-        estimate = steps * limits.seconds_per_step
+        estimate = submission.steps * limits.seconds_per_step
         lines = [
             f"Submitted job {job_id} to {runtime.model} on {runtime.connection_name!r}.",
-            f"  task: {body['task']}"
-            + (f" ({', '.join(notes)})" if notes else ""),
-            f"  {_size_for(limits, target['aspect_ratio'])} · "
-            f"{_seconds(target['duration_seconds'])}s · {steps} steps"
+            f"  task: {submission.label}"
+            + (f" ({', '.join(submission.notes)})" if submission.notes else ""),
+            f"  {_size_for(limits, submission.aspect_ratio)} · "
+            f"{_seconds(submission.duration_seconds)}s · {submission.steps} steps"
             + (f" · seed {seed}" if seed is not None else " · seed: engine's choice"),
             f"  estimated wall clock: {_estimate(estimate)} "
-            f"({steps} steps × {limits.seconds_per_step}s)",
+            f"({submission.steps} steps × {limits.seconds_per_step}s)",
             "",
             "Nothing advances until you poll. Next: "
             f'video_status("{job_id}", wait_seconds={MAX_WAIT_SECONDS})',
@@ -368,6 +373,24 @@ class _Invalid(Exception):
     """A constraint the engine would reject, caught before the round trip."""
 
 
+@dataclass(frozen=True)
+class _Submission:
+    """A validated request: the body to send, plus what it was asked for.
+
+    The summary the tool returns is built from these fields rather than read back
+    out of ``body``, because the body's shape is per-model — ``target.aspect_ratio``
+    exists in H3's schema and nowhere else, and a summary that reaches into it
+    crashes the moment a second model appears.
+    """
+
+    body: dict[str, Any]
+    notes: list[str]
+    label: str
+    aspect_ratio: str
+    duration_seconds: float
+    steps: int
+
+
 def _build_request(
     runtime: VideoRuntime,
     root: Path,
@@ -379,7 +402,7 @@ def _build_request(
     seed: int | None,
     first_frame: str | None,
     last_frame: str | None,
-) -> tuple[dict[str, Any], list[str]]:
+) -> _Submission:
     """The engine body for these arguments, or raise :class:`_Invalid`.
 
     Validated locally *before* submitting, because a 400 round trip through a
@@ -392,7 +415,9 @@ def _build_request(
         raise _Invalid("prompt is required — describe the shot, motion and sound.")
 
     ratio = (aspect_ratio or "").strip() or "16:9"
-    if ratio not in limits.aspect_ratios and ratio != "auto":
+    # An empty ``aspect_ratios`` means the model's profile does not constrain them,
+    # so there is nothing to check against — the engine stays the authority.
+    if limits.aspect_ratios and ratio not in limits.aspect_ratios and ratio != "auto":
         allowed = ", ".join(limits.aspect_ratios)
         raise _Invalid(
             f"aspect_ratio {ratio!r} is not supported by {runtime.model}; "
@@ -421,6 +446,81 @@ def _build_request(
             f"got {step_count}."
         )
 
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError) as exc:
+            raise _Invalid(f"seed must be a whole number, got {seed!r}") from exc
+        if seed < 0:
+            raise _Invalid(f"seed must not be negative, got {seed}.")
+
+    frames = [
+        (label, candidate)
+        for label, candidate in (("first_frame", first_frame), ("last_frame", last_frame))
+        if candidate
+    ]
+    if frames and not limits.keyframes:
+        raise _Invalid(
+            f"{runtime.model} does not support first/last-frame conditioning, so "
+            f"{frames[0][0]} cannot be used. Generate the shot from a prompt, or "
+            "join shots with a crossfade instead of conditioning them."
+        )
+
+    builder = _BUILDERS.get(runtime.request_schema)
+    if builder is None:  # pragma: no cover - resolution rejects unknown schemas
+        raise _Invalid(
+            f"this build cannot construct a request for {runtime.request_schema!r}."
+        )
+    body, notes = builder(
+        runtime,
+        root,
+        prompt=prompt,
+        ratio=ratio,
+        duration=duration,
+        steps=step_count,
+        seed=seed,
+        frames=frames,
+    )
+
+    # Checked on the assembled body, not per frame: two keyframes that each fit can
+    # still bust the budget together, and the gateway's 413 says nothing about which
+    # one to shrink.
+    if frames:
+        size = len(json.dumps(body))
+        if size > _GATEWAY_BODY_LIMIT:
+            raise _Invalid(
+                f"the request is {size} bytes with the frame(s) inlined, over the "
+                f"gateway's {_GATEWAY_BODY_LIMIT}-byte body limit. {_REENCODE_HINT}."
+            )
+    # A neutral label: H3 names its own task, other schemas do not have the concept.
+    label = str(body.get("task") or ("image-to-video" if frames else "text-to-video"))
+    return _Submission(
+        body=body,
+        notes=notes,
+        label=label,
+        aspect_ratio=ratio,
+        duration_seconds=duration,
+        steps=step_count,
+    )
+
+
+def _build_minimax_h3(
+    runtime: VideoRuntime,
+    root: Path,
+    *,
+    prompt: str,
+    ratio: str,
+    duration: float,
+    steps: int,
+    seed: int | None,
+    frames: list[tuple[str, str]],
+) -> tuple[dict[str, Any], list[str]]:
+    """MiniMax-H3's canonical body (``minimax_h3.request/v1``).
+
+    ``task``/``target``/``conditions`` are H3's own extras, not the generic video
+    API — which is exactly why the schema has to be declared before this is used.
+    """
+    limits = runtime.constraints
     body: dict[str, Any] = {
         "model": runtime.model,
         "prompt": prompt,
@@ -430,49 +530,89 @@ def _build_request(
             "aspect_ratio": ratio,
             "duration_seconds": duration,
         },
-        "num_inference_steps": step_count,
+        "num_inference_steps": steps,
     }
     if seed is not None:
-        try:
-            body["seed"] = int(seed)
-        except (TypeError, ValueError) as exc:
-            raise _Invalid(f"seed must be a whole number, got {seed!r}") from exc
-        if body["seed"] < 0:
-            raise _Invalid(f"seed must not be negative, got {seed}.")
+        body["seed"] = seed
 
-    # Keyframe conditioning. ``frame_index`` is the whole contract: 0 is the first
-    # frame, -1 the last, and [0, -1] both — the engine accepts exactly those three
-    # signatures, in that order.
+    # ``frame_index`` is the whole keyframe contract: 0 is the first frame, -1 the
+    # last, and [0, -1] both — the engine accepts exactly those three signatures, in
+    # that order (verified against a running box).
     conditions = []
     notes = []
-    for label, candidate, frame_index in (
-        ("first_frame", first_frame, 0),
-        ("last_frame", last_frame, -1),
-    ):
-        if not candidate:
-            continue
+    for label, candidate in frames:
         conditions.append(
             {
                 "type": "image",
                 "uri": _data_uri(root, candidate, label),
                 "role": "keyframe",
-                "frame_index": frame_index,
+                "frame_index": 0 if label == "first_frame" else -1,
             }
         )
         notes.append(f"{label}={candidate}")
     if conditions:
         body["task"] = "fl2va"
         body["conditions"] = conditions
-        # Checked on the assembled body, not per frame: two keyframes that each fit
-        # can still bust the budget together, and the gateway's 413 says nothing
-        # about which one to shrink.
-        size = len(json.dumps(body))
-        if size > _GATEWAY_BODY_LIMIT:
-            raise _Invalid(
-                f"the request is {size} bytes with the frame(s) inlined, over the "
-                f"gateway's {_GATEWAY_BODY_LIMIT}-byte body limit. {_REENCODE_HINT}."
-            )
     return body, notes
+
+
+def _build_sglang_video(
+    runtime: VideoRuntime,
+    root: Path,
+    *,
+    prompt: str,
+    ratio: str,
+    duration: float,
+    steps: int,
+    seed: int | None,
+    frames: list[tuple[str, str]],
+) -> tuple[dict[str, Any], list[str]]:
+    """The generic SGLang video body (``sglang.video/v1``).
+
+    For a model whose profile declares this shape rather than H3's. The knobs the
+    engine actually reads are ``seconds`` and ``size``/``width``/``height`` — sending
+    H3's ``target`` block instead is the silent-wrong-clip failure this whole
+    resolution path exists to prevent.
+
+    Image conditioning here is ``input_reference``, which is a *first* frame only:
+    the generic API has no last-frame concept, so asking for one is refused rather
+    than quietly dropped.
+
+    Untested against a real second model — no video recipe other than H3 exists yet
+    — so it is written to the engine's source and kept deliberately small.
+    """
+    limits = runtime.constraints
+    body: dict[str, Any] = {
+        "model": runtime.model,
+        "prompt": prompt,
+        # Integer seconds: the generic path derives num_frames as fps * seconds.
+        "seconds": int(round(duration)),
+        "num_inference_steps": steps,
+    }
+    if seed is not None:
+        body["seed"] = seed
+    # Only when the profile said what this ratio means in pixels. Inventing a size
+    # would be the same guess, one layer down.
+    size = limits.sizes.get(ratio, "").replace(" ", "")
+    if size:
+        body["size"] = size
+
+    notes = []
+    for label, candidate in frames:
+        if label == "last_frame":
+            raise _Invalid(
+                f"{runtime.model} takes a first frame only ({SCHEMA_SGLANG_VIDEO} has "
+                "no last-frame conditioning), so last_frame cannot be used."
+            )
+        body["input_reference"] = _data_uri(root, candidate, label)
+        notes.append(f"{label}={candidate}")
+    return body, notes
+
+
+_BUILDERS: dict[str, Any] = {
+    SCHEMA_MINIMAX_H3: _build_minimax_h3,
+    SCHEMA_SGLANG_VIDEO: _build_sglang_video,
+}
 
 
 # Accepted keyframe types, keyed by what ``mime_for_path`` actually returns and

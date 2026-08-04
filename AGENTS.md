@@ -553,16 +553,42 @@ reads `request` on every poll.
 
 Two measured numbers that are not in any doc and are invisible until they bite:
 
-1. **The gateway caps a request body at 2 MiB** (axum's default; 2,090,000 bytes went
-   through, 2,200,000 got `413 Failed to buffer the request body`). A keyframe is
-   base64 in that body — a real 1344x768 frame is 587 KB as PNG against 31 KB as
-   JPEG, and an incompressible one is 2.9 MB, so PNG is the format that gets you
-   near the edge rather than one that always fails. `generate_video` checks the
-   *assembled* body, not each frame (two keyframes share the budget), and answers
-   with the `-q:v 3` JPEG remedy.
+1. **The gateway caps a request body at 2 MiB** (axum's `Bytes` extractor default;
+   2,090,000 bytes went through, 2,200,000 got `413 Failed to buffer the request
+   body`). A keyframe is base64 in that body — a real 1344x768 frame is 587 KB as
+   PNG against 31 KB as JPEG, and an incompressible one is 2.9 MB, so PNG is the
+   format that gets you near the edge rather than one that always fails.
+   `generate_video` checks the *assembled* body, not each frame (two keyframes share
+   the budget), and answers with the `-q:v 3` JPEG remedy. The upstream patch raises
+   the limit on that one route.
 2. **The delivered duration is not the requested one.** The engine aligns frames to
    17n+5 at 24 fps, so `duration_seconds=4` returns a 4.5 s clip. Every fade/concat
    calculation must come from `ffprobe`, never from what was submitted.
+
+**Which model, and how to ask it.** `capabilities: [video]` says a model generates
+video; it says nothing about the request shape, and the shape is per-model rather
+than per-engine — H3 takes `task`/`target`/`conditions`, the generic SGLang video API
+takes `seconds`/`size`/`input_reference`. Guessing wrong does **not** error: SGLang's
+base `lower_video_request_kwargs` is `del request; return kwargs`, so a non-H3 model
+discards the fields it does not know, falls back to `DEFAULT_VIDEO_SECONDS = 4` and
+its own resolution, and returns HTTP 200 — full GPU time for a clip of the wrong
+length with its keyframes ignored. Silent wrong output, which is worse than any 400.
+
+So the model declares its shape, in the recipe's `video_profile` block surfaced on
+the control plane's `/v1/models` (prepared upstream:
+`docs/upstream/laios-video-profile.patch`). `video_runtime.py` resolves in that
+order: a profile naming a schema we implement → drive it with the profile's own
+ranges; no profile but the model *identifies* as MiniMax-H3 → drive it as H3 with
+the measured defaults and mark the runtime `assumed`; anything else → **no tools**,
+logged. H3 is grandfathered because it predates the block and is the only video
+recipe in the wild; requiring a declaration would turn a working box off.
+
+A profile's missing fields leave that knob *unconstrained* rather than inheriting
+H3's, or a 5-second-max model would accept 15 and fail on the box. `GET
+/video/capability` reports the outcome for the agent editor, because a toggle that
+silently does nothing is indistinguishable from a broken one. Model choice among
+several is still first-connection, alphabetically-first — correct by accident while
+H3 is the only one.
 
 Agents reach it through four deferred tools (`agents/video_tools.py`):
 `generate_video` (submit, never wait — a 35-minute tool call makes a run look hung),

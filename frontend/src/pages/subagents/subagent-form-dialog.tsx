@@ -42,6 +42,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { useMemoryHint } from "@/pages/settings/memory-hint"
+import { useVideoHint } from "@/pages/agents/video-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
 
@@ -171,6 +172,8 @@ export function SubagentFormDialog({
   // Where memory goes if the toggle below is on. A subagent shares its parent's
   // bank and workspace, so this is the same app-wide provider.
   const memoryHint = useMemoryHint()
+  // Only resolved while the dialog is open: it reaches the box behind a cache.
+  const videoHint = useVideoHint(open)
   const isEdit = Boolean(subagent)
   const isSaving = createSubagent.isPending || updateSubagent.isPending
 
@@ -434,6 +437,9 @@ export function SubagentFormDialog({
                     ) : null}
                     {field.hint ? (
                       <p className="text-xs text-muted-foreground">{field.hint}</p>
+                    ) : null}
+                    {field.key === "include_video" && videoHint ? (
+                      <p className="text-xs text-muted-foreground">{videoHint}</p>
                     ) : null}
                   </div>
                   <Switch

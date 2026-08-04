@@ -30,6 +30,14 @@
 >   (`backend/app/skills/bundled/`) and is seeded into `~/.lursor/skills` on startup,
 >   stamped so a user's edits are never overwritten by a later release
 >   (`app/skills/seed.py`).
+> * **"The tool signature is provider-neutral" was not enough** (§10). The signature
+>   was; the body builder was H3's canonical schema, and SGLang *silently discards*
+>   fields a model does not declare — so any other video model would have returned a
+>   4-second clip at its own default size with the keyframes ignored, at HTTP 200.
+>   Model support is now driven by a `video_profile` the recipe declares
+>   (`docs/upstream/laios-video-profile.patch`), with H3 grandfathered by identity and
+>   everything undeclared getting no tools. `GET /video/capability` reports the
+>   outcome to the agent editor.
 >
 ## 0. Why this is mostly assembly
 

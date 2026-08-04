@@ -45,6 +45,37 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/laios/connections", tags=["videos"])
 
+# The capability probe is not connection-scoped — "can any box do this" is the
+# question — so it gets its own router rather than a path under a connection id.
+capability_router = APIRouter(prefix="/video", tags=["videos"])
+
+
+@capability_router.get("/capability")
+async def video_capability(session: AsyncSession = Depends(get_session)):
+    """Whether anything connected can generate video, and what would be used.
+
+    Exists for the agent editor. The ``include_video`` toggle is gated on a box
+    actually serving a model this build can drive (``agents/video_runtime.py``), and
+    a checkbox that silently does nothing is indistinguishable from a broken one —
+    so the editor states which model it would reach, or why it would reach none.
+
+    Shares the resolver's 5-minute cache, so opening the dialog costs no round trip
+    once a run has already resolved.
+    """
+    from app.agents.video_runtime import resolve_video_target
+
+    runtime, reason = await resolve_video_target(session)
+    return {
+        "available": runtime is not None,
+        "model": runtime.model if runtime else None,
+        "connection_name": runtime.connection_name if runtime else None,
+        # True when the request shape was inferred from the model's identity rather
+        # than declared by its recipe — worth surfacing, since it is the one case
+        # where Lursor is trusting a measurement instead of a declaration.
+        "assumed": bool(runtime.assumed) if runtime else False,
+        "reason": reason,
+    }
+
 # Submitting and polling are fast — the generation itself happens on the box and
 # is observed by polling, so no request here waits on a clip.
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0)

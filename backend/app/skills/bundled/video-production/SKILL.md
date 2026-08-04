@@ -29,6 +29,12 @@ to join, and never quietly skip a step that needed it.
 
 ## 1. What a generation costs
 
+The numbers below are MiniMax-H3's, which is the model in practice today. They are
+**not universal**: each model declares its own accepted ranges and its own cost per
+step, and `generate_video` enforces whatever the connected one declared. If it
+rejects a value, the message carries that model's real range — trust it over this
+table.
+
 Roughly **44 seconds of GPU time per denoise step**, on somebody's actual box:
 
 | steps | wall clock | what it is for |
@@ -101,6 +107,10 @@ generate_video(
   steps=8, seed=1101,
 )
 ```
+
+Not every model supports this. `generate_video` refuses with a plain message when
+the connected one does not, rather than sending a frame the engine would ignore —
+if you get that, join the shots with a crossfade (§5) instead of conditioning them.
 
 - `first_frame` alone means "continue from here" — the usual case.
 - `last_frame` alone means "arrive at this".

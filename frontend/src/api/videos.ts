@@ -8,7 +8,12 @@ import { useMemo } from "react"
 
 import { API_BASE, api } from "./client"
 import { useLaiosModels } from "./laios"
-import type { LaiosVideoInput, LaiosVideoJob, LaiosVideoStatus } from "./types"
+import type {
+  LaiosVideoInput,
+  LaiosVideoJob,
+  LaiosVideoStatus,
+  VideoCapability,
+} from "./types"
 
 // Statuses that will not change again. Everything else is worth polling.
 const TERMINAL: ReadonlySet<LaiosVideoStatus> = new Set([
@@ -32,6 +37,9 @@ export const videosApi = {
     api.get<LaiosVideoJob>(`/laios/connections/${cid}/videos/${jobId}`, signal),
   cancel: (cid: string, jobId: string) =>
     api.delete<LaiosVideoJob>(`/laios/connections/${cid}/videos/${jobId}`),
+  // Not connection-scoped: "can anything connected generate video".
+  capability: (signal?: AbortSignal) =>
+    api.get<VideoCapability>("/video/capability", signal),
 }
 
 /**
@@ -47,8 +55,25 @@ export function videoContentUrl(cid: string, jobId: string): string {
 
 export const videoKeys = {
   all: ["videos"] as const,
+  capability: ["videos", "capability"] as const,
   jobs: (cid: string) => ["videos", cid, "jobs"] as const,
   job: (cid: string, jobId: string) => ["videos", cid, "job", jobId] as const,
+}
+
+/**
+ * Whether any connected box can generate video, and which model would be used.
+ *
+ * Behind the same 5-minute resolver cache the agent build uses, so this is cheap;
+ * `enabled` lets a caller skip it entirely until a dialog is open.
+ */
+export function useVideoCapability(enabled = true) {
+  return useQuery({
+    queryKey: videoKeys.capability,
+    queryFn: ({ signal }) => videosApi.capability(signal),
+    enabled,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
 }
 
 /**

@@ -170,3 +170,10 @@ for module in (
     settings_api,
 ):
     app.include_router(module.router, prefix="/api")
+
+# Not in the loop above, which registers one ``router`` per module: this one is not
+# connection-scoped (see ``videos.capability_router``), and giving it its own prefix
+# keeps it out of ``/laios/connections/{cid}``'s path space — where a literal segment
+# would depend on router registration order to beat the parameterised route
+# (invariant 7 in AGENTS.md).
+app.include_router(videos.capability_router, prefix="/api")

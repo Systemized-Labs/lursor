@@ -49,6 +49,7 @@ import {
   parsePercentText,
 } from "@/components/compaction-fields"
 import { useMemoryHint } from "@/pages/settings/memory-hint"
+import { useVideoHint } from "@/pages/agents/video-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
 
@@ -87,7 +88,9 @@ const BOOLEAN_FIELDS: {
   {
     key: "include_video",
     label: "Video generation",
-    hint: "Generate clips on a connected laios box. Each render runs for minutes on that box's GPU.",
+    // The live hint underneath names the model (or why there is none); this is
+    // what shows while that resolves.
+    hint: "Generate clips on a connected laios box.",
   },
 ]
 
@@ -190,6 +193,8 @@ export function AgentFormDialog({
   // Where memory goes if the toggle below is on — an app-wide provider choice, so
   // it's read here rather than being part of the agent's own config.
   const memoryHint = useMemoryHint()
+  // Only resolved while the dialog is open: it reaches the box behind a cache.
+  const videoHint = useVideoHint(open)
 
   // Prompt-authoring UI state: an inline brief box, and a pending destructive
   // replace guarded by a confirm dialog when the field already has content.
@@ -590,6 +595,9 @@ export function AgentFormDialog({
                     ) : null}
                     {field.hint ? (
                       <p className="text-xs text-muted-foreground">{field.hint}</p>
+                    ) : null}
+                    {field.key === "include_video" && videoHint ? (
+                      <p className="text-xs text-muted-foreground">{videoHint}</p>
                     ) : null}
                   </div>
                   <Switch

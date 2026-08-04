@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -333,33 +333,51 @@ async def non_chat_served_names(conn: LaiosConnection) -> set[str]:
     return excluded
 
 
-async def video_served_names(conn: LaiosConnection) -> set[str]:
-    """Served names on this box that declare the ``video`` capability.
+class VideoServedModel(NamedTuple):
+    """One video-capable model a box is actually serving.
+
+    ``served_name`` is what the gateway routes on. ``profile`` is the recipe's
+    ``video_profile`` block when the operator declared one (see
+    ``docs/upstream/laios-video-profile.patch``) — the only thing that says *how* to
+    ask this model for a clip. ``model_id``/``recipe_id`` are identity, used to
+    recognise a model whose profile is missing.
+    """
+
+    served_name: str
+    model_id: str
+    recipe_id: str
+    profile: dict[str, Any] | None
+
+
+async def video_served_models(conn: LaiosConnection) -> list[VideoServedModel]:
+    """Video-capable models this box is serving, with their request profiles.
 
     The sibling of :func:`non_chat_served_names`, over the same control-plane
-    inventory join, and deliberately not the same question: that one asks "what
-    must the chat picker hide" and answers by the *absence* of ``chat``; this asks
-    "is there something here that can generate a clip" and answers by the
-    *presence* of ``video``.
+    inventory join, and deliberately not the same question: that one asks "what must
+    the chat picker hide" and answers by the *absence* of ``chat``; this asks "is
+    there something here we can drive" and answers by the *presence* of ``video``
+    plus a running instance.
 
     **Fails closed**, which is the opposite of its sibling and is the point. The
     picker hides on a guess and so must guess generously; a video tool built for a
     box we cannot classify would 400 on every call, and an absent tool is strictly
     better than one that always fails.
+
+    Sorted by served name so the caller's choice among several is stable.
     """
     try:
         async with _client(conn, timeout=httpx.Timeout(5.0)) as client:
             resp = await client.get("/v1/models")
         if resp.status_code >= 400:
-            return set()
+            return []
         inventory = resp.json()
     except (httpx.RequestError, ValueError):
-        return set()
+        return []
 
     if not isinstance(inventory, list):
-        return set()
+        return []
 
-    served: set[str] = set()
+    served: list[VideoServedModel] = []
     for model in inventory:
         if not isinstance(model, dict):
             continue
@@ -375,9 +393,18 @@ async def video_served_names(conn: LaiosConnection) -> set[str]:
         if not isinstance(instance, dict) or instance.get("status") != "running":
             continue
         name = instance.get("served_name") or model.get("served_model_name")
-        if isinstance(name, str) and name:
-            served.add(name)
-    return served
+        if not isinstance(name, str) or not name:
+            continue
+        profile = model.get("video_profile")
+        served.append(
+            VideoServedModel(
+                served_name=name,
+                model_id=str(model.get("model_id") or ""),
+                recipe_id=str(model.get("recipe_id") or model.get("id") or ""),
+                profile=profile if isinstance(profile, dict) else None,
+            )
+        )
+    return sorted(served, key=lambda m: m.served_name)
 
 
 # --- Connection CRUD ------------------------------------------------------------

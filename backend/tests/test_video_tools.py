@@ -603,3 +603,113 @@ async def test_a_frame_type_the_engine_cannot_read_names_the_remedy(box, monkeyp
 
     assert result.startswith("Error:")
     assert "-q:v 3 last.jpg" in result, "point at the JPEG recipe, not PNG"
+
+
+# --- a second model, driven from its declared profile ---------------------------
+
+
+def _generic_runtime(connection_id: str):
+    """A model declaring the generic SGLang video shape rather than H3's."""
+    from app.agents.video_runtime import (
+        SCHEMA_SGLANG_VIDEO,
+        VideoRuntime,
+        constraints_from_profile,
+    )
+
+    return VideoRuntime(
+        connection_id=connection_id,
+        connection_name="other-box",
+        model="wan-t2v",
+        request_schema=SCHEMA_SGLANG_VIDEO,
+        constraints=constraints_from_profile(
+            {
+                "request_schema": SCHEMA_SGLANG_VIDEO,
+                "aspect_ratios": ["16:9"],
+                "sizes": {"16:9": "1280 x 720"},
+                "duration_seconds": {"min": 1.0, "max": 5.0},
+                "num_inference_steps": {"min": 10, "max": 40},
+                "seconds_per_step": 3,
+                "keyframes": False,
+                "audio": False,
+            }
+        ),
+    )
+
+
+async def test_a_generic_model_gets_the_generic_body(box, monkeypatch):
+    """The bug this exists to prevent: H3's body on a model that ignores it.
+
+    SGLang's base ``lower_video_request_kwargs`` discards fields it does not know, so
+    sending ``target``/``task`` here would produce a 4-second clip at the model's own
+    default resolution — HTTP 200, minutes of GPU, wrong output. The knobs this
+    engine actually reads are ``seconds`` and ``size``.
+    """
+    runtime, workspace = box
+    captured: dict = {}
+    _gateway(monkeypatch, _lifecycle(captured))
+    generic = _generic_runtime(runtime.connection_id)
+    generate_video = _tools(generic, workspace)["generate_video"]
+
+    result = await generate_video("a drone shot over a reef", duration_seconds=5, steps=20)
+    assert not result.startswith("Error:"), result
+
+    body = captured["body"]
+    assert body["seconds"] == 5, "duration must ride the field this engine reads"
+    assert body["size"] == "1280x720"
+    assert body["num_inference_steps"] == 20
+    assert "target" not in body and "task" not in body and "conditions" not in body
+
+
+async def test_a_generic_models_own_ranges_are_enforced(box, monkeypatch):
+    """Its profile says 1-5s and 10-40 steps; H3's 4-15 and 4-50 must not apply."""
+    runtime, workspace = box
+
+    def never(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("an out-of-range request must not be submitted")
+
+    _gateway(monkeypatch, never)
+    generic = _generic_runtime(runtime.connection_id)
+    generate_video = _tools(generic, workspace)["generate_video"]
+
+    assert "[1, 5]" in await generate_video("x", duration_seconds=15)
+    assert "[10, 40]" in await generate_video("x", duration_seconds=4, steps=50)
+    # ...and a value H3 would have rejected is fine here.
+    _gateway(monkeypatch, _lifecycle({}))
+    assert not (await generate_video("x", duration_seconds=2, steps=10)).startswith("Error:")
+
+
+async def test_keyframes_are_refused_when_the_model_lacks_them(box, monkeypatch):
+    """Better an explicit refusal than a keyframe the engine silently drops."""
+    runtime, workspace = box
+    _gateway(monkeypatch, _lifecycle({}))
+    generic = _generic_runtime(runtime.connection_id)
+    generate_video = _tools(generic, workspace)["generate_video"]
+    (workspace / "frame.jpg").write_bytes(b"pretend jpeg")
+
+    # Valid knobs for this model, so the refusal is about the keyframe and nothing else.
+    result = await generate_video(
+        "continue", duration_seconds=5, steps=10, first_frame="frame.jpg"
+    )
+    assert result.startswith("Error:")
+    assert "does not support first/last-frame conditioning" in result
+
+
+async def test_a_generic_model_takes_a_first_frame_only(box, monkeypatch):
+    """The generic API has ``input_reference`` (image-to-video) and no last frame."""
+    from app.agents.video_runtime import with_constraints
+
+    base, workspace = box
+    captured: dict = {}
+    _gateway(monkeypatch, _lifecycle(captured))
+    runtime = with_constraints(_generic_runtime(base.connection_id), keyframes=True)
+    generate_video = _tools(runtime, workspace)["generate_video"]
+    (workspace / "frame.jpg").write_bytes(b"pretend jpeg")
+
+    ok = await generate_video("continue", duration_seconds=5, steps=10, first_frame="frame.jpg")
+    assert not ok.startswith("Error:"), ok
+    assert captured["body"]["input_reference"].startswith("data:image/jpeg;base64,")
+    assert "conditions" not in captured["body"]
+
+    refused = await generate_video("arrive", duration_seconds=5, steps=10, last_frame="frame.jpg")
+    assert refused.startswith("Error:")
+    assert "first frame only" in refused

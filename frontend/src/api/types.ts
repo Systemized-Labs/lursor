@@ -1275,6 +1275,25 @@ export interface LaiosVideoJob {
   updated_at: string
 }
 
+/**
+ * Whether anything connected can generate video, and what would be used.
+ *
+ * The `include_video` agent toggle is gated on a box actually serving a model the
+ * backend knows how to drive, so the editor states the outcome rather than leaving
+ * a checkbox that silently does nothing.
+ */
+export interface VideoCapability {
+  available: boolean
+  /** Served name of the model that would be used, when one resolves. */
+  model: string | null
+  connection_name: string | null
+  /** The request shape was inferred from the model's identity, not declared by its
+   *  recipe — the one case where the backend trusts a measurement. */
+  assumed: boolean
+  /** One sentence: which model, or why none. */
+  reason: string
+}
+
 /** The knobs the video page sends. Relayed to the engine unaltered. */
 export interface LaiosVideoInput {
   model: string
