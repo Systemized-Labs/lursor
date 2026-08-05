@@ -1,17 +1,9 @@
 import { useEffect, useMemo, useState } from "react"
 import { useTheme } from "next-themes"
-import { Plus, X } from "@phosphor-icons/react"
+import { CalendarBlank, Plus, X } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -50,19 +42,23 @@ const THEME_GROUPS: { label: string; mode: "light" | "dark" }[] = [
 
 /**
  * A tiny live swatch: real tokens rendered under the target theme's class, the
- * same trick the theme picker uses for its list rows.
+ * same trick the theme list uses for its rows.
+ *
+ * The theme's `background` is the dominant colour with `primary` as a pip
+ * inside. Leading with `primary` reads inverted — a light theme's primary is
+ * near-black, so the swatch for "Light" came out dark.
  */
 function ThemeDot({ value }: { value: string }) {
   return (
     <span className={cn(value, "inline-flex")}>
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-background">
-        <span className="h-4 w-2 bg-primary" />
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-border bg-background">
+        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
       </span>
     </span>
   )
 }
 
-/** The next slot boundary, phrased for the footer hint. */
+/** Recomputes the active/next slot as the clock moves. */
 function useNextChange(enabled: boolean, slots: ThemeScheduleSlot[]) {
   const [now, setNow] = useState(() => new Date())
 
@@ -83,12 +79,15 @@ function useNextChange(enabled: boolean, slots: ThemeScheduleSlot[]) {
 }
 
 /**
- * Theme cycling by time of day. The user builds a list of "at this time, use
- * this theme" slots — two of them is the classic light-by-day / dark-by-night
- * setup, more of them rotate through as many themes as they like. Application
- * is handled by {@link file://../../components/theme-scheduler.tsx}.
+ * The Schedule tab of the theme dialog: theme cycling by time of day. The user
+ * builds a list of "at this time, use this theme" slots — two of them is the
+ * classic light-by-day / dark-by-night setup, more of them rotate through as
+ * many themes as they like.
+ *
+ * Only editing lives here. Applying the schedule is the scheduler's job, see
+ * {@link file://../theme-scheduler.tsx}.
  */
-export function ThemeScheduleSection() {
+export function ThemeSchedulePanel() {
   const { schedule, setSchedule } = useThemeSchedule()
   const { override, clearOverride } = useThemeOverride()
   const { setTheme } = useTheme()
@@ -147,56 +146,65 @@ export function ThemeScheduleSection() {
     setSchedule((prev) => ({ ...prev, enabled }))
   }
 
+  const hasInvalidTime = schedule.slots.some((s) => parseTime(s.start) === null)
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Theme schedule</CardTitle>
-        <CardDescription>
-          Cycle themes by time of day — light in the morning, dark at night, or any
-          rotation you like.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-6">
-        <div className="flex items-start justify-between gap-4 sm:max-w-md">
-          <div className="grid gap-1">
-            <Label htmlFor="theme-schedule-enabled">Cycle themes automatically</Label>
-            <p className="text-xs text-muted-foreground">
-              Picking a theme by hand still works — it holds until the next scheduled
-              change.
-            </p>
-          </div>
-          <Switch
-            id="theme-schedule-enabled"
-            checked={schedule.enabled}
-            onCheckedChange={toggleEnabled}
-          />
+    <div className="space-y-4 p-4">
+      {/* Enable */}
+      <label
+        htmlFor="theme-schedule-enabled"
+        className="flex cursor-pointer items-start justify-between gap-4 rounded-lg border border-border bg-muted/30 p-3"
+      >
+        <span className="grid gap-1">
+          <span className="text-sm font-medium text-foreground">Cycle by time of day</span>
+          <span className="text-xs text-muted-foreground">
+            Switch themes automatically as the day goes on.
+          </span>
+        </span>
+        <Switch
+          id="theme-schedule-enabled"
+          checked={schedule.enabled}
+          onCheckedChange={toggleEnabled}
+        />
+      </label>
+
+      {!schedule.enabled ? (
+        <div className="flex flex-col items-center gap-2 px-6 py-8 text-center">
+          <CalendarBlank className="h-6 w-6 text-muted-foreground" />
+          <p className="text-sm text-foreground">No schedule running</p>
+          <p className="text-xs text-muted-foreground">
+            Turn cycling on to set light for the morning, dark for the evening, or any
+            rotation you like.
+          </p>
         </div>
-
-        {schedule.enabled && (
-          <>
-            <div className="grid gap-2">
-              <Label>Presets</Label>
-              <div className="flex flex-wrap gap-2">
-                {SCHEDULE_PRESETS.map((preset) => (
-                  <Button
-                    key={preset.id}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    title={preset.description}
-                    onClick={() => applyPreset(preset.id)}
-                  >
-                    {preset.label}
-                  </Button>
-                ))}
-              </div>
+      ) : (
+        <>
+          {/* Presets */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">Start from a preset</p>
+            <div className="flex flex-wrap gap-1.5">
+              {SCHEDULE_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  title={preset.description}
+                  onClick={() => applyPreset(preset.id)}
+                  className="rounded-full border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                >
+                  {preset.label}
+                </button>
+              ))}
             </div>
+          </div>
 
-            <div className="grid gap-2">
-              <Label>Schedule</Label>
-              <div className="grid gap-2">
-                {schedule.slots.map((slot) => (
-                  <div key={slot.id} className="flex items-center gap-2">
+          {/* Slots */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">Switch at</p>
+            <div className="space-y-1.5">
+              {schedule.slots.map((slot) => {
+                const isLive = active?.id === slot.id
+                return (
+                  <div key={slot.id} className="flex items-center gap-1.5">
                     <Input
                       type="time"
                       aria-label="Start time"
@@ -205,7 +213,7 @@ export function ThemeScheduleSection() {
                       onChange={(e) => updateSlot(slot.id, { start: e.target.value })}
                       onBlur={sortSlots}
                       className={cn(
-                        "h-9 w-[7.5rem] shrink-0",
+                        "h-9 w-[7.25rem] shrink-0 tabular-nums",
                         parseTime(slot.start) === null &&
                           "border-destructive/60 focus-visible:border-destructive/60",
                       )}
@@ -216,10 +224,13 @@ export function ThemeScheduleSection() {
                         updateSlot(slot.id, { theme })
                         // Editing the slot that's live right now should show up at
                         // once — unless a hand-picked theme is holding the floor.
-                        if (active?.id === slot.id && !override) setTheme(theme)
+                        if (isLive && !override) setTheme(theme)
                       }}
                     >
-                      <SelectTrigger className="h-9 min-w-0 flex-1" aria-label="Theme">
+                      <SelectTrigger
+                        className={cn("h-9 min-w-0 flex-1", isLive && "ring-1 ring-primary/40")}
+                        aria-label="Theme"
+                      >
                         <SelectValue placeholder="Select a theme" />
                       </SelectTrigger>
                       <SelectContent>
@@ -250,49 +261,42 @@ export function ThemeScheduleSection() {
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={addSlot}
-                  disabled={schedule.slots.length >= MAX_SCHEDULE_SLOTS}
-                >
-                  <Plus className="h-4 w-4" />
-                  Add time
-                </Button>
-                {schedule.slots.length >= MAX_SCHEDULE_SLOTS && (
-                  <span className="text-xs text-muted-foreground">
-                    Maximum of {MAX_SCHEDULE_SLOTS} entries.
-                  </span>
-                )}
-              </div>
-              {schedule.slots.some((s) => parseTime(s.start) === null) && (
-                <p className="text-xs text-destructive">
-                  Entries without a valid time are ignored.
-                </p>
-              )}
+                )
+              })}
             </div>
+            {hasInvalidTime && (
+              <p className="text-xs text-destructive">
+                Entries without a valid time are ignored.
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={addSlot}
+              disabled={schedule.slots.length >= MAX_SCHEDULE_SLOTS}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-ring/40 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {schedule.slots.length >= MAX_SCHEDULE_SLOTS
+                ? `Maximum of ${MAX_SCHEDULE_SLOTS} entries`
+                : "Add a time"}
+            </button>
+          </div>
 
+          {/* Status */}
+          <div className="rounded-lg bg-muted/40 px-3 py-2">
             {override ? (
-              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                <p className="text-xs text-muted-foreground">
-                  Holding <span className="text-foreground">{themeLabel(override.theme)}</span>{" "}
-                  because you picked it by hand — the schedule takes over again at{" "}
-                  {clockLabel(override.expiresAt)}.
-                </p>
-                <Button
+              <p className="text-xs text-muted-foreground">
+                Holding <span className="text-foreground">{themeLabel(override.theme)}</span>{" "}
+                because you picked it by hand — the schedule takes over again at{" "}
+                {clockLabel(override.expiresAt)}.{" "}
+                <button
                   type="button"
-                  variant="link"
-                  size="sm"
-                  className="h-auto p-0 text-xs"
                   onClick={clearOverride}
+                  className="font-medium text-primary underline-offset-4 hover:underline"
                 >
                   Resume now
-                </Button>
-              </div>
+                </button>
+              </p>
             ) : (
               <p className="text-xs text-muted-foreground">
                 {active ? (
@@ -313,10 +317,10 @@ export function ThemeScheduleSection() {
                 )}
               </p>
             )}
-          </>
-        )}
-      </CardContent>
-    </Card>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 
