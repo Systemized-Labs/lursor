@@ -89,17 +89,42 @@ Note there is no `--trust` flag: it does not exist in Homebrew 6.0.13
 
 ## Cutting a release
 
-```bash
-# 1. Bump the version (this is what names every artifact).
-#    frontend/package.json -> "version": "0.2.0"
-git commit -am "release: v0.2.0"
+Bump the version and merge it to main. That is the whole trigger — no tagging
+step.
 
-# 2. Tag and push. The tag drives the whole pipeline.
-git tag v0.2.0
-git push origin main --tags
+```bash
+# Bump all three in lockstep (the frontend one names every artifact):
+#   frontend/package.json  -> "version": "0.2.0"
+#   backend/pyproject.toml -> version = "0.2.0"
+#   backend/uv.lock        -> version = "0.2.0" under [[package]] lursor-backend
+git commit -am "chore: version bump"
+# then merge to main as usual
 ```
 
-The `release` workflow then runs `build` per platform:
+The `release` workflow's `gate` job runs on every push to main and compares
+`frontend/package.json` against the tags on the remote. No tag for that version
+yet → it releases, and `publish` creates `v0.2.0` at the merge commit. A tag
+already there → the push did not bump the version, `gate` reports so and stops;
+no build runs. So merges cost one cheap job unless they carry a bump, and
+re-pushing an already-released commit cannot produce a second release.
+
+The tag is deliberately created by `publish`, at the end, rather than pushed
+onto main by an earlier job. Two reasons, one of them fatal to the alternative:
+
+- **A tag pushed with `GITHUB_TOKEN` does not start a workflow run.** GitHub
+  suppresses those events to prevent recursion. An auto-tag job would push
+  `v0.2.0` and nothing would ever build it; making it work needs a PAT with
+  `contents:write`, i.e. a long-lived credential that can push to main.
+- Tagging last means a tag only ever exists for a build that succeeded. A tag
+  with no release behind it is the state that `install.sh` and
+  `electron-updater` handle worst.
+
+Pushing a `v*` tag by hand still works and takes the identical path — `gate`
+just reads the version off the tag instead, and still fails in seconds if the tag
+and `frontend/package.json` disagree. Useful for re-releasing a commit that is no
+longer the head of main.
+
+The `build` job then runs per platform:
 
 1. Freezes the backend (`backend/scripts/build_bundle.sh`) — a standalone CPython
    with dependencies installed **from `uv.lock`**, so the bundle matches what was
@@ -126,9 +151,11 @@ concurrent uploads (even within a single job) each made their own. A build that
 fails on one platform would likewise have left a half-populated release that
 looked installable. Do not move publishing back into the matrix.
 
-**A tag push ships.** The release is published immediately, with no manual step —
-so tag only when you intend to release. The asset check above is the gate, and it
-runs on every release rather than relying on someone remembering to look.
+**A merged version bump ships.** The release is published immediately, with no
+manual step — so bump the version only when you intend to release, and keep the
+bump in its own PR if the rest of the branch is not ready to ship. The asset
+check above is the gate, and it runs on every release rather than relying on
+someone remembering to look.
 
 This used to be a draft requiring `gh release edit <tag> --draft=false`, and that
 step was missed repeatedly: v0.1.1, v0.1.3, and v0.1.4 all sat drafted and
@@ -152,10 +179,10 @@ workflow now passes `--latest` explicitly for this reason.
 
 `workflow_dispatch` runs the build jobs without publishing — use it to test a
 pipeline change without burning a version number. This holds even when you
-dispatch against a tag: `publish` and `homebrew` are gated on
-`github.event_name == 'push'`, not merely on the ref. They were previously
-ref-gated only, so dispatching a tag re-ran publishing and created a second
-release for it — the cause of the duplicate v0.1.4 drafts.
+dispatch against a tag: `gate` only sets `publish=true` for a `push` event, not
+merely on the ref. Publishing was previously ref-gated only, so dispatching a tag
+re-ran it and created a second release — the cause of the duplicate v0.1.4
+drafts.
 
 Re-running a failed `publish` job is safe: it re-uploads assets with `--clobber`
 and publishes the existing release rather than failing on "already exists".
