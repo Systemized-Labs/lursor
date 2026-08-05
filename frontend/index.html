@@ -73,6 +73,49 @@
         } catch (e) {}
       })()
     </script>
+    <!-- Resolve the time-of-day theme schedule before next-themes' own no-flash
+         script reads localStorage, so a scheduled theme is already in place on
+         first paint. Keep in sync with src/lib/theme-schedule.ts. -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem("lursor-theme-schedule")
+          if (!raw) return
+          var schedule = JSON.parse(raw)
+          if (!schedule || schedule.enabled !== true || !Array.isArray(schedule.slots)) return
+          function minutesOf(value) {
+            var m = /^(\d{1,2}):(\d{2})$/.exec(String(value).trim())
+            if (!m) return null
+            var h = Number(m[1])
+            var min = Number(m[2])
+            if (h > 23 || min > 59) return null
+            return h * 60 + min
+          }
+          var slots = []
+          for (var i = 0; i < schedule.slots.length; i++) {
+            var slot = schedule.slots[i]
+            if (!slot || typeof slot.theme !== "string") continue
+            var at = minutesOf(slot.start)
+            if (at === null) continue
+            slots.push({ at: at, theme: slot.theme })
+          }
+          if (!slots.length) return
+          slots.sort(function (a, b) {
+            return a.at - b.at
+          })
+          var d = new Date()
+          var now = d.getHours() * 60 + d.getMinutes()
+          // Before the earliest slot, the schedule wraps to the previous day's last.
+          var active = slots[slots.length - 1]
+          for (var j = 0; j < slots.length; j++) {
+            if (slots[j].at <= now) active = slots[j]
+            else break
+          }
+          // next-themes' default storage key; it applies the class from here.
+          localStorage.setItem("theme", active.theme)
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>
