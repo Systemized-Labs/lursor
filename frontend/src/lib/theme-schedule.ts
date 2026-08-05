@@ -254,3 +254,74 @@ export function writeThemeSchedule(schedule: ThemeSchedule): void {
   }
   window.dispatchEvent(new CustomEvent<ThemeSchedule>(THEME_SCHEDULE_EVENT, { detail: schedule }))
 }
+
+// ── Manual override ─────────────────────────────────────────────────────────
+/**
+ * A schedule must never take the theme away from someone who just picked one.
+ * Choosing a theme by hand while the schedule is on parks an override that
+ * holds until the schedule's *next* boundary — the macOS auto-appearance rule.
+ *
+ * It has to be persisted rather than kept in memory: the pre-paint script would
+ * otherwise stomp the hand-picked theme on the next reload, and a schedule edit
+ * would revert it. Expiry is stored as an absolute timestamp so a reload (or a
+ * few hours asleep) resolves it correctly without any elapsed-time bookkeeping.
+ */
+
+export const THEME_OVERRIDE_STORAGE_KEY = "lursor-theme-override"
+
+/** Fired on `window` when the override is set or cleared; `detail` is the new value. */
+export const THEME_OVERRIDE_EVENT = "lursor:theme-override"
+
+export interface ThemeOverride {
+  theme: string
+  /** Epoch ms at which the schedule takes back control. */
+  expiresAt: number
+}
+
+/** The live override, or `null` if there is none or it has lapsed. */
+export function readThemeOverride(now: Date = new Date()): ThemeOverride | null {
+  if (typeof localStorage === "undefined") return null
+  try {
+    const stored = localStorage.getItem(THEME_OVERRIDE_STORAGE_KEY)
+    if (!stored) return null
+    const raw: unknown = JSON.parse(stored)
+    if (!isRecord(raw)) return null
+    const theme = typeof raw.theme === "string" ? raw.theme : ""
+    const expiresAt = typeof raw.expiresAt === "number" ? raw.expiresAt : 0
+    if (!THEME_NAMES.includes(theme) || !Number.isFinite(expiresAt)) return null
+    if (expiresAt <= now.getTime()) return null
+    return { theme, expiresAt }
+  } catch {
+    return null
+  }
+}
+
+/** Persist an override, or clear it by passing `null`. */
+export function writeThemeOverride(override: ThemeOverride | null): void {
+  if (typeof localStorage === "undefined") return
+  try {
+    if (override) {
+      localStorage.setItem(THEME_OVERRIDE_STORAGE_KEY, JSON.stringify(override))
+    } else {
+      localStorage.removeItem(THEME_OVERRIDE_STORAGE_KEY)
+    }
+  } catch {
+    // Storage blocked — the schedule simply reasserts itself sooner.
+  }
+  window.dispatchEvent(
+    new CustomEvent<ThemeOverride | null>(THEME_OVERRIDE_EVENT, { detail: override }),
+  )
+}
+
+/**
+ * Record a hand-picked theme. A no-op unless a schedule is actually running —
+ * with no schedule there is nothing to override, and next-themes already
+ * remembers the choice on its own.
+ */
+export function recordManualTheme(theme: string, now: Date = new Date()): void {
+  const schedule = readThemeSchedule()
+  if (!schedule.enabled) return
+  const boundary = nextChangeAt(schedule, now)
+  if (!boundary) return
+  writeThemeOverride({ theme, expiresAt: boundary.at.getTime() })
+}

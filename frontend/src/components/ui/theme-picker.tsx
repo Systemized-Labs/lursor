@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTheme } from 'next-themes'
 import { CaretUpDown, Check, Sun, Moon } from '@phosphor-icons/react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { recordManualTheme } from '@/lib/theme-schedule'
 import { THEME_OPTIONS, type ThemeOption } from '@/lib/themes'
 import { cn } from '@/lib/utils'
 
@@ -67,9 +68,19 @@ function ListSwatch({ value }: { value: string }) {
 }
 
 export function ThemePicker({ trigger }: { trigger?: (open: () => void) => React.ReactNode }) {
-  const { theme, setTheme } = useTheme()
+  const { theme, setTheme: applyTheme } = useTheme()
   const [open, setOpen] = useState(false)
   const [modeFilter, setModeFilter] = useState<'light' | 'dark'>(systemModeOrDark)
+
+  // Every selection here is a deliberate human choice, so it also parks an
+  // override that holds a running theme schedule off until its next boundary.
+  const setTheme = useCallback(
+    (value: string) => {
+      applyTheme(value)
+      recordManualTheme(value)
+    },
+    [applyTheme],
+  )
 
   const active: ThemeOption | undefined = THEME_OPTIONS.find((t) => t.value === theme)
 

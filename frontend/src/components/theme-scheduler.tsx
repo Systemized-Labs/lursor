@@ -1,21 +1,30 @@
 import { useEffect, useRef } from "react"
 import { useTheme } from "next-themes"
 
+import { useThemeOverride } from "@/hooks/use-theme-override"
 import { useThemeSchedule } from "@/hooks/use-theme-schedule"
-import { activeSlotAt, nextBoundaryAt } from "@/lib/theme-schedule"
+import {
+  activeSlotAt,
+  nextBoundaryAt,
+  readThemeOverride,
+  THEME_OVERRIDE_STORAGE_KEY,
+  writeThemeOverride,
+} from "@/lib/theme-schedule"
 
 /**
  * Headless driver for the time-of-day theme schedule. Renders nothing; it just
  * calls next-themes' `setTheme` when the active slot changes.
  *
- * Deliberately *not* a tight leash: within a slot the user stays free to pick
- * any theme by hand, and that choice survives until the next boundary (the
- * macOS auto-appearance behaviour). Editing the schedule re-applies immediately
- * so settings changes are visible as you make them.
+ * Deliberately not a tight leash: a theme the user picked by hand parks an
+ * override (see `recordManualTheme`) that this loop refuses to overrule until
+ * the next boundary. The schedule is a default, never a lock.
  */
 export function ThemeScheduler() {
   const { setTheme } = useTheme()
   const { schedule } = useThemeSchedule()
+  // Only used to re-run the effect when the override is set or cleared
+  // elsewhere (a hand-picked theme, or "Resume schedule" in settings).
+  const { override } = useThemeOverride()
   const appliedSlotId = useRef<string | null>(null)
 
   useEffect(() => {
@@ -23,7 +32,7 @@ export function ThemeScheduler() {
       appliedSlotId.current = null
       return
     }
-    // The schedule object changed (config edit, or another tab) — force a pass.
+    // The schedule or override changed — force a fresh pass.
     appliedSlotId.current = null
 
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -32,6 +41,19 @@ export function ThemeScheduler() {
       // `tick` is also called ad hoc on wake — never leave a second chain running.
       if (timer) clearTimeout(timer)
       const now = new Date()
+
+      // A live hand-picked theme wins outright. Re-read rather than closing over
+      // the value: this loop outlives any single render.
+      const held = readThemeOverride(now)
+      if (held) {
+        appliedSlotId.current = null
+        const delay = Math.max(1_000, Math.min(held.expiresAt - now.getTime() + 500, 60_000))
+        timer = setTimeout(tick, delay)
+        return
+      }
+      // Lapsed — drop the record so the UI stops advertising an override.
+      if (localStorage.getItem(THEME_OVERRIDE_STORAGE_KEY)) writeThemeOverride(null)
+
       const slot = activeSlotAt(schedule, now)
       if (slot && slot.id !== appliedSlotId.current) {
         appliedSlotId.current = slot.id
@@ -59,7 +81,7 @@ export function ThemeScheduler() {
       document.removeEventListener("visibilitychange", onWake)
       window.removeEventListener("focus", onWake)
     }
-  }, [schedule, setTheme])
+  }, [schedule, override, setTheme])
 
   return null
 }

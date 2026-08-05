@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { useThemeOverride } from "@/hooks/use-theme-override"
 import { useThemeSchedule } from "@/hooks/use-theme-schedule"
 import {
   activeSlotAt,
@@ -89,6 +90,7 @@ function useNextChange(enabled: boolean, slots: ThemeScheduleSlot[]) {
  */
 export function ThemeScheduleSection() {
   const { schedule, setSchedule } = useThemeSchedule()
+  const { override, clearOverride } = useThemeOverride()
   const { setTheme } = useTheme()
   const { active, next } = useNextChange(schedule.enabled, schedule.slots)
 
@@ -134,7 +136,14 @@ export function ThemeScheduleSection() {
     setSchedule((prev) => ({ ...prev, slots: slotsFromPreset(preset) }))
   }
 
+  /**
+   * Editing the schedule leaves a hand-picked theme alone — it would be jarring
+   * to lose the theme you are looking at because you nudged a time. Flipping the
+   * feature itself is different: it's an explicit "take over" / "stop", so any
+   * held override goes with it.
+   */
   function toggleEnabled(enabled: boolean) {
+    clearOverride()
     setSchedule((prev) => ({ ...prev, enabled }))
   }
 
@@ -205,8 +214,9 @@ export function ThemeScheduleSection() {
                       value={slot.theme}
                       onValueChange={(theme) => {
                         updateSlot(slot.id, { theme })
-                        // Editing the slot that's live right now should show up at once.
-                        if (active?.id === slot.id) setTheme(theme)
+                        // Editing the slot that's live right now should show up at
+                        // once — unless a hand-picked theme is holding the floor.
+                        if (active?.id === slot.id && !override) setTheme(theme)
                       }}
                     >
                       <SelectTrigger className="h-9 min-w-0 flex-1" aria-label="Theme">
@@ -266,24 +276,43 @@ export function ThemeScheduleSection() {
               )}
             </div>
 
-            <p className="text-xs text-muted-foreground">
-              {active ? (
-                <>
-                  Now using <span className="text-foreground">{themeLabel(active.theme)}</span>
-                  {next ? (
-                    <>
-                      {" "}
-                      until {formatTimeLabel(next.start)}, then{" "}
-                      <span className="text-foreground">{themeLabel(next.theme)}</span>.
-                    </>
-                  ) : (
-                    "."
-                  )}
-                </>
-              ) : (
-                "Add at least one entry with a valid time to start cycling."
-              )}
-            </p>
+            {override ? (
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <p className="text-xs text-muted-foreground">
+                  Holding <span className="text-foreground">{themeLabel(override.theme)}</span>{" "}
+                  because you picked it by hand — the schedule takes over again at{" "}
+                  {clockLabel(override.expiresAt)}.
+                </p>
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs"
+                  onClick={clearOverride}
+                >
+                  Resume now
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {active ? (
+                  <>
+                    Now using <span className="text-foreground">{themeLabel(active.theme)}</span>
+                    {next ? (
+                      <>
+                        {" "}
+                        until {formatTimeLabel(next.start)}, then{" "}
+                        <span className="text-foreground">{themeLabel(next.theme)}</span>.
+                      </>
+                    ) : (
+                      "."
+                    )}
+                  </>
+                ) : (
+                  "Add at least one entry with a valid time to start cycling."
+                )}
+              </p>
+            )}
           </>
         )}
       </CardContent>
@@ -293,4 +322,12 @@ export function ThemeScheduleSection() {
 
 function themeLabel(value: string): string {
   return THEME_OPTIONS.find((t) => t.value === value)?.label ?? value
+}
+
+/** Epoch ms → a friendly `7:00 PM`. */
+function clockLabel(epochMs: number): string {
+  return new Date(epochMs).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  })
 }

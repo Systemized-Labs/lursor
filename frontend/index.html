@@ -79,6 +79,13 @@
     <script>
       (function () {
         try {
+          // A theme the user picked by hand outranks the schedule until the
+          // boundary it was parked against; leave next-themes' value alone.
+          var held = localStorage.getItem("lursor-theme-override")
+          if (held) {
+            var parsedHold = JSON.parse(held)
+            if (parsedHold && parsedHold.expiresAt > Date.now()) return
+          }
           var raw = localStorage.getItem("lursor-theme-schedule")
           if (!raw) return
           var schedule = JSON.parse(raw)
