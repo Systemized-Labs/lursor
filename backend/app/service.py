@@ -131,6 +131,35 @@ def ensure_token(*, rotate: bool = False) -> str:
     return token
 
 
+def migrate_checkout_database(workdir: Path, data_dir: Path) -> Path | None:
+    """Move a database left inside the checkout into the data directory.
+
+    Early installs ran without ``LURSOR_DATA_DIR``, so the database defaulted to
+    ``<backend>/lursor.db`` — inside the tree the installer ``git reset --hard``s and
+    that a user may reasonably re-clone or move. This relocates it once, on the next
+    install, rather than letting the service quietly come up on an empty database and
+    look like every thread was lost.
+
+    Returns the new path when something moved, else None. Never overwrites a database
+    already in the data directory: if both exist the one already in the right place is
+    the live one, and clobbering it would be the very data loss this prevents.
+    """
+    stale = workdir / "lursor.db"
+    target = data_dir / "lursor.db"
+    if not stale.exists() or target.exists():
+        return None
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    stale.replace(target)
+    # SQLite's WAL and shared-memory files belong with it; leaving them behind can
+    # strand committed transactions that were still only in the -wal.
+    for suffix in ("-wal", "-shm"):
+        sidecar = stale.with_name(stale.name + suffix)
+        if sidecar.exists():
+            sidecar.replace(target.with_name(target.name + suffix))
+    return target
+
+
 def write_env_file(token: str) -> Path:
     """Put the token in a file systemd reads, rather than in the unit itself.
 
@@ -149,7 +178,9 @@ def write_env_file(token: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def render_systemd_unit(uvicorn: Path, workdir: Path, env: Path, host: str, port: int) -> str:
+def render_systemd_unit(
+    uvicorn: Path, workdir: Path, env: Path, host: str, port: int, data_dir: Path
+) -> str:
     return f"""\
 [Unit]
 Description=Lursor backend (agent harness API)
@@ -165,6 +196,11 @@ WorkingDirectory={workdir}
 ExecStart={uvicorn} app.main:app --host {host} --port {port}
 EnvironmentFile={env}
 Environment=PYTHONUNBUFFERED=1
+# Keep every byte of state out of the checkout. Without this the database defaults to
+# sitting next to the code (``config.py``: ``BACKEND_DIR / 'lursor.db'``), and the
+# checkout is disposable by design — the installer runs `git reset --hard` on it, and a
+# re-clone or a moved directory would take your threads, agents and schedules with it.
+Environment=LURSOR_DATA_DIR={data_dir}
 
 Restart=always
 RestartSec=3
@@ -185,7 +221,7 @@ WantedBy=default.target
 
 
 def render_launchd_plist(
-    uvicorn: Path, workdir: Path, token: str, host: str, port: int
+    uvicorn: Path, workdir: Path, token: str, host: str, port: int, data_dir: Path
 ) -> bytes:
     """A LaunchAgent for macOS.
 
@@ -206,6 +242,8 @@ def render_launchd_plist(
         "EnvironmentVariables": {
             "LURSOR_AUTH_TOKEN": token,
             "PYTHONUNBUFFERED": "1",
+            # See the systemd unit: state must not live in the disposable checkout.
+            "LURSOR_DATA_DIR": str(data_dir),
         },
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -282,14 +320,24 @@ def cmd_install(args: argparse.Namespace) -> int:
         )
 
     uvicorn, workdir = resolve_paths()
+    # Whether this machine is getting its first token matters to the person reading the
+    # output: re-running the installer prints an existing token, and without being told
+    # so it looks like it just changed and invalidated their saved connection.
+    had_token = token_file().exists()
     token = ensure_token(rotate=args.rotate_token)
+    created = args.rotate_token or not had_token
+    data_dir = config_dir()
+
+    moved = migrate_checkout_database(workdir, data_dir)
+    if moved:
+        print(f"moved your database out of the checkout to {moved}")
 
     if _is_linux():
         env = write_env_file(token)
         unit_path = systemd_unit_path()
         unit_path.parent.mkdir(parents=True, exist_ok=True)
         unit_path.write_text(
-            render_systemd_unit(uvicorn, workdir, env, args.host, args.port)
+            render_systemd_unit(uvicorn, workdir, env, args.host, args.port, data_dir)
         )
         print(f"wrote {unit_path}")
 
@@ -312,7 +360,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         plist_path = launchd_plist_path()
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_bytes(
-            render_launchd_plist(uvicorn, workdir, token, args.host, args.port)
+            render_launchd_plist(
+                uvicorn, workdir, token, args.host, args.port, data_dir
+            )
         )
         plist_path.chmod(0o600)
         print(f"wrote {plist_path}")
@@ -327,13 +377,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "— see docs/REMOTE.md."
         )
 
-    print(f"\nListening on http://{args.host}:{args.port}")
-    print(f"Token: {token}")
-    print(
-        "\nAdd it in the desktop app under Switch Connection. The token grants a shell "
-        "on this host — pair it with TLS or an SSH tunnel, never plain http over a "
-        "network. See docs/REMOTE.md."
-    )
+    print_summary(args.host, args.port, token, created=created)
     return 0
 
 
@@ -412,6 +456,44 @@ def cmd_token(args: argparse.Namespace) -> int:
         )
     print(path.read_text().strip())
     return 0
+
+
+def print_summary(host: str, port: int, token: str, *, created: bool) -> None:
+    """The last thing the installer prints: the two values needed to pair a client.
+
+    Framed and last on purpose. The install scrolls a few hundred lines of dependency
+    resolution past before reaching here, and the token is a 43-character random string
+    someone has to select with a mouse — burying it in a paragraph is how you end up
+    running `lursor-service token` to find it again. Nothing may print after this.
+
+    Also states whether the token is new. Re-running the installer prints the *existing*
+    token, and silence there reads as "it changed", which would send someone off to
+    update a connection that was working fine.
+    """
+    rule = "-" * 68
+    origin = f"http://{host}:{port}"
+    provenance = (
+        "newly generated for this machine"
+        if created
+        else "existing — unchanged, saved clients keep working"
+    )
+
+    print()
+    print(rule)
+    print("  Lursor backend is running.")
+    print()
+    print(f"    Address    {origin}")
+    print(f"    Token      {token}")
+    print(f"               ({provenance})")
+    print()
+    print("  Add both in the desktop app: Switch Connection -> Add a remote")
+    print("  backend. To print the token again later:")
+    print()
+    print("    uv run lursor-service token")
+    print()
+    print("  The token grants a shell on this host. Put TLS or an SSH tunnel in")
+    print("  front of it; never send it over plain http across a network.")
+    print(rule)
 
 
 def build_parser() -> argparse.ArgumentParser:

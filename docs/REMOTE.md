@@ -27,7 +27,13 @@ reboot and a crash:
 curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install-server.sh | sh
 ```
 
-It prints the token at the end — that is what the desktop app authenticates with.
+It ends with a framed block holding the two values you need — the address and the
+token — so they are the last thing on screen and can be copied straight out. The token
+is 32 bytes of CSPRNG output generated on that machine: there is no default and no
+shared value anywhere in the tree, so every backend has its own.
+
+Re-running the installer keeps that token and says so, rather than looking like it
+changed. `--rotate-token` replaces it on purpose, which logs out every saved client.
 Re-run the same command to upgrade: it pulls, re-syncs and restarts the service,
 keeping your database, workspaces and token.
 
@@ -58,6 +64,32 @@ this tool installs.
 
 Logs: `journalctl --user -u lursor-backend -f` on Linux,
 `~/Library/Logs/lursor-backend.log` on macOS.
+
+### Where your data lives
+
+Everything that matters is under **`~/.lursor`**, and nothing that matters is in the
+checkout:
+
+```
+~/.lursor/lursor.db     threads, agents, schedules, settings
+~/.lursor/workspaces/   workspaces created without an explicit path
+~/.lursor/skills/       the skills catalog
+~/.lursor/media/        chat attachments
+~/.lursor/token         the bearer token
+~/.lursor/.env          optional: provider keys and other settings
+```
+
+That separation is the point. `~/lursor` is a git checkout the installer owns — it
+runs `git reset --hard` on every upgrade, and you should be able to delete or re-clone
+it without a second thought. Anything you leave inside it is one upgrade away from
+being someone else's problem, which is why the service sets `LURSOR_DATA_DIR`.
+
+Provider keys have two homes, and `backend/.env` is not one of them on a server:
+
+- The **Settings page** in the app, which stores them in the database. Easiest, and
+  they follow the database.
+- **`~/.lursor/.env`** (`chmod 600`), read in addition to `backend/.env`. Use this if
+  you'd rather configure the box from the shell than from the UI.
 
 ### What supervision does and does not give you
 

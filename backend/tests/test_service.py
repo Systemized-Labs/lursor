@@ -36,6 +36,7 @@ def test_systemd_unit_shape() -> None:
         Path("/home/jon/.lursor/service.env"),
         "127.0.0.1",
         8791,
+        Path("/home/jon/.lursor"),
     )
     assert "ExecStart=/opt/lursor/backend/.venv/bin/uvicorn app.main:app" in unit
     assert "--host 127.0.0.1 --port 8791" in unit
@@ -49,7 +50,7 @@ def test_systemd_unit_shape() -> None:
 def test_systemd_unit_never_embeds_the_token() -> None:
     """The token belongs in the EnvironmentFile, not somewhere `systemctl cat` shows it."""
     unit = service.render_systemd_unit(
-        Path("/v/bin/uvicorn"), Path("/w"), Path("/e.env"), "127.0.0.1", 8791
+        Path("/v/bin/uvicorn"), Path("/w"), Path("/e.env"), "127.0.0.1", 8791, Path("/d")
     )
     assert "LURSOR_AUTH_TOKEN" not in unit
 
@@ -58,7 +59,7 @@ def test_systemd_unit_kills_the_control_group() -> None:
     """Agent runs spawn dev servers; a restart that orphans them leaves the ports the
     next run wants held by a process nobody owns."""
     unit = service.render_systemd_unit(
-        Path("/v/bin/uvicorn"), Path("/w"), Path("/e.env"), "127.0.0.1", 8791
+        Path("/v/bin/uvicorn"), Path("/w"), Path("/e.env"), "127.0.0.1", 8791, Path("/d")
     )
     assert "KillMode=control-group" in unit
 
@@ -66,7 +67,7 @@ def test_systemd_unit_kills_the_control_group() -> None:
 @pytest.mark.parametrize("host,port", [("127.0.0.1", 8791), ("0.0.0.0", 9000)])
 def test_systemd_unit_honours_bind_arguments(host: str, port: int) -> None:
     unit = service.render_systemd_unit(
-        Path("/v/bin/uvicorn"), Path("/w"), Path("/e.env"), host, port
+        Path("/v/bin/uvicorn"), Path("/w"), Path("/e.env"), host, port, Path("/d")
     )
     assert f"--host {host} --port {port}" in unit
 
@@ -81,6 +82,7 @@ def test_launchd_plist_shape(home: Path) -> None:
         "tok-abc",
         "127.0.0.1",
         8791,
+        Path("/home/jon/.lursor"),
     )
     job = plistlib.loads(raw)
     assert job["Label"] == service.LAUNCHD_LABEL
@@ -100,7 +102,7 @@ def test_launchd_plist_is_valid_plist(home: Path) -> None:
     """Rendered through plistlib rather than string-formatted, so a token containing
     XML-special characters cannot corrupt the file."""
     raw = service.render_launchd_plist(
-        Path("/v/bin/uvicorn"), Path("/w"), "tok&<>\"'", "127.0.0.1", 8791
+        Path("/v/bin/uvicorn"), Path("/w"), "tok&<>\"'", "127.0.0.1", 8791, Path("/d")
     )
     assert plistlib.loads(raw)["EnvironmentVariables"]["LURSOR_AUTH_TOKEN"] == "tok&<>\"'"
 
@@ -191,3 +193,126 @@ def test_token_command_prints_the_token(home: Path, capsys) -> None:
     token = service.ensure_token()
     assert service.main(["token"]) == 0
     assert capsys.readouterr().out.strip() == token
+
+
+# --- state location (regression) -------------------------------------------
+
+
+def test_systemd_unit_keeps_state_out_of_the_checkout() -> None:
+    """Regression: the first shipped version omitted this, so the database defaulted
+    to ``<backend>/lursor.db`` — inside the tree the installer resets and a user may
+    re-clone. Moving that directory lost every thread, agent and schedule."""
+    unit = service.render_systemd_unit(
+        Path("/v/bin/uvicorn"),
+        Path("/home/jon/lursor/backend"),
+        Path("/e.env"),
+        "127.0.0.1",
+        8791,
+        Path("/home/jon/.lursor"),
+    )
+    assert "Environment=LURSOR_DATA_DIR=/home/jon/.lursor" in unit
+
+
+def test_launchd_plist_keeps_state_out_of_the_checkout(home: Path) -> None:
+    job = plistlib.loads(
+        service.render_launchd_plist(
+            Path("/v/bin/uvicorn"), Path("/w"), "tok", "127.0.0.1", 8791, Path("/d")
+        )
+    )
+    assert job["EnvironmentVariables"]["LURSOR_DATA_DIR"] == "/d"
+
+
+# --- database migration ----------------------------------------------------
+
+
+def test_migration_moves_a_database_out_of_the_checkout(tmp_path) -> None:
+    workdir, data = tmp_path / "backend", tmp_path / "data"
+    workdir.mkdir()
+    (workdir / "lursor.db").write_text("rows")
+    (workdir / "lursor.db-wal").write_text("pending")
+    (workdir / "lursor.db-shm").write_text("shm")
+
+    moved = service.migrate_checkout_database(workdir, data)
+
+    assert moved == data / "lursor.db"
+    assert (data / "lursor.db").read_text() == "rows"
+    # The -wal can hold committed transactions; leaving it behind strands them.
+    assert (data / "lursor.db-wal").read_text() == "pending"
+    assert (data / "lursor.db-shm").exists()
+    assert not (workdir / "lursor.db").exists()
+
+
+def test_migration_never_clobbers_the_live_database(tmp_path) -> None:
+    """If both exist, the one already in the data directory is the live one."""
+    workdir, data = tmp_path / "backend", tmp_path / "data"
+    workdir.mkdir()
+    data.mkdir()
+    (workdir / "lursor.db").write_text("stale")
+    (data / "lursor.db").write_text("live")
+
+    assert service.migrate_checkout_database(workdir, data) is None
+    assert (data / "lursor.db").read_text() == "live"
+    assert (workdir / "lursor.db").read_text() == "stale"
+
+
+def test_migration_is_a_noop_on_a_fresh_install(tmp_path) -> None:
+    workdir, data = tmp_path / "backend", tmp_path / "data"
+    workdir.mkdir()
+    assert service.migrate_checkout_database(workdir, data) is None
+
+
+# --- the pairing summary ---------------------------------------------------
+
+
+def test_summary_contains_the_address_and_token(capsys) -> None:
+    service.print_summary("127.0.0.1", 8791, "tok-xyz", created=True)
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:8791" in out
+    assert "tok-xyz" in out
+
+
+def test_summary_says_when_a_token_is_new(capsys) -> None:
+    service.print_summary("127.0.0.1", 8791, "tok", created=True)
+    assert "newly generated" in capsys.readouterr().out
+
+
+def test_summary_says_when_a_token_is_reused(capsys) -> None:
+    """Re-running the installer must not look like the token just changed."""
+    service.print_summary("127.0.0.1", 8791, "tok", created=False)
+    out = capsys.readouterr().out
+    assert "existing" in out and "unchanged" in out
+
+
+def test_token_is_on_its_own_line_for_copy_paste(capsys) -> None:
+    """A 43-character random string has to be selectable without catching prose."""
+    token = "abcDEF123_-xyz"
+    service.print_summary("127.0.0.1", 8791, token, created=True)
+    lines = [line for line in capsys.readouterr().out.splitlines() if token in line]
+    assert len(lines) == 1
+    # Only the label and the value on that line, nothing to select around.
+    assert lines[0].split() == ["Token", token]
+
+
+# --- per-backend token uniqueness -----------------------------------------
+
+
+def test_each_backend_generates_its_own_token(tmp_path, monkeypatch) -> None:
+    """Two installs must never share a credential.
+
+    There is no default token anywhere in the tree — `.env.example` ships the name
+    commented out with no value — so this asserts the only source is CSPRNG output per
+    machine.
+    """
+    tokens = set()
+    for name in ("box-a", "box-b", "box-c"):
+        home = tmp_path / name
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda home=home: home)
+        tokens.add(service.ensure_token())
+    assert len(tokens) == 3, "tokens collided across backends"
+
+
+def test_token_has_full_entropy(home: Path) -> None:
+    """32 bytes, url-safe base64 -> 43 characters. A shorter token means someone
+    reduced the entropy of the only credential guarding a remote shell."""
+    assert len(service.ensure_token()) == 43

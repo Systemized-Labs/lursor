@@ -16,11 +16,32 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
+def _env_files() -> tuple[Path | str, ...]:
+    """The ``.env`` files to read, lowest precedence first.
+
+    ``backend/.env`` is the one a developer edits, and it stays the last word.
+
+    The data-directory file exists for server installs, where the code lives in a
+    checkout the installer owns: ``scripts/install-server.sh`` runs ``git reset --hard``
+    on every upgrade and a user may re-clone or move it. A provider key kept in
+    ``backend/.env`` is therefore one ``rm -rf`` away from gone — which is exactly how
+    it was lost the first time. Keys belong with the database, outside the tree.
+
+    Read from ``os.environ`` rather than from the ``data_dir`` field below because the
+    file list has to exist before any field is parsed; this is the same variable the
+    packaged app and the service unit already set.
+    """
+    import os
+
+    root = Path(os.environ.get("LURSOR_DATA_DIR", "~/.lursor")).expanduser()
+    return (root / ".env", ".env")
+
+
 class Settings(BaseSettings):
     """Environment-driven configuration."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )

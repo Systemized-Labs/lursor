@@ -104,8 +104,10 @@ uv sync
 
 # --- Install the service --------------------------------------------------
 
+# Anything this script has to say comes *before* the install, so the token block the
+# CLI prints is the last thing on screen and can be copied without scrolling.
+info "Installed at $DIR — check on it later with:"
+printf '     cd %s/backend && uv run lursor-service status\n' "$DIR"
+
 info "Installing the service"
 uv run lursor-service install --port "$PORT"
-
-printf '\n'
-info "Check it any time with:  cd $DIR/backend && uv run lursor-service status"
