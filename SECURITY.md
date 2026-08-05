@@ -72,6 +72,17 @@ privileges of the OS user running it:
   clear "token rejected", not a silent outage.
 - **Scope your API keys.** Use provider keys with spend limits, and assume any
   key you paste into Settings is recoverable in plaintext from the machine.
+- **`POST /api/update` runs code on the host.** It fetches the newest release,
+  syncs dependencies and restarts the service. It refuses unless a token is set —
+  which matters more than it looks: CORS reflects any origin, and the auth
+  middleware is *not installed at all* when there is no token, so without that gate
+  a page open in your browser could drive a loopback backend into running it. It
+  also refuses for a bundled or desktop-managed backend, and for one with no
+  supervisor. This is not a new privilege for a token holder — they can already run
+  arbitrary commands through the agent's shell tools — so the token remains the
+  boundary. Set `LURSOR_DISABLE_SELF_UPDATE=1` to switch it off on hosts you deploy
+  to by other means. The update log is written `0600` because it captures git
+  remotes and paths; nothing prints the token into it.
 - **Treat workspaces as trusted input.** Pointing an agent at a repository means
   its contents — README files, source comments, tool output — enter the model's
   context and can attempt prompt injection against an agent that holds shell

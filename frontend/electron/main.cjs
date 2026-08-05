@@ -134,6 +134,12 @@ function startBackend(port) {
   const { command, args, cwd, dataDir } = resolveBackendCommand(port)
   const env = { ...process.env, PYTHONUNBUFFERED: "1" }
   if (dataDir) env.LURSOR_DATA_DIR = dataDir
+  // Tell the backend who owns its lifecycle, so it can refuse to self-update: we
+  // would respawn the old code on the next launch, and in a packaged build its own
+  // files live inside a read-only app bundle. Declared rather than left to the
+  // backend to infer, because a dev run is an ordinary git checkout and no amount of
+  // path-sniffing distinguishes it from a server install. See backend/app/updater.py.
+  env.LURSOR_MANAGED_BY = "desktop"
 
   console.log(`[backend] starting: ${command} ${args.join(" ")} (cwd=${cwd})`)
 
@@ -306,6 +312,16 @@ function createWindow() {
       return { action: "deny" }
     }
     return { action: "allow" }
+  })
+
+  // Replay the update state into every document this window loads. Without this an
+  // update found before the renderer mounted — or before a reload — is announced to
+  // nobody, and since `autoInstallOnAppQuit` stays false it would simply never be
+  // offered. The splash and picker documents ignore it.
+  mainWindow.webContents.on("did-finish-load", () => {
+    if (updateState.phase !== "idle" && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("update:state", updateState)
+    }
   })
 
   mainWindow.on("closed", () => {
@@ -512,6 +528,37 @@ ipcMain.handle("connection:switch", async () => {
 
 ipcMain.handle("forward:open", async (_event, port) => portForward.forward(port))
 
+// --- Update bridge ---------------------------------------------------------
+//
+// The offer used to be a native dialog here; it is the renderer's now, so these are
+// the three things it needs: the current state (for a window that mounted late or
+// reloaded), a way to re-check on demand, and a way to say "do it".
+
+ipcMain.handle("update:get-state", () => updateState)
+
+ipcMain.handle("update:check", () => {
+  if (squirrel) squirrel.checkForUpdates()
+  else if (updateState.mechanism === "script") checkForScriptUpdate()
+  return updateState
+})
+
+ipcMain.handle("update:install", () => {
+  if (updateState.mechanism === "script") {
+    if (updateState.version) runScriptUpdate(updateState.version)
+    return
+  }
+  // quitAndInstall triggers before-quit, so killBackend still runs.
+  if (squirrel && updateState.phase === "downloaded") squirrel.quitAndInstall()
+})
+
+ipcMain.handle("update:later", () => {
+  // Matches what the old dialog's "Later" did: don't interrupt now, but don't throw
+  // the download away either — install it on the next quit.
+  if (squirrel && updateState.phase === "downloaded") {
+    squirrel.autoInstallOnAppQuit = true
+  }
+})
+
 /**
  * Application menu, for the one item that has to live outside the React app:
  * switching connections is only reachable when the app can't load.
@@ -578,6 +625,45 @@ const UPDATE_REPO = process.env.LURSOR_REPO || "JonathanConn/lursor"
 const UPDATE_SCRIPT_URL = `https://raw.githubusercontent.com/${UPDATE_REPO}/main/scripts/update.sh`
 
 /**
+ * The latest update state, mirrored to the renderer.
+ *
+ * Kept here as well as sent, for two reasons: the window may not have finished
+ * loading when the first check resolves (a fast network beats the renderer), and a
+ * reload throws away whatever the renderer knew. Both are replayed from here — see
+ * `did-finish-load` in `createWindow`.
+ *
+ * `mechanism` matters to the UI because the two paths offer different things: Squirrel
+ * downloads in the background and then needs a restart, whereas the script updater
+ * hands off to Terminal and quits immediately. Telling the user "Restart now" when the
+ * app is about to disappear into a Terminal window would be a lie.
+ *
+ * @typedef {"idle"|"checking"|"available"|"downloading"|"downloaded"|"error"|"unsupported"} UpdatePhase
+ * @type {{phase: UpdatePhase, version: string|null, percent: number|null,
+ *         error: string|null, mechanism: "squirrel"|"script"|"none", note: string|null}}
+ */
+let updateState = {
+  phase: "idle",
+  version: null,
+  percent: null,
+  error: null,
+  mechanism: "none",
+  note: null,
+}
+
+/** Merge into the update state and tell the renderer. */
+function publishUpdateState(patch) {
+  updateState = { ...updateState, ...patch }
+  // Logged on every transition on purpose: if the IPC or the renderer subscription
+  // ever breaks, an update that downloads and is never offered is otherwise a
+  // completely silent regression — `autoInstallOnAppQuit` stays false, so nothing
+  // happens at all.
+  console.log(`[updater] ${updateState.phase}`, updateState.version ?? "")
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("update:state", updateState)
+  }
+}
+
+/**
  * Route this build to whichever update mechanism can actually finish the job.
  *
  * - dev: neither (there is no update feed for an unpackaged app).
@@ -592,15 +678,28 @@ const UPDATE_SCRIPT_URL = `https://raw.githubusercontent.com/${UPDATE_REPO}/main
  */
 function initAutoUpdate() {
   if (isDev) {
-    console.log("[updater] unpackaged build — skipping")
+    publishUpdateState({
+      phase: "unsupported",
+      note: "Updates are off in a development build.",
+    })
     return
   }
   if (process.platform === "linux") {
     if (process.env.APPIMAGE) initSquirrelUpdate()
-    else console.log("[updater] not an AppImage — skipping")
+    else
+      publishUpdateState({
+        phase: "unsupported",
+        note: "This build is managed by your package manager — update it with apt.",
+      })
     return
   }
-  if (process.platform !== "darwin") return
+  if (process.platform !== "darwin") {
+    publishUpdateState({
+      phase: "unsupported",
+      note: `No update channel for ${process.platform}.`,
+    })
+    return
+  }
 
   isGatekeeperApproved().then((approved) => {
     if (approved) initSquirrelUpdate()
@@ -627,36 +726,56 @@ function initSquirrelUpdate() {
   // Required lazily: pulling electron-updater into an unpackaged dev run would
   // have it complain about the missing app-update.yml on startup.
   const { autoUpdater } = require("electron-updater")
+  squirrel = autoUpdater
 
   autoUpdater.logger = console
   autoUpdater.autoDownload = true
   // Installing on quit would race the backend teardown, so we drive the restart
-  // ourselves from the prompt below.
+  // ourselves once the user asks for it.
   autoUpdater.autoInstallOnAppQuit = false
 
   autoUpdater.on("error", (err) => {
-    console.error("[updater] check failed:", err?.message ?? err)
+    publishUpdateState({
+      phase: "error",
+      error: String(err?.message ?? err),
+      mechanism: "squirrel",
+    })
+  })
+  autoUpdater.on("checking-for-update", () => {
+    // Don't stomp a version already found and downloaded by an earlier check —
+    // the 6-hourly re-check would otherwise hide a pending update mid-poll.
+    if (updateState.phase === "downloaded" || updateState.phase === "downloading") return
+    publishUpdateState({ phase: "checking", mechanism: "squirrel", error: null })
+  })
+  autoUpdater.on("update-not-available", () => {
+    if (updateState.phase === "downloaded" || updateState.phase === "downloading") return
+    publishUpdateState({ phase: "idle", version: null, mechanism: "squirrel" })
   })
   autoUpdater.on("update-available", (info) => {
-    console.log(`[updater] downloading ${info.version}`)
+    publishUpdateState({
+      phase: "available",
+      version: info.version,
+      mechanism: "squirrel",
+    })
+  })
+  autoUpdater.on("download-progress", (p) => {
+    publishUpdateState({
+      phase: "downloading",
+      percent: Math.round(p?.percent ?? 0),
+      mechanism: "squirrel",
+    })
   })
 
-  autoUpdater.on("update-downloaded", async (info) => {
-    const { response } = await dialog.showMessageBox({
-      type: "info",
-      buttons: ["Restart now", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      message: `Lursor ${info.version} is ready to install`,
-      detail:
-        "Restarting takes a few seconds and will stop any running agents. The update installs on the next launch either way.",
+  autoUpdater.on("update-downloaded", (info) => {
+    // No dialog here any more: the offer is the renderer's, so it can be a toast
+    // plus a persistent indicator rather than a modal that is gone once dismissed.
+    // The install still only happens when the user asks — see `update:install`.
+    publishUpdateState({
+      phase: "downloaded",
+      version: info.version,
+      percent: 100,
+      mechanism: "squirrel",
     })
-    if (response === 0) {
-      // quitAndInstall triggers before-quit, so killBackend still runs.
-      autoUpdater.quitAndInstall()
-    } else {
-      autoUpdater.autoInstallOnAppQuit = true
-    }
   })
 
   autoUpdater.checkForUpdates()
@@ -665,8 +784,8 @@ function initSquirrelUpdate() {
 
 // --- Script updater (builds Squirrel can't install) ------------------------
 
-/** Version we have already offered this run, so the re-check doesn't nag. */
-let offeredVersion = null
+/** The electron-updater instance, once one exists. Null on the script path. */
+let squirrel = null
 
 /**
  * Compare two release versions. Dotted numeric compare, with a trailing
@@ -703,8 +822,11 @@ function initScriptUpdate() {
 }
 
 async function checkForScriptUpdate() {
+  publishUpdateState({ phase: "checking", mechanism: "script", error: null })
   let latest = ""
   try {
+    // `/releases/latest` excludes drafts and prereleases, which is exactly the
+    // stable-only channel we want — no filtering of our own to get wrong.
     const res = await fetch(
       `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`,
       {
@@ -715,24 +837,30 @@ async function checkForScriptUpdate() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     latest = String((await res.json()).tag_name ?? "").replace(/^v/, "")
   } catch (err) {
-    console.error("[updater] release check failed:", err?.message ?? err)
+    publishUpdateState({
+      phase: "error",
+      error: String(err?.message ?? err),
+      mechanism: "script",
+    })
     return
   }
 
-  if (!latest || !isNewerVersion(latest, app.getVersion())) return
-  if (offeredVersion === latest) return
-  offeredVersion = latest
+  if (!latest || !isNewerVersion(latest, app.getVersion())) {
+    publishUpdateState({ phase: "idle", version: null, mechanism: "script" })
+    return
+  }
 
-  const { response } = await dialog.showMessageBox({
-    type: "info",
-    buttons: ["Update now", "Later"],
-    defaultId: 0,
-    cancelId: 1,
-    message: `Lursor ${latest} is available`,
-    detail:
-      "Lursor will quit, finish the update in a Terminal window, then reopen. This stops any running agents.",
+  // There is no download step on this path: the script does the fetching, after the
+  // app has quit. So "available" is the terminal state, and the renderer's action
+  // goes straight to the handoff.
+  publishUpdateState({
+    phase: "available",
+    version: latest,
+    mechanism: "script",
+    note:
+      "Lursor will quit, finish the update in a Terminal window, then reopen. " +
+      "This stops any running agents.",
   })
-  if (response === 0) runScriptUpdate(latest)
 }
 
 /**
@@ -810,10 +938,16 @@ if (!gotLock) {
     await bootConnection()
 
     // Only look for updates once the app is actually usable, so a slow or failing
-    // update check never delays startup. Skipped in remote mode: updating the
-    // client wouldn't touch the backend the agents are actually running on, and
-    // quitting to install would drop the connection mid-run.
-    if (activeConnection?.kind === "local") initAutoUpdate()
+    // update check never delays startup.
+    //
+    // This used to be local-only, on the grounds that quitting to install would drop
+    // a remote connection mid-run. That reasoning applied to the *install*, not the
+    // check — and the install is now user-initiated from the renderer rather than a
+    // dialog that appears unbidden, so nothing quits until someone asks. Downloading
+    // in the background touches no connection. Meanwhile the old skip left remote
+    // users with no way to learn their client was out of date at all, which is the
+    // configuration where client and backend drift in the first place.
+    initAutoUpdate()
 
     app.on("activate", async () => {
       if (BrowserWindow.getAllWindows().length !== 0) return

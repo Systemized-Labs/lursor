@@ -408,6 +408,35 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
+def restart_command() -> list[str]:
+    """The argv that restarts the service, per platform.
+
+    Split out from ``cmd_restart`` so it can be asserted without a supervisor
+    present, the way the unit renderers are.
+
+    ``launchctl kickstart -k`` rather than ``bootout`` + ``bootstrap``: it keeps the
+    job loaded and stops the old process first, so a restart cannot land in the state
+    where bootout succeeded and bootstrap didn't and the backend is simply gone.
+    """
+    _require_supported_platform()
+    if _is_linux():
+        return ["systemctl", "--user", "restart", SYSTEMD_UNIT]
+    return ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"]
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    """Restart the service without touching the unit, the port or the token.
+
+    Exists for ``scripts/self-update.sh``, which needs to restart into new code and
+    must not re-run ``install``: that would re-render the unit from whatever port it
+    was given (the updater doesn't know the real one) and print the token, which then
+    ends up in the update log the API serves back. See the header of that script.
+    """
+    _run(restart_command())
+    print("Restarted. Check it came back with `lursor-service status`.")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     _require_supported_platform()
 
@@ -523,6 +552,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     uninstall = sub.add_parser("uninstall", help="stop and remove the service")
     uninstall.set_defaults(func=cmd_uninstall)
+
+    # No --host/--port: a restart must not be able to move the service. That is the
+    # whole reason this exists rather than self-update re-running `install`.
+    restart = sub.add_parser("restart", help="restart the service into current code")
+    restart.set_defaults(func=cmd_restart)
 
     status = sub.add_parser("status", help="report supervisor state and reachability")
     add_common(status)

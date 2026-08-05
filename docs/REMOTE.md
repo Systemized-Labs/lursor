@@ -267,6 +267,45 @@ LURSOR_AUTH_TOKEN='test-token' LURSOR_DATA_DIR=/tmp/lursor-remote \
 
 Then add `http://127.0.0.1:8799` in the app with the token `test-token`.
 
+## Updates
+
+A remote setup has **two versions**, and they move independently: the desktop app on
+your machine, and the backend on the host. Either can be ahead. The app compares them
+on connect and lights an update glyph in the window bar when they disagree or when
+either is out of date — click it for both, or find the same panel under
+Settings → About.
+
+Skew is a warning, never a block. A 0.1.7 app against a 0.1.6 backend keeps working;
+the indicator is there because "the two halves disagree" explains a class of symptoms
+that is otherwise baffling to debug.
+
+**The app** updates itself as it always has (see `docs/DISTRIBUTION.md`), and now does
+so over a remote connection too — it downloads in the background and waits for you to
+ask for the restart. It used to skip the check entirely in remote mode, on the grounds
+that quitting to install would drop the connection mid-run. That reasoning applied to
+the install, not the check: nothing quits until you press the button, and the prompt
+tells you it will disconnect you and stop any running agents.
+
+**The backend** can update itself in place — "Update backend" in that panel. It fetches
+the newest release, `uv sync`s, and restarts the service, which takes a minute or two
+(dependency syncing is the slow part). Your database, workspaces and token are
+untouched, so saved clients keep working. The connection drops as the service restarts
+and the app reconnects on its own; the progress log is written to
+`~/.lursor/update.log` on the host, so it survives the restart and the panel can keep
+showing it. `scripts/self-update.sh` is what actually runs, and re-running
+`scripts/install-server.sh` by hand remains equivalent.
+
+The button only appears where it can work: a git checkout, supervised by systemd or
+launchd, with a token set. A backend inside the desktop app's bundle is replaced by
+the app update instead, and one started by hand with `uv run` has nothing to restart
+it. The panel says which of these applies rather than just greying out.
+
+To turn it off on a host, set `LURSOR_DISABLE_SELF_UPDATE=1` in `~/.lursor/.env`. Note
+what that does and does not buy you: the endpoint runs code as the backend user, but
+anyone holding the token can already do that through the agent's shell tools, so this
+is an operational switch (a host you deploy to by other means) rather than a security
+boundary. The security boundary is the token — see `SECURITY.md`.
+
 ## What is not supported
 
 - **Browser access.** The backend serves the API only. A browser cannot attach an
@@ -274,7 +313,6 @@ Then add `http://127.0.0.1:8799` in the app with the token `test-token`.
   token-protected backend needs the desktop app.
 - **Multiple users.** One token, one operator. Everyone who has the token is the same
   person as far as the backend is concerned.
-- **In-app updates over a remote connection.** They are skipped: updating the client
-  would not touch the backend your agents are running on, and quitting to install
-  would drop the connection mid-run. Update the client from a local connection, and
-  the remote backend with `git pull` on that host.
+- **Updating a `.deb` install of the desktop app in place.** It is owned by `apt`, so
+  the app reports that rather than trying. An AppImage and a signed macOS build both
+  self-update normally.

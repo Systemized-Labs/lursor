@@ -71,6 +71,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Four files carry the version and all four have to agree. They drifted once
+      # already: app/__init__.py and the FastAPI `version=` sat at 0.1.0 from v0.1.0
+      # until this check existed, because the release checklist only named three of
+      # them and nothing verified it. The API reported the wrong version for six
+      # releases.
+      #
+      # Here in `gate` rather than in a build job: it costs a second and fails before
+      # a ~300MB notarized build, not after. The uv.lock arm matters most —
+      # build_bundle.sh runs `uv export --frozen`, which does *not* verify lock
+      # freshness (that is `--locked`), so a drifted lock is otherwise tolerated
+      # silently and ships in the bundle.
+      - name: Check every version is in lockstep
+        run: |
+          PKG="$(node -p "require('./frontend/package.json').version")"
+          PYPROJECT="$(sed -n 's/^version = "\(.*\)"/\1/p' backend/pyproject.toml | head -1)"
+          INIT="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' backend/app/__init__.py | head -1)"
+          LOCK="$(awk -F'"' '/^name = "lursor-backend"$/{f=1;next} f && /^version = /{print $2; exit}' backend/uv.lock)"
+
+          echo "frontend/package.json      $PKG"
+          echo "backend/pyproject.toml     $PYPROJECT"
+          echo "backend/app/__init__.py    $INIT"
+          echo "backend/uv.lock            $LOCK"
+
+          fail=0
+          for pair in "pyproject.toml:$PYPROJECT" "app/__init__.py:$INIT" "uv.lock:$LOCK"; do
+            name="${pair%%:*}"
+            value="${pair#*:}"
+            if [ -z "$value" ]; then
+              echo "error: could not read a version from $name" >&2
+              fail=1
+            elif [ "$value" != "$PKG" ]; then
+              echo "error: $name is $value but frontend/package.json is $PKG" >&2
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "Bump all four together — see docs/DISTRIBUTION.md." >&2
+            exit 1
+          fi
+          echo "all four agree on $PKG"
+
       - name: Resolve the version to release
         id: decide
         run: |

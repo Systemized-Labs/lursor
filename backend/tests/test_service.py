@@ -316,3 +316,42 @@ def test_token_has_full_entropy(home: Path) -> None:
     """32 bytes, url-safe base64 -> 43 characters. A shorter token means someone
     reduced the entropy of the only credential guarding a remote shell."""
     assert len(service.ensure_token()) == 43
+
+
+# --- restart ---------------------------------------------------------------
+
+
+def test_restart_command_per_platform(monkeypatch) -> None:
+    """Restart must never carry a port, a unit render or a token.
+
+    ``scripts/self-update.sh`` calls this instead of re-running ``install`` for
+    exactly that reason: the updater does not know which port the service was
+    installed on, and ``install`` finishes by printing the token — which would then
+    land in the update log that ``GET /api/update/log`` serves back.
+    """
+    monkeypatch.setattr(service, "_require_supported_platform", lambda: None)
+
+    monkeypatch.setattr(service, "_is_linux", lambda: True)
+    assert service.restart_command() == [
+        "systemctl",
+        "--user",
+        "restart",
+        service.SYSTEMD_UNIT,
+    ]
+
+    monkeypatch.setattr(service, "_is_linux", lambda: False)
+    cmd = service.restart_command()
+    # kickstart -k, not bootout+bootstrap: it cannot leave the job unloaded if the
+    # second half fails.
+    assert cmd[:3] == ["launchctl", "kickstart", "-k"]
+    assert cmd[3].endswith(f"/{service.LAUNCHD_LABEL}")
+
+    for argv in (["systemctl"], cmd):
+        assert not any("--port" in a for a in argv)
+
+
+def test_restart_is_registered_without_host_or_port() -> None:
+    """A restart that could move the service would defeat the point of having it."""
+    args = service.build_parser().parse_args(["restart"])
+    assert args.func is service.cmd_restart
+    assert not hasattr(args, "port")

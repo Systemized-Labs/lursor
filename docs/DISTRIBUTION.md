@@ -93,13 +93,23 @@ Bump the version and merge it to main. That is the whole trigger — no tagging
 step.
 
 ```bash
-# Bump all three in lockstep (the frontend one names every artifact):
-#   frontend/package.json  -> "version": "0.2.0"
-#   backend/pyproject.toml -> version = "0.2.0"
-#   backend/uv.lock        -> version = "0.2.0" under [[package]] lursor-backend
+# Bump all four in lockstep (the frontend one names every artifact):
+#   frontend/package.json    -> "version": "0.2.0"
+#   backend/pyproject.toml   -> version = "0.2.0"
+#   backend/uv.lock          -> version = "0.2.0" under [[package]] lursor-backend
+#   backend/app/__init__.py  -> __version__ = "0.2.0"
 git commit -am "chore: version bump"
 # then merge to main as usual
 ```
+
+`gate` fails the release if those four disagree, so a missed one costs a red
+check rather than a wrong release. That check exists because this list said
+*three* until v0.1.7: `app/__init__.py` and the `FastAPI(version=...)` derived
+from it sat at `0.1.0` from the first release onward, so `/api/server-info` and
+the OpenAPI schema reported a version the build had never been. Nothing noticed,
+because a packaged app ships its own backend and the number is only visible from
+another machine — which is exactly where it now matters, since the desktop app
+compares it against its own to detect a stale remote backend.
 
 The `release` workflow's `gate` job runs on every push to main and compares
 `frontend/package.json` against the tags on the remote. No tag for that version

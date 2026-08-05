@@ -1047,6 +1047,22 @@ Each of these has already cost a debugging session.
     network back to the desktop. `lib/preview-reach.ts` keeps the two apart:
     canonical for storage, comparison and display; reachable only for the iframe and
     `openExternal`.
+18. **A backend cannot self-update from inside its own systemd cgroup.**
+    `render_systemd_unit` sets `KillMode=control-group` so a restart can't orphan the
+    dev servers an agent run spawned — which also means every descendant of the
+    backend dies with it. `start_new_session=True` does *not* save you: it leaves the
+    session and process group, not the cgroup. So the update job would be SIGKILLed by
+    the very restart it just triggered, halfway through `uv sync`, leaving a
+    half-synced checkout and a log that stops mid-sentence. `start_update` in
+    `app/updater.py` hands the job to `systemd-run --user` for its own cgroup, and
+    falls back to a detached spawn that *says so in the log* — because a truncated log
+    and a crashed update look identical otherwise. launchd has no equivalent trap.
+19. **Update state is polled, never pushed.** The obvious move for "tell the UI an
+    update exists" is a new AG-UI event, and it is the wrong one: the stream is
+    thread-scoped, so an update would only be announced to someone mid-conversation,
+    and it would owe the dual-transport wiring in invariant 1 for nothing. `/api/update/*`
+    plus Electron IPC is the whole mechanism. This is invariant 1's own advice —
+    "the cheapest correct move is to add no new event type at all".
 
 ## 8. Desktop and distribution
 
@@ -1076,8 +1092,14 @@ connection is resolved before the app document loads, which shapes the bootstrap
   each connection to `/api/tunnel` (`api/tunnel.py`). Rewriting HTML/CSS/HMR payloads
   behind a path prefix is the alternative, and it breaks on every framework that
   emits root-absolute asset paths. See both files' docstrings.
-- Auto-update is skipped on a remote connection: it wouldn't touch the backend the
-  agents are on, and quitting to install would drop the connection mid-run.
+- Auto-update runs on a remote connection too, and the *backend* has its own update
+  path (`/api/update/*`, `scripts/self-update.sh`) because a remote one is a git
+  checkout rather than a frozen bundle. This used to be skipped outright on the
+  grounds that quitting to install would drop the connection mid-run — true of the
+  install, not the check, and the install is now user-initiated from the renderer
+  rather than a native dialog that appears unbidden. `server-info` carries the
+  backend's version so the client can report skew, which is the one thing a remote
+  setup can have and a local one cannot.
 
 `docs/REMOTE.md` is the user-facing runbook.
 

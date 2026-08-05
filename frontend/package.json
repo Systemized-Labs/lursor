@@ -2,7 +2,7 @@
   "name": "lursor",
   "productName": "Lursor",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Self-hosted agent harness with workspaces, live terminal, and git review",
   "author": "Jonathan Conn <JonathanConn@users.noreply.github.com>",
   "license": "Apache-2.0",

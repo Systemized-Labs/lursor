@@ -2,6 +2,7 @@ import { useEffect } from "react"
 import { Gear, List, SidebarSimple, SquaresFour } from "@phosphor-icons/react"
 
 import { ConnectionStatus } from "@/components/layout/connection-status"
+import { UpdateIndicator } from "@/components/update/update-indicator"
 import { useSidebar } from "@/components/ui/sidebar"
 import { isMacElectron } from "@/lib/platform"
 import { cn } from "@/lib/utils"
@@ -125,6 +126,13 @@ export function WindowBar({
       <ConnectionStatus />
 
       <div className="min-w-0 flex-1" />
+
+      {/* Lit only when this app or the backend it is driving is out of date, and
+          hidden the rest of the time. This is not the general Notifications surface
+          that was cut (§10) — it is one glyph with one purpose, and it is here because
+          the toast that accompanies it is dismissible while an outstanding update
+          should not be. */}
+      <UpdateIndicator />
 
       {/* Three controls, not the five in the plan's sketch. Notifications was cut
           outright (§10), and Keyboard shortcuts is a settings category rather than
