@@ -83,7 +83,7 @@ export function PaneContent({
     return <ChangesPanel workspaceId={workspaceId} />
   }
   if (kind === "terminal") {
-    return <TerminalPanel workspaceId={workspaceId} />
+    return <TerminalPanel workspaceId={workspaceId} paneId={paneId} />
   }
   if (kind === "preview") {
     return (

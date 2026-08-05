@@ -33,6 +33,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePendingRequest } from "@/hooks/use-pending-request"
 import { usePreviewWatch } from "@/hooks/use-preview-watch"
+import { useTerminalPrewarm } from "@/hooks/use-terminal-prewarm"
 import { cn } from "@/lib/utils"
 import {
   consumePendingFile,
@@ -107,6 +108,9 @@ export function AppShell() {
   // Keep the detected dev-server list live for the active workspace, so servers
   // the agent starts are known even before a Preview pane is opened.
   usePreviewWatch(workspaceId)
+  // Start this workspace's shell now, so the first Terminal pane attaches to one
+  // that is already past its rc files instead of waiting seconds for a prompt.
+  useTerminalPrewarm(workspaceId)
   // Workspace name feeds the mobile header title (cached — the chat pane shares
   // this query).
   const workspaceForTitle = useWorkspace(workspaceId)

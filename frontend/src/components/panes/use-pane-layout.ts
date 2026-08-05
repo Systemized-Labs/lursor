@@ -28,6 +28,7 @@ import {
   type BottomPanelState,
 } from "@/components/panes/bottom-panel"
 import { clearTabStorage } from "@/lib/tab-storage"
+import { releaseTerminal } from "@/lib/terminal-session"
 
 const LAYOUT_PREFIX = "lursor:layout:"
 /** The right dock's old per-workspace key, read once for the migration. */
@@ -369,7 +370,14 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       // URLs and open buffers of the workspace you just left, and the layout that
       // still names those ids would restore them empty on the way back.
       api.onDidRemovePanel((panel) => {
-        if (!loading.current) clearTabStorage(panel.api.id)
+        if (!loading.current) {
+          clearTabStorage(panel.api.id)
+          // A terminal's shell outlives its socket by design, so an unload must
+          // not kill it — but a *close* must, or the backend would sit on a PTY
+          // for nothing until the idle sweeper noticed. Same distinction, same
+          // `loading` guard: this is the one branch that means "gone for good".
+          if (paneKindOf(panel) === "terminal") releaseTerminal(panel.api.id)
+        }
         mru.current = mru.current.filter((x) => x !== panel.api.id)
       }),
     ]
