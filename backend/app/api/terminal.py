@@ -1,16 +1,22 @@
 """Live terminal over a WebSocket, backed by a real PTY.
 
-``GET /api/terminal/ws`` (WebSocket) spawns an interactive shell in a
-pseudo-terminal rooted at a workspace's directory and pipes it to the browser:
+``GET /api/terminal/ws`` (WebSocket) attaches the browser to an interactive
+shell running in a pseudo-terminal rooted at a workspace's directory:
 
 - binary client frames are raw keystrokes written straight to the PTY;
 - text client frames are JSON control messages (currently ``resize``);
 - PTY output is streamed back to the client as binary frames.
 
-The PTY is created with :func:`pty.fork` so the child gets a controlling
-terminal (job control, ``Ctrl-C``, ``clear``, full-screen apps all work). The
-master fd is read via the event loop's reader callback, so a chatty shell never
-blocks the loop. When the shell exits or the socket drops, the child is reaped.
+**The socket no longer owns the shell.** :mod:`app.terminal_sessions` does — see
+that module for why. This one is transport: resolve the workspace directory,
+attach to the session named by ``session_id`` (creating, claiming a pre-warmed
+shell, or re-attaching as appropriate), replay what the pane missed, and pump
+bytes both ways. A dropped socket detaches; it does not kill.
+
+Two REST endpoints sit alongside it: ``POST /api/terminal/prewarm``, which the UI
+fires when a workspace opens so the shell's rc files are already loaded by the
+time anyone clicks Terminal, and ``DELETE /api/terminal/sessions/{id}``, which
+the UI fires when a terminal pane is genuinely closed.
 
 POSIX only (macOS/Linux). Windows would need a ``pywinpty`` backend.
 """
@@ -19,34 +25,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import json
 import os
-import pty
-import shutil
-import signal
-import struct
-import termios
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Response, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from app import gitcfg
 from app.config import get_settings
 from app.db.models import Workspace
 from app.db.session import async_session_factory
+from app.terminal_sessions import Session, sessions
 
 router = APIRouter(tags=["terminal"])
 settings = get_settings()
-
-_READ_CHUNK = 65536
-
-
-def _set_winsize(fd: int, rows: int, cols: int) -> None:
-    """Push a new window size onto the PTY so the child reflows / redraws."""
-    with contextlib.suppress(OSError):
-        winsize = struct.pack("HHHH", max(rows, 1), max(cols, 1), 0, 0)
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
 
 async def _resolve_cwd(workspace_id: str | None) -> str:
@@ -60,68 +51,32 @@ async def _resolve_cwd(workspace_id: str | None) -> str:
     return str(settings.workspaces_dir)
 
 
-def _spawn_shell(cwd: str) -> tuple[int, int]:
-    """Fork an interactive login shell attached to a fresh PTY.
-
-    Returns ``(pid, master_fd)``. The child never returns — it execs the shell
-    or exits.
-    """
-    shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/sh"
-    pid, master_fd = pty.fork()
-    if pid == 0:  # child
-        with contextlib.suppress(OSError):
-            os.chdir(cwd)
-        os.environ["TERM"] = "xterm-256color"
-        os.environ["COLORTERM"] = "truecolor"
-        # If a GitHub account is connected, point git at Lursor's isolated
-        # config so clone/push/pull authenticate here too — without touching
-        # the user's real ~/.gitconfig.
-        os.environ.update(gitcfg.config_env())
-        try:
-            os.execvp(shell, [shell, "-i"])
-        except OSError:
-            os._exit(127)
-    return pid, master_fd
-
-
 @router.websocket("/terminal/ws")
-async def terminal_ws(websocket: WebSocket, workspace_id: str | None = None) -> None:
+async def terminal_ws(
+    websocket: WebSocket,
+    workspace_id: str | None = None,
+    session_id: str | None = None,
+    cols: int = 80,
+    rows: int = 24,
+) -> None:
     await websocket.accept()
     cwd = await _resolve_cwd(workspace_id)
-    pid, master_fd = _spawn_shell(cwd)
 
-    loop = asyncio.get_running_loop()
-    os.set_blocking(master_fd, False)
-    queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    # No `session_id` means a caller that cannot name its pane. It still gets a
+    # working shell — it just gets the old behaviour, reaped when the socket
+    # drops, because nothing will ever ask for it again.
+    ephemeral = not session_id
+    sid = session_id or f"anon:{id(websocket)}"
 
-    def _on_readable() -> None:
-        """Drain the PTY into the queue; enqueue ``None`` on EOF (shell exited)."""
-        try:
-            data = os.read(master_fd, _READ_CHUNK)
-        except (OSError, BlockingIOError):
-            data = b""
-        if data:
-            queue.put_nowait(data)
-        else:
-            loop.remove_reader(master_fd)
-            queue.put_nowait(None)
+    session, replay, queue = sessions.attach(sid, workspace_id, cwd, cols, rows)
 
-    loop.add_reader(master_fd, _on_readable)
+    # Everything the pane missed while it was gone, in one frame. Written before
+    # the pump starts so it cannot interleave with live output.
+    if replay:
+        with contextlib.suppress(Exception):
+            await websocket.send_bytes(replay)
 
-    async def _pump_output() -> None:
-        """Forward PTY bytes to the client until EOF or the socket closes."""
-        while True:
-            data = await queue.get()
-            if data is None:
-                break
-            with contextlib.suppress(Exception):
-                await websocket.send_bytes(data)
-        # Shell exited: close the socket so the client shows "[process exited]".
-        if websocket.application_state == WebSocketState.CONNECTED:
-            with contextlib.suppress(Exception):
-                await websocket.close()
-
-    out_task = asyncio.create_task(_pump_output())
+    out_task = asyncio.create_task(_pump_output(websocket, queue))
 
     try:
         while True:
@@ -130,35 +85,77 @@ async def terminal_ws(websocket: WebSocket, workspace_id: str | None = None) -> 
                 break
             data = message.get("bytes")
             if data is not None:
-                os.write(master_fd, data)
+                sessions.write(session, data)
                 continue
             text = message.get("text")
             if text:
-                _handle_control(master_fd, text)
+                _handle_control(session, text)
     except WebSocketDisconnect:
         pass
     finally:
-        with contextlib.suppress(Exception):
-            loop.remove_reader(master_fd)
         out_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await out_task
+        if ephemeral:
+            sessions.release(sid)
+        else:
+            sessions.detach(session, queue)
+
+
+async def _pump_output(
+    websocket: WebSocket, queue: asyncio.Queue[bytes | None]
+) -> None:
+    """Forward PTY bytes to the client until the shell exits or the socket goes.
+
+    The ``None`` sentinel is the whole reason this distinguishes anything: a
+    socket that simply dropped will be reconnected by the client, so it must not
+    be reported as an exit. Only a child that actually died gets the ``exit``
+    control frame, and only that frame makes the pane print "[process exited]".
+    """
+    while True:
+        data = await queue.get()
+        if data is None:
+            break
         with contextlib.suppress(Exception):
-            os.close(master_fd)
-        _reap(pid)
+            await websocket.send_bytes(data)
+    if websocket.application_state == WebSocketState.CONNECTED:
+        with contextlib.suppress(Exception):
+            await websocket.send_text(json.dumps({"type": "exit"}))
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
 
-def _handle_control(master_fd: int, text: str) -> None:
+def _handle_control(session: Session, text: str) -> None:
     """Apply a JSON control frame from the client (resize, etc.)."""
     try:
         obj = json.loads(text)
     except ValueError:
         return
     if obj.get("type") == "resize":
-        _set_winsize(master_fd, int(obj.get("rows", 24)), int(obj.get("cols", 80)))
+        with contextlib.suppress(TypeError, ValueError):
+            sessions.resize(session, int(obj.get("cols", 80)), int(obj.get("rows", 24)))
 
 
-def _reap(pid: int) -> None:
-    """Terminate and reap the shell process group so nothing is orphaned."""
-    with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGKILL)
-    with contextlib.suppress(OSError):
-        os.waitpid(pid, 0)
+@router.post("/terminal/prewarm", status_code=204)
+async def prewarm_terminal(
+    workspace_id: str | None = None, cols: int = 80, rows: int = 24
+) -> Response:
+    """Start a shell for a workspace ahead of anyone asking for one.
+
+    Idempotent and fire-and-forget: called on every workspace open, and a
+    failure just means the next terminal starts cold.
+    """
+    cwd = await _resolve_cwd(workspace_id)
+    sessions.prewarm(workspace_id, cwd, cols, rows)
+    return Response(status_code=204)
+
+
+@router.delete("/terminal/sessions/{session_id}", status_code=204)
+async def release_terminal(session_id: str) -> Response:
+    """Kill the shell behind a terminal pane the user closed.
+
+    204 for an unknown id too — the caller's intent ("this session should not
+    exist") is already satisfied, and a pane closed twice is not an error.
+    """
+    sessions.release(session_id)
+    return Response(status_code=204)

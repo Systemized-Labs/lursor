@@ -47,6 +47,7 @@ from app.config import get_settings
 from app.db.prompt_seed import seed_prompt_templates
 from app.db.session import async_session_factory, init_db
 from app.skills.seed import globalize_bundled, seed_bundled_skills
+from app.terminal_sessions import sessions as terminal_sessions
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -95,6 +96,9 @@ async def lifespan(app: FastAPI):
         logger.exception("scheduler failed to start; schedules will not fire")
     yield
     await scheduler.stop()
+    # Terminal shells outlive their WebSocket by design, so nothing else would
+    # ever reap the ones still detached when the process goes down.
+    await terminal_sessions.shutdown()
     # Drain the shared Hindsight clients (see ``agents/hindsight.py``). Their
     # transport is aiohttp, which complains loudly about sessions left unclosed at
     # interpreter exit; a no-op when the memory provider is "file".
