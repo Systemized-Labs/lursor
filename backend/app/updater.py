@@ -36,7 +36,7 @@ ManagedBy = Literal["desktop", "service", "none"]
 
 # Defaults shared with scripts/install-server.sh and the Electron updater, so all
 # three agree on where updates come from without a config file to keep in sync.
-DEFAULT_REPO = "JonathanConn/lursor"
+DEFAULT_REPO = "Systemized-Labs/lursor"
 DEFAULT_REF = "main"
 
 LOG_NAME = "update.log"

@@ -184,7 +184,7 @@ def render_systemd_unit(
     return f"""\
 [Unit]
 Description=Lursor backend (agent harness API)
-Documentation=https://github.com/JonathanConn/lursor
+Documentation=https://github.com/Systemized-Labs/lursor
 # The API talks to model providers, so wait for configured networking rather than
 # racing DHCP on a cold boot.
 After=network-online.target

@@ -24,7 +24,7 @@ name: release
 #   APPLE_API_ISSUER      issuer ID for that .p8
 #   APPLE_TEAM_ID         10-character Developer Team ID
 # Optional, for the Homebrew tap bump:
-#   HOMEBREW_TAP_TOKEN    PAT with contents:write on JonathanConn/homebrew-lursor
+#   HOMEBREW_TAP_TOKEN    PAT with contents:write on Systemized-Labs/homebrew-lursor
 
 on:
   push:
@@ -398,7 +398,7 @@ jobs:
 
   # Point the Homebrew tap at the new version. Runs only for published releases
   # and only when a tap token is configured; the tap repo itself is
-  # JonathanConn/homebrew-lursor (see docs/DISTRIBUTION.md).
+  # Systemized-Labs/homebrew-lursor (see docs/DISTRIBUTION.md).
   homebrew:
     needs: [gate, publish]
     if: needs.gate.outputs.publish == 'true'
@@ -431,7 +431,7 @@ jobs:
             packaging/homebrew/lursor.rb.template > lursor.rb
 
           git clone --depth 1 \
-            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/JonathanConn/homebrew-lursor.git" tap
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Systemized-Labs/homebrew-lursor.git" tap
           mkdir -p tap/Casks
           mv lursor.rb tap/Casks/lursor.rb
           cd tap

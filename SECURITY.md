@@ -94,7 +94,7 @@ privileges of the OS user running it:
 Please report security issues **privately**, not as a public issue:
 
 1. Open a private report via GitHub Security Advisories:
-   <https://github.com/JonathanConn/lursor/security/advisories/new>
+   <https://github.com/Systemized-Labs/lursor/security/advisories/new>
 2. Include the version or commit, reproduction steps, and what an attacker
    gains.
 

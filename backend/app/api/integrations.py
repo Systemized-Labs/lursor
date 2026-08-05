@@ -37,7 +37,7 @@ _PLUGIN_SUBDIR = ("integrations", "hermes", PLUGIN_NAME)
 
 # The public source Hermes clones from. Its installer accepts an
 # ``owner/repo/subdir`` shorthand, so the plugin needs no repo of its own.
-_PLUGIN_ORIGIN = "JonathanConn/lursor"
+_PLUGIN_ORIGIN = "Systemized-Labs/lursor"
 
 
 class HermesIntegration(BaseModel):

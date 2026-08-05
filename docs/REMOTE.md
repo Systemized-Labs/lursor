@@ -24,7 +24,7 @@ generates a token, and hands the backend to the platform's supervisor so it surv
 reboot and a crash:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install-server.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install-server.sh | sh
 ```
 
 It ends with a framed block holding the two values you need — the address and the
@@ -107,7 +107,7 @@ overnight, not from a crash three minutes into a long run.
 If you'd rather not run an installer, the backend is just uvicorn with a token:
 
 ```bash
-git clone https://github.com/JonathanConn/lursor.git && cd lursor/backend && uv sync
+git clone https://github.com/Systemized-Labs/lursor.git && cd lursor/backend && uv sync
 LURSOR_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
   uv run uvicorn app.main:app --host 127.0.0.1 --port 8791
 ```

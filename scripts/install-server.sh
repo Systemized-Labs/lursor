@@ -1,7 +1,7 @@
 #!/bin/sh
 # Lursor *backend* installer, for a machine that stays on.
 #
-#   curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install-server.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install-server.sh | sh
 #
 # Installs the backend from source and hands it to the platform's supervisor, so it
 # survives a reboot, a crash and an OOM kill. Re-run it to upgrade: it pulls, re-syncs
@@ -23,7 +23,7 @@
 # environment that CLI then runs from.
 #
 # Env overrides:
-#   LURSOR_REPO      owner/repo to clone from     (default JonathanConn/lursor)
+#   LURSOR_REPO      owner/repo to clone from     (default Systemized-Labs/lursor)
 #   LURSOR_DIR       where to install             (default ~/lursor)
 #   LURSOR_REF       branch/tag to check out      (default main)
 #   LURSOR_PORT      port to bind                 (default 8791)
@@ -32,7 +32,7 @@
 #   --uninstall      stop and remove the service (leaves the code and your data)
 set -eu
 
-REPO="${LURSOR_REPO:-JonathanConn/lursor}"
+REPO="${LURSOR_REPO:-Systemized-Labs/lursor}"
 DIR="${LURSOR_DIR:-$HOME/lursor}"
 REF="${LURSOR_REF:-main}"
 PORT="${LURSOR_PORT:-8791}"

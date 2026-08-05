@@ -2,11 +2,11 @@
   "name": "lursor",
   "productName": "Lursor",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Self-hosted agent harness with workspaces, live terminal, and git review",
   "author": "Jonathan Conn <JonathanConn@users.noreply.github.com>",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/JonathanConn/lursor",
+  "homepage": "https://github.com/Systemized-Labs/lursor",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -89,7 +89,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "JonathanConn",
+        "owner": "Systemized-Labs",
         "repo": "lursor"
       }
     ],
