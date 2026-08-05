@@ -25,6 +25,7 @@ import type { SidebarSide } from "@/components/layout/use-sidebar-side"
 import type { SerializedNode } from "@/components/panes/layout-shapes"
 import {
   buildTemplate,
+  gridZones,
   TEMPLATES,
   type TemplateDef,
 } from "@/components/panes/layout-templates"
@@ -102,10 +103,10 @@ export function LayoutsDialog({
    * A template is a function of the *live* pane set (see `buildTemplate`), so with
    * a lone chat open — or none, which is what an emptied layout looks like — every
    * shape collapses onto what is there and the picker used to close having done
-   * nothing. Picking "Quad" is a request for four zones, so the missing ones get
-   * the kinds the template rosters. Kinds already open are skipped, nothing is
-   * closed, and the roster is trimmed to the shortfall: with a chat and a terminal
-   * up, Quad opens two panes rather than four.
+   * nothing. Picking "Workbench" is a request for its two zones and a drawer, so the
+   * missing ones get the kinds the template rosters. Kinds already open are skipped,
+   * nothing is closed, and the roster is trimmed to the shortfall: with a chat
+   * already up, Workbench opens a Changes pane and a shell rather than three panes.
    *
    * A *global* layout is the one case that can still come up short — it cannot hold
    * a terminal or a Changes pane at all (the rule the zone's `+` menu applies), so
@@ -126,7 +127,7 @@ export function LayoutsDialog({
         template.deck && isDeckEmpty(api) && allowed("terminal") ? ["terminal"] : []
 
       const panels = gridPanels(api)
-      const shortfall = advertisedZones(template) - panels.length
+      const shortfall = gridZones(template) - panels.length
       if (shortfall <= 0) return wanted
       const open = new Set(
         panels.map((panel) => (panel.params as PaneParams | undefined)?.kind)
@@ -272,7 +273,7 @@ export function LayoutsDialog({
     const next = buildTemplate(template.id, api, api.activePanel?.api.id)
     if (!next) return "Open a pane to arrange."
     if (shapeKey(next) !== currentShape) return null
-    return countZones(next.grid.root) < advertisedZones(template)
+    return countZones(next.grid.root) < gridZones(template)
       ? `"${template.label}" needs another pane — open one and it will have somewhere to put it.`
       : `The panes are already arranged like "${template.label}".`
   }
@@ -436,18 +437,6 @@ export function LayoutsDialog({
 }
 
 /**
- * How many *grid* zones a template's schematic advertises.
- *
- * Read off the picture rather than declared twice: the schematic is what the user is
- * promised, so it is also the right thing to measure a shortfall against. Minus the
- * deck's band, which is drawn in the same picture but is the shell's bottom edge
- * rather than a zone the grid has to find a pane for.
- */
-const advertisedZones = (template: TemplateDef) =>
-  template.preview.reduce((sum, row) => sum + row.columns.length, 0) -
-  (template.deck ? 1 : 0)
-
-/**
  * A layout's arrangement, with everything that is not the arrangement removed.
  *
  * Zone ids and pixel sizes are not part of what a user sees as "the same window",
@@ -481,9 +470,9 @@ function countZones(node: unknown): number {
  *
  * The one count in this file that is not `countZones`, and the difference is who is
  * reading it. Everywhere else a "zone" is a cell of the *grid*: `reshape` deals panes
- * into those, and `advertisedZones` measures a shortfall against them, and neither has
- * any business finding a pane for the drawer — that is exactly why `advertisedZones`
- * subtracts the deck's band from the schematic it reads.
+ * into those, and `gridZones` measures a shortfall against them, and neither has any
+ * business finding a pane for the drawer — that is exactly why `gridZones` subtracts
+ * the deck's band from the schematic it reads.
  *
  * This one is a label on a row someone clicks to recognise something they saved, and a
  * chat beside a diff with a terminal underneath is three things on screen. Counting it
