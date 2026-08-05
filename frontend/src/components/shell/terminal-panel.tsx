@@ -94,7 +94,11 @@ export function TerminalPanel({ workspaceId }: TerminalPanelProps) {
 
     /** Fit to the container, then tell the PTY its new dimensions. */
     const syncSize = () => {
-      if (host.clientWidth === 0 || host.clientHeight === 0) return
+      // Not just zero: a pane too short for a single row has no size worth
+      // reporting, and telling the PTY it is one row high reflows the shell's whole
+      // output — so a deck put away and pulled back would come back mangled. Below
+      // a line, the last real size is the right one to keep.
+      if (host.clientWidth === 0 || host.clientHeight < 24) return
       try {
         fit.fit()
       } catch {

@@ -88,6 +88,31 @@
 }
 
 /**
+ * The terminal deck — dockview's bottom edge group.
+ *
+ * It sits outside the grid, in the shell around it, so the grid's own separators do
+ * not run along the top of it: the border is the only thing distinguishing a
+ * collapsed drawer from the pane above, and without it the strip reads as part of
+ * whatever zone happens to be sitting on top.
+ *
+ * Only while the deck is *shown*. A layout with no workspace has no deck, and
+ * dockview hides an edge group by giving its view a height of 0 rather than removing
+ * it — a border on the group itself would overflow that as a stray hairline along the
+ * bottom of the window. `.visible` is the splitview's own marker for the difference.
+ */
+.dockview-theme-lursor .dv-view.visible > .dv-edge-group {
+  border-top: 1px solid var(--border);
+}
+
+/**
+ * A collapsed drawer is its tab strip and nothing else, so the strip's own bottom
+ * border would draw a second line directly under the one above.
+ */
+.dockview-theme-lursor .dv-edge-collapsed .dv-tabs-and-actions-container {
+  border-bottom: none;
+}
+
+/**
  * Dockview's own empty-grid watermark, retired.
  *
  * `PaneHost` draws the empty state — the "open one of these" cards — as an overlay

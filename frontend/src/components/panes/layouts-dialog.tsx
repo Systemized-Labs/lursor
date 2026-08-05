@@ -5,7 +5,11 @@ import {
   FloppyDisk,
   Trash,
 } from "@phosphor-icons/react"
-import type { IDockviewPanel, SerializedDockview } from "dockview-react"
+import type {
+  DockviewApi,
+  IDockviewPanel,
+  SerializedDockview,
+} from "dockview-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -18,18 +22,24 @@ import {
 } from "@/components/ui/responsive-dialog"
 import { Input } from "@/components/ui/input"
 import type { SidebarSide } from "@/components/layout/use-sidebar-side"
-import {
-  panelState,
-  type SerializedNode,
-} from "@/components/panes/layout-shapes"
+import type { SerializedNode } from "@/components/panes/layout-shapes"
 import {
   buildTemplate,
   TEMPLATES,
   type TemplateDef,
-  type TemplateId,
 } from "@/components/panes/layout-templates"
-import type { PaneParams } from "@/components/panes/pane-kinds"
+import {
+  WORKSPACE_KINDS,
+  type PaneKind,
+  type PaneParams,
+} from "@/components/panes/pane-kinds"
 import type { PaneLayout } from "@/components/panes/use-pane-layout"
+import {
+  applyLayout,
+  gridPanels,
+  isDeckCollapsed,
+  isDeckEmpty,
+} from "@/components/panes/terminal-deck"
 import {
   useCustomLayouts,
   type CustomLayout,
@@ -42,6 +52,12 @@ interface LayoutsDialogProps {
   layout: PaneLayout
   /** False outside a workspace, where there are no panes to arrange. */
   hasPanes: boolean
+  /**
+   * Whether the layout belongs to a workspace. A global layout cannot hold a
+   * terminal or a Changes pane, so a template is not allowed to open one there —
+   * the same rule the zone's `+` menu applies.
+   */
+  hasWorkspace: boolean
   side: SidebarSide
   onSideChange: (side: SidebarSide) => void
 }
@@ -61,34 +77,80 @@ export function LayoutsDialog({
   onOpenChange,
   layout,
   hasPanes,
+  hasWorkspace,
   side,
   onSideChange,
 }: LayoutsDialogProps) {
   const custom = useCustomLayouts()
   const [name, setName] = useState("")
 
-  /** Apply a serialized layout, preserving every live pane. */
+  /** Apply a serialized layout, preserving every live pane — deck included. */
   const apply = useCallback(
     (next: SerializedDockview | null) => {
       if (!layout.api || !next) return
-      layout.api.fromJSON(next, { reuseExistingPanels: true })
+      applyLayout(layout.api, next)
       onOpenChange(false)
     },
     [layout.api, onOpenChange]
   )
 
-  const applyTemplate = useCallback(
-    (id: TemplateId) => {
-      if (!layout.api) return
-      apply(
-        buildTemplate(
-          id,
-          layout.api.panels,
-          layout.api.activePanel?.api.id
-        )
+  /**
+   * The panes a template would open right now to fill the zones it is drawing.
+   *
+   * A template is a function of the *live* pane set (see `buildTemplate`), so with
+   * a lone chat open — or none, which is what an emptied layout looks like — every
+   * shape collapses onto what is there and the picker used to close having done
+   * nothing. Picking "Quad" is a request for four zones, so the missing ones get
+   * the kinds the template rosters. Kinds already open are skipped, nothing is
+   * closed, and the roster is trimmed to the shortfall: with a chat and a terminal
+   * up, Quad opens two panes rather than four.
+   *
+   * A *global* layout is the one case that can still come up short — it cannot hold
+   * a terminal or a Changes pane at all (the rule the zone's `+` menu applies), so
+   * those are filtered out and the shape stays whatever the live panes can make.
+   *
+   * Counted over the *grid*: the deck is the shell's bottom edge, so a terminal in
+   * it does not fill a zone. A shape that draws the deck asks for a shell of its own
+   * — and only when the drawer is empty, because one already down there is the one
+   * the band is promising to show.
+   */
+  const fillsFor = useCallback(
+    (template: TemplateDef): PaneKind[] => {
+      const api = layout.api
+      if (!api) return []
+      const allowed = (kind: PaneKind) =>
+        hasWorkspace || !WORKSPACE_KINDS.includes(kind)
+      const wanted: PaneKind[] =
+        template.deck && isDeckEmpty(api) && allowed("terminal") ? ["terminal"] : []
+
+      const panels = gridPanels(api)
+      const shortfall = advertisedZones(template) - panels.length
+      if (shortfall <= 0) return wanted
+      const open = new Set(
+        panels.map((panel) => (panel.params as PaneParams | undefined)?.kind)
       )
+      return [
+        ...wanted,
+        ...template.fills
+          .filter((kind) => !open.has(kind) && allowed(kind))
+          .slice(0, shortfall),
+      ]
     },
-    [layout.api, apply]
+    [layout.api, hasWorkspace]
+  )
+
+  const applyTemplate = useCallback(
+    (template: TemplateDef) => {
+      const api = layout.api
+      if (!api) return
+      // Read before opening anything: `openPane` focuses what it adds, and a
+      // layout picker should rearrange the window without moving the cursor —
+      // the same rule `buildTemplate` follows for the zone it marks active.
+      const active = api.activePanel?.api.id
+      for (const kind of fillsFor(template)) layout.openPane(kind)
+      apply(buildTemplate(template.id, api, active ?? api.activePanel?.api.id))
+    },
+    [layout, apply, fillsFor]
   )
 
   /**
@@ -104,11 +166,12 @@ export function LayoutsDialog({
   const applyCustom = useCallback(
     (item: CustomLayout) => {
       if (!layout.api) return
-      const panels = layout.api.panels
+      const panels = gridPanels(layout.api)
       if (panels.length === 0) return
       const zones = countZones(item.layout.grid.root)
       const reshaped = reshape(
         item.layout,
+        layout.api,
         panels,
         layout.api.activePanel?.api.id
       )
@@ -131,6 +194,33 @@ export function LayoutsDialog({
     [layout.api, apply]
   )
 
+  /**
+   * Why a template would change nothing, or null when it would.
+   *
+   * Computed per render rather than memoised: the dialog is mounted only while it
+   * is open, and this is four pure builds over a handful of panes. In a workspace
+   * this is now almost always null — a template that is short on panes opens them
+   * rather than reporting the shortfall. What is left is the honestly inert case:
+   * the window is already arranged that way.
+   */
+  const currentShape = layout.api ? shapeKey(layout.api.toJSON()) : null
+  const blockedReason = (template: TemplateDef): string | null => {
+    const api = layout.api
+    if (!api) return "Open a workspace to arrange its panes."
+    // Mirrors `applyTemplate`: one about to open panes changes something by
+    // definition. Only once it has them is it judged on its shape.
+    if (fillsFor(template).length > 0) return null
+    // And a shape that shows the deck changes the window whenever the drawer is
+    // shut, whatever the grid above it already looks like.
+    if (template.deck && isDeckCollapsed(api)) return null
+    const next = buildTemplate(template.id, api, api.activePanel?.api.id)
+    if (!next) return "Open a pane to arrange."
+    if (shapeKey(next) !== currentShape) return null
+    return countZones(next.grid.root) < advertisedZones(template)
+      ? `"${template.label}" needs another pane — open one and it will have somewhere to put it.`
+      : `The panes are already arranged like "${template.label}".`
+  }
+
   const saveCurrent = useCallback(() => {
     if (!layout.api) return
     custom.save(name || `Layout ${custom.items.length + 1}`, layout.api.toJSON())
@@ -144,8 +234,8 @@ export function LayoutsDialog({
         <DialogHeader>
           <DialogTitle>Layouts</DialogTitle>
           <DialogDescription>
-            Rearrange the zones. Every pane stays open and keeps running — a
-            terminal does not lose its shell.
+            Rearrange the zones, opening any pane a layout is short of. Nothing
+            closes and nothing restarts — a terminal does not lose its shell.
           </DialogDescription>
         </DialogHeader>
 
@@ -160,20 +250,32 @@ export function LayoutsDialog({
                 Templates
               </h3>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {TEMPLATES.map((template) => (
-                  <button
-                    key={template.id}
-                    type="button"
-                    onClick={() => applyTemplate(template.id)}
-                    title={template.description}
-                    className="flex flex-col gap-2 rounded-lg border border-border p-2 text-left hover:border-primary/50 hover:bg-accent"
-                  >
-                    <Schematic rows={template.preview} />
-                    <span className="truncate text-xs font-medium text-foreground">
-                      {template.label}
-                    </span>
-                  </button>
-                ))}
+                {TEMPLATES.map((template) => {
+                  const blocked = blockedReason(template)
+                  // Dimmed but not `disabled`, and deliberately not
+                  // `aria-disabled` either: a button that cannot be clicked cannot
+                  // tell you why it did nothing, which is the whole complaint. It
+                  // stays actionable and answers instead.
+                  return (
+                    <button
+                      key={template.id}
+                      type="button"
+                      onClick={() =>
+                        blocked ? toast.info(blocked) : applyTemplate(template)
+                      }
+                      title={blocked ?? template.description}
+                      className={cn(
+                        "flex flex-col gap-2 rounded-lg border border-border p-2 text-left hover:border-primary/50 hover:bg-accent",
+                        blocked && "opacity-50"
+                      )}
+                    >
+                      <Schematic rows={template.preview} />
+                      <span className="truncate text-xs font-medium text-foreground">
+                        {template.label}
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
             </section>
 
@@ -268,6 +370,37 @@ export function LayoutsDialog({
   )
 }
 
+/**
+ * How many *grid* zones a template's schematic advertises.
+ *
+ * Read off the picture rather than declared twice: the schematic is what the user is
+ * promised, so it is also the right thing to measure a shortfall against. Minus the
+ * deck's band, which is drawn in the same picture but is the shell's bottom edge
+ * rather than a zone the grid has to find a pane for.
+ */
+const advertisedZones = (template: TemplateDef) =>
+  template.preview.reduce((sum, row) => sum + row.columns.length, 0) -
+  (template.deck ? 1 : 0)
+
+/**
+ * A layout's arrangement, with everything that is not the arrangement removed.
+ *
+ * Zone ids and pixel sizes are not part of what a user sees as "the same window",
+ * so they are dropped; the nesting is kept, because a column split in two and two
+ * zones side by side hold the same panes in the same order and are not the same
+ * layout. Orientation only counts once there is a split — a single zone is the
+ * whole window whichever axis it claims, which is why the deck reads as a no-op
+ * with one pane open rather than as a change.
+ */
+function shapeKey(layout: SerializedDockview): string {
+  const walk = (node: SerializedNode): unknown =>
+    node.type === "leaf"
+      ? (node.data as { views: string[] }).views
+      : (node.data as SerializedNode[]).map(walk)
+  const axis = countZones(layout.grid.root) > 1 ? layout.grid.orientation : ""
+  return JSON.stringify([axis, walk(layout.grid.root as SerializedNode)])
+}
+
 /** How many leaf zones a serialized grid has. */
 function countZones(node: unknown): number {
   const typed = node as { type: string; data: unknown }
@@ -282,11 +415,15 @@ function countZones(node: unknown): number {
  * Re-deal the live panes into a saved layout's geometry.
  *
  * Walks the saved tree in order, replacing each zone's view list with a slice of
- * the live panes, and rebuilds the `panels` map from those panes — **not** from the
- * saved one. The saved map is keyed by the pane ids of the workspace it came from;
- * reusing it would hand `fromJSON` a layout whose views name panels it has no state
- * for, and whose real panels are absent and therefore destroyed. That is the §3.7
- * failure mode wearing a different hat.
+ * the live panes, and takes `panels` and the deck from the **live** layout rather
+ * than the saved one. The saved map is keyed by the pane ids of the workspace it
+ * came from; reusing it would hand `fromJSON` a layout whose views name panels it has
+ * no state for, and whose real panels are absent and therefore destroyed. That is the
+ * §3.7 failure mode wearing a different hat — and the deck's shells are the sharpest
+ * case of it, since they are named nowhere in the grid at all.
+ *
+ * `panels` is the *grid's* panes, for the same reason a template arranges only those:
+ * a saved shape is a shape for the grid, and the deck stays as the user left it.
  *
  * Extra panes join the last zone rather than being dropped. A shape with *more*
  * zones than panes is refused outright, because an empty zone is not a legal
@@ -294,6 +431,7 @@ function countZones(node: unknown): number {
  */
 function reshape(
   saved: SerializedDockview,
+  api: DockviewApi,
   panels: IDockviewPanel[],
   activePanelId?: string
 ): SerializedDockview | null {
@@ -319,16 +457,17 @@ function reshape(
   }
 
   const root = walk(saved.grid.root as SerializedNode)
+  const live = api.toJSON()
 
   return {
     ...saved,
     grid: { ...saved.grid, root },
-    panels: Object.fromEntries(
-      panels.map((panel) => [
-        panel.api.id,
-        panelState(panel.api.id, panel.params as PaneParams),
-      ])
-    ),
+    // Every live pane, deck included: the grid names only the ones dealt above, and
+    // anything missing from here is a pane `fromJSON` destroys.
+    panels: live.panels,
+    // The deck as it is now, not as it was when this arrangement was saved — same
+    // reason. Its serialized state names the pane ids of another workspace.
+    edgeGroups: live.edgeGroups,
     activeGroup,
     // Dropped: a saved layout's floating and popout groups. They reference the same
     // stale ids, and we do not ship popouts (open question 7 deferred them).

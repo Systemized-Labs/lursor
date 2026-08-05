@@ -445,7 +445,7 @@ export function AppShell() {
 
   // ── Desktop layout ─────────────────────────────────────────────────────────
   const center: ReactNode = fullBleed ? (
-    <main className="flex h-(--shell-height) min-w-0 flex-col overflow-hidden">
+    <main className="flex h-(--shell-height) min-w-0 flex-1 flex-col overflow-hidden">
       <Outlet />
     </main>
   ) : (
@@ -512,6 +512,7 @@ export function AppShell() {
               onOpenChange={setLayoutsOpen}
               layout={layout}
               hasPanes={showPanes}
+              hasWorkspace={inWorkspace}
               side={sidebarSide}
               onSideChange={setSidebarSide}
             />

@@ -14,6 +14,17 @@ import {
   type PaneKind,
   type PaneParams,
 } from "@/components/panes/pane-kinds"
+import {
+  adoptGridTerminals,
+  ensureDeck,
+  focusDeckTerminal,
+  gridPanels,
+  openInDeck,
+  revealDeck,
+  revealPanel,
+  setDeckPresent,
+  watchDeck,
+} from "@/components/panes/terminal-deck"
 import { clearTabStorage } from "@/lib/tab-storage"
 
 const LAYOUT_PREFIX = "lursor:layout:"
@@ -125,6 +136,31 @@ function readLayout(workspaceId?: string): SerializedDockview | null {
   return migrateLegacy(workspaceId)
 }
 
+/**
+ * Where a pane with no zone of its own goes — a grid zone, never the deck.
+ *
+ * Dockview's own answer is "the active group", and that answer became wrong the day
+ * the deck arrived: with a terminal focused, "open Changes" would tab a diff in
+ * behind the shell and then hide it with the drawer. Undefined means dockview's
+ * answer is already a grid zone and can stand.
+ *
+ * The zone chosen is the one the user last worked in — the same MRU rule `ensurePane`
+ * follows, and for the same reason: it is the zone they are looking at. A grid with
+ * nothing left in it gets a new zone rather than borrowing the drawer.
+ */
+function gridGroupId(api: DockviewApi, mru: string[]): string | undefined {
+  if (api.activeGroup?.api.location.type !== "edge") return undefined
+  const byId = new Map(api.panels.map((panel) => [panel.api.id, panel]))
+  const recent = mru
+    .map((id) => byId.get(id))
+    .find(
+      (panel): panel is IDockviewPanel =>
+        panel !== undefined && panel.api.group.api.location.type === "grid"
+    )
+  const inGrid = recent ?? gridPanels(api)[0]
+  return inGrid ? inGrid.api.group.api.id : api.addGroup().api.id
+}
+
 export interface PaneLayout {
   /** Set once dockview is ready. */
   api: DockviewApi | null
@@ -184,6 +220,11 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   const load = useCallback(
     (target: DockviewApi, ws?: string) => {
       const stored = readLayout(ws)
+      // The deck is structural: created once per dockview instance and untouched by
+      // `clear()` or `fromJSON`. It is present only in a workspace, because a
+      // terminal with no workspace has no directory to run in.
+      ensureDeck(target)
+      setDeckPresent(target, Boolean(ws))
       if (!stored && !ws) {
         // A *global* layout has no sensible default. `defaultLayout` seeds a chat
         // pane, and a chat with no workspace has nothing to talk to — so start
@@ -206,6 +247,12 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       }
       loadedFor.current = ws
       mru.current = target.activePanel ? [target.activePanel.api.id] : []
+      // A layout saved before the deck existed has its terminals as zones of the
+      // grid. Move them in, and open the drawer if it just inherited a shell —
+      // migrating someone's terminal into a closed drawer looks like losing it.
+      // Guarded on the absence of `edgeGroups`, which every layout written since
+      // carries, so this runs once per workspace and never again.
+      if (!stored?.edgeGroups && adoptGridTerminals(target)) revealDeck(target)
       // Commit immediately rather than waiting for the first change. Dockview only
       // fires `onDidLayoutChange` when something *changes*, so a migrated or
       // defaulted layout would otherwise never be written — and would be re-derived
@@ -246,6 +293,8 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
     }
     const subs = [
       api.onDidLayoutChange(persist),
+      // The deck is not in the grid, so `onDidLayoutChange` says nothing about it.
+      ...watchDeck(api, persist),
       api.onDidActivePanelChange((event) => {
         if (!event.panel) return
         const id = event.panel.api.id
@@ -267,18 +316,30 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       opts?: { params?: Partial<PaneParams>; groupId?: string }
     ) => {
       if (!api) return
-      api.addPanel({
+      const panel = {
         id: newPaneId(),
         component: kind,
         tabComponent: "pane",
         title: PANE_KINDS[kind].title,
         renderer: PANE_KINDS[kind].renderer,
         params: { kind, ...opts?.params } satisfies PaneParams,
-        // A `+` on a zone's strip means "here", not "wherever dockview decides".
-        ...(opts?.groupId
+      }
+      // Terminals have one home. Wherever the request came from — a card, a
+      // template, the deck's own `+` — a new shell opens in the deck and the drawer
+      // comes up on it, so there is exactly one place to look for a terminal and
+      // one thing to put away when you are done with it.
+      if (kind === "terminal") {
+        openInDeck(api, panel)
+        return
+      }
+      // A `+` on a zone's strip means "here", not "wherever dockview decides".
+      const groupId = opts?.groupId ?? gridGroupId(api, mru.current)
+      api.addPanel({
+        ...panel,
+        ...(groupId
           ? {
               floating: false as const,
-              position: { referenceGroup: opts.groupId, direction: "within" as const },
+              position: { referenceGroup: groupId, direction: "within" as const },
             }
           : {}),
       })
@@ -302,11 +363,23 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   const ensurePane = useCallback(
     (kind: PaneKind) => {
       if (!api) return
+      // A terminal is wherever the deck is: no MRU to consult, and reopening the
+      // drawer *is* the request when a shell is already in there.
+      if (kind === "terminal") {
+        if (!focusDeckTerminal(api)) openPane(kind)
+        return
+      }
+
       const panels = api.panels
       const kindOf = (panel: IDockviewPanel) =>
         (panel.params as PaneParams | undefined)?.kind
       const active = api.activePanel
-      if (active && kindOf(active) === kind) return
+      if (active && kindOf(active) === kind) {
+        // Already the pane in focus — though it may be one someone parked in the
+        // deck, in which case the drawer still has to come up.
+        revealPanel(api, active)
+        return
+      }
 
       const byId = new Map(panels.map((p) => [p.api.id, p]))
       const target =
@@ -316,7 +389,7 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
         panels.find((p) => kindOf(p) === kind)
 
       if (target) {
-        target.api.setActive()
+        revealPanel(api, target)
         return
       }
       openPane(kind)
@@ -340,7 +413,7 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
           )
         : undefined
       if (existing) {
-        existing.api.setActive()
+        revealPanel(api, existing)
         return
       }
 
@@ -357,7 +430,7 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
 
       if (target) {
         target.api.updateParameters({ kind: "chat", threadId })
-        target.api.setActive()
+        revealPanel(api, target)
         return
       }
       openPane("chat", { params: { threadId } })

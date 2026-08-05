@@ -13,6 +13,7 @@ import { ThemePicker } from "@/components/ui/theme-picker"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   DESTINATIONS,
+  isDestinationRoute,
   matchesRoute,
 } from "@/components/layout/destinations"
 import { useSettingsParam } from "@/components/settings/use-settings-param"
@@ -43,9 +44,7 @@ export function SessionsFooter({ onNavigate }: SessionsFooterProps) {
   const routeDestinations = DESTINATIONS.filter(
     (item) => item.to !== undefined
   )
-  const destinationActive = routeDestinations.some(
-    (item) => item.to && matchesRoute(pathname, item.to)
-  )
+  const destinationActive = isDestinationRoute(pathname)
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-t border-sidebar-border px-2 py-1.5">
@@ -96,6 +95,10 @@ export function SessionsFooter({ onNavigate }: SessionsFooterProps) {
                 aria-label="More destinations"
                 className={cn(
                   TILE,
+                  // Radix puts `pointer-events: none` on the body while the menu
+                  // is open, so `:hover` stops applying and the trigger would go
+                  // flat the moment you click it. Hold the accent explicitly.
+                  "data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground",
                   destinationActive &&
                     "bg-sidebar-accent text-sidebar-accent-foreground"
                 )}
