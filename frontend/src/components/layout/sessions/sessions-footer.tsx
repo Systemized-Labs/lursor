@@ -99,8 +99,13 @@ export function SessionsFooter({ onNavigate }: SessionsFooterProps) {
                   // is open, so `:hover` stops applying and the trigger would go
                   // flat the moment you click it. Hold the accent explicitly.
                   "data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground",
-                  destinationActive &&
-                    "bg-sidebar-accent text-sidebar-accent-foreground"
+                  // "You are on one of these pages" is only a brighter icon. A
+                  // filled tile is the active state for the *rows* above, where
+                  // it reads as a highlighted line in a list; on a 28px square
+                  // sitting between two flat tiles and a round avatar it reads
+                  // as a stuck toggle instead, and it persists for as long as
+                  // you stay on the page.
+                  destinationActive && "text-sidebar-accent-foreground"
                 )}
               >
                 <DotsThree className="size-5" weight="bold" />

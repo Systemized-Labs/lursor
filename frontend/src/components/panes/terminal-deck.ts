@@ -4,6 +4,7 @@ import type {
   DockviewIDisposable,
   DockviewPanelRenderer,
   IDockviewPanel,
+  PanelTransfer,
   SerializedDockview,
   SerializedEdgeGroups,
 } from "dockview-react"
@@ -126,6 +127,18 @@ export function isDeckCollapsed(api: DockviewApi): boolean {
 }
 
 /**
+ * Whether the drawer is in the window *and* open — showing what is in it.
+ *
+ * The state in which dockview's own drop targets are the better ones: an open drawer
+ * is a group on screen, so dragging a pane onto its strip already puts it in there,
+ * at the tab index you dropped it on. {@link dropInDeck}'s band is for the other two
+ * states, where the drawer is put away or gone and there is nothing to aim at.
+ */
+export function isDeckOpen(api: DockviewApi): boolean {
+  return api.isEdgeGroupVisible(EDGE) && !isDeckCollapsed(api)
+}
+
+/**
  * Close the deck: its panes go, and the strip goes with them.
  *
  * The `×` beside the collapse caret, and the difference between the two is the whole
@@ -180,6 +193,112 @@ export function openInDeck(api: DockviewApi, panel: DeckPane): void {
     position: { referenceGroup: DECK_ID, direction: "within" },
   })
   revealDeck(api)
+}
+
+/**
+ * Move a *dragged* pane into the deck, and open the drawer on it.
+ *
+ * The other half of the drawer's drop band (`DrawerDropZone` in `pane-host`): the band
+ * decides where the drop counts, this decides what a drop means. Dockview's own targets
+ * cannot express it — a drop is resolved against the group under the cursor, and the
+ * deck is not a group in the grid, so the closest a drag could get to "put this along
+ * the bottom" was splitting the bottom-most zone in two.
+ *
+ * `data` is dockview's transfer object, which names either one panel or a whole group:
+ * a tab drag carries a `panelId`, a group drag (the void space beside the tabs) carries
+ * only its `groupId` and means every pane in it. Both are moved rather than re-created,
+ * so a running shell and a scrolled preview arrive exactly as they left.
+ *
+ * Revealing the drawer afterwards is the point of routing this through here rather than
+ * letting the moves stand on their own: a pane dropped into a drawer that is put away —
+ * or one the `×` took out of the window entirely — would otherwise vanish on drop.
+ */
+export function dropInDeck(api: DockviewApi, data: PanelTransfer): void {
+  // Another dockview instance's drag (a popout window's). Its panels are not ours to
+  // move, and its ids may well collide with ours.
+  if (data.viewId !== api.id) return
+  ensureDeck(api)
+  const group = deckGroup(api)
+  if (!group) return
+
+  const panel = data.panelId ? api.getPanel(data.panelId) : undefined
+  // A copy of the group's roster: moving a pane out mutates the list being read, and
+  // dockview disposes the group once the last one leaves.
+  const dragged = panel
+    ? [panel]
+    : [...(api.groups.find((g) => g.api.id === data.groupId)?.panels ?? [])]
+  if (dragged.length === 0) return
+
+  for (const dropped of dragged) {
+    dropped.api.moveTo({ group, position: "center", skipSetActive: true })
+  }
+  revealDeck(api)
+  // Then focus what was dropped. Unlike a template switch — which rearranges the window
+  // and leaves the cursor alone — a drag is a request to put *this* pane there, so the
+  // drawer should open on it rather than on whichever tab it happens to land beside.
+  dragged[dragged.length - 1].api.setActive()
+}
+
+/**
+ * Take over the drops that would put a pane across the whole bottom of the grid.
+ *
+ * The band in `pane-host` is an *affordance*; this is the rule. Dockview resolves a drop
+ * against the group under the cursor, and a drop on the lower fifth of a zone splits it
+ * — so a zone spanning the full width gets a full-width row beneath it, which is a
+ * drawer in every respect a user can see and in none that the app agrees with: it is a
+ * grid zone, so its strip has a `+` and no caret and no `×`, and the real drawer is still
+ * sitting collapsed underneath it. Dragging to the bottom would produce one or the other
+ * depending on a few dozen pixels.
+ *
+ * So a full-width bottom row is not a layout this app has. Nothing else builds one either
+ * — every template splits columns and leaves the bottom to the deck (see `buildTemplate`)
+ * — and this is the one path that could, so it is claimed here instead.
+ *
+ * **Only when the row would span the grid**: dropping below a *column* stacks two zones
+ * inside it, which is a real arrangement and is left alone. That is the whole of
+ * {@link spansGridBottom}.
+ *
+ * Returns the subscription for the caller to dispose.
+ */
+export function claimBottomDrops(api: DockviewApi): DockviewIDisposable {
+  return api.onWillDrop((event) => {
+    if (event.kind !== "content" || event.position !== "bottom") return
+    const group = event.group
+    if (!group || group.api.location.type !== "grid") return
+    if (!spansGridBottom(api, group)) return
+    const data = event.getData()
+    // Not a pane — a file from the tree, say. Dockview has its own answer for those.
+    if (!data) return
+    event.preventDefault()
+    dropInDeck(api, data)
+  })
+}
+
+/**
+ * Whether a row added below `group` would run the full width of the grid's bottom.
+ *
+ * Measured off the live group boxes rather than walked in the serialized tree: "spans the
+ * bottom" is a question about the picture on screen, and the tree answers a subtly
+ * different one — a zone can be the last leaf of the root and still have a column beside
+ * it. The grid's own box is the union of its zones, which is exactly what the deck sits
+ * under.
+ */
+function spansGridBottom(
+  api: DockviewApi,
+  group: DockviewGroupPanel
+): boolean {
+  const boxes = api.groups
+    .filter((candidate) => candidate.api.location.type === "grid")
+    .map((candidate) => candidate.element.getBoundingClientRect())
+  if (boxes.length === 0) return false
+  const rect = group.element.getBoundingClientRect()
+  // Within a sash: the gridview leaves a couple of pixels between views.
+  const near = (a: number, b: number) => Math.abs(a - b) <= 4
+  return (
+    near(rect.left, Math.min(...boxes.map((box) => box.left))) &&
+    near(rect.right, Math.max(...boxes.map((box) => box.right))) &&
+    near(rect.bottom, Math.max(...boxes.map((box) => box.bottom)))
+  )
 }
 
 /**

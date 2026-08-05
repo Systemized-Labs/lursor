@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { CaretDown, CaretUp, Plus, Terminal, X } from "@phosphor-icons/react"
+import {
+  ArrowLineDown,
+  CaretDown,
+  CaretUp,
+  Plus,
+  Terminal,
+  X,
+} from "@phosphor-icons/react"
 import {
   DockviewReact,
+  getPanelData,
+  type DockviewApi,
   type DockviewReadyEvent,
   type DockviewTheme,
   type IDockviewHeaderActionsProps,
@@ -25,7 +34,14 @@ import {
   type PaneParams,
 } from "@/components/panes/pane-kinds"
 import type { PaneLayout } from "@/components/panes/use-pane-layout"
-import { closeDeck, gridPanels } from "@/components/panes/terminal-deck"
+import {
+  claimBottomDrops,
+  closeDeck,
+  dropInDeck,
+  gridPanels,
+  isDeckOpen,
+} from "@/components/panes/terminal-deck"
+import { cn } from "@/lib/utils"
 import "@/components/panes/pane-theme.css"
 
 /**
@@ -144,6 +160,55 @@ export function PaneHost({
     return () => sub.dispose()
   }, [api])
 
+  /**
+   * Whether to offer the drawer's drop band — a pane is being dragged, and the drawer
+   * is not already open.
+   *
+   * Decided once, when the drag starts, rather than read live: the answer cannot change
+   * mid-drag (nothing opens the drawer while you are holding a pane), and a band that
+   * appeared or vanished under the cursor would move the drop target out from under a
+   * drag in progress.
+   *
+   * The end of a drag is taken from the document rather than from dockview, because a
+   * drag abandoned outside the window — released over another app, or cancelled with
+   * escape — never reaches dockview at all, and the band has to come down anyway.
+   *
+   * `dragend` and `drop` end an HTML5 drag, which is what a mouse produces; `pointerup`
+   * ends a touch or pen one, which dockview drives from pointer events instead and which
+   * fires no `dragend`. **Not `pointercancel`**, tempting as the pair looks: Chromium
+   * fires it the instant a press becomes an HTML5 drag, so it took the band back down in
+   * the same tick `onWillDragPanel` put it up — measured, with a drag that then landed on
+   * dockview's own collapsed strip and hid the pane in a shut drawer.
+   */
+  /**
+   * A pane dropped along the bottom of the grid is the drawer, wherever in the bottom
+   * band it landed — see {@link claimBottomDrops}. The band above is how you find that
+   * out; this is what makes it true a few pixels higher up, where dockview would
+   * otherwise have built a zone that looks like a drawer and has none of its controls.
+   *
+   * Workspace-only, like the drawer itself: without one there is no deck to claim for,
+   * so the drop stays dockview's.
+   */
+  useEffect(() => {
+    if (!api || !workspaceId) return
+    const sub = claimBottomDrops(api)
+    return () => sub.dispose()
+  }, [api, workspaceId])
+
+  const [dragging, setDragging] = useState(false)
+  useEffect(() => {
+    if (!api) return
+    const start = () => setDragging(!isDeckOpen(api))
+    const stop = () => setDragging(false)
+    const ends = ["dragend", "drop", "pointerup"] as const
+    for (const event of ends) document.addEventListener(event, stop)
+    const subs = [api.onWillDragPanel(start), api.onWillDragGroup(start)]
+    return () => {
+      for (const event of ends) document.removeEventListener(event, stop)
+      subs.forEach((sub) => sub.dispose())
+    }
+  }, [api])
+
   return (
     <div className="relative min-h-0 min-w-0 flex-1">
       <DockviewReact
@@ -159,6 +224,83 @@ export function PaneHost({
       {empty ? (
         <EmptyLayout layout={layout} hasWorkspace={Boolean(workspaceId)} />
       ) : null}
+      {/* Workspace-only, like the deck itself: a global layout has no directory for a
+          shell to run in, so it has no drawer to drop into either. */}
+      {dragging && api && workspaceId ? <DrawerDropZone api={api} /> : null}
+    </div>
+  )
+}
+
+/**
+ * The drawer's drop zone: a band across the whole bottom of the window.
+ *
+ * The third thing a dragged pane can become, beside a tab of a zone and a zone of its
+ * own — the drawer, spanning the full width under everything else. Dockview cannot
+ * offer it, and not for want of a drop target: every drop it resolves lands somewhere
+ * in the *grid*, and the deck is the shell's bottom edge rather than a cell of it (see
+ * `terminal-deck`). So the closest a drag could get to "along the bottom" was splitting
+ * whichever zone happened to be lowest, which is a column with something under it and
+ * not a drawer at all.
+ *
+ * **Ours rather than dockview's, deliberately.** Dockview does have outer-edge drop
+ * targets, but a group's own content target sits inside them and marks the drag event
+ * handled before the outer one is reached, so the edge only wins where no group covers
+ * the cursor. Yielding to it would mean suppressing the group's overlay by mirroring
+ * dockview's own edge arithmetic — two internals to keep in step for a band we would
+ * then have to relabel anyway. This element is a *sibling* of the dockview container,
+ * so a drag over it never reaches dockview's targets: the band is the only thing
+ * offering a drop, and it says what dropping there does.
+ *
+ * Only mounted while a pane is being dragged, so it costs the layout nothing at rest —
+ * and only while the drawer is shut, since an open one is already a group you can drop
+ * onto (see {@link isDeckOpen}).
+ */
+function DrawerDropZone({ api }: { api: DockviewApi }) {
+  const [over, setOver] = useState(false)
+
+  /**
+   * Accept the drag, if it is one of ours.
+   *
+   * `getPanelData` is dockview's transfer store, and empty for anything that is not a
+   * pane — a file dragged from the tree, a link, an image. Those are left unaccepted
+   * rather than swallowed: without a `preventDefault` the browser refuses the drop and
+   * the band never sees one.
+   */
+  const accept = (event: React.DragEvent): boolean => {
+    if (!getPanelData()) return false
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "move"
+    return true
+  }
+
+  return (
+    <div
+      onDragEnter={(event) => setOver(accept(event))}
+      // Every `dragover` re-accepts: the browser drops the target's willingness the
+      // moment one goes unhandled.
+      onDragOver={(event) => setOver(accept(event))}
+      onDragLeave={() => setOver(false)}
+      onDrop={(event) => {
+        const data = getPanelData()
+        if (!data) return
+        event.preventDefault()
+        setOver(false)
+        dropInDeck(api, data)
+      }}
+      className={cn(
+        // Above dockview's own overlays, which the theme puts at `z-index: 40`.
+        "absolute inset-x-0 bottom-0 z-50 flex h-14 items-center justify-center gap-2 border-t border-dashed text-xs transition-colors",
+        // Opaque at rest, so the band reads as one strip rather than as a haze over the
+        // put-away drawer it is sitting on; tinted while hovered, which is the same
+        // dashed-primary-over-content language as dockview's own drop overlays
+        // (`--dv-drag-over-*` in `pane-theme.css`).
+        over
+          ? "border-primary bg-primary/15 text-foreground"
+          : "border-border bg-card text-muted-foreground"
+      )}
+    >
+      <ArrowLineDown className="size-4" />
+      Drop here for the drawer
     </div>
   )
 }
@@ -274,11 +416,13 @@ function DeckActions({
   const putAway = collapsed ? "Show the terminal deck" : "Hide the terminal deck"
   // Say what it takes with it. The caret next door means the drawer keeps running,
   // so the one that does not had better be specific about the difference.
-  const shells =
-    panels.length === 1 ? "1 shell" : `${panels.length} shells`
+  //
+  // Counted as panes rather than shells: anything can be dragged into the drawer, so a
+  // count of "shells" is a guess that a Changes pane parked down there makes wrong.
+  const held = panels.length === 1 ? "1 pane" : `${panels.length} panes`
   const close =
     panels.length > 0
-      ? `Close the terminal deck (${shells})`
+      ? `Close the terminal deck (${held})`
       : "Close the terminal deck"
 
   return (
