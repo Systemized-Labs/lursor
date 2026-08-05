@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-react"
 
 import {
@@ -11,6 +11,8 @@ import {
   isPaneKind,
   newPaneId,
   PANE_KINDS,
+  paneKindOf,
+  paneParamsOf,
   type PaneKind,
   type PaneParams,
 } from "@/components/panes/pane-kinds"
@@ -410,10 +412,8 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       // case did, except it also ignored every terminal in the grid and opened a
       // second shell beside one already running.
       const panels = api.panels
-      const kindOf = (panel: IDockviewPanel) =>
-        (panel.params as PaneParams | undefined)?.kind
       const active = api.activePanel
-      if (active && kindOf(active) === kind) {
+      if (active && paneKindOf(active) === kind) {
         // Already the pane in focus — though it may be one someone parked in the
         // deck, in which case the drawer still has to come up.
         revealPanel(api, active)
@@ -424,8 +424,9 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       const target =
         mru.current
           .map((id) => byId.get(id))
-          .find((p): p is IDockviewPanel => p !== undefined && kindOf(p) === kind) ??
-        panels.find((p) => kindOf(p) === kind)
+          .find(
+            (p): p is IDockviewPanel => p !== undefined && paneKindOf(p) === kind
+          ) ?? panels.find((p) => paneKindOf(p) === kind)
 
       if (target) {
         revealPanel(api, target)
@@ -439,17 +440,14 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   const openThread = useCallback(
     (threadId: string | null) => {
       if (!api) return
-      const kindOf = (panel: IDockviewPanel) =>
-        (panel.params as PaneParams | undefined)?.kind
 
       // A pane already on this thread is the answer — focus it rather than
       // re-addressing another one and ending up with the conversation open twice.
       const existing = threadId
-        ? api.panels.find(
-            (panel) =>
-              kindOf(panel) === "chat" &&
-              (panel.params as PaneParams | undefined)?.threadId === threadId
-          )
+        ? api.panels.find((panel) => {
+            const params = paneParamsOf(panel)
+            return params?.kind === "chat" && params.threadId === threadId
+          })
         : undefined
       if (existing) {
         revealPanel(api, existing)
@@ -459,13 +457,13 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       const active = api.activePanel
       const byId = new Map(api.panels.map((p) => [p.api.id, p]))
       const target =
-        (active && kindOf(active) === "chat" ? active : undefined) ??
+        (active && paneKindOf(active) === "chat" ? active : undefined) ??
         mru.current
           .map((id) => byId.get(id))
           .find(
-            (p): p is IDockviewPanel => p !== undefined && kindOf(p) === "chat"
+            (p): p is IDockviewPanel => p !== undefined && paneKindOf(p) === "chat"
           ) ??
-        api.panels.find((p) => kindOf(p) === "chat")
+        api.panels.find((p) => paneKindOf(p) === "chat")
 
       if (target) {
         target.api.updateParameters({ kind: "chat", threadId })
@@ -477,7 +475,24 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
     [api, openPane]
   )
 
-  return { api, onReady, openPane, ensurePane, openThread }
+  /**
+   * Memoised, and this is not a micro-optimisation.
+   *
+   * Six effects in `app-shell` list `layout` in their deps. A fresh object literal
+   * here re-ran all six on every shell render — every keystroke in a chat — and the
+   * only thing standing between that and duplicate panes was the ref guard each one
+   * happens to carry (`seededRef`, `seededThreadFor`, `addressedRoute` and the
+   * pending-request hooks' own). Those guards are correct and stay, but they should
+   * not be the *reason* nothing breaks.
+   *
+   * Every member is already stable — `api` is state, the other four are
+   * `useCallback` — so this genuinely holds identity between renders rather than
+   * just moving the allocation.
+   */
+  return useMemo(
+    () => ({ api, onReady, openPane, ensurePane, openThread }),
+    [api, onReady, openPane, ensurePane, openThread]
+  )
 }
 
 /**

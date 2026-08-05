@@ -10,7 +10,7 @@ import {
   Terminal,
   type Icon,
 } from "@phosphor-icons/react"
-import type { DockviewPanelRenderer } from "dockview-react"
+import type { DockviewPanelRenderer, IDockviewPanel } from "dockview-react"
 
 /**
  * The kinds of surface a pane can be.
@@ -139,6 +139,54 @@ export function isPaneKind(value: unknown): value is PaneKind {
 }
 
 /**
+ * Our params off a live panel.
+ *
+ * Dockview types `panel.params` as an open record, so reading ours out of it takes
+ * a cast. **The cast lives here so it lives nowhere else** — it used to be written
+ * out at nine call sites across five files, each one re-asserting the same thing and
+ * each one a place the shape could drift.
+ *
+ * `undefined` for a panel dockview created without params, which a hand-edited
+ * layout key can still produce.
+ *
+ * The dockview import this needs is `import type`, and has to stay that way:
+ * `pane-kinds` is reached from the shell on every route, so a value import would
+ * pull dockview into the entry chunk past the lazy pane host. Same rule as
+ * `layout-shapes` and `terminal-deck`; see the note on `HORIZONTAL`.
+ */
+export function paneParamsOf(panel: IDockviewPanel): PaneParams | undefined {
+  return panel.params as PaneParams | undefined
+}
+
+/** A pane's kind, off its live panel. */
+export function paneKindOf(panel: IDockviewPanel): PaneKind | undefined {
+  return paneParamsOf(panel)?.kind
+}
+
+/**
+ * A prefixed unique id: `crypto.randomUUID` where it exists, else time plus random.
+ *
+ * The probe is not paranoia — `crypto.randomUUID` is only exposed on secure
+ * contexts, and the app is reachable over the LAN on plain http, which is exactly
+ * the case that has no `randomUUID` to call.
+ *
+ * The fallback carries a timestamp as well as the random part, so two ids minted in
+ * the same millisecond by different tabs still differ and one minted later sorts
+ * later — cheap, and the reason not to trust `Math.random` alone for something that
+ * keys persistent storage.
+ */
+export function newId(prefix: string): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return `${prefix}-${crypto.randomUUID()}`
+    }
+  } catch {
+    // Fall through to the Math.random id below.
+  }
+  return `${prefix}-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`
+}
+
+/**
  * A globally unique pane id.
  *
  * Unique across workspaces *and* across reloads, not just within a session: panes
@@ -147,12 +195,5 @@ export function isPaneKind(value: unknown): value is PaneKind {
  * rule and same reasoning as the tab ids it replaces.
  */
 export function newPaneId(): string {
-  try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return `p-${crypto.randomUUID()}`
-    }
-  } catch {
-    // Fall through to the Math.random id below.
-  }
-  return `p-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`
+  return newId("p")
 }

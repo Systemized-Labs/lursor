@@ -1,10 +1,11 @@
 import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-react"
 
-import type { PaneKind, PaneParams } from "@/components/panes/pane-kinds"
+import { paneKindOf, type PaneKind } from "@/components/panes/pane-kinds"
 import {
   HORIZONTAL,
   branch,
   leaf,
+  leaves,
   type SerializedNode,
 } from "@/components/panes/layout-shapes"
 import { gridPanels, withDeckOpen } from "@/components/panes/terminal-deck"
@@ -132,10 +133,10 @@ export const gridZones = (template: TemplateDef): number =>
  * order, so applying a template rearranges zones without reshuffling tabs.
  */
 function roles(panels: IDockviewPanel[]) {
-  const kindOf = (panel: IDockviewPanel) =>
-    (panel.params as PaneParams | undefined)?.kind
   const ids = panels.map((panel) => panel.api.id)
-  const primary = panels.filter((p) => kindOf(p) === "chat").map((p) => p.api.id)
+  const primary = panels
+    .filter((panel) => paneKindOf(panel) === "chat")
+    .map((panel) => panel.api.id)
   return { ids, primary }
 }
 
@@ -213,13 +214,5 @@ export function buildTemplate(
 
 /** Which group in a built tree holds `panelId`. */
 function findGroupFor(node: SerializedNode, panelId: string): string | null {
-  if (node.type === "leaf") {
-    const data = node.data as { id: string; views: string[] }
-    return data.views.includes(panelId) ? data.id : null
-  }
-  for (const child of node.data as SerializedNode[]) {
-    const found = findGroupFor(child, panelId)
-    if (found) return found
-  }
-  return null
+  return leaves(node).find((zone) => zone.views.includes(panelId))?.id ?? null
 }

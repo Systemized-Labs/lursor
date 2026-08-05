@@ -1,3 +1,5 @@
+import { createRequestChannel } from "@/lib/request-channel"
+
 /**
  * A tiny cross-component channel for "open this conversation" requests.
  *
@@ -18,39 +20,11 @@ export interface OpenThreadRequest {
   threadId: string
 }
 
-let pending: OpenThreadRequest | null = null
-const listeners = new Set<() => void>()
+/** The channel itself, for the shell's `usePendingRequest`. See `open-file`. */
+export const openThreadChannel = createRequestChannel<OpenThreadRequest>()
+const channel = openThreadChannel
 
-/** Park a request and notify subscribers. */
-export function requestOpenThread(request: OpenThreadRequest): void {
-  pending = request
-  for (const listener of listeners) listener()
-}
-
-/** Look at the pending request without clearing it. */
-export function peekPendingThread(): OpenThreadRequest | null {
-  return pending
-}
-
-/**
- * Take the pending request if it targets `workspaceId`, clearing it so it opens
- * exactly once. Returns null when there is nothing for this workspace.
- */
-export function consumePendingThread(
-  workspaceId: string | undefined
-): OpenThreadRequest | null {
-  if (pending && workspaceId && pending.workspaceId === workspaceId) {
-    const request = pending
-    pending = null
-    return request
-  }
-  return null
-}
-
-/** Subscribe to request changes; returns an unsubscribe. */
-export function subscribeOpenThread(listener: () => void): () => void {
-  listeners.add(listener)
-  return () => {
-    listeners.delete(listener)
-  }
-}
+export const requestOpenThread = channel.request
+export const peekPendingThread = channel.peek
+export const consumePendingThread = channel.consume
+export const subscribeOpenThread = channel.subscribe

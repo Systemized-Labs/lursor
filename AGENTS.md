@@ -106,6 +106,21 @@ sheets below `md`. Respect safe-area insets (`pb-safe` etc.).
 skipped fire, dropped result — it must say so in an event, a log line, or a
 history row. A quiet stop reads as success.
 
+**Device preferences go through `hooks/use-stored.ts`** — `useStoredSet` for a
+membership set, `useStoredJson` for anything else, `readStored`/`writeStored` for a
+format that is not JSON (the sidebar side is a bare string, and moving it would reset
+the preference for everyone who has set it). Reads and writes are best-effort:
+localStorage throws on a full quota and is absent in some private windows, so absence
+means the default.
+
+Nothing is written until a value actually diverges from what storage holds. **Do not
+rewrite that guard as a "skip the first effect run" ref** — StrictMode deliberately
+double-invokes effects, so the second invocation finds the ref set and stamps the
+default in anyway. That was measured, not reasoned about: `lursor:pins` and
+`lursor:projects-collapsed` both came back as `[]` on a clean first load with the ref
+version in place. Comparing values is also what keeps toggling a preference *back* to
+its default persisting.
+
 ## 5. Architecture
 
 ### Backend: the run engine
@@ -716,12 +731,47 @@ Rules that cost something to rediscover:
   looking at, not one you forgot was open.
 - **A hidden pane keeps running.** That is what `always` buys and what it costs.
   Every pane gets `active` from `onDidVisibilityChange`; gate expensive work on it.
+- **`layout-shapes.ts` is the only module that narrows a serialized tree.**
+  `SerializedGridObject<T>` types `data` as `T | SerializedGridObject<T>[]` without
+  discriminating on `type`, so readers used to re-assert the shape by hand — 18 casts
+  across three files and three separate answers to "what are this tree's leaves". Ask
+  `leaves`, `leafViews`, `leafIds`, `countLeaves` or `mapLeaves` instead; the two
+  remaining casts live in `asLeaf`/`children`. `LeafData` is dockview's own group
+  state, not a hand-written `{id, views, activeView}` — a zone can also carry
+  `locked`, `constraints` and `tabGroups`, and a narrower type lets a rebuild drop
+  them silently.
+- **Read a pane's kind with `paneKindOf(panel)`** (`paneParamsOf` for the rest of the
+  params). `panel.params` is an open record, so getting ours out takes a cast, and
+  that cast lives in `pane-kinds.ts` and nowhere else.
+- **`layout-shapes`, `terminal-deck` and `pane-kinds` import dockview `import type`,
+  and must keep doing so.** All three are reached from the shell on every route, so a
+  *value* import pulls dockview into the entry chunk past the lazy pane host. That is
+  why `HORIZONTAL` is a double-cast string literal instead of `Orientation.HORIZONTAL`.
+  Check with `bun run build` and compare *first-load* bytes — the entry chunk alone is
+  misleading, because rolldown moves shared modules in and out of it between builds.
 
 **Chat is a pane, so routing is an address, not an owner.** `?c=` is written *from*
 the focused chat pane and read exactly once per workspace load, to honour a
 bookmark. A sidebar row therefore cannot address a pane through the URL — it parks
 a request on `lib/open-thread.ts`, the same channel `open-file` and `open-preview`
 use, and the shell routes it.
+
+**To add a cross-component open request, call `createRequestChannel`**
+(`lib/request-channel.ts`). The three `open-*.ts` modules are that factory plus their
+own request type and their own reason for existing; each re-exports the four names its
+callers already use (`requestOpenX` / `peekPendingX` / `consumePendingX` /
+`subscribeOpenX`) and the channel object for the shell. Keep the module
+dependency-free — no React, no dockview — because it is reached on every route.
+
+On the receiving end the shell uses `usePendingRequest(channel, workspaceId, ready,
+handle)`. **`ready` matters**: the pane host is lazy, so a request can arrive before
+dockview exists, and a handler that runs then marks it handled while `ensurePane`
+no-ops on `if (!api) return` — the request opens nothing and is never consumed. The
+shell passes `isMobile || layout.api !== null`, and the `isMobile` half is not
+decoration: there is no pane layer on a phone at all, so gating on `layout.api` there
+would stop a plan doc ever reaching `MobilePlanView`. Consuming is the *handler's*
+choice — a conversation is opened by the shell, while a Preview pane reads its own URL
+out of the channel once it mounts.
 
 **Outside a workspace there is a global layout** (`lursor:layout:_global`), which
 is what `/analytics`, `/video`, `/image` and `/artifacts` resolve to. Those kinds

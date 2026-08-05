@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { matchPath, useLocation, useNavigate, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 
@@ -99,9 +99,12 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
     if (activeWorkspaceId) record(activeWorkspaceId, activeThreadId)
   }, [activeWorkspaceId, activeThreadId, record])
 
-  const closeMobile = () => {
+  // `useCallback` because it is a member of `handlers` below, which is memoised for
+  // the sake of every `ConversationRow` it is spread into. A fresh function here
+  // would make that memo unable to hold.
+  const closeMobile = useCallback(() => {
     if (isMobile) setOpenMobile(false)
-  }
+  }, [isMobile, setOpenMobile])
 
   const { switchTo, hrefFor } = useWorkspaceSwitch({
     // Tree order — groups' members counted where they sit — then the studio, so
@@ -178,17 +181,44 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
     activeThreadId,
   })
 
-  const handlers = {
-    activeThreadId,
-    activeRuns,
-    threadState,
-    selection,
-    isPinned: pins.has,
-    onTogglePin: pins.toggle,
-    onNavigate: closeMobile,
-    onRename: dialogs.openRenameThread,
-    onDelete: dialogs.openDeleteThread,
-  }
+  /**
+   * The per-row props, memoised.
+   *
+   * This object is spread into `WorkspaceConversations` and reaches every
+   * `ConversationRow`, so rebuilding it made every row's props new on every sidebar
+   * render — and the sidebar re-renders on each 3s active-runs poll.
+   *
+   * It holds because everything in it already does: `activeRuns`, `selection`,
+   * `threadState` and the two `pins` callbacks are memoised in their own hooks, and
+   * `openRenameThread`/`openDeleteThread` are `useState` setters. `dialogs` as a
+   * whole is *not* stable and cannot be — it carries the dialog JSX, which has to
+   * re-render — which is why these two members are depended on rather than the
+   * object they come from.
+   */
+  const handlers = useMemo(
+    () => ({
+      activeThreadId,
+      activeRuns,
+      threadState,
+      selection,
+      isPinned: pins.has,
+      onTogglePin: pins.toggle,
+      onNavigate: closeMobile,
+      onRename: dialogs.openRenameThread,
+      onDelete: dialogs.openDeleteThread,
+    }),
+    [
+      activeThreadId,
+      activeRuns,
+      threadState,
+      selection,
+      pins.has,
+      pins.toggle,
+      closeMobile,
+      dialogs.openRenameThread,
+      dialogs.openDeleteThread,
+    ]
+  )
 
   return (
     /* `offcanvas`, not `icon`. The collapsed state used to be the 68px rail —

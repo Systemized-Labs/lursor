@@ -278,6 +278,15 @@ export function ProjectsSection({
             },
             { running: false, unread: 0 }
           )
+          // The slot after this group's last member. Named once because the header
+          // drop, the floor's highlight, its hover and its drop all mean the same
+          // place, and four copies of the same literal is four chances for them to
+          // stop agreeing.
+          const folderEnd = {
+            kind: "folder",
+            folderId: folder.id,
+            index: children.length,
+          } as const
 
           return (
             <FolderRow
@@ -315,11 +324,7 @@ export function ProjectsSection({
                 onDrop: (event) => {
                   event.preventDefault()
                   if (drag.dragged?.kind === "workspace") {
-                    tree.move(drag.dragged, {
-                      kind: "folder",
-                      folderId: folder.id,
-                      index: children.length,
-                    })
+                    tree.move(drag.dragged, folderEnd)
                   } else if (drag.dragged && drag.dragged.id !== folder.id) {
                     tree.move(drag.dragged, { kind: "root", index: rootIndex })
                   }
@@ -343,27 +348,13 @@ export function ProjectsSection({
                   unreachable: every row above hands you the space *before* it. */}
               {drag.active && !collapsed && drag.dragged?.kind === "workspace" ? (
                 <DropFloor
-                  active={drag.isDropTarget({
-                    kind: "folder",
-                    folderId: folder.id,
-                    index: children.length,
-                  })}
+                  active={drag.isDropTarget(folderEnd)}
                   onOver={() => {
-                    drag.setDropTarget({
-                      kind: "folder",
-                      folderId: folder.id,
-                      index: children.length,
-                    })
+                    drag.setDropTarget(folderEnd)
                     drag.setFileInto(null)
                   }}
                   onDrop={() => {
-                    if (drag.dragged) {
-                      tree.move(drag.dragged, {
-                        kind: "folder",
-                        folderId: folder.id,
-                        index: children.length,
-                      })
-                    }
+                    if (drag.dragged) tree.move(drag.dragged, folderEnd)
                     drag.end()
                   }}
                 />

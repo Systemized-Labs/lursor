@@ -13,14 +13,14 @@ import { Outlet, useLocation, useSearchParams } from "react-router-dom"
 import { useWorkspace } from "@/api/workspaces"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { destinationFor } from "@/components/layout/destinations"
+import {
+  CONTENT_COLUMN,
+  MobileShell,
+  type MobileView,
+} from "@/components/layout/mobile-shell"
 import { useSidebarSide } from "@/components/layout/use-sidebar-side"
 import { WINDOW_BAR_HEIGHT, WindowBar } from "@/components/layout/window-bar"
-import { PaneContent } from "@/components/panes/pane-content"
-import {
-  PANE_KINDS,
-  type MobilePaneKind,
-  type PaneKind,
-} from "@/components/panes/pane-kinds"
+import type { MobilePaneKind, PaneKind } from "@/components/panes/pane-kinds"
 import {
   hasStoredLayout,
   readLayoutKinds,
@@ -29,28 +29,21 @@ import {
 import { SettingsDialog } from "@/components/settings/settings-dialog"
 import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
-import { MobileDockBar } from "@/components/shell/mobile-dock-bar"
-import { MobilePlanView } from "@/components/shell/mobile-plan-view"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { usePendingRequest } from "@/hooks/use-pending-request"
 import { usePreviewWatch } from "@/hooks/use-preview-watch"
 import { cn } from "@/lib/utils"
 import {
   consumePendingFile,
-  peekPendingFile,
-  subscribeOpenFile,
+  openFileChannel,
   type OpenFileRequest,
 } from "@/lib/open-file"
 import { isPlanFile } from "@/lib/plan-doc"
-import {
-  peekPendingPreview,
-  subscribeOpenPreview,
-  type OpenPreviewRequest,
-} from "@/lib/open-preview"
+import { openPreviewChannel } from "@/lib/open-preview"
 import {
   consumePendingThread,
-  peekPendingThread,
-  subscribeOpenThread,
+  openThreadChannel,
   type OpenThreadRequest,
 } from "@/lib/open-thread"
 
@@ -148,9 +141,7 @@ export function AppShell() {
   // Surfaces are mounted on first visit and kept alive (hidden) when switched
   // away, so a terminal session or editor buffer survives a tab switch — the same
   // guarantee `renderer: 'always'` gives the panes on desktop.
-  const [mobileView, setMobileView] = useState<"chat" | "plan" | MobilePaneKind>(
-    "chat"
-  )
+  const [mobileView, setMobileView] = useState<MobileView>("chat")
   const [visitedKinds, setVisitedKinds] = useState<MobilePaneKind[]>([])
   // The plan doc surfaced for this workspace's parked `/plan` turn, if any. The
   // Files editor is desktop-only, so on mobile a plan opens in a read-only
@@ -201,27 +192,40 @@ export function AppShell() {
     layout.openPane("file")
   }, [workspaceForTitle.data?.is_system, workspaceId, isMobile, layout])
 
+  /**
+   * Whether this shell can answer a parked open request yet.
+   *
+   * On desktop that means dockview exists: the pane host is lazy, and a request
+   * handled before it mounts is marked handled by a handler that can do nothing —
+   * `ensurePane` and `openThread` both begin `if (!api) return`, so the request would
+   * be dropped without opening and never consumed.
+   *
+   * A phone is always ready, and that is not the same condition: there is no pane
+   * layer on mobile at all, so `layout.api` is null for the whole session. Gating on
+   * it there would mean a plan doc never reaches {@link MobilePlanView} and the
+   * bottom bar never switches for a preview.
+   */
+  const canOpen = isMobile || layout.api !== null
+
   // Global "open this conversation" requests (a sidebar row, a link in a reply).
   // Chat is a pane now, so a click cannot address it through `?c=` — see
   // `lib/open-thread.ts`.
-  const [openThreadTick, setOpenThreadTick] = useState(0)
-  const handledThreadRef = useRef<OpenThreadRequest | null>(null)
-  useEffect(() => subscribeOpenThread(() => setOpenThreadTick((t) => t + 1)), [])
-  useEffect(() => {
-    const pending = peekPendingThread()
-    if (!pending || pending.workspaceId !== workspaceId) return
-    if (handledThreadRef.current === pending) return
-    if (!layout.api) return
-    handledThreadRef.current = pending
-    consumePendingThread(workspaceId)
-    if (isMobile) {
-      // No panes on a phone: the single chat surface reads `?c=`, which the row's
-      // own navigation has already set.
-      setMobileView("chat")
-      return
-    }
-    layout.openThread(pending.threadId)
-  }, [openThreadTick, workspaceId, layout, isMobile])
+  const handleOpenThread = useCallback(
+    (request: OpenThreadRequest) => {
+      consumePendingThread(workspaceId)
+      if (isMobile) {
+        // No panes on a phone: the single chat surface reads `?c=`, which the row's
+        // own navigation has already set. Switching to it is still ours to do —
+        // tapping a conversation while looking at the terminal means show me the
+        // conversation.
+        setMobileView("chat")
+        return
+      }
+      layout.openThread(request.threadId)
+    },
+    [workspaceId, isMobile, layout]
+  )
+  usePendingRequest(openThreadChannel, workspaceId, canOpen, handleOpenThread)
 
   /**
    * A `?c=` arriving from outside the pane layer — a bookmark, a reload, a link
@@ -261,185 +265,69 @@ export function AppShell() {
 
   // Global "open this file" requests (from the command palette) land here: once
   // we're on the target workspace, ensure a Files pane so the editor mounts and
-  // can pick the request up.
-  const [openFileTick, setOpenFileTick] = useState(0)
-  const handledPendingRef = useRef<OpenFileRequest | null>(null)
-  useEffect(() => subscribeOpenFile(() => setOpenFileTick((t) => t + 1)), [])
-  useEffect(() => {
-    const pending = peekPendingFile()
-    if (!pending || pending.workspaceId !== workspaceId) return
-    // Guard by request identity so re-renders don't spawn duplicate panes.
-    if (handledPendingRef.current === pending) return
-    handledPendingRef.current = pending
-    // The Monaco editor is desktop-only, so on mobile the FileViewer never mounts
-    // to consume this request. Plan docs are the exception: route them to the
-    // read-only mobile plan view (consuming the request ourselves so it doesn't
-    // linger). Any other file has nowhere to go on a phone — leave it.
-    if (isMobile) {
-      if (isPlanFile(pending.name)) {
-        consumePendingFile(workspaceId)
-        setMobilePlan({ path: pending.path })
-        setMobileView("plan")
+  // can pick the request up. Left parked rather than consumed — the viewer is what
+  // knows the file is open, so it takes it.
+  const handleOpenFile = useCallback(
+    (request: OpenFileRequest) => {
+      // The Monaco editor is desktop-only, so on mobile the FileViewer never mounts
+      // to consume this request. Plan docs are the exception: route them to the
+      // read-only mobile plan view (consuming the request ourselves so it doesn't
+      // linger). Any other file has nowhere to go on a phone — leave it.
+      if (isMobile) {
+        if (isPlanFile(request.name)) {
+          consumePendingFile(workspaceId)
+          setMobilePlan({ path: request.path })
+          setMobileView("plan")
+        }
+        return
       }
-      return
-    }
-    layout.ensurePane("file")
-  }, [openFileTick, workspaceId, layout, isMobile])
+      layout.ensurePane("file")
+    },
+    [isMobile, workspaceId, layout]
+  )
+  usePendingRequest(openFileChannel, workspaceId, canOpen, handleOpenFile)
 
   // Global "open this URL in the preview" requests (from the right-click menu on
   // chat links): reveal a Preview surface for the target workspace so the panel
-  // mounts and navigates.
-  const [openPreviewTick, setOpenPreviewTick] = useState(0)
-  const handledPreviewRef = useRef<OpenPreviewRequest | null>(null)
-  useEffect(() => subscribeOpenPreview(() => setOpenPreviewTick((t) => t + 1)), [])
-  useEffect(() => {
-    const pending = peekPendingPreview()
-    if (!pending || pending.workspaceId !== workspaceId) return
-    if (handledPreviewRef.current === pending) return
-    handledPreviewRef.current = pending
+  // mounts and navigates. The panel consumes the request itself, so the URL is
+  // still there when it comes up.
+  const handleOpenPreview = useCallback(() => {
     if (isMobile) {
       showMobilePaneKind("preview")
       return
     }
     layout.ensurePane("preview")
-  }, [openPreviewTick, workspaceId, layout, isMobile, showMobilePaneKind])
+  }, [isMobile, layout, showMobilePaneKind])
+  usePendingRequest(openPreviewChannel, workspaceId, canOpen, handleOpenPreview)
 
   // Full-bleed surfaces (e.g. the New Agent launcher) manage their own scroll and
   // fill the panel edge to edge; everything else keeps the padded column.
   const fullBleed = pathname === "/"
-  const columnClass = "mx-auto w-full max-w-6xl"
 
   // ── Mobile layout ──────────────────────────────────────────────────────────
   if (isMobile) {
-    const mobileCenter = fullBleed ? (
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <Outlet />
-      </main>
-    ) : paneRoute ? (
-      // These routes have no element — the desktop shell answers them with a pane.
-      // A phone has no pane layer, so it renders the same surface full-screen
-      // through the same kind→component map.
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <PaneContent
-          kind={paneRoute.kind}
-          workspaceId={workspaceId}
-          paneId={`mobile-route-${paneRoute.kind}`}
-          active
-        />
-      </main>
-    ) : inWorkspace ? (
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <PaneContent
-          kind="chat"
-          workspaceId={workspaceId}
-          paneId={`mobile-${workspaceId}-chat`}
-          active
-          threadId={searchParams.get("c")}
-          onThreadChange={setFocusedThread}
-        />
-      </main>
-    ) : (
-      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-        <div
-          className={cn(
-            columnClass,
-            "px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
-          )}
-        >
-          <Outlet />
-        </div>
-      </main>
-    )
-
-    const routeTitle =
-      destinationFor(pathname)?.label ??
-      (workspaceId ? (workspaceForTitle.data?.name ?? "Workspace") : "New chat")
-    const mobileTitle =
-      mobileView === "chat"
-        ? routeTitle
-        : mobileView === "plan"
-          ? "Plan"
-          : PANE_KINDS[mobileView].title
-
     return (
-      <SidebarProvider>
-        <CommandPaletteProvider>
-          <AppSidebar />
-          <SidebarInset className="min-w-0">
-            <div className="flex h-svh min-h-0 flex-col overflow-hidden">
-              <WindowBar
-                onOpenSettings={openSettings}
-                onOpenLayouts={() => setLayoutsOpen(true)}
-                title={mobileTitle}
-              />
-
-              {/* Stacked full-screen views — only the active one is shown.
-                  Layering (rather than conditional mount) keeps each surface's
-                  state alive when the bottom bar switches away from it. */}
-              <div className="relative min-h-0 flex-1">
-                <div
-                  className={cn(
-                    "absolute inset-0 flex flex-col",
-                    mobileView !== "chat" && "hidden"
-                  )}
-                >
-                  {mobileCenter}
-                </div>
-                {workspaceId &&
-                  visitedKinds.map((kind) => (
-                    <div
-                      key={kind}
-                      className={cn(
-                        "absolute inset-0 flex min-h-0 flex-col bg-background",
-                        mobileView !== kind && "hidden"
-                      )}
-                    >
-                      {/* One surface per kind here — the bottom bar has no notion
-                          of duplicates — so a fixed id stands in for a pane id.
-                          Scoped by workspace: these are not remounted on a
-                          workspace switch, and per-pane storage is global, so a
-                          shared id would carry the last repo's preview URL over. */}
-                      <PaneContent
-                        kind={kind}
-                        workspaceId={workspaceId}
-                        paneId={`mobile-${workspaceId}-${kind}`}
-                        active={mobileView === kind}
-                      />
-                    </div>
-                  ))}
-                {workspaceId && (
-                  <div
-                    className={cn(
-                      "absolute inset-0 flex min-h-0 flex-col bg-background",
-                      mobileView !== "plan" && "hidden"
-                    )}
-                  >
-                    <MobilePlanView
-                      workspaceId={workspaceId}
-                      path={mobilePlan?.path}
-                    />
-                  </div>
-                )}
-              </div>
-              {workspaceId && (
-                <MobileDockBar
-                  kinds={mobileKinds}
-                  activeKind={
-                    mobileView === "chat" || mobileView === "plan"
-                      ? null
-                      : mobileView
-                  }
-                  planActive={mobileView === "plan"}
-                  onSelectChat={() => setMobileView("chat")}
-                  onSelectKind={showMobilePaneKind}
-                  onSelectPlan={() => setMobileView("plan")}
-                />
-              )}
-            </div>
-            <SettingsDialog />
-          </SidebarInset>
-        </CommandPaletteProvider>
-      </SidebarProvider>
+      <MobileShell
+        workspaceId={workspaceId}
+        fullBleed={fullBleed}
+        paneRoute={paneRoute}
+        inWorkspace={inWorkspace}
+        threadId={searchParams.get("c")}
+        onThreadChange={setFocusedThread}
+        routeTitle={
+          destinationFor(pathname)?.label ??
+          (workspaceId ? (workspaceForTitle.data?.name ?? "Workspace") : "New chat")
+        }
+        view={mobileView}
+        visitedKinds={visitedKinds}
+        barKinds={mobileKinds}
+        plan={mobilePlan}
+        onShowChat={() => setMobileView("chat")}
+        onShowKind={showMobilePaneKind}
+        onShowPlan={() => setMobileView("plan")}
+        onOpenSettings={openSettings}
+        onOpenLayouts={() => setLayoutsOpen(true)}
+      />
     )
   }
 
@@ -450,7 +338,7 @@ export function AppShell() {
     </main>
   ) : (
     <main className="min-w-0 flex-1 overflow-y-auto">
-      <div className={cn(columnClass, "px-4 py-6 sm:px-6")}>
+      <div className={cn(CONTENT_COLUMN, "px-4 py-6 sm:px-6")}>
         <Outlet />
       </div>
     </main>

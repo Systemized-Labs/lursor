@@ -8,8 +8,8 @@ import type {
   SerializedEdgeGroups,
 } from "dockview-react"
 
-import type { SerializedNode } from "@/components/panes/layout-shapes"
-import type { PaneParams } from "@/components/panes/pane-kinds"
+import { leafIds, mapLeaves } from "@/components/panes/layout-shapes"
+import { paneKindOf, type PaneParams } from "@/components/panes/pane-kinds"
 
 /**
  * The terminal deck: a drawer across the bottom of the window that puts itself
@@ -208,7 +208,7 @@ export function adoptGridTerminals(api: DockviewApi): boolean {
   const group = deckGroup(api)
   if (!group) return false
   const strays = gridPanels(api).filter(
-    (panel) => (panel.params as PaneParams | undefined)?.kind === "terminal"
+    (panel) => paneKindOf(panel) === "terminal"
   )
   for (const panel of strays) {
     // `skipSetActive`: a migration should not move the cursor off whatever the
@@ -242,14 +242,6 @@ export function watchDeck(
 }
 
 /**
- * A serialized deck, opened — for a layout whose schematic promises it is showing.
- *
- * Read as *intent* by {@link applyLayout}, which is the only thing that should hand a
- * rebuilt layout to dockview. Dropping `collapsed` is how "open" is spelled:
- * `toJSON` records the expanded height as `size` even while collapsed, precisely so
- * restoring without the flag reopens it where the user last left it.
- */
-/**
  * How many shells a *serialized* deck was holding.
  *
  * For a saved arrangement, which has to answer "did this layout have a terminal in
@@ -264,6 +256,14 @@ export function serializedDeckSize(layout: SerializedDockview): number {
   return Array.isArray(group?.views) ? group.views.length : 0
 }
 
+/**
+ * A serialized deck, opened — for a layout whose schematic promises it is showing.
+ *
+ * Read as *intent* by {@link applyLayout}, which is the only thing that should hand a
+ * rebuilt layout to dockview. Dropping `collapsed` is how "open" is spelled:
+ * `toJSON` records the expanded height as `size` even while collapsed, precisely so
+ * restoring without the flag reopens it where the user last left it.
+ */
 export function withDeckOpen(
   edgeGroups: SerializedEdgeGroups | undefined
 ): SerializedEdgeGroups | undefined {
@@ -366,26 +366,19 @@ function withCarried(
     : base
   if (carried.length === 0) return rest
 
-  const host = leafIds(rest.grid.root as SerializedNode)
+  const host = leafIds(rest.grid.root)
   const target = host.find((id) => id === rest.activeGroup) ?? host[0]
   if (!target) return rest
 
-  const walk = (node: SerializedNode): SerializedNode => {
-    if (node.type === "leaf") {
-      const data = node.data as { id: string; views: string[] }
-      if (data.id !== target) return node
-      return { ...node, data: { ...data, views: [...data.views, ...carried] } }
-    }
-    return { ...node, data: (node.data as SerializedNode[]).map(walk) }
-  }
   return {
     ...rest,
-    grid: { ...rest.grid, root: walk(rest.grid.root as SerializedNode) },
+    grid: {
+      ...rest.grid,
+      root: mapLeaves(rest.grid.root, (leaf) =>
+        leaf.id === target
+          ? { ...leaf, views: [...leaf.views, ...carried] }
+          : leaf
+      ),
+    },
   }
-}
-
-/** Every zone id in a serialized grid, in order. */
-function leafIds(node: SerializedNode): string[] {
-  if (node.type === "leaf") return [(node.data as { id: string }).id]
-  return (node.data as SerializedNode[]).flatMap(leafIds)
 }

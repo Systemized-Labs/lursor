@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback } from "react"
+
+import { useStoredSet } from "@/hooks/use-stored"
 
 /** Pinned conversation ids. A device preference, like the sidebar's width. */
 const STORAGE_KEY = "lursor:pins"
@@ -26,57 +28,35 @@ export interface Pins {
   prune: (knownIds: string[]) => void
 }
 
-function load(): Set<string> {
-  if (typeof window === "undefined") return new Set()
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(parsed)) return new Set()
-    return new Set(parsed.filter((id): id is string => typeof id === "string"))
-  } catch {
-    return new Set()
-  }
-}
-
 export function usePins(): Pins {
-  const [ids, setIds] = useState<Set<string>>(load)
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...ids]))
-    } catch {
-      // Ignore quota / disabled-storage errors — pins are best-effort.
-    }
-  }, [ids])
+  const [ids, toggle, update] = useStoredSet(STORAGE_KEY)
 
   const has = useCallback((threadId: string) => ids.has(threadId), [ids])
-
-  const toggle = useCallback((threadId: string) => {
-    setIds((prev) => {
-      const next = new Set(prev)
-      if (!next.delete(threadId)) next.add(threadId)
-      return next
-    })
-  }, [])
 
   /**
    * Waits for a non-empty list: the first render, before the threads query
    * resolves, would otherwise wipe every pin. Same guard `use-workspace-icons`
    * needs for the same reason.
    */
-  const prune = useCallback((knownIds: string[]) => {
-    if (knownIds.length === 0) return
-    const known = new Set(knownIds)
-    setIds((prev) => {
-      let dropped = false
-      const next = new Set<string>()
-      for (const id of prev) {
-        if (known.has(id)) next.add(id)
-        else dropped = true
-      }
-      return dropped ? next : prev
-    })
-  }, [])
+  const prune = useCallback(
+    (knownIds: string[]) => {
+      if (knownIds.length === 0) return
+      const known = new Set(knownIds)
+      update((prev) => {
+        let dropped = false
+        const next = new Set<string>()
+        for (const id of prev) {
+          if (known.has(id)) next.add(id)
+          else dropped = true
+        }
+        // The previous set, unchanged, when nothing was pinned to a dead thread:
+        // a new `Set` with the same members is still a new identity, and this runs
+        // on every threads-query result.
+        return dropped ? next : prev
+      })
+    },
+    [update]
+  )
 
   return { ids, has, toggle, prune }
 }

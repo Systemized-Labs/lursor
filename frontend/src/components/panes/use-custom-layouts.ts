@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback } from "react"
 import type { SerializedDockview } from "dockview-react"
+
+import { newId } from "@/components/panes/pane-kinds"
+import { useStoredJson } from "@/hooks/use-stored"
 
 /** Saved arrangements, shared across workspaces. */
 const STORAGE_KEY = "lursor:layouts:custom"
@@ -33,67 +36,67 @@ export interface CustomLayouts {
   rename: (id: string, name: string) => void
 }
 
-function load(): CustomLayout[] {
-  if (typeof window === "undefined") return []
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (entry): entry is CustomLayout =>
-        typeof entry === "object" &&
-        entry !== null &&
-        typeof (entry as CustomLayout).id === "string" &&
-        typeof (entry as CustomLayout).name === "string" &&
-        typeof (entry as CustomLayout).layout === "object"
-    )
-  } catch {
-    return []
-  }
-}
-
-function newId(): string {
-  try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return `l-${crypto.randomUUID()}`
-    }
-  } catch {
-    // Fall through.
-  }
-  return `l-${Math.random().toString(36).slice(2)}`
+/**
+ * Entries that are still the right shape, and only those.
+ *
+ * Per-entry rather than all-or-nothing: one malformed row — a key written by an
+ * older version, or a hand edit — should cost that arrangement, not every
+ * arrangement. The `layout` itself is checked no further than "it is an object",
+ * because what a valid `SerializedDockview` is is dockview's question and it already
+ * answers it; `fromJSON` throwing is handled where the layout is applied.
+ */
+function parseLayouts(raw: unknown): CustomLayout[] | null {
+  if (!Array.isArray(raw)) return null
+  return raw.filter(
+    (entry): entry is CustomLayout =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as CustomLayout).id === "string" &&
+      typeof (entry as CustomLayout).name === "string" &&
+      typeof (entry as CustomLayout).layout === "object"
+  )
 }
 
 export function useCustomLayouts(): CustomLayouts {
-  const [items, setItems] = useState<CustomLayout[]>(load)
+  const [items, setItems] = useStoredJson<CustomLayout[]>(
+    STORAGE_KEY,
+    parseLayouts,
+    []
+  )
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
-    } catch {
-      // Ignore quota / disabled-storage errors — saved layouts are best-effort.
-    }
-  }, [items])
+  // `setItems` is in every deps list below because it now comes from a hook rather
+  // than from `useState` in this file, and the lint rule cannot see through that to
+  // know it is stable. It is — `useStoredJson` returns the state setter — so listing
+  // it costs nothing and keeps these three genuinely stable.
+  const save = useCallback(
+    (name: string, layout: SerializedDockview) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      setItems((prev) => [
+        ...prev.filter((item) => item.name !== trimmed),
+        { id: newId("l"), name: trimmed, layout },
+      ])
+    },
+    [setItems]
+  )
 
-  const save = useCallback((name: string, layout: SerializedDockview) => {
-    const trimmed = name.trim()
-    if (!trimmed) return
-    setItems((prev) => [
-      ...prev.filter((item) => item.name !== trimmed),
-      { id: newId(), name: trimmed, layout },
-    ])
-  }, [])
+  const remove = useCallback(
+    (id: string) => {
+      setItems((prev) => prev.filter((item) => item.id !== id))
+    },
+    [setItems]
+  )
 
-  const remove = useCallback((id: string) => {
-    setItems((prev) => prev.filter((item) => item.id !== id))
-  }, [])
-
-  const rename = useCallback((id: string, name: string) => {
-    const trimmed = name.trim()
-    if (!trimmed) return
-    setItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
-    )
-  }, [])
+  const rename = useCallback(
+    (id: string, name: string) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      setItems((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
+      )
+    },
+    [setItems]
+  )
 
   return { items, save, remove, rename }
 }

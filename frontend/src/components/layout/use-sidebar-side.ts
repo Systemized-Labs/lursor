@@ -1,5 +1,7 @@
 import { useCallback, useState } from "react"
 
+import { readStored, writeStored } from "@/hooks/use-stored"
+
 const STORAGE_KEY = "lursor:sidebar-side"
 
 export type SidebarSide = "left" | "right"
@@ -21,22 +23,22 @@ export type SidebarSide = "left" | "right"
  * DOM order rather than `flex-direction: row-reverse`: reversing the visual order
  * of a flex row leaves tab order and screen-reader order pointing the old way, so
  * the sidebar would still be read *after* the content while appearing before it.
+ *
+ * Stored as a **bare string**, not JSON, which is why this uses `readStored` and
+ * `writeStored` rather than `useStoredJson` like its neighbours: `JSON.parse("right")`
+ * throws, so moving the format would quietly reset the preference for everyone who
+ * has already set it. The two-line saving is not worth that. Writing from the setter
+ * rather than from an effect is deliberate for the same reason it is elsewhere —
+ * nothing should be written until something is actually chosen.
  */
 export function useSidebarSide(): [SidebarSide, (side: SidebarSide) => void] {
-  const [side, setSideState] = useState<SidebarSide>(() => {
-    if (typeof window === "undefined") return "left"
-    return window.localStorage.getItem(STORAGE_KEY) === "right"
-      ? "right"
-      : "left"
-  })
+  const [side, setSideState] = useState<SidebarSide>(() =>
+    readStored(STORAGE_KEY) === "right" ? "right" : "left"
+  )
 
   const setSide = useCallback((next: SidebarSide) => {
     setSideState(next)
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next)
-    } catch {
-      // Ignore quota / disabled-storage errors — this is a preference.
-    }
+    writeStored(STORAGE_KEY, next)
   }, [])
 
   return [side, setSide]

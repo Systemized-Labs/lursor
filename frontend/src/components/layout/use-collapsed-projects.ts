@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback } from "react"
+
+import { useStoredSet } from "@/hooks/use-stored"
 
 /**
  * Which projects have their sessions hidden, by id. A view preference, so it
@@ -6,18 +8,6 @@ import { useCallback, useEffect, useRef, useState } from "react"
  * collapse set in `use-workspace-tree`.
  */
 const COLLAPSED_KEY = "lursor:projects-collapsed"
-
-function load(): Set<string> {
-  if (typeof window === "undefined") return new Set()
-  try {
-    const raw = window.localStorage.getItem(COLLAPSED_KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(parsed)) return new Set()
-    return new Set(parsed.filter((id): id is string => typeof id === "string"))
-  } catch {
-    return new Set()
-  }
-}
 
 export interface CollapsedProjects {
   isCollapsed: (workspaceId: string) => boolean
@@ -39,35 +29,12 @@ export interface CollapsedProjects {
  * clicking.
  */
 export function useCollapsedProjects(): CollapsedProjects {
-  const [collapsed, setCollapsed] = useState<Set<string>>(load)
-
-  // Skip the first run, which would write back exactly what `load` read.
-  const hydrated = useRef(false)
-  useEffect(() => {
-    if (!hydrated.current) {
-      hydrated.current = true
-      return
-    }
-    try {
-      window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]))
-    } catch {
-      // Ignore quota / disabled-storage errors — this is best-effort.
-    }
-  }, [collapsed])
+  const [collapsed, toggle] = useStoredSet(COLLAPSED_KEY)
 
   const isCollapsed = useCallback(
     (workspaceId: string) => collapsed.has(workspaceId),
     [collapsed]
   )
-
-  const toggle = useCallback((workspaceId: string) => {
-    setCollapsed((current) => {
-      const next = new Set(current)
-      if (next.has(workspaceId)) next.delete(workspaceId)
-      else next.add(workspaceId)
-      return next
-    })
-  }, [])
 
   return { isCollapsed, toggle }
 }

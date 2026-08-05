@@ -22,7 +22,14 @@ import {
 } from "@/components/ui/responsive-dialog"
 import { Input } from "@/components/ui/input"
 import type { SidebarSide } from "@/components/layout/use-sidebar-side"
-import type { SerializedNode } from "@/components/panes/layout-shapes"
+import {
+  asLeaf,
+  children,
+  countLeaves,
+  leafViews,
+  mapLeaves,
+  type SerializedNode,
+} from "@/components/panes/layout-shapes"
 import {
   buildTemplate,
   gridZones,
@@ -31,6 +38,7 @@ import {
 } from "@/components/panes/layout-templates"
 import {
   isPaneKind,
+  paneKindOf,
   WORKSPACE_KINDS,
   type PaneKind,
   type PaneParams,
@@ -124,9 +132,7 @@ export function LayoutsDialog({
       const panels = gridPanels(api)
       const shortfall = gridZones(template) - panels.length
       if (shortfall <= 0) return []
-      const open = new Set(
-        panels.map((panel) => (panel.params as PaneParams | undefined)?.kind)
-      )
+      const open = new Set(panels.map(paneKindOf))
       return template.fills
         .filter(
           (kind) =>
@@ -190,14 +196,12 @@ export function LayoutsDialog({
         hasWorkspace || !WORKSPACE_KINDS.includes(kind)
 
       const panels = gridPanels(api)
-      const shortfall = countZones(saved.grid.root) - panels.length
+      const shortfall = countLeaves(saved.grid.root) - panels.length
       if (shortfall <= 0) return []
 
-      const open = new Set(
-        panels.map((panel) => (panel.params as PaneParams | undefined)?.kind)
-      )
+      const open = new Set(panels.map(paneKindOf))
       const missing: PaneKind[] = []
-      for (const id of zoneViews(saved.grid.root as SerializedNode).flat()) {
+      for (const id of leafViews(saved.grid.root).flat()) {
         const kind = (saved.panels?.[id] as { params?: PaneParams } | undefined)
           ?.params?.kind
         if (!isPaneKind(kind)) continue
@@ -239,7 +243,7 @@ export function LayoutsDialog({
     (item: CustomLayout) => {
       const api = layout.api
       if (!api) return
-      const zones = countZones(item.layout.grid.root)
+      const zones = countLeaves(item.layout.grid.root)
       // Read before opening anything, for the same reason `applyTemplate` does:
       // `openPane` focuses what it adds, and restoring a layout should not move the
       // cursor off the pane you were in.
@@ -303,7 +307,7 @@ export function LayoutsDialog({
     const next = buildTemplate(template.id, api, api.activePanel?.api.id)
     if (!next) return "Open a pane to arrange."
     if (shapeKey(next) !== currentShape) return null
-    return countZones(next.grid.root) < gridZones(template)
+    return countLeaves(next.grid.root) < gridZones(template)
       ? `"${template.label}" needs another pane — open one and it will have somewhere to put it.`
       : `The panes are already arranged like "${template.label}".`
   }
@@ -478,21 +482,9 @@ export function LayoutsDialog({
  */
 function shapeKey(layout: SerializedDockview): string {
   const walk = (node: SerializedNode): unknown =>
-    node.type === "leaf"
-      ? (node.data as { views: string[] }).views
-      : (node.data as SerializedNode[]).map(walk)
-  const axis = countZones(layout.grid.root) > 1 ? layout.grid.orientation : ""
-  return JSON.stringify([axis, walk(layout.grid.root as SerializedNode)])
-}
-
-/** How many leaf zones a serialized grid has. */
-function countZones(node: unknown): number {
-  const typed = node as { type: string; data: unknown }
-  if (typed.type === "leaf") return 1
-  return (typed.data as unknown[]).reduce<number>(
-    (sum, child) => sum + countZones(child),
-    0
-  )
+    asLeaf(node)?.views ?? children(node).map(walk)
+  const axis = countLeaves(layout.grid.root) > 1 ? layout.grid.orientation : ""
+  return JSON.stringify([axis, walk(layout.grid.root)])
 }
 
 /**
@@ -513,13 +505,7 @@ function countZones(node: unknown): number {
  * `closeDeck` ends them before it hides the strip.
  */
 function describedZones(saved: SerializedDockview): number {
-  return countZones(saved.grid.root) + (serializedDeckSize(saved) > 0 ? 1 : 0)
-}
-
-/** Each zone's view list, in the order `reshape`'s walk visits the leaves. */
-function zoneViews(node: SerializedNode): string[][] {
-  if (node.type === "leaf") return [(node.data as { views: string[] }).views]
-  return (node.data as SerializedNode[]).flatMap(zoneViews)
+  return countLeaves(saved.grid.root) + (serializedDeckSize(saved) > 0 ? 1 : 0)
 }
 
 /**
@@ -553,7 +539,7 @@ function reshape(
   activePanelId?: string
 ): SerializedDockview | null {
   if (panels.length === 0) return null
-  const zones = countZones(saved.grid.root)
+  const zones = countLeaves(saved.grid.root)
   // A zero-zone arrangement is one saved over an empty grid. There is no shape to
   // restore, and dealing panes into no zones used to walk off the end of the roster
   // list and throw — which the dialog swallowed, so the saved entry simply did
@@ -564,7 +550,7 @@ function reshape(
 
   const paneIds = panels.map((panel) => panel.api.id)
   const liveIds = new Set(paneIds)
-  const rosters = zoneViews(saved.grid.root as SerializedNode).map((views) =>
+  const rosters = leafViews(saved.grid.root).map((views) =>
     views.filter((id) => liveIds.has(id))
   )
   const claimed = new Set(rosters.flat())
@@ -590,31 +576,24 @@ function reshape(
   if (rosters.some((roster) => roster.length === 0)) return null
   if (spare.length > 0) rosters[rosters.length - 1].push(...spare)
 
+  // Dealt positionally, in the same order `rosters` was built in — `mapLeaves` and
+  // `leafViews` share one traversal, which is what makes the cursor line up.
   let cursor = 0
   let activeGroup: string | undefined
-  const walk = (node: SerializedNode): SerializedNode => {
-    if (node.type === "leaf") {
-      const views = rosters[cursor] ?? []
-      const data = node.data as { id: string; activeView?: string }
-      cursor += 1
-      if (activePanelId && views.includes(activePanelId)) activeGroup = data.id
-      return {
-        ...node,
-        data: {
-          ...data,
-          views,
-          // The tab the arrangement was left on, when it is still one of them.
-          activeView:
-            data.activeView && views.includes(data.activeView)
-              ? data.activeView
-              : views[0],
-        },
-      }
+  const root = mapLeaves(saved.grid.root, (zone) => {
+    const views = rosters[cursor] ?? []
+    cursor += 1
+    if (activePanelId && views.includes(activePanelId)) activeGroup = zone.id
+    return {
+      ...zone,
+      views,
+      // The tab the arrangement was left on, when it is still one of them.
+      activeView:
+        zone.activeView && views.includes(zone.activeView)
+          ? zone.activeView
+          : views[0],
     }
-    return { ...node, data: (node.data as SerializedNode[]).map(walk) }
-  }
-
-  const root = walk(saved.grid.root as SerializedNode)
+  })
   const live = api.toJSON()
 
   return {

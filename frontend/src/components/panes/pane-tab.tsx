@@ -2,7 +2,11 @@ import { useEffect, useState } from "react"
 import { X } from "@phosphor-icons/react"
 import type { IDockviewPanelHeaderProps } from "dockview-react"
 
-import { PANE_KINDS, type PaneParams } from "@/components/panes/pane-kinds"
+import {
+  PANE_KINDS,
+  paneKindOf,
+  type PaneParams,
+} from "@/components/panes/pane-kinds"
 import { cn } from "@/lib/utils"
 
 /**
@@ -47,7 +51,7 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
   useEffect(() => {
     const recount = () => {
       const same = props.containerApi.panels.filter(
-        (panel) => (panel.params as PaneParams | undefined)?.kind === kind
+        (panel) => paneKindOf(panel) === kind
       )
       setDuplicated(same.length > 1)
     }
