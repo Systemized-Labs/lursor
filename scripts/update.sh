@@ -1,7 +1,7 @@
 #!/bin/sh
 # Lursor desktop updater.
 #
-#   curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/update.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/update.sh | sh
 #
 # Compares the installed version against the latest GitHub release and, when a
 # newer one exists, hands off to install.sh to download, verify, and install it.
@@ -13,7 +13,7 @@
 # notarized, in-app updates take over and this becomes a manual fallback.
 #
 # Env overrides:
-#   LURSOR_REPO      owner/repo to fetch from         (default JonathanConn/lursor)
+#   LURSOR_REPO      owner/repo to fetch from         (default Systemized-Labs/lursor)
 #   LURSOR_VERSION   update to this version           (default: latest release)
 #   LURSOR_PREFIX    Linux install dir                (default ~/.local/bin)
 #   LURSOR_DATA_DIR  where the version stamp lives    (default ~/.lursor)
@@ -26,7 +26,7 @@
 #   --relaunch       open Lursor once the update is installed
 set -eu
 
-REPO="${LURSOR_REPO:-JonathanConn/lursor}"
+REPO="${LURSOR_REPO:-Systemized-Labs/lursor}"
 VERSION="${LURSOR_VERSION:-}"
 REF="${LURSOR_REF:-main}"
 STAMP="${LURSOR_DATA_DIR:-$HOME/.lursor}/.install-version"

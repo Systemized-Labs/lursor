@@ -10,7 +10,7 @@ description: >-
   and the git diff, put agents on a schedule, manage local models, and report
   what it all cost.
 author: Lursor
-homepage: https://github.com/JonathanConn/lursor
+homepage: https://github.com/Systemized-Labs/lursor
 provides_tools:
   - lursor_workspaces
   - lursor_agents

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Lursor desktop installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install.sh | sh
 #
 # Downloads the prebuilt Lursor desktop app for this OS/arch from GitHub
 # Releases and installs it. The app bundles its own backend, so no Python, uv,
@@ -9,7 +9,7 @@
 # your OpenRouter key in Settings.
 #
 # Env overrides:
-#   LURSOR_REPO      owner/repo to fetch from       (default JonathanConn/lursor)
+#   LURSOR_REPO      owner/repo to fetch from       (default Systemized-Labs/lursor)
 #   LURSOR_VERSION   pin a version, e.g. 1.2.3      (default: latest release)
 #   LURSOR_PREFIX    Linux install dir              (default ~/.local/bin)
 #
@@ -17,7 +17,7 @@
 #   --uninstall      remove an installed Lursor
 set -eu
 
-REPO="${LURSOR_REPO:-JonathanConn/lursor}"
+REPO="${LURSOR_REPO:-Systemized-Labs/lursor}"
 VERSION="${LURSOR_VERSION:-}"
 
 info() { printf '\033[0;36m>>\033[0m %s\n' "$1"; }

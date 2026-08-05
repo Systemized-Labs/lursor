@@ -9,7 +9,7 @@ Python, `uv`, `bun`, or manual server to run.
 macOS (Apple Silicon) and Linux (x86_64):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install.sh | sh
 ```
 
 This downloads the prebuilt app for your OS/architecture from GitHub Releases,
@@ -57,7 +57,7 @@ Environment variables understood by the installer:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LURSOR_REPO` | `JonathanConn/lursor` | Source repo for releases |
+| `LURSOR_REPO` | `Systemized-Labs/lursor` | Source repo for releases |
 | `LURSOR_VERSION` | latest release | Pin a specific version, e.g. `1.2.3` |
 | `LURSOR_PREFIX` | `~/.local/bin` | Linux install directory |
 
@@ -66,7 +66,7 @@ Re-running the installer upgrades in place.
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install.sh | sh -s -- --uninstall
 ```
 
 Your data in `~/.lursor` (workspaces, skills, database, media) is left untouched.
@@ -108,7 +108,7 @@ the build:
 To update by hand at any time:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/update.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/update.sh | sh
 ```
 
 It compares what you have installed against the latest release and does nothing

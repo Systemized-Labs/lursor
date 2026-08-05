@@ -56,7 +56,7 @@ and the build still produces installable (unsigned) artifacts.
 ### 2. Homebrew tap (not set up — macOS)
 
 **Do not advertise this channel until all three steps below are done.** As of
-now none of them are: `JonathanConn/homebrew-lursor` returns 404, and the repo
+now none of them are: `Systemized-Labs/homebrew-lursor` returns 404, and the repo
 has no secrets at all, so the `homebrew` job's bump step is gated off by
 `if: env.HOMEBREW_TAP_TOKEN != ''` and **skips on every release while the job
 still reports success**. A green `homebrew` job means nothing until step 2 lands.
@@ -69,7 +69,7 @@ notarized. Own tap in the meantime:
    `--no-quarantine` in 4.7 and macOS 15 removed the Control-click bypass, so a
    cask installing an unsigned app produces a bundle the user cannot open —
    strictly worse than `install.sh`, which clears the quarantine flag itself.
-2. Create a **public** repo `JonathanConn/homebrew-lursor` with a `Casks/` directory.
+2. Create a **public** repo `Systemized-Labs/homebrew-lursor` with a `Casks/` directory.
 3. Create a fine-grained PAT with `contents: write` on that repo, and add it to
    *this* repo as the secret `HOMEBREW_TAP_TOKEN`.
 
@@ -79,7 +79,7 @@ pushes it to `Casks/lursor.rb`. Never hand-edit the tap copy.
 Users would then run:
 
 ```bash
-brew tap JonathanConn/lursor
+brew tap Systemized-Labs/lursor
 brew install --cask lursor
 ```
 
@@ -205,14 +205,14 @@ spctl --assess --type execute -vv /Applications/Lursor.app
 xcrun stapler validate ~/Downloads/Lursor-0.2.0-mac-arm64.dmg
 
 # The installer path end to end (checksum verification included).
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install.sh | sh
 
 # Auto-update feed exists for both platforms.
 gh release view v0.2.0 --json assets --jq '.assets[].name'
 #   expect: .dmg, .zip, latest-mac.yml, .AppImage, .deb, latest-linux.yml, SHA256SUMS.txt
 
 # Exactly one release for the tag — more than one means publishing raced again.
-gh api repos/JonathanConn/lursor/releases --jq '[.[]|select(.tag_name=="v0.2.0")]|length'
+gh api repos/Systemized-Labs/lursor/releases --jq '[.[]|select(.tag_name=="v0.2.0")]|length'
 ```
 
 ## Auto-update mechanics

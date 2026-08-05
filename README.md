@@ -11,7 +11,7 @@ Your machine, your keys, your models.
 [Install](#install) · [How it works](#how-it-works) · [Security](#security) · [Design record](AGENTS.md)
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=for-the-badge)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/JonathanConn/lursor?style=for-the-badge&color=black)](https://github.com/JonathanConn/lursor/releases)
+[![Release](https://img.shields.io/github/v/release/Systemized-Labs/lursor?style=for-the-badge&color=black)](https://github.com/Systemized-Labs/lursor/releases)
 
 </div>
 
@@ -77,7 +77,7 @@ interpreter that Lursor starts and stops for you. No Python, `uv`, `bun`, or
 manual server required.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install.sh | sh
 ```
 
 This downloads the prebuilt app for your OS/arch from GitHub Releases, verifies
@@ -94,14 +94,14 @@ To update an existing install — checks your version against the latest release
 and does nothing if you're current:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/update.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/update.sh | sh
 ```
 
 Pin a version with `LURSOR_VERSION=1.2.3`, change the Linux install dir with
 `LURSOR_PREFIX`, and remove it again with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install.sh | sh -s -- --uninstall
 ```
 
 ### On a machine that stays on
@@ -112,7 +112,7 @@ builds from source and hands the backend to systemd (or launchd), so it survives
 reboot, and prints the token the desktop app authenticates with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install-server.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Systemized-Labs/lursor/main/scripts/install-server.sh | sh
 ```
 
 Then add the connection in the app under **Switch Connection…**. Re-run the same

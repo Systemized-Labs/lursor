@@ -621,7 +621,7 @@ function installMenu() {
 /** Re-check for updates on this cadence while the app stays open. */
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** Repo the update feed and the fallback updater script come from. */
-const UPDATE_REPO = process.env.LURSOR_REPO || "JonathanConn/lursor"
+const UPDATE_REPO = process.env.LURSOR_REPO || "Systemized-Labs/lursor"
 const UPDATE_SCRIPT_URL = `https://raw.githubusercontent.com/${UPDATE_REPO}/main/scripts/update.sh`
 
 /**

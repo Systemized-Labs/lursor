@@ -20,7 +20,7 @@ Otherwise, one command. Hermes's installer accepts an `owner/repo/subdir`
 shorthand, so it can pull this plugin straight out of the Lursor monorepo:
 
 ```bash
-hermes plugins install JonathanConn/lursor/integrations/hermes/lursor
+hermes plugins install Systemized-Labs/lursor/integrations/hermes/lursor
 ```
 
 It clones the repo, extracts this directory, names it from the manifest

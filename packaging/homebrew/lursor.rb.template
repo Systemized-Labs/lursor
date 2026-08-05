@@ -1,4 +1,4 @@
-# Cask template for the Lursor Homebrew tap (JonathanConn/homebrew-lursor).
+# Cask template for the Lursor Homebrew tap (Systemized-Labs/homebrew-lursor).
 #
 # NOT IN USE YET: the tap repo does not exist and HOMEBREW_TAP_TOKEN is unset, so
 # the release workflow's bump step skips. See docs/DISTRIBUTION.md before
@@ -18,10 +18,10 @@ cask "lursor" do
   version "@@VERSION@@"
   sha256 "@@SHA256@@"
 
-  url "https://github.com/JonathanConn/lursor/releases/download/v#{version}/Lursor-#{version}-mac-arm64.dmg"
+  url "https://github.com/Systemized-Labs/lursor/releases/download/v#{version}/Lursor-#{version}-mac-arm64.dmg"
   name "Lursor"
   desc "Self-hosted agent harness with workspaces, live terminal, and git review"
-  homepage "https://github.com/JonathanConn/lursor"
+  homepage "https://github.com/Systemized-Labs/lursor"
 
   livecheck do
     url :url
