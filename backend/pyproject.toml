@@ -20,6 +20,13 @@ dependencies = [
     "croniter>=6.2.4",
 ]
 
+[project.scripts]
+# Installs the backend as a supervised service (see app/service.py). A console
+# script rather than a bare module so the documented command is short enough to
+# paste, and so `uv run lursor-service` resolves the right interpreter — which is
+# what the generated unit is derived from.
+lursor-service = "app.service:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

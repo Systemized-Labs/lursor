@@ -46,7 +46,7 @@ frontend/         Vite + React 19 + Tailwind v4 + shadcn/ui  (frontend/README.md
   electron/       desktop main + preload
 docs/             INSTALL / ELECTRON / DISTRIBUTION / REMOTE
 packaging/        Homebrew cask template (rendered by CI)
-scripts/          dev.sh, install.sh, update.sh
+scripts/          dev.sh, install.sh, update.sh, install-server.sh
 ```
 
 ## 3. Commands
@@ -58,6 +58,7 @@ scripts/          dev.sh, install.sh, update.sh
 cd backend
 uv sync --extra dev                   # add --extra hindsight for the memory provider
 uv run uvicorn app.main:app --reload --port 8791
+uv run lursor-service install         # ... or as a supervised service (docs/REMOTE.md)
 uv run pytest                         # offline; no API key needed
 uv run ruff check app tests
 
@@ -1098,10 +1099,14 @@ Details, secrets and the release runbook: [`docs/DISTRIBUTION.md`](docs/DISTRIBU
 nullable `user_id`; the shipped auth is one token for one operator — see
 `app/auth.py`), serving the SPA from the backend so a browser could reach a remote
 instance (it would need a login screen and a session cookie, because a browser can't
-put a header on a navigation or an iframe load), server-side install tooling for a
-remote backend (no install script, systemd unit or container image — `docs/REMOTE.md`
-hands you the uvicorn command and leaves supervision to you), Docker sandbox
-execution, MCP + HTTP tool wiring
+put a header on a navigation or an iframe load), a container image for the backend
+(`scripts/install-server.sh` + `app/service.py` install it from source under systemd
+or launchd instead), resuming a turn interrupted by a backend restart (run state is
+in-memory, so supervision means "the API comes back", not "the work continues" — see
+`reconcile_interrupted_runs`), app-managed SSH tunnels (the shipped remote path is
+https direct; a tunnel is supervised outside the app — `docs/REMOTE.md`), restarting a
+*local* backend that crashes (Electron logs the exit and leaves the window a dead
+shell), Docker sandbox execution, MCP + HTTP tool wiring
 (`Tool` rows are catalogued but not yet passed to agents), Alembic, encryption or
 OS keychain for stored secrets, an always-on scheduler daemon, catch-up fires,
 non-cron triggers, chained schedules, a budget ceiling that disables a schedule,

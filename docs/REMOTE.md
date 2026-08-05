@@ -18,45 +18,79 @@ filesystem rather than an OS dialog.
 
 ## 1. Install the backend on the remote host
 
-The same source and the same command as [running from source](../README.md#run-from-source)
-— there is no separate server build:
+One command. It clones the source, builds the environment (fetching a suitable Python
+— the backend pins `>=3.11,<3.13` and distros routinely ship something outside that),
+generates a token, and hands the backend to the platform's supervisor so it survives a
+reboot and a crash:
 
 ```bash
-git clone https://github.com/JonathanConn/lursor.git
-cd lursor/backend
-uv sync
+curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install-server.sh | sh
 ```
 
-## 2. Generate a token
+It prints the token at the end — that is what the desktop app authenticates with.
+Re-run the same command to upgrade: it pulls, re-syncs and restarts the service,
+keeping your database, workspaces and token.
+
+Env overrides: `LURSOR_DIR` (default `~/lursor`), `LURSOR_PORT` (default `8791`),
+`LURSOR_REF`, `LURSOR_REPO`. Remove it again with `--uninstall`, which stops the
+service and leaves your code and data alone.
+
+The service itself is managed by `lursor-service`, a CLI in the backend:
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+cd ~/lursor/backend
+uv run lursor-service status      # supervisor state, linger, and whether it answers
+uv run lursor-service token       # print the token again
+uv run lursor-service install --rotate-token   # new token; logs out every client
+uv run lursor-service uninstall
 ```
 
-Use that generator, not a passphrase you invent. It is 32 bytes of CSPRNG output,
-and its URL-safe alphabet is also a valid WebSocket subprotocol token — which is how
-the token reaches WebSocket routes, since browsers cannot put headers on them.
+On Linux that is a systemd `--user` unit — a *user* unit because the backend is an
+ordinary program running as you, with your keys and repos; nothing about it wants
+root. `install` will tell you to run `sudo loginctl enable-linger <user>` if it isn't
+already set: without lingering your systemd instance only exists while you are logged
+in, so the backend would not start after a reboot until someone signed in. That is the
+one step needing root, and the installer won't do it for you.
 
-Keep it somewhere you can paste from once. The app stores it in your OS keychain
-after that.
+On macOS it is a LaunchAgent, which starts at **login, not at boot**. A Mac that must
+serve from cold with nobody signed in needs a root-owned LaunchDaemon — not something
+this tool installs.
 
-## 3. Run it, bound to loopback
+Logs: `journalctl --user -u lursor-backend -f` on Linux,
+`~/Library/Logs/lursor-backend.log` on macOS.
+
+### What supervision does and does not give you
+
+It means **the backend comes back** — after a reboot, a crash, an OOM kill. It does
+**not** mean the work continues. Run state lives in memory
+(`app/agents/chat_run_manager.py`), so a turn that was in flight when the service
+restarted is marked `stopped` on the next boot and you resend it yourself. Schedules,
+and anything started after the restart, are unaffected.
+
+That is the honest shape of it: supervision protects you from the machine rebooting
+overnight, not from a crash three minutes into a long run.
+
+### Doing it by hand instead
+
+If you'd rather not run an installer, the backend is just uvicorn with a token:
 
 ```bash
-LURSOR_AUTH_TOKEN='<the token>' \
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8791
+git clone https://github.com/JonathanConn/lursor.git && cd lursor/backend && uv sync
+LURSOR_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  uv run uvicorn app.main:app --host 127.0.0.1 --port 8791
 ```
 
-Loopback, deliberately — the TLS proxy in the next step is what faces the network.
+Use that generator rather than a passphrase you invent: 32 bytes of CSPRNG output,
+and its URL-safe alphabet is also a valid WebSocket subprotocol token, which is how
+the token reaches WebSocket routes since browsers cannot put headers on them.
 
-Without `LURSOR_AUTH_TOKEN` the backend starts completely unauthenticated and logs a
-warning saying so. Check for that line if a connection is rejected: it means the
-token you are sending is being compared against nothing.
+Bind loopback — the TLS proxy in the next step is what faces the network. Without
+`LURSOR_AUTH_TOKEN` the backend starts completely unauthenticated and logs a warning
+saying so; check for that line if a connection is rejected, because it means the token
+you are sending is being compared against nothing. And note that command dies with
+your shell, which is the whole reason the installer exists.
 
-Keeping it running across reboots is your call — a systemd unit, `tmux`, or whatever
-you already use for services on that host. Lursor ships no supervisor.
-
-## 4. Put TLS in front of it
+## 2. Put TLS in front of it
 
 A bearer token over plain HTTP is readable by anything on the path and replayable
 forever, so the app refuses to save a `http://` connection to any non-loopback host.
@@ -75,14 +109,14 @@ both hold a connection open far longer than 60 seconds.
 
 Point DNS at the host, open 443, and leave 8791 closed.
 
-## 5. Add the connection in the app
+## 3. Add the connection in the app
 
 Launch Lursor and open **Switch Connection…** (the app menu on macOS, File
 elsewhere). Choose **Add a remote backend** and give it:
 
 - **Name** — whatever you want to see in the window bar.
 - **Address** — `https://lursor.example.com`.
-- **Token** — from step 2.
+- **Token** — printed by the installer, or `uv run lursor-service token`.
 
 It connects on save. From then on that connection is remembered and reused at launch,
 and the picker only appears when you ask for it or when the saved connection can't be
@@ -92,6 +126,66 @@ one click.
 Connections are stored in `~/.lursor/connections.json`, with tokens encrypted using
 your OS keychain (`safeStorage`). Where no keychain is available the token is stored
 in plaintext and the app logs a warning saying so.
+
+## Keeping the tunnel alive
+
+The backend is already supervised by step 1. If you reach it over an SSH tunnel rather
+than https, that tunnel is a second thing that fails independently — it dies when your
+laptop sleeps or changes network, and nothing brings it back.
+
+Unlike the backend, Lursor does not manage this for you: the shipped path is https
+direct, and the tunnel is something you set up outside the app. On macOS a LaunchAgent
+is the least fragile way to do it.
+
+Two ssh config entries, because sharing one is a trap — the forward would be attached to
+every `ssh` you run, and each would fail with `Address already in use` while the
+tunnel holds the port:
+
+```
+Host lursor-server
+    HostName 192.168.1.50
+    User jon
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+
+# Used by the launchd agent and nothing else.
+Host lursor-tunnel
+    HostName 192.168.1.50
+    User jon
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+    LocalForward 8792 127.0.0.1:8791
+    # Make a dead link terminate in ~45s so the agent can replace it, instead of
+    # leaving a socket that accepts connections and then hangs.
+    ServerAliveInterval 15
+    ServerAliveCountMax 3
+    ExitOnForwardFailure yes
+```
+
+Key-based auth is required — a launchd job has no terminal to type a password into.
+`ssh-copy-id lursor-server` once, then confirm `ssh -o BatchMode=yes lursor-server`
+works.
+
+`~/Library/LaunchAgents/local.lursor.tunnel.plist` runs
+`/usr/bin/ssh -N -o BatchMode=yes lursor-tunnel` with `RunAtLoad`, `KeepAlive` and a
+`ThrottleInterval` of 10. `KeepAlive` is what makes this survive sleep: ssh exits when
+the link dies and launchd starts a new one.
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.lursor.tunnel.plist
+```
+
+### What recovery actually looks like
+
+Waking the laptop takes roughly a minute end to end: ~45s for `ServerAliveInterval`
+to notice the link is dead, then ~10s for launchd to start a replacement. During that
+window the app shows "Reconnecting to `<name>`…" in the window bar and then
+re-attaches on its own — no restart, and agent runs, dev servers and schedules on the
+server were never interrupted.
+
+Add the connection as `http://127.0.0.1:8792` (loopback, so the plain-http guard
+allows it; SSH is what encrypts the hop). If the tunnel is down when you launch, you
+get the picker with "Could not reach …" and can pick **This Mac** instead.
 
 ## Previews of remote dev servers
 

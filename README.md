@@ -104,6 +104,21 @@ Pin a version with `LURSOR_VERSION=1.2.3`, change the Linux install dir with
 curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install.sh | sh -s -- --uninstall
 ```
 
+### On a machine that stays on
+
+To run the backend somewhere else — a VPS, or a box in the corner — so agents keep
+working while your laptop is shut, install the **server** half there instead. It
+builds from source and hands the backend to systemd (or launchd), so it survives a
+reboot, and prints the token the desktop app authenticates with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JonathanConn/lursor/main/scripts/install-server.sh | sh
+```
+
+Then add the connection in the app under **Switch Connection…**. Re-run the same
+command to upgrade. [docs/REMOTE.md](docs/REMOTE.md) covers TLS, previews of remote
+dev servers, and what supervision does and doesn't protect you from.
+
 Requires macOS on Apple Silicon or Linux x86_64; Windows and Intel macOS aren't
 built yet — run from source there. On first launch, paste an
 [OpenRouter key](https://openrouter.ai/keys) or point at a local
