@@ -1,97 +1,175 @@
-import { useCallback, useEffect, useRef, useState } from "react"
-import type { ReactNode } from "react"
-import { Outlet, useLocation } from "react-router-dom"
-import type { ImperativePanelHandle } from "react-resizable-panels"
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+import type { CSSProperties, ReactNode } from "react"
+import { Outlet, useLocation, useSearchParams } from "react-router-dom"
 
 import { useWorkspace } from "@/api/workspaces"
 import { AppSidebar } from "@/components/layout/app-sidebar"
-import { MobileHeader } from "@/components/layout/mobile-header"
-import { destinationFor } from "@/components/layout/rail-items"
-import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
-import { DockRail } from "@/components/shell/dock-rail"
-import { MobileDockBar } from "@/components/shell/mobile-dock-bar"
-import { MobilePlanView } from "@/components/shell/mobile-plan-view"
-import { RightDock, DockPanelContent } from "@/components/shell/right-dock"
+import { destinationFor } from "@/components/layout/destinations"
 import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
-import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar"
-import { hasStoredDockState, useDockState } from "@/hooks/use-dock-state"
-import type { DockKind } from "@/hooks/use-dock-state"
+  CONTENT_COLUMN,
+  MobileShell,
+  type MobileView,
+} from "@/components/layout/mobile-shell"
+import { useSidebarSide } from "@/components/layout/use-sidebar-side"
+import { WINDOW_BAR_HEIGHT, WindowBar } from "@/components/layout/window-bar"
+import type { MobilePaneKind, PaneKind } from "@/components/panes/pane-kinds"
+import {
+  hasStoredLayout,
+  readLayoutKinds,
+  usePaneLayout,
+} from "@/components/panes/use-pane-layout"
+import { SettingsDialog } from "@/components/settings/settings-dialog"
+import { useSettingsParam } from "@/components/settings/use-settings-param"
+import { CommandPaletteProvider } from "@/components/command-palette/command-palette"
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { usePendingRequest } from "@/hooks/use-pending-request"
 import { usePreviewWatch } from "@/hooks/use-preview-watch"
 import { cn } from "@/lib/utils"
 import {
   consumePendingFile,
-  peekPendingFile,
-  subscribeOpenFile,
+  openFileChannel,
   type OpenFileRequest,
 } from "@/lib/open-file"
 import { isPlanFile } from "@/lib/plan-doc"
+import { openPreviewChannel } from "@/lib/open-preview"
 import {
-  peekPendingPreview,
-  subscribeOpenPreview,
-  type OpenPreviewRequest,
-} from "@/lib/open-preview"
-
-/** Titles for the full-screen dock views shown via the mobile bottom bar. */
-const MOBILE_DOCK_TITLES: Record<DockKind, string> = {
-  changes: "Changes",
-  file: "Files",
-  terminal: "Terminal",
-  preview: "Preview",
-}
+  consumePendingThread,
+  openThreadChannel,
+  type OpenThreadRequest,
+} from "@/lib/open-thread"
 
 /**
- * The persistent app shell: a Cursor-style collapsible sidebar, the routed
- * center content, and a resizable right-side dock. A slim inset header carries
- * the sidebar toggle and (when the dock is hidden) a re-open affordance.
+ * Dockview is ~77KB gzipped and only ever needed inside a workspace, so the host
+ * is code-split behind that — exactly the arrangement the plan's §3.4 asks for, and
+ * the one Phase 0 measured at +213 bytes to the entry chunk. `use-pane-layout` is
+ * imported eagerly and must therefore stay free of dockview *value* imports; see
+ * the note on `HORIZONTAL` there.
+ */
+const PaneHost = lazy(() =>
+  import("@/components/panes/pane-host").then((m) => ({ default: m.PaneHost }))
+)
+
+/**
+ * Routes that are *addresses for a pane*, not pages.
  *
- * On desktop the dock is a side-by-side split. On phones that split would crush
- * the content, so the shell adds a global top header (hamburger + title) and a
- * bottom tab bar (inside a workspace) that swaps the center view in place.
+ * Same move Phase 4 made for chat: the route resolves so links and bookmarks keep
+ * working, and arriving on it ensures the corresponding pane in the layout. Which
+ * layout depends on where you are — inside a workspace these join that workspace's
+ * arrangement, outside one they join the global `_global` layout §3.6 describes.
+ */
+const PANE_ROUTES: { path: string; kind: PaneKind }[] = [
+  { path: "/analytics", kind: "usage" },
+  { path: "/video", kind: "video" },
+  { path: "/image", kind: "image" },
+  { path: "/artifacts", kind: "artifacts" },
+]
+
+/** Same reasoning: it imports dockview types *and* `fromJSON`, so it goes too. */
+const LayoutsDialog = lazy(() =>
+  import("@/components/panes/layouts-dialog").then((m) => ({
+    default: m.LayoutsDialog,
+  }))
+)
+
+/**
+ * The persistent app shell: the WindowBar, the sessions sidebar, and — inside a
+ * workspace — the pane layer.
+ *
+ * Outside a workspace the centre is still the routed `Outlet`: Usage, Video and
+ * Image are whole pages until Phase 6 re-hosts them as panes, and the New Agent
+ * home is a full-bleed launcher rather than a pane.
+ *
+ * On phones the pane layer is not used at all. A four-zone grid on a 390px screen
+ * is not a layout, so mobile keeps the bottom bar that swaps one full-screen
+ * surface for another — rendering the same {@link PaneContent} the panes do, just
+ * without zones, tabs or drag.
  */
 export function AppShell() {
   const isMobile = useIsMobile()
   const { pathname } = useLocation()
-  // The active workspace (from `/workspaces/:id/...`) keys the dock's persisted
-  // layout, so each workspace remembers whether its dock is open and which
-  // panels were up.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { openSettings } = useSettingsParam()
+  const [sidebarSide, setSidebarSide] = useSidebarSide()
+  const [layoutsOpen, setLayoutsOpen] = useState(false)
+  // The active workspace (from `/workspaces/:id/...`) keys the pane layout, so
+  // each workspace remembers its own arrangement.
   const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
-  const dock = useDockState(workspaceId)
+  const layout = usePaneLayout(workspaceId)
   // Keep the detected dev-server list live for the active workspace, so servers
-  // the agent starts are known even before the Preview panel is opened.
+  // the agent starts are known even before a Preview pane is opened.
   usePreviewWatch(workspaceId)
-  // Workspace name feeds the mobile header title (cached — the chat page shares
+  // Workspace name feeds the mobile header title (cached — the chat pane shares
   // this query).
   const workspaceForTitle = useWorkspace(workspaceId)
-  // The dock is workspace-scoped (changes/files/terminal for a repo), so it
-  // only makes sense inside a workspace route — not on the New Agent home,
-  // Customization, or Settings surfaces.
-  const dockVisible = !isMobile && !dock.collapsed && Boolean(workspaceId)
+  const inWorkspace = Boolean(workspaceId)
+  const paneRoute = PANE_ROUTES.find((entry) => pathname === entry.path)
+  // The pane layer is the centre for a workspace, and for the four surfaces that
+  // are panes without one. Everything else — the New Agent launcher — is still a
+  // routed page, because a full-bleed launcher is not a pane.
+  const showPanes = inWorkspace || paneRoute !== undefined
 
-  // On mobile the bottom bar switches the center view in place (like tabs):
-  // "chat" shows the routed content, a DockKind shows that panel full-screen.
-  // Panels are mounted on first visit and kept alive (hidden) when switched
-  // away, so a terminal session or editor buffer survives tab switches.
-  const [mobileView, setMobileView] = useState<"chat" | "plan" | DockKind>(
-    "chat"
+  /**
+   * `?c=` is written *from* the focused chat pane, never read to build the layout
+   * (the plan's §4). It stays in the URL so a conversation is still linkable and
+   * still survives a reload — routing degrades from owner to address.
+   */
+  const setFocusedThread = useCallback(
+    (threadId: string | null) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (threadId) next.set("c", threadId)
+          else next.delete("c")
+          return next
+        },
+        { replace: true }
+      )
+    },
+    [setSearchParams]
   )
-  const [visitedKinds, setVisitedKinds] = useState<DockKind[]>([])
+
+  // On mobile the bottom bar switches the centre view in place (like tabs).
+  // Surfaces are mounted on first visit and kept alive (hidden) when switched
+  // away, so a terminal session or editor buffer survives a tab switch — the same
+  // guarantee `renderer: 'always'` gives the panes on desktop.
+  const [mobileView, setMobileView] = useState<MobileView>("chat")
+  const [visitedKinds, setVisitedKinds] = useState<MobilePaneKind[]>([])
   // The plan doc surfaced for this workspace's parked `/plan` turn, if any. The
   // Files editor is desktop-only, so on mobile a plan opens in a read-only
   // Markdown view instead (see the open-file effect below).
   const [mobilePlan, setMobilePlan] = useState<{ path: string } | null>(null)
 
-  const showMobileKind = useCallback((kind: DockKind) => {
+  /**
+   * The pane kinds this workspace's layout holds, for the bottom bar.
+   *
+   * Read from storage rather than from `layout.api`: the pane layer never mounts
+   * on a phone, so there is no dockview instance to ask. Recomputed when the
+   * workspace changes, which is the only time it can change without a desktop
+   * session in between.
+   */
+  const mobileKinds = useMemo<MobilePaneKind[]>(() => {
+    if (!isMobile || !workspaceId) return []
+    return readLayoutKinds(workspaceId).filter(
+      (kind): kind is MobilePaneKind => kind !== "chat"
+    )
+  }, [isMobile, workspaceId])
+
+  const showMobilePaneKind = useCallback((kind: MobilePaneKind) => {
     setVisitedKinds((prev) => (prev.includes(kind) ? prev : [...prev, kind]))
     setMobileView(kind)
   }, [])
 
   // Leaving a workspace (or switching to desktop) snaps back to the chat view
-  // and forgets which panels were mounted for the previous repo.
+  // and forgets which surfaces were mounted for the previous repo.
   useEffect(() => {
     if (!workspaceId || !isMobile) {
       setMobileView("chat")
@@ -100,363 +178,236 @@ export function AppShell() {
     }
   }, [workspaceId, isMobile])
 
-  // First visit to the Skill Studio: open the Files panel. Its whole point is
-  // the tree over every skill, and a blank right-hand side hides that the dock
-  // is even there. Only when nothing is stored for this workspace — after that
-  // the layout is the user's, closed dock included.
-  const seededDockRef = useRef<string | null>(null)
+  // First visit to the Skill Studio: open a Files pane. Its whole point is the
+  // tree over every skill, and a lone chat hides that the panes are even there.
+  // Only when nothing is stored for this workspace — after that the layout is the
+  // user's.
+  const seededRef = useRef<string | null>(null)
   useEffect(() => {
     const isStudio = workspaceForTitle.data?.is_system === true
-    if (!isStudio || !workspaceId || isMobile) return
-    if (seededDockRef.current === workspaceId) return
-    seededDockRef.current = workspaceId
-    if (hasStoredDockState(workspaceId)) return
-    dock.ensureTab("file")
-  }, [workspaceForTitle.data?.is_system, workspaceId, isMobile, dock])
-
-  // Global "open this file" requests (from the command palette) land here: once
-  // we're on the target workspace, reveal the dock and ensure a file tab so the
-  // editor mounts and can pick the request up.
-  const [openFileTick, setOpenFileTick] = useState(0)
-  const handledPendingRef = useRef<OpenFileRequest | null>(null)
-  useEffect(() => subscribeOpenFile(() => setOpenFileTick((t) => t + 1)), [])
-  useEffect(() => {
-    const pending = peekPendingFile()
-    if (!pending || pending.workspaceId !== workspaceId) return
-    // Guard by request identity so re-renders don't spawn duplicate file tabs.
-    if (handledPendingRef.current === pending) return
-    handledPendingRef.current = pending
-    // The Monaco editor is desktop-only, so on mobile the FileViewer never
-    // mounts to consume this request. Plan docs are the exception: route them to
-    // the read-only mobile plan view (consuming the request ourselves so it
-    // doesn't linger). Any other file has nowhere to go on a phone — leave it.
-    if (isMobile) {
-      if (isPlanFile(pending.name)) {
-        consumePendingFile(workspaceId)
-        setMobilePlan({ path: pending.path })
-        setMobileView("plan")
-      }
-      return
-    }
-    dock.ensureTab("file")
-    dock.setCollapsed(false)
-  }, [openFileTick, workspaceId, dock, isMobile])
-
-  // Global "open this URL in the preview" requests (from the right-click menu on
-  // chat links): reveal the preview surface for the target workspace so the
-  // PreviewPanel mounts and navigates. On mobile that's the full-screen preview
-  // view; on desktop, the side dock's preview tab.
-  const [openPreviewTick, setOpenPreviewTick] = useState(0)
-  const handledPreviewRef = useRef<OpenPreviewRequest | null>(null)
-  useEffect(() => subscribeOpenPreview(() => setOpenPreviewTick((t) => t + 1)), [])
-  useEffect(() => {
-    const pending = peekPendingPreview()
-    if (!pending || pending.workspaceId !== workspaceId) return
-    // Guard by request identity so re-renders don't re-open the dock repeatedly.
-    if (handledPreviewRef.current === pending) return
-    handledPreviewRef.current = pending
-    if (isMobile) {
-      showMobileKind("preview")
-      return
-    }
-    dock.ensureTab("preview")
-    dock.setCollapsed(false)
-  }, [openPreviewTick, workspaceId, dock, isMobile, showMobileKind])
-
-  // Full-bleed surfaces (e.g. a chat thread) manage their own scroll and fill
-  // the panel edge to edge; everything else keeps the padded, centered column.
-  const fullBleed =
-    pathname === "/" ||
-    pathname.includes("/threads/") ||
-    pathname.endsWith("/chat")
+    if (!isStudio || !workspaceId || isMobile || !layout.api) return
+    if (seededRef.current === workspaceId) return
+    seededRef.current = workspaceId
+    if (hasStoredLayout(workspaceId)) return
+    layout.openPane("file")
+  }, [workspaceForTitle.data?.is_system, workspaceId, isMobile, layout])
 
   /**
-   * The padded column every non-full-bleed route sits in.
+   * Whether this shell can answer a parked open request yet.
    *
-   * Customization gets a much wider cap than the rest. Its tabs are browsers and
-   * grids that spend every pixel they are given — the two-pane Skills and
-   * Environment rails most of all, where the default column left the detail pane
-   * narrower than the rail beside it. Settings and Analytics are forms and prose,
-   * which read worse the wider they get, so they keep the measured column.
+   * On desktop that means dockview exists: the pane host is lazy, and a request
+   * handled before it mounts is marked handled by a handler that can do nothing —
+   * `ensurePane` and `openThread` both begin `if (!api) return`, so the request would
+   * be dropped without opening and never consumed.
    *
-   * Still capped rather than edge-to-edge: on an ultrawide, an uncapped card grid
-   * stretches three cards across two feet of desk. The cap is high enough that any
-   * ordinary laptop is already below it and simply gets the full width.
+   * A phone is always ready, and that is not the same condition: there is no pane
+   * layer on mobile at all, so `layout.api` is null for the whole session. Gating on
+   * it there would mean a plan doc never reaches {@link MobilePlanView} and the
+   * bottom bar never switches for a preview.
    */
-  const columnClass = cn(
-    "mx-auto w-full",
-    pathname.startsWith("/customization") ? "max-w-[100rem]" : "max-w-6xl"
+  const canOpen = isMobile || layout.api !== null
+
+  // Global "open this conversation" requests (a sidebar row, a link in a reply).
+  // Chat is a pane now, so a click cannot address it through `?c=` — see
+  // `lib/open-thread.ts`.
+  const handleOpenThread = useCallback(
+    (request: OpenThreadRequest) => {
+      consumePendingThread(workspaceId)
+      if (isMobile) {
+        // No panes on a phone: the single chat surface reads `?c=`, which the
+        // requester's own navigation has already set — or cleared, which is how a
+        // new session still reaches it here. Switching to chat is ours to do —
+        // tapping a conversation while looking at the terminal means show me the
+        // conversation.
+        setMobileView("chat")
+        return
+      }
+      layout.openThread(request.threadId)
+    },
+    [workspaceId, isMobile, layout]
   )
+  usePendingRequest(openThreadChannel, workspaceId, canOpen, handleOpenThread)
+
+  /**
+   * A `?c=` arriving from outside the pane layer — a bookmark, a reload, a link
+   * pasted into the address bar — addresses the chat pane once per workspace load.
+   *
+   * This is the *only* place the URL is read to position a pane, and it is
+   * consistent with §4: the URL is the address. Once per load, because after that
+   * the panes own their own addressing and re-reading `?c=` would drag a second
+   * chat pane back onto the first one's thread.
+   */
+  const seededThreadFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (isMobile || !layout.api || !workspaceId) return
+    if (seededThreadFor.current === workspaceId) return
+    const wanted = searchParams.get("c")
+    seededThreadFor.current = workspaceId
+    if (wanted) layout.openThread(wanted)
+  }, [workspaceId, layout, isMobile, searchParams])
+
+  /**
+   * Arriving on a pane route ensures its pane, once.
+   *
+   * Guarded on the path rather than the pane's existence: `ensurePane` already
+   * focuses an open one instead of adding a second, and re-running on every render
+   * would fight the user the moment they focused something else.
+   */
+  const addressedRoute = useRef<string | null>(null)
+  useEffect(() => {
+    if (isMobile || !layout.api || !paneRoute) return
+    if (addressedRoute.current === paneRoute.path) return
+    addressedRoute.current = paneRoute.path
+    layout.ensurePane(paneRoute.kind)
+  }, [paneRoute, layout, isMobile])
+  useEffect(() => {
+    if (!paneRoute) addressedRoute.current = null
+  }, [paneRoute])
+
+  // Global "open this file" requests (from the command palette) land here: once
+  // we're on the target workspace, ensure a Files pane so the editor mounts and
+  // can pick the request up. Left parked rather than consumed — the viewer is what
+  // knows the file is open, so it takes it.
+  const handleOpenFile = useCallback(
+    (request: OpenFileRequest) => {
+      // The Monaco editor is desktop-only, so on mobile the FileViewer never mounts
+      // to consume this request. Plan docs are the exception: route them to the
+      // read-only mobile plan view (consuming the request ourselves so it doesn't
+      // linger). Any other file has nowhere to go on a phone — leave it.
+      if (isMobile) {
+        if (isPlanFile(request.name)) {
+          consumePendingFile(workspaceId)
+          setMobilePlan({ path: request.path })
+          setMobileView("plan")
+        }
+        return
+      }
+      layout.ensurePane("file")
+    },
+    [isMobile, workspaceId, layout]
+  )
+  usePendingRequest(openFileChannel, workspaceId, canOpen, handleOpenFile)
+
+  // Global "open this URL in the preview" requests (from the right-click menu on
+  // chat links): reveal a Preview surface for the target workspace so the panel
+  // mounts and navigates. The panel consumes the request itself, so the URL is
+  // still there when it comes up.
+  const handleOpenPreview = useCallback(() => {
+    if (isMobile) {
+      showMobilePaneKind("preview")
+      return
+    }
+    layout.ensurePane("preview")
+  }, [isMobile, layout, showMobilePaneKind])
+  usePendingRequest(openPreviewChannel, workspaceId, canOpen, handleOpenPreview)
+
+  // Full-bleed surfaces (e.g. the New Agent launcher) manage their own scroll and
+  // fill the panel edge to edge; everything else keeps the padded column.
+  const fullBleed = pathname === "/"
 
   // ── Mobile layout ──────────────────────────────────────────────────────────
-  // A single column under a global top header: the routed content fills the
-  // space above a bottom tab bar (inside a workspace), and the bottom bar swaps
-  // the center view in place.
   if (isMobile) {
-    const mobileCenter = fullBleed ? (
-      <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
-        <Outlet />
-      </main>
-    ) : (
-      <main className="flex-1 min-w-0 min-h-0 overflow-y-auto">
-        <div
-          className={cn(
-            columnClass,
-            "px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
-          )}
-        >
-          <Outlet />
-        </div>
-      </main>
-    )
-
-    // Header title: the active dock view when one is up, otherwise the route.
-    // Whole-page destinations name themselves from the rail's own list, so a new
-    // one is titled correctly without a branch here.
-    const routeTitle =
-      destinationFor(pathname)?.label ??
-      (workspaceId ? workspaceForTitle.data?.name ?? "Workspace" : "New chat")
-    const mobileTitle =
-      mobileView === "chat"
-        ? routeTitle
-        : mobileView === "plan"
-          ? "Plan"
-          : MOBILE_DOCK_TITLES[mobileView]
-
     return (
-      <SidebarProvider>
-        <CommandPaletteProvider>
-          <AppSidebar />
-          <SidebarInset className="min-w-0">
-            <div className="flex h-svh min-h-0 flex-col overflow-hidden">
-              <MobileHeader title={mobileTitle} />
-
-              {/* Stacked full-screen views — only the active one is shown.
-                  Layering (rather than conditional mount) keeps each panel's
-                  state alive when the bottom bar switches away from it. */}
-              <div className="relative min-h-0 flex-1">
-                <div
-                  className={cn(
-                    "absolute inset-0 flex flex-col",
-                    mobileView !== "chat" && "hidden"
-                  )}
-                >
-                  {mobileCenter}
-                </div>
-                {workspaceId &&
-                  visitedKinds.map((kind) => (
-                    <div
-                      key={kind}
-                      className={cn(
-                        "absolute inset-0 flex min-h-0 flex-col bg-background",
-                        mobileView !== kind && "hidden"
-                      )}
-                    >
-                      {/* One panel per kind here — the bottom bar has no notion
-                          of duplicates — so a fixed id stands in for a tab id.
-                          Scoped by workspace: these panels are not remounted on
-                          a workspace switch, and per-tab storage is global, so a
-                          shared id would carry the last repo's preview URL over. */}
-                      <DockPanelContent
-                        kind={kind}
-                        workspaceId={workspaceId}
-                        tabId={`mobile-${workspaceId}-${kind}`}
-                        active={mobileView === kind}
-                      />
-                    </div>
-                  ))}
-                {workspaceId && (
-                  <div
-                    className={cn(
-                      "absolute inset-0 flex min-h-0 flex-col bg-background",
-                      mobileView !== "plan" && "hidden"
-                    )}
-                  >
-                    <MobilePlanView
-                      workspaceId={workspaceId}
-                      path={mobilePlan?.path}
-                    />
-                  </div>
-                )}
-              </div>
-              {workspaceId && (
-                <MobileDockBar
-                  activeKind={
-                    mobileView === "chat" || mobileView === "plan"
-                      ? null
-                      : mobileView
-                  }
-                  planActive={mobileView === "plan"}
-                  onSelectChat={() => setMobileView("chat")}
-                  onSelectKind={showMobileKind}
-                  onSelectPlan={() => setMobileView("plan")}
-                />
-              )}
-            </div>
-          </SidebarInset>
-        </CommandPaletteProvider>
-      </SidebarProvider>
+      <MobileShell
+        workspaceId={workspaceId}
+        fullBleed={fullBleed}
+        paneRoute={paneRoute}
+        inWorkspace={inWorkspace}
+        threadId={searchParams.get("c")}
+        onThreadChange={setFocusedThread}
+        routeTitle={
+          destinationFor(pathname)?.label ??
+          (workspaceId ? (workspaceForTitle.data?.name ?? "Workspace") : "New chat")
+        }
+        view={mobileView}
+        visitedKinds={visitedKinds}
+        barKinds={mobileKinds}
+        plan={mobilePlan}
+        onShowChat={() => setMobileView("chat")}
+        onShowKind={showMobilePaneKind}
+        onShowPlan={() => setMobileView("plan")}
+        onOpenSettings={openSettings}
+        onOpenLayouts={() => setLayoutsOpen(true)}
+      />
     )
   }
 
   // ── Desktop layout ─────────────────────────────────────────────────────────
-  // Full-bleed surfaces must fill exactly the viewport so their inner regions
-  // (e.g. a chat message list) scroll independently. The sidebar shell is only
-  // `min-h-svh` (a floor that grows with content), so `flex-1`/`min-h-0` have no
-  // definite height to cap against — pin a concrete `h-svh` here instead.
-  const center = fullBleed ? (
-    <main className="h-svh min-w-0 flex flex-col overflow-hidden">
+  const center: ReactNode = fullBleed ? (
+    <main className="flex h-(--shell-height) min-w-0 flex-1 flex-col overflow-hidden">
       <Outlet />
     </main>
   ) : (
-    <main className="flex-1 min-w-0 overflow-y-auto">
-      <div className={cn(columnClass, "px-4 py-6 sm:px-6")}>
+    <main className="min-w-0 flex-1 overflow-y-auto">
+      <div className={cn(CONTENT_COLUMN, "px-4 py-6 sm:px-6")}>
         <Outlet />
       </div>
     </main>
   )
 
   return (
-    <SidebarProvider>
+    /* A column, not the primitive's default row: the WindowBar is the frame's own
+       strip and everything else lives under it. `--sidebar-top` is how the fixed
+       sidebar box and every `--shell-height` consumer learn that the viewport now
+       starts 44px down. */
+    <SidebarProvider
+      className="h-svh flex-col overflow-hidden"
+      style={{ "--sidebar-top": WINDOW_BAR_HEIGHT } as CSSProperties}
+    >
       <CommandPaletteProvider>
-        <AppSidebar />
-        <ShellBody
-          workspaceId={workspaceId}
-          dock={dock}
-          dockVisible={dockVisible}
-          center={center}
+        <WindowBar
+          onOpenSettings={openSettings}
+          onOpenLayouts={() => setLayoutsOpen(true)}
         />
+        {/* The sidebar swaps sides by DOM order, not `row-reverse`: reversing a
+            flex row leaves tab order and screen-reader order pointing the old way,
+            so the sidebar would be *read* after the content while appearing before
+            it. `side` also has to reach the primitive, which decides whether its
+            fixed box anchors left or right. */}
+        <div className="flex min-h-0 w-full flex-1">
+          {sidebarSide === "left" ? <AppSidebar side="left" /> : null}
+          {/* `min-w-0` lets this flex child shrink below its content's intrinsic
+              width; without it, widening a pane grows the whole inset past the
+              viewport instead of redistributing space within it.
+
+              The row is pinned to a concrete `--shell-height` — the viewport minus
+              the WindowBar. Without a definite height, `flex-1`/`min-h-0`
+              descendants have nothing to cap against, and dockview in particular
+              needs a real box to measure its zones against. */}
+          <SidebarInset className="min-w-0">
+            <div className="flex h-(--shell-height) min-h-0 overflow-hidden">
+              {showPanes ? (
+                <Suspense fallback={<div className="flex-1 bg-background" />}>
+                  <PaneHost
+                    workspaceId={workspaceId}
+                    layout={layout}
+                    onFocusedThreadChange={setFocusedThread}
+                  />
+                </Suspense>
+              ) : (
+                center
+              )}
+            </div>
+          </SidebarInset>
+          {sidebarSide === "right" ? <AppSidebar side="right" /> : null}
+        </div>
+        {/* Mounted at the shell, not per route: settings opens *over* whatever you
+            were doing rather than replacing it. */}
+        <SettingsDialog />
+        {layoutsOpen ? (
+          <Suspense fallback={null}>
+            <LayoutsDialog
+              open={layoutsOpen}
+              onOpenChange={setLayoutsOpen}
+              layout={layout}
+              hasPanes={showPanes}
+              hasWorkspace={inWorkspace}
+              side={sidebarSide}
+              onSideChange={setSidebarSide}
+            />
+          </Suspense>
+        ) : null}
       </CommandPaletteProvider>
     </SidebarProvider>
-  )
-}
-
-interface ShellBodyProps {
-  workspaceId?: string
-  dock: ReturnType<typeof useDockState>
-  dockVisible: boolean
-  center: ReactNode
-}
-
-/**
- * The desktop shell's inset: the routed content, its optional dock split, and
- * the rail.
- *
- * Split out of {@link AppShell} for one reason — it has to live *inside*
- * `SidebarProvider` to call {@link useSidebar}, which is what lets maximizing the
- * dock close the app sidebar as well as the chat column. Everything else here is
- * the markup that used to sit inline.
- *
- * Maximizing deliberately collapses the existing center panel rather than moving
- * the dock into an overlay: Monaco view state, terminal sessions and preview
- * iframes all die if a panel's position in the React tree changes, so the panel
- * group, the tree and every panel stay mounted throughout. Restoring returns to
- * the exact split the user had, because nothing was ever unmounted to lose it.
- */
-function ShellBody({ workspaceId, dock, dockVisible, center }: ShellBodyProps) {
-  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar()
-  const centerPanelRef = useRef<ImperativePanelHandle>(null)
-  const maximized = dockVisible && dock.maximized
-
-  // Collapse/expand the center column to match `maximized`. Imperative because
-  // the panel's size is owned by react-resizable-panels (and persisted under
-  // `autoSaveId`), so driving it from a prop would fight the user's own drags.
-  useEffect(() => {
-    const panel = centerPanelRef.current
-    if (!panel) return
-    if (maximized) {
-      if (!panel.isCollapsed()) panel.collapse()
-    } else if (panel.isCollapsed()) {
-      // Also the repair path for a saved layout that was collapsed when the
-      // maximize flag didn't survive with it.
-      panel.expand()
-    }
-  }, [maximized, dockVisible])
-
-  // Close the app sidebar while maximized, and put it back on the way out. The
-  // provider persists open state in a cookie, so the pre-maximize value is
-  // snapshotted here rather than assumed to be "open".
-  const sidebarWasOpen = useRef<boolean | null>(null)
-  useEffect(() => {
-    if (maximized) {
-      if (sidebarWasOpen.current === null) {
-        sidebarWasOpen.current = sidebarOpen
-        setSidebarOpen(false)
-      }
-      return
-    }
-    if (sidebarWasOpen.current === null) return
-    // Only undo our own close: a sidebar the user opened themselves while
-    // maximized stays open.
-    if (sidebarWasOpen.current && !sidebarOpen) setSidebarOpen(true)
-    sidebarWasOpen.current = null
-  }, [maximized, sidebarOpen, setSidebarOpen])
-
-  return (
-    /* `min-w-0` lets this flex child shrink below its content's intrinsic
-       width; without it, widening the dock grows the whole inset past the
-       viewport instead of redistributing space within it. */
-    <SidebarInset className="min-w-0">
-      {/* A horizontal row: the content area (with its optional dock split) and
-          a thin, always-present rail whose toggle governs the dock. The rail
-          owns a real column, so its toggle never overlaps page content.
-
-          The row is pinned to a concrete `h-svh` (the sidebar shell is only
-          `min-h-svh`, a floor that grows with content). Without a definite
-          height here, `flex-1`/`min-h-0` descendants have nothing to cap
-          against, so a tall panel — e.g. a large Changes diff in the dock —
-          would grow the whole inset and overflow the viewport instead of
-          scrolling internally. `overflow-hidden` clips at the row so the split
-          below always resolves its own scroll. */}
-      <div className="flex h-svh min-h-0 overflow-hidden">
-        <div className="flex flex-1 flex-col min-w-0 min-h-0">
-          {dockVisible ? (
-            <ResizablePanelGroup
-              direction="horizontal"
-              autoSaveId="app-shell-dock"
-              className="flex-1 min-h-0"
-            >
-              <ResizablePanel
-                ref={centerPanelRef}
-                minSize={30}
-                collapsible
-                collapsedSize={0}
-                className="flex flex-col min-w-0"
-              >
-                {center}
-              </ResizablePanel>
-              <ResizableHandle />
-              <ResizablePanel
-                defaultSize={40}
-                minSize={22}
-                // The everyday cap keeps some chat on screen; maximized, the
-                // dock *is* the window, and a 70% cap would refuse the collapse
-                // outright (the two panels have to sum to 100).
-                maxSize={maximized ? 100 : 70}
-                className="flex flex-col min-w-0"
-              >
-                <RightDock
-                  workspaceId={workspaceId}
-                  tabs={dock.tabs}
-                  activeId={dock.activeId}
-                  onOpenTab={dock.openTab}
-                  onCloseTab={dock.closeTab}
-                  onSelectTab={dock.selectTab}
-                  onCollapse={() => dock.setCollapsed(true)}
-                  maximized={dock.maximized}
-                  onSetMaximized={dock.setMaximized}
-                />
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          ) : (
-            center
-          )}
-        </div>
-
-        {workspaceId && dock.collapsed && (
-          <DockRail onOpen={() => dock.setCollapsed(false)} />
-        )}
-      </div>
-    </SidebarInset>
   )
 }

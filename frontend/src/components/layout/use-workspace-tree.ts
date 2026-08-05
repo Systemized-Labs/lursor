@@ -44,12 +44,6 @@ function loadLegacyOrder(): string[] {
 
 export interface RailWorkspace {
   workspace: Workspace
-  /**
-   * The ⌘N slot, 1-based. Counted over the whole tree rather than over what is
-   * on screen, so shutting a group doesn't renumber the tiles below it: ⌘3 has
-   * to mean the same workspace whether or not the group above it is open.
-   */
-  slot: number
 }
 
 export type RailNode =
@@ -193,21 +187,23 @@ export function useWorkspaceTree(workspaces: Workspace[]): WorkspaceTree {
     return { root, children }
   }, [workspaces, folders])
 
+  // `ordered` is the ⌘1–⌘9 sequence: counted over the whole tree rather than over
+  // what is on screen, so shutting a group doesn't renumber the projects below it
+  // — ⌘3 has to mean the same project whether or not the group above it is open.
+  // Rows used to carry their own `slot` number to print as a hover badge; the
+  // badge is gone and the position was always just this walk's index.
   const { nodes, ordered } = useMemo(() => {
     const out: RailNode[] = []
     const flat: Workspace[] = []
-    let slot = 0
     for (const entry of bySlot.root) {
       if (entry.kind === "workspace") {
-        slot += 1
         flat.push(entry.workspace)
-        out.push({ kind: "workspace", workspace: entry.workspace, slot })
+        out.push({ kind: "workspace", workspace: entry.workspace })
         continue
       }
       const members = (bySlot.children.get(entry.id) ?? []).map((workspace) => {
-        slot += 1
         flat.push(workspace)
-        return { workspace, slot }
+        return { workspace }
       })
       out.push({
         kind: "folder",
@@ -285,6 +281,19 @@ export function useWorkspaceTree(workspaces: Workspace[]): WorkspaceTree {
         root.splice(insertAt(root.length, to.index, from?.list === "root"), 0, {
           kind: "workspace",
           id: dragged.id,
+        })
+      }
+
+      // Filing into a shut group opens it. Otherwise the project you just moved
+      // is gone from the list with nothing to say where it went — the drop
+      // succeeded and looked like a delete. Only on the way *in*: a group you
+      // dragged something out of stays as you left it.
+      if (to.kind === "folder") {
+        setCollapsed((current) => {
+          if (!current.has(to.folderId)) return current
+          const next = new Set(current)
+          next.delete(to.folderId)
+          return next
         })
       }
 

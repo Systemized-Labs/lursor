@@ -1,4 +1,4 @@
-import { Clock, Pencil, Trash } from "@phosphor-icons/react"
+import { Clock, Pencil, PushPin, PushPinSlash, Trash } from "@phosphor-icons/react"
 import type { MouseEvent } from "react"
 import { Link } from "react-router-dom"
 
@@ -9,25 +9,33 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
-import type { RowHandlers } from "@/components/layout/panel/types"
+import type { RowHandlers } from "@/components/layout/sessions/types"
 import type { SelectMods } from "@/components/layout/use-sidebar-selection"
 import type { ThreadState } from "@/hooks/use-thread-state"
+import { requestOpenThread } from "@/lib/open-thread"
 import { timeAgo } from "@/lib/time-ago"
 import { cn } from "@/lib/utils"
 
-export interface ConversationRowProps extends RowHandlers {
+export interface ConversationRowProps
+  // The pin pair is re-declared below with a row's shape: `RowHandlers` carries
+  // them keyed by thread id, because a *list* has to answer for many rows.
+  extends Omit<RowHandlers, "isPinned" | "onTogglePin"> {
   thread: Thread
   state: ThreadState
   /**
-   * `compact` is one line for a workspace's own list. `stacked` gives the
-   * `workspace · time` metadata its own line, which is why Activity reads better
-   * in a 256px panel than a single-line row would.
+   * `compact` is one line, for sessions listed under the project they belong to.
+   * `stacked` gives the `workspace · time` metadata its own line, which is what
+   * Pinned uses: those rows come from anywhere, so they have to name their
+   * project, and that does not fit beside a title in a 256px column.
    */
   variant?: "compact" | "stacked"
   /** Which workspace it belongs to; only cross-workspace lists pass it. */
   workspaceName?: string
   isSelected: boolean
   onSelect: (mods: SelectMods) => void
+  /** Pinned to the top of the sidebar. Undefined where pinning has no meaning. */
+  isPinned?: boolean
+  onTogglePin?: () => void
 }
 
 /**
@@ -56,6 +64,8 @@ export function ConversationRow({
   onNavigate,
   onRename,
   onDelete,
+  isPinned,
+  onTogglePin,
 }: ConversationRowProps) {
   const { isActive, running, unread } = state
   const stacked = variant === "stacked"
@@ -70,6 +80,11 @@ export function ConversationRow({
     } else {
       // Opening a conversation ends bulk selection rather than fighting it.
       if (selection.count > 0) selection.clear()
+      // The `href` still navigates — it has to, since the conversation may live in
+      // another workspace and the pane layer is keyed on that. But the pane itself
+      // is addressed through the request channel, because a pane reads its thread
+      // from its own params rather than from `?c=`.
+      requestOpenThread({ workspaceId: thread.workspace_id, threadId: thread.id })
       onNavigate()
     }
   }
@@ -118,6 +133,16 @@ export function ConversationRow({
               {title}
             </span>
 
+            {isPinned ? (
+              <PushPin
+                aria-label="Pinned"
+                className={cn(
+                  "size-3 shrink-0 text-sidebar-foreground/45",
+                  stacked && "absolute right-2 top-2"
+                )}
+              />
+            ) : null}
+
             {stacked ? (
               // Metadata in its own line, with the workspace given the room to
               // be read — it is the only thing distinguishing `cat-adoption`'s
@@ -155,6 +180,19 @@ export function ConversationRow({
           </Link>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          {/* Pinning lives here rather than on ⇧-click, which the plan's §5
+              suggested: ⇧-click already extends a range in the bulk selection,
+              and a modifier cannot mean two things on the same row. */}
+          {onTogglePin ? (
+            <ContextMenuItem onSelect={onTogglePin}>
+              {isPinned ? (
+                <PushPinSlash className="size-4" />
+              ) : (
+                <PushPin className="size-4" />
+              )}
+              {isPinned ? "Unpin" : "Pin"}
+            </ContextMenuItem>
+          ) : null}
           <ContextMenuItem onSelect={() => onRename(thread)}>
             <Pencil className="size-4" />
             Rename

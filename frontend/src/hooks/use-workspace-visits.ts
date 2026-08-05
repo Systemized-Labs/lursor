@@ -20,7 +20,7 @@ export interface WorkspaceVisits {
  * Per-workspace resume memory — the conversation you had open, and how recently
  * you were there.
  *
- * This is what makes switching lossless. Peer to `use-dock-state`, which already
+ * This is what makes switching lossless. Peer to `use-pane-layout`, which already
  * remembers each workspace's dock layout by the same trick, so a switch now
  * restores both halves of where you were.
  *

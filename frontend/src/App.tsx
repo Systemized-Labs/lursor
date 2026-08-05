@@ -1,16 +1,23 @@
 import { Navigate, Route, Routes, useParams } from "react-router-dom"
 
-import { AnalyticsPage } from "@/pages/analytics/analytics-page"
-import { WorkspaceChatPage } from "@/pages/chat/workspace-chat-page"
-import { CustomizationPage } from "@/pages/customization/customization-page"
-import { ImagePage } from "@/pages/image/image-page"
-import { LaiosPage } from "@/pages/laios/laios-page"
+import { DEFAULT_CATEGORY } from "@/components/settings/settings-categories"
+import { SETTINGS_PARAM } from "@/components/settings/use-settings-param"
 import { NewAgentPage } from "@/pages/new-agent/new-agent-page"
 import { OnboardingGate } from "@/pages/onboarding/onboarding-gate"
 import { WelcomePage } from "@/pages/onboarding/welcome-page"
-import { SchedulesPage } from "@/pages/schedules/schedules-page"
-import { SettingsPage } from "@/pages/settings/settings-page"
-import { VideoPage } from "@/pages/video/video-page"
+
+/**
+ * Land on the home surface with the settings dialog open at `category`.
+ *
+ * The dialog's state is a query param, so this is the whole implementation —
+ * there is no settings *route* to send anyone to any more.
+ */
+function SettingsRedirect({ category }: { category?: string }) {
+  const search = new URLSearchParams({
+    [SETTINGS_PARAM]: category ?? DEFAULT_CATEGORY,
+  })
+  return <Navigate to={`/?${search.toString()}`} replace />
+}
 
 /**
  * Opening a workspace now drops straight into its chat surface. The old
@@ -47,59 +54,75 @@ function App() {
           redirects a fresh install to /welcome. */}
       <Route element={<OnboardingGate />}>
         <Route index element={<NewAgentPage />} />
-        <Route path="analytics" element={<AnalyticsPage />} />
-        <Route path="customization" element={<CustomizationPage />} />
-        <Route path="laios" element={<LaiosPage />} />
-        <Route path="schedules" element={<SchedulesPage />} />
-        <Route path="settings" element={<SettingsPage />} />
-        {/* Its own destination rather than a LAIOS tab: generating a clip is a
+        {/* Addresses, not pages — same as the chat route. The shell mounts the
+            pane layer for these paths and ensures the matching pane; the route
+            exists so links and bookmarks still resolve. Usage is
+            cross-workspace and Video/Image are LAIOS-scoped, so outside a
+            workspace they join the global `_global` layout. */}
+        <Route path="analytics" element={null} />
+        <Route path="artifacts" element={null} />
+        {/* Four former destinations are settings-dialog categories now, so their
+            routes become redirects onto the home surface with the dialog open.
+            They land on `/` rather than staying put because a redirect has to
+            choose a path — from inside the app you reach these without
+            navigating at all (the rail, ⌘K and ⌘, all set `?settings=` on the
+            route you are already on). These exist so an old bookmark, an old
+            link in a chat reply, and the ⌘K history of anyone mid-upgrade still
+            arrive somewhere correct. */}
+        <Route path="settings" element={<SettingsRedirect />} />
+        <Route
+          path="customization"
+          element={<SettingsRedirect category="capabilities" />}
+        />
+        <Route path="laios" element={<SettingsRedirect category="laios" />} />
+        <Route
+          path="schedules"
+          element={<SettingsRedirect category="schedules" />}
+        />
+        {/* Its own pane rather than a LAIOS tab: generating a clip is a
             minutes-long job you come back to, not part of managing the box. */}
-        <Route path="video" element={<VideoPage />} />
-        {/* Its own destination beside Video rather than a tab inside it: they
-            share a gateway and a card grid but nothing else — one is a job API
-            measured in minutes, the other a synchronous call measured in
-            seconds, with different knobs and a different model roster. */}
-        <Route path="image" element={<ImagePage />} />
-        {/* Back-compat: LAIOS graduated from a Providers sub-tab to a top-level
-            destination; the old deep link still lands on the page. */}
+        <Route path="video" element={null} />
+        {/* Its own pane beside Video rather than a tab inside it: they share a
+            gateway and a card grid but nothing else — one is a job API measured in
+            minutes, the other a synchronous call measured in seconds, with
+            different knobs and a different model roster. */}
+        <Route path="image" element={null} />
+        {/* Back-compat, two generations deep now: these were top-level pages,
+            then `?tab=` on Settings or Customization, and are settings categories
+            today. Each one still resolves, in one hop rather than a chain. */}
         <Route
           path="settings/laios"
-          element={<Navigate to="/laios" replace />}
+          element={<SettingsRedirect category="laios" />}
         />
-        {/* Back-compat: providers/github moved from Customization to Settings. */}
         <Route
           path="providers"
-          element={<Navigate to="/settings?tab=providers" replace />}
+          element={<SettingsRedirect category="providers" />}
         />
-        <Route
-          path="github"
-          element={<Navigate to="/settings?tab=general" replace />}
-        />
-        {/* Back-compat: the old top-level pages now live as tabs. */}
+        <Route path="github" element={<SettingsRedirect category="github" />} />
         <Route
           path="agents"
-          element={<Navigate to="/customization?tab=agents" replace />}
+          element={<SettingsRedirect category="capabilities" />}
         />
         <Route
           path="prompts"
-          element={<Navigate to="/customization?tab=prompts" replace />}
+          element={<SettingsRedirect category="capabilities" />}
         />
         <Route
           path="skills"
-          element={<Navigate to="/customization?tab=skills" replace />}
+          element={<SettingsRedirect category="capabilities" />}
         />
         <Route
           path="tools"
-          element={<Navigate to="/customization?tab=tools" replace />}
+          element={<SettingsRedirect category="capabilities" />}
         />
         <Route
           path="workspaces/:workspaceId"
           element={<WorkspaceIndexRedirect />}
         />
-        <Route
-          path="workspaces/:workspaceId/chat"
-          element={<WorkspaceChatPage />}
-        />
+        {/* No element: chat is a *pane* now, and the shell mounts the pane layer
+            for any `/workspaces/:id` route. This route exists so the URL still
+            resolves — it is the address, not the owner (the plan's §4). */}
+        <Route path="workspaces/:workspaceId/chat" element={null} />
         <Route
           path="workspaces/:workspaceId/threads/:threadId"
           element={<LegacyThreadRedirect />}

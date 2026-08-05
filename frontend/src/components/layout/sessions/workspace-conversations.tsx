@@ -1,6 +1,6 @@
 import type { Thread } from "@/api/types"
-import { ConversationRow } from "@/components/layout/panel/conversation-row"
-import type { ConversationHandlers } from "@/components/layout/panel/types"
+import { ConversationRow } from "@/components/layout/sessions/conversation-row"
+import type { ConversationHandlers } from "@/components/layout/sessions/types"
 
 interface WorkspaceConversationsProps extends ConversationHandlers {
   /** Already newest-first — a slice of the cross-workspace list. */
@@ -10,7 +10,8 @@ interface WorkspaceConversationsProps extends ConversationHandlers {
 }
 
 /**
- * A workspace's conversations, as the panel's whole list.
+ * A workspace's conversations — the rows under a project, and the whole list when
+ * the sidebar is drilled into one.
  *
  * The rows come from the cross-workspace list the sidebar already holds rather
  * than a per-workspace fetch. `GET /threads?workspace_id=` returns the same rows
@@ -24,6 +25,8 @@ export function WorkspaceConversations({
   emptyLabel = "No conversations",
   threadState,
   selection,
+  isPinned,
+  onTogglePin,
   ...rowHandlers
 }: WorkspaceConversationsProps) {
   if (isLoading) {
@@ -36,18 +39,21 @@ export function WorkspaceConversations({
   }
 
   return (
-    // Flush, not indented: these rows used to hang off a folder header, and the
-    // rail is the folder now.
+    // Flush: the caller decides the indent, because the same list sits under a
+    // project row at the top level (indented, so the hierarchy reads) and fills
+    // the section when drilled (not indented, because nothing is above it).
     <ul className="flex min-w-0 flex-col">
       {threads.map((thread) => (
         <ConversationRow
           key={thread.id}
+          {...rowHandlers}
           thread={thread}
           state={threadState(thread)}
           isSelected={selection.isThreadSelected(thread.id)}
+          isPinned={isPinned(thread.id)}
+          onTogglePin={() => onTogglePin(thread.id)}
           selection={selection}
           onSelect={(mods) => selection.selectThread(thread, mods, threads)}
-          {...rowHandlers}
         />
       ))}
     </ul>

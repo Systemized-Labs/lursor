@@ -36,7 +36,7 @@ interface ChangesPanelProps {
 }
 
 /**
- * The right-dock "Changes" panel: a review view of the workspace's uncommitted
+ * The "Changes" pane: a review view of the workspace's uncommitted
  * changes (working tree vs HEAD). Lists every touched file with its add/delete
  * counts and status, and expands each into a syntax-highlighted, word-level
  * unified-diff view — gaps between hunks collapse to a "N unmodified lines"

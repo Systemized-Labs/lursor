@@ -112,7 +112,7 @@ const STATE_VARIANT: Record<
   failed: "destructive",
 }
 
-export function LaiosPage() {
+export function LaiosPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: connections, isLoading, isError, error } = useLaiosConnections()
 
   const [activeId, setActiveId] = useState<string | undefined>(
@@ -187,11 +187,21 @@ export function LaiosPage() {
       {/* The add-connection action only belongs in the header once at least one
           connection exists; before that the intro below carries the primary
           call to action so the empty page isn't split between two CTAs. */}
-      <PageHeader
-        title="LAIOS"
-        description={DESCRIPTION}
-        actions={hasConnections ? action : undefined}
-      />
+      {/* Embedded in the Settings dialog the category rail already names this,
+          so a title here would be a second heading over the same thing. The
+          description and the action still belong here. */}
+      {embedded ? (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <p className="min-w-0 text-sm text-muted-foreground">{DESCRIPTION}</p>
+          {hasConnections ? action : null}
+        </div>
+      ) : (
+        <PageHeader
+          title="LAIOS"
+          description={DESCRIPTION}
+          actions={hasConnections ? action : undefined}
+        />
+      )}
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading connections…</p>

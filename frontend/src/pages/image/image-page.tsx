@@ -26,7 +26,7 @@ const DESCRIPTION =
 // over here.
 const ACTIVE_KEY = "laios.activeConnectionId"
 
-export function ImagePage() {
+export function ImagePage({ embedded = false }: { embedded?: boolean } = {}) {
   const { data: connections, isLoading: connectionsLoading } =
     useLaiosConnections()
 
@@ -54,6 +54,7 @@ export function ImagePage() {
     <div className="space-y-6">
       <PageHeader
         title="Image"
+        embedded={embedded}
         description={DESCRIPTION}
         actions={
           connections && connections.length > 1 ? (

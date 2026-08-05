@@ -26,8 +26,9 @@ import {
 
 /**
  * Appearance controls — theme, font family and font size. Font changes apply
- * instantly (and persist) via {@link useAppearance}; the theme is owned by
- * next-themes through the shared {@link ThemePicker}.
+ * instantly (and persist) via {@link useAppearance}; everything theme-related,
+ * including time-of-day cycling, lives behind the shared {@link ThemePicker}
+ * dialog so there is one place to look for it.
  */
 export function AppearanceSection() {
   const { fontFamily, setFontFamily, fontSize, setFontSize } = useAppearance()
@@ -35,7 +36,7 @@ export function AppearanceSection() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Appearance</CardTitle>
+        <CardTitle>Theme and typography</CardTitle>
         <CardDescription>
           Choose your theme and how text is rendered across the app.
         </CardDescription>
@@ -44,6 +45,9 @@ export function AppearanceSection() {
         <div className="grid gap-2">
           <Label>Theme</Label>
           <ThemePicker />
+          <p className="text-xs text-muted-foreground">
+            Includes time-of-day cycling under the Schedule tab.
+          </p>
         </div>
 
         <div className="grid gap-2">

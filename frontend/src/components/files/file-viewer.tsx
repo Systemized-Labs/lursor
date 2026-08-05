@@ -249,53 +249,83 @@ export function FileViewer({
   )
 
   if (!showSide) {
-    return <div className="flex-1 min-h-0 flex flex-col bg-card">{editors}</div>
+    return (
+      <Inset>
+        <div className="flex-1 min-h-0 flex flex-col bg-card">{editors}</div>
+      </Inset>
+    )
   }
 
   return (
-    <ResizablePanelGroup
-      direction="horizontal"
-      autoSaveId="file-viewer-v2"
-      className="flex-1 min-h-0"
-    >
-      <ResizablePanel minSize={30} className="flex flex-col min-w-0 bg-card">
-        {editors}
-      </ResizablePanel>
-      <ResizableHandle />
-      {/* A touch wider than a bare file tree would need: this panel also holds the
-          search results, whose rows are `line │ text` and want the characters.
-          Only a default — an existing saved ratio (`autoSaveId`) still wins. */}
-      <ResizablePanel defaultSize={32} minSize={15} className="flex flex-col min-w-0">
-        <SideViewSwitch view={sideView} onChange={setSideView} />
-        {/* Both views stay mounted: switching preserves tree expansion and the
-            search results and query, which is the whole reason to have a switch
-            rather than a mode. */}
-        <div
-          className={cn(
-            "flex min-h-0 flex-1 flex-col",
-            sideView !== "explorer" && "hidden"
-          )}
-        >
-          <FileExplorer
-            workspaceId={workspaceId}
-            activePath={activePath}
-            onOpenFile={(path, name) => void openFile(path, name)}
-          />
-        </div>
-        <div
-          className={cn(
-            "flex min-h-0 flex-1 flex-col",
-            sideView !== "search" && "hidden"
-          )}
-        >
-          <SearchPanel
-            workspaceId={workspaceId}
-            activePath={activePath}
-            onOpenMatch={openMatch}
-          />
-        </div>
-      </ResizablePanel>
-    </ResizablePanelGroup>
+    <Inset>
+      <ResizablePanelGroup
+        direction="horizontal"
+        autoSaveId="file-viewer-v2"
+        className="flex-1 min-h-0"
+      >
+        <ResizablePanel minSize={30} className="flex flex-col min-w-0 bg-card">
+          {editors}
+        </ResizablePanel>
+        <ResizableHandle />
+        {/* A touch wider than a bare file tree would need: this panel also holds
+            the search results, whose rows are `line │ text` and want the
+            characters. Only a default — an existing saved ratio (`autoSaveId`)
+            still wins. */}
+        <ResizablePanel defaultSize={32} minSize={15} className="flex flex-col min-w-0">
+          <SideViewSwitch view={sideView} onChange={setSideView} />
+          {/* Both views stay mounted: switching preserves tree expansion and the
+              search results and query, which is the whole reason to have a switch
+              rather than a mode. */}
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col",
+              sideView !== "explorer" && "hidden"
+            )}
+          >
+            <FileExplorer
+              workspaceId={workspaceId}
+              activePath={activePath}
+              onOpenFile={(path, name) => void openFile(path, name)}
+            />
+          </div>
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col",
+              sideView !== "search" && "hidden"
+            )}
+          >
+            <SearchPanel
+              workspaceId={workspaceId}
+              activePath={activePath}
+              onOpenMatch={openMatch}
+            />
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </Inset>
+  )
+}
+
+/**
+ * The pane's contents, held a few pixels clear of the dock's tab strip.
+ *
+ * The reason is the one the tab strips already ran into: two header rows stacked
+ * flush read as peers, and these are not peers — the dock strip owns the panel,
+ * this pane's strips live inside it. A band of the pane's own surface between
+ * them is what makes the editor block read as sitting *in* the panel rather than
+ * as a second row of chrome bolted underneath.
+ *
+ * `bg-background` because that is what the dockview group view is filled with
+ * (`--dv-group-view-background-color` in `pane-theme.css`), so the band continues
+ * the panel's surface rather than introducing a third one. Top only: insetting
+ * the sides too would pull the resize handles off the pane's edges, and the
+ * confusion this fixes is entirely vertical.
+ */
+function Inset({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-background pt-1.5">
+      {children}
+    </div>
   )
 }
 
@@ -322,7 +352,9 @@ function SideViewSwitch({
     <div
       role="tablist"
       aria-label="Side pane view"
-      className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border/40 px-1.5"
+      // 32px, tracking the editor's own tab strip so the two columns' header
+      // rows stay on one line. See the density note in `editor-pane.tsx`.
+      className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border/40 px-1.5"
     >
       {items.map(({ id, label, icon: Icon }) => {
         const isActive = view === id

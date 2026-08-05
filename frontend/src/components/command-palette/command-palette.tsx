@@ -15,6 +15,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
   SquaresFour,
   ArrowElbowDownLeft,
+  ChartBar,
   Clock,
   Cpu,
   FilmSlate,
@@ -22,11 +23,14 @@ import {
   GitBranch,
   ChatCentered,
   ImageSquare,
+  Keyboard,
+  Palette,
   Plug,
   Gear,
   SlidersHorizontal,
   ShootingStar,
   Sparkle,
+  Terminal,
   Wrench,
   type Icon,
 } from "@phosphor-icons/react"
@@ -37,6 +41,7 @@ import type { Skill, Workspace } from "@/api/types"
 import { useAllThreads } from "@/hooks/use-all-threads"
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from "@/components/ui/dialog"
 import { fileKind } from "@/components/files/file-icon"
+import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { requestOpenFile } from "@/lib/open-file"
 import {
   revealSkill,
@@ -202,6 +207,7 @@ function useDebounced<T>(value: T, delay = 150): T {
 
 function PaletteBody({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate()
+  const { openSettings } = useSettingsParam()
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<Filter>("all")
   const [activeIndex, setActiveIndex] = useState(0)
@@ -222,6 +228,15 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       onClose()
     },
     [navigate, onClose]
+  )
+
+  /** Open the settings dialog at a category, without leaving this route. */
+  const goSettings = useCallback(
+    (category: string) => {
+      openSettings(category)
+      onClose()
+    },
+    [openSettings, onClose]
   )
 
   // Selecting a file: park the request, then land on its workspace chat. The
@@ -333,14 +348,19 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     // No "Skill Studio" row here any more — the studio is a workspace, so it is in
     // the Workspaces section above, where it resumes like every other one instead
     // of always opening a blank composer.
+    // Two kinds of destination now: a route, or a category of the settings
+    // dialog. Everything that used to be `/settings?tab=` or `/customization?tab=`
+    // is the second kind — the palette should still name it, but selecting it
+    // opens the dialog over wherever you are rather than navigating away.
     const actionDefs: {
       label: string
       icon: Icon
-      to: string
+      to?: string
+      settings?: string
       meta?: string
     }[] = [
-      { label: "Schedules", icon: Clock, to: "/schedules", meta: "cron jobs" },
-      { label: "LAIOS", icon: Cpu, to: "/laios" },
+      { label: "Schedules", icon: Clock, settings: "schedules", meta: "cron jobs" },
+      { label: "LAIOS", icon: Cpu, settings: "laios" },
       { label: "Video", icon: FilmSlate, to: "/video", meta: "generate a clip" },
       {
         label: "Image",
@@ -348,22 +368,31 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         to: "/image",
         meta: "generate an image",
       },
-      { label: "Customization", icon: SlidersHorizontal, to: "/customization" },
-      { label: "Agents", icon: ShootingStar, to: "/customization?tab=agents" },
-      { label: "Skills", icon: SquaresFour, to: "/customization?tab=skills" },
-      { label: "Tools", icon: Wrench, to: "/customization?tab=tools" },
-      { label: "Settings", icon: Gear, to: "/settings" },
-      { label: "Providers", icon: Plug, to: "/settings?tab=providers" },
-      { label: "GitHub", icon: GitBranch, to: "/settings?tab=general" },
+      { label: "Usage", icon: ChartBar, to: "/analytics" },
+      {
+        label: "Customization",
+        icon: SlidersHorizontal,
+        settings: "capabilities",
+      },
+      { label: "Agents", icon: ShootingStar, settings: "capabilities" },
+      { label: "Skills", icon: SquaresFour, settings: "capabilities" },
+      { label: "Tools", icon: Wrench, settings: "capabilities" },
+      { label: "Settings", icon: Gear, settings: "model" },
+      { label: "Appearance", icon: Palette, settings: "appearance" },
+      { label: "Providers", icon: Plug, settings: "providers" },
+      { label: "Environment", icon: Terminal, settings: "environment" },
+      { label: "Keyboard shortcuts", icon: Keyboard, settings: "shortcuts" },
+      { label: "GitHub", icon: GitBranch, settings: "github" },
     ]
     const actionRows: Row[] = actionDefs
       .filter((a) => !q || a.label.toLowerCase().includes(q))
       .map((a) => ({
-        id: `action:${a.to}`,
+        id: `action:${a.settings ? `settings:${a.label}` : a.to}`,
         label: a.label,
         meta: a.meta,
         icon: a.icon,
-        onSelect: () => go(a.to),
+        onSelect: () =>
+          a.settings ? goSettings(a.settings) : a.to ? go(a.to) : undefined,
       }))
 
     const searching = q.length > 0
@@ -404,6 +433,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     q,
     filter,
     go,
+    goSettings,
     openFile,
     openSkill,
   ])

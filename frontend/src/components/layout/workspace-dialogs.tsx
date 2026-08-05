@@ -154,7 +154,9 @@ export function useWorkspaceDialogs({
     // background with an optimistic cache update (rolled back on failure).
     setDeleteWsTarget(null)
     if (activeWorkspaceId === ws.id) {
-      navigate("/customization")
+      // Home, not the old Customization page: that was only ever "somewhere
+      // that isn't the workspace you just deleted", and it is a dialog now.
+      navigate("/")
     }
     deleteWorkspace.mutate(ws.id, {
       onSuccess: () => {
@@ -212,9 +214,9 @@ export function useWorkspaceDialogs({
     }
     const ids = new Set(threads.map((t) => t.id))
     const affected = [...new Set(threads.map((t) => t.workspace_id))]
-    // Both cache shapes hold these rows: the per-workspace lists the panel reads,
-    // and the cross-workspace list Activity and the rail's status marks read. Drop
-    // them from every one, or the deleted conversations linger in the panel.
+    // Both cache shapes hold these rows: the per-workspace lists a project's
+    // sessions come from, and the cross-workspace list Pinned and the status
+    // marks read. Drop them from every one, or the deleted conversations linger.
     const previous = affected.map((wsId) => ({
       wsId,
       data: qc.getQueryData<Thread[]>(threadKeys.byWorkspace(wsId)),

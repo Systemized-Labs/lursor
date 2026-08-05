@@ -22,10 +22,25 @@ export interface BrowserBox {
   narrow: boolean
 }
 
+/**
+ * Where the space available to the browser ends.
+ *
+ * The fold, normally. But inside the Settings dialog the fold is irrelevant —
+ * the pane's own bottom edge is well above it, and measuring to the viewport
+ * would size the browser to overflow the modal it lives in. Any ancestor can
+ * declare itself the boundary with `data-browser-bounds`, which is one attribute
+ * at the one place that needs it rather than a prop threaded through every
+ * two-pane page.
+ */
+function bottomBoundary(el: HTMLElement): number {
+  const bounds = el.closest("[data-browser-bounds]")
+  return bounds ? bounds.getBoundingClientRect().bottom : window.innerHeight
+}
+
 function measureBox(el: HTMLElement): BrowserBox {
   const rect = el.getBoundingClientRect()
   return {
-    height: Math.max(MIN_HEIGHT, window.innerHeight - rect.top - BOTTOM_GUTTER),
+    height: Math.max(MIN_HEIGHT, bottomBoundary(el) - rect.top - BOTTOM_GUTTER),
     narrow: rect.width < TWO_PANE_MIN_WIDTH,
   }
 }

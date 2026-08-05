@@ -1,6 +1,6 @@
 import { Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Link, useLocation, useParams, useSearchParams } from "react-router-dom"
+import { useLocation, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useStore } from "zustand"
@@ -27,9 +27,8 @@ import { GoalRunPanel } from "@/components/chat/GoalPanel"
 import { parseSlashCommand } from "@/components/chat/commands/registry"
 import type { AgentScope, CommandAction } from "@/components/chat/commands/types"
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
-import { useMacTitlebar } from "@/hooks/use-mac-titlebar"
+import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { requestOpenFile } from "@/lib/open-file"
-import { cn } from "@/lib/utils"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
 import type { DefaultAgentsSettings } from "@/api/types"
@@ -46,17 +45,37 @@ function baseName(path: string): string {
   return i === -1 ? path : path.slice(i + 1)
 }
 
+interface WorkspaceChatPageProps {
+  workspaceId?: string
+  /** The open conversation, or null for a new one. */
+  threadId: string | null
+  /** Report a change of conversation to whoever owns the address. */
+  onThreadChange: (threadId: string | null) => void
+  /** Report the open conversation's name, for the pane's tab to label itself with. */
+  onDetail?: (detail: string | null) => void
+}
+
 /**
  * The chat surface for a workspace. Built on a normalized store + engine
  * ({@link useChatEngine}) and use-stick-to-bottom autoscroll, so streamed tokens
  * re-render only the affected message row and the view pins cleanly to the bottom.
- * Owns a single conversation, selected via the `?c=<threadId>` URL param.
+ *
+ * A **pane**, not a route, since Phase 4. Which conversation is open arrives as a
+ * prop rather than being read from `?c=`, and a change to it is reported back out
+ * — because there can be more than one chat pane open, and two of them cannot both
+ * be `?c=`. The pane host mirrors whichever one is focused; see `pane-host.tsx`.
+ *
+ * `?draft=` is still read from the URL, deliberately: that is a one-shot hand-off
+ * from elsewhere in the app, not state this surface owns.
  */
-export function WorkspaceChatPage() {
-  const { workspaceId } = useParams<{ workspaceId: string }>()
+export function WorkspaceChatPage({
+  workspaceId,
+  threadId: cParam,
+  onThreadChange,
+  onDetail,
+}: WorkspaceChatPageProps) {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
-  const cParam = searchParams.get("c")
   const qc = useQueryClient()
 
   const workspaceQuery = useWorkspace(workspaceId)
@@ -78,17 +97,11 @@ export function WorkspaceChatPage() {
     () => new Map(agents.map((a) => [a.id, a.name])),
     [agents]
   )
-  const [isEditingTitle, setIsEditingTitle] = useState(false)
-  const [titleDraft, setTitleDraft] = useState("")
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const mentionSources = useWorkspaceChatMentionSources(workspaceId)
   const { data: defaultAgents } = useDefaultAgents()
-  // This header is the top-left of the window whenever the sidebar is down to
-  // its rail, so it shares the traffic lights' line rather than sitting under
-  // them.
-  const macTitlebar = useMacTitlebar()
-
+  const { openSettings } = useSettingsParam()
   // A manual per-turn override of the agent a queued slash command would switch
   // to. Null unless the user picks a different agent from the composer while a
   // command is in the draft; reset whenever the draft's command changes so it
@@ -110,7 +123,7 @@ export function WorkspaceChatPage() {
     reconnect: true,
     onThreadCreated: (thread) => {
       invalidateThreadLists(qc, thread.workspace_id)
-      setSearchParams({ c: thread.id }, { replace: true })
+      onThreadChange(thread.id)
     },
   })
   const { store, loadConversation, reloadMessages, startNewConversation } = chat
@@ -137,10 +150,23 @@ export function WorkspaceChatPage() {
   ).data
   const currentThread = listedThread ?? unlistedThread
 
+  // Hand the conversation's name to the pane so its tab can wear it instead of
+  // "Chat". Reported as it becomes known and as it changes: a fresh conversation
+  // has no name until the backend titles it from the first turn (which the
+  // list-refresh below picks up), and a rename in the header should reach the tab
+  // without a reload. Null while there is no conversation, which is what puts the
+  // kind's own label back.
+  useEffect(() => {
+    onDetail?.(currentThread?.title || null)
+  }, [currentThread?.title, onDetail])
+
   // Scroll instance owned here so send/interject can re-pin to the bottom.
   const stick = useStickToBottom({ resize: "smooth", initial: "instant" })
 
-  // The URL is the source of truth for which conversation is open.
+  // The `threadId` prop is the source of truth for which conversation is open.
+  // Same shape as when it came from `?c=`, including the "only reset when it was
+  // actually cleared" guard — a prop that is null on the first render is a new
+  // conversation, not a request to discard one.
   const prevCParam = useRef(cParam)
   useEffect(() => {
     const cParamCleared = prevCParam.current !== cParam && !cParam
@@ -148,7 +174,6 @@ export function WorkspaceChatPage() {
     if (cParam) {
       if (cParam !== selectedThreadId) void loadConversation(cParam)
     } else if (cParamCleared && selectedThreadId !== null) {
-      // Only reset when the URL param was actually cleared (New conversation).
       startNewConversation()
     }
   }, [cParam, selectedThreadId, loadConversation, startNewConversation])
@@ -280,7 +305,7 @@ export function WorkspaceChatPage() {
   function handleNewConversation() {
     const chatDefault = defaultAgentFor("chat")
     if (chatDefault) setSelectedAgentId(chatDefault)
-    setSearchParams({})
+    onThreadChange(null)
   }
 
   // Condense the open conversation into a single summary, then reload so the
@@ -322,36 +347,6 @@ export function WorkspaceChatPage() {
   async function runCommandAction(action: CommandAction) {
     if (action === "new-conversation") handleNewConversation()
     else if (action === "compact") await handleCompact()
-  }
-
-  function startEditingTitle() {
-    if (!currentThread) return
-    setTitleDraft(currentThread.title)
-    setIsEditingTitle(true)
-  }
-
-  async function commitTitle() {
-    setIsEditingTitle(false)
-    const next = titleDraft.trim()
-    if (!currentThread || !next || next === currentThread.title) return
-    try {
-      await updateThread.mutateAsync({
-        id: currentThread.id,
-        input: { title: next },
-      })
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to rename conversation")
-    }
-  }
-
-  function handleTitleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") {
-      e.preventDefault()
-      void commitTitle()
-    } else if (e.key === "Escape") {
-      e.preventDefault()
-      setIsEditingTitle(false)
-    }
   }
 
   async function handleSend() {
@@ -540,49 +535,17 @@ export function WorkspaceChatPage() {
   return (
     <ChatStoreProvider value={store}>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-        {/* Header. On macOS it continues the sidebar's chrome line: the same 44px
-            height, so the conversation title sits level with the window buttons
-            and the panel heading beside it, and the same `bg-sidebar`, so the top
-            of the window is one surface rather than two tones meeting under the
-            buttons — which is what collapsing the sidebar to its 68px rail made
-            of a `bg-background` header. `pl-[26px]` is for that collapsed case:
-            this row then starts at the rail's edge, and 26 plus the title's own
-            6px of padding puts the text at x=100, the same place the panel
-            heading starts (see AppSidebar). */}
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-3 px-3",
-            macTitlebar.enabled
-              ? "h-11 bg-sidebar"
-              : "h-9 bg-background/70 backdrop-blur-sm",
-            macTitlebar.clearButtons && "pl-[26px]"
-          )}
-        >
+        {/* Header. One height, one tone, on every platform. It used to grow to
+            44px and take `bg-sidebar` on macOS — and inset 26px when the sidebar
+            was down to its rail — because collapsing the sidebar put this row
+            under the traffic lights. The WindowBar reserves that band above the
+            whole shell now, so this is an ordinary content header again. */}
+        <div className="flex h-9 shrink-0 items-center gap-3 bg-background/70 px-3 backdrop-blur-sm">
+          {/* No conversation name here. The tab carries it (`pane-tab.tsx`), and
+              printing it again one line below the tab that just said it spent a
+              row on nothing. Renaming moved with it: the sidebar row's menu owns
+              that now, via `workspace-dialogs.tsx`. */}
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            {isEditingTitle ? (
-              <input
-                autoFocus
-                value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onBlur={() => void commitTitle()}
-                onKeyDown={handleTitleKeyDown}
-                aria-label="Conversation title"
-                className="min-w-0 flex-1 rounded-md bg-accent px-1.5 py-0.5 text-sm font-medium text-foreground outline-none ring-1 ring-primary/40 focus:ring-primary"
-              />
-            ) : currentThread ? (
-              <button
-                type="button"
-                onClick={startEditingTitle}
-                title="Rename conversation"
-                className="min-w-0 truncate rounded-md px-1.5 py-0.5 text-left text-sm font-medium text-foreground hover:bg-accent"
-              >
-                {currentThread.title}
-              </button>
-            ) : (
-              <span className="truncate px-1.5 text-sm font-medium text-foreground">
-                New conversation
-              </span>
-            )}
             {isStreaming && (
               <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
                 <span className="relative flex h-1.5 w-1.5">
@@ -602,27 +565,13 @@ export function WorkspaceChatPage() {
                 variant="ghost"
                 size="sm"
                 className="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
-                asChild
+                onClick={() => openSettings("capabilities")}
+                title="Manage and assign skills — new ones land unassigned"
               >
-                <Link
-                  to="/customization?tab=skills"
-                  title="Manage and assign skills — new ones land unassigned"
-                >
-                  <SquaresFour className="h-4 w-4" />
-                  <span className="hidden sm:inline">Manage skills</span>
-                </Link>
+                <SquaresFour className="h-4 w-4" />
+                <span className="hidden sm:inline">Manage skills</span>
               </Button>
             ) : null}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-muted-foreground hover:text-foreground"
-              onClick={handleNewConversation}
-              aria-label="New conversation"
-              title="New conversation"
-            >
-              <NotePencil className="h-4 w-4" />
-            </Button>
           </div>
         </div>
 
@@ -652,7 +601,7 @@ export function WorkspaceChatPage() {
                   </p>
                   <p className="mx-auto max-w-[18rem] text-xs text-muted-foreground">
                     {noAgents
-                      ? "Create an agent in Customization to start chatting."
+                      ? "Create an agent in Settings → Capabilities to start chatting."
                       : workspace?.is_system
                         ? "Ask for a skill and it gets written into your catalog — SKILL.md, references and scripts. Every existing skill is in the file tree to crib from, and the terminal runs their scripts."
                         : "Pick an agent above and send the first message."}
@@ -660,12 +609,13 @@ export function WorkspaceChatPage() {
                   {workspace?.is_system && !noAgents ? (
                     <p className="mx-auto max-w-[18rem] pt-1 text-xs text-muted-foreground">
                       New skills arrive unassigned — pick where they apply in{" "}
-                      <Link
-                        to="/customization?tab=skills"
+                      <button
+                        type="button"
+                        onClick={() => openSettings("capabilities")}
                         className="font-medium text-foreground underline underline-offset-2"
                       >
                         Skills
-                      </Link>
+                      </button>
                       .
                     </p>
                   ) : null}

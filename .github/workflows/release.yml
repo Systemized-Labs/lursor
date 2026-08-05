@@ -2,7 +2,12 @@ name: release
 
 # Build the desktop app (renderer + frozen backend) for macOS (arm64) and Linux
 # (x64), sign + notarize the macOS build, and attach the artifacts to a GitHub
-# Release. Triggered by pushing a v* tag.
+# Release.
+#
+# Triggered by a push to main that moves frontend/package.json's version: the
+# version bump landing on main *is* the release trigger, and the tag is created
+# by the `publish` job at that commit. Pushing a v* tag by hand still works and
+# takes the same path. See the `gate` job.
 #
 # Intel macOS is deliberately not built: Apple has dropped x86_64, GitHub retires
 # its last Intel runner in Aug 2027, and Homebrew demotes Intel to tier 3 in
@@ -23,6 +28,8 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -30,8 +37,90 @@ on:
 permissions:
   contents: write
 
+# One release pipeline per ref. Two pushes to main in quick succession would
+# otherwise race for the same tag, and the loser publishes assets built from the
+# wrong commit. Not cancel-in-progress: a run that has reached `publish` must
+# finish, or the release is left half-uploaded.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # Decides whether this run releases anything, and under what tag. Everything
+  # downstream reads the tag and version from here rather than from the ref, so
+  # the branch-push and tag-push paths are otherwise identical.
+  #
+  # A push to main releases when frontend/package.json names a version with no
+  # tag yet — bumping the version in a merged PR is the entire trigger. Pushes
+  # that leave the version alone resolve to an existing tag and stop here, so an
+  # ordinary merge costs one cheap job and nothing else.
+  #
+  # The tag is created by `publish`, at the released commit, rather than pushed
+  # from here. That is not a stylistic choice: a tag pushed with GITHUB_TOKEN
+  # does not start a new workflow run, so a job that tagged main would leave the
+  # tag-triggered pipeline permanently unfired. Tagging from the job that
+  # already has the artifacts also means a tag never exists for a build that
+  # failed.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.decide.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
+      build: ${{ steps.decide.outputs.build }}
+      publish: ${{ steps.decide.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the version to release
+        id: decide
+        run: |
+          PKG_VERSION="$(node -p "require('./frontend/package.json').version")"
+
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            # frontend/package.json's version — not the tag — names every
+            # artifact, so a mismatch produces a release full of wrongly-versioned
+            # files and fails the Homebrew bump only after a full build has
+            # already run. Fail in seconds instead.
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+              echo "error: tag $GITHUB_REF_NAME implies $TAG_VERSION, but frontend/package.json is $PKG_VERSION" >&2
+              echo "Bump the version and re-tag." >&2
+              exit 1
+            fi
+            TAG="$GITHUB_REF_NAME"
+            BUILD=true
+          else
+            TAG="v$PKG_VERSION"
+            # An existing tag means this push did not bump the version, so there
+            # is nothing to release. Also what makes a re-push of an already
+            # released commit a no-op instead of a second release.
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "$TAG already exists — no version bump on this push, nothing to release"
+              BUILD=false
+            else
+              echo "no tag for $PKG_VERSION yet — releasing $TAG from $GITHUB_SHA"
+              BUILD=true
+            fi
+          fi
+
+          # Dispatch runs build (useful for checking a pipeline change without
+          # burning a version number) but never publish.
+          if [ "$BUILD" = true ] && [ "$GITHUB_EVENT_NAME" = push ]; then
+            PUBLISH=true
+          else
+            PUBLISH=false
+          fi
+
+          {
+            echo "version=$PKG_VERSION"
+            echo "tag=$TAG"
+            echo "build=$BUILD"
+            echo "publish=$PUBLISH"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -59,22 +148,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      # frontend/package.json's version — not the tag — names every artifact, so
-      # a mismatch produces a release full of wrongly-versioned files and fails
-      # the Homebrew bump only after a full build has already run. Fail in
-      # seconds instead.
-      - name: Check the tag matches package.json
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION="$(node -p "require('./frontend/package.json').version")"
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "error: tag $GITHUB_REF_NAME implies $TAG_VERSION, but frontend/package.json is $PKG_VERSION" >&2
-            echo "Bump the version and re-tag." >&2
-            exit 1
-          fi
-          echo "version $PKG_VERSION matches $GITHUB_REF_NAME"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -176,10 +249,23 @@ jobs:
   # a half-populated one that looks installable. This job is also the only
   # process that touches the release, which is what makes duplicate drafts
   # structurally impossible rather than merely unlikely.
+  #
+  # Also the job that creates the tag, for a release triggered by a push to main
+  # — see `gate`. It is the last thing to happen, so a tag existing means a
+  # complete release exists at it.
+  #
+  # Gated on `gate.outputs.publish`, which is gated on the *event*, not just the
+  # ref: a workflow_dispatch can select a tag, in which case github.ref is
+  # refs/tags/v* too. A ref-only guard let a manual re-run of an already-released
+  # tag create a second release for it, which is exactly what produced the
+  # duplicate v0.1.4 drafts.
   publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, build]
+    if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      VERSION: ${{ needs.gate.outputs.version }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -192,7 +278,6 @@ jobs:
       - name: Verify the asset set is complete
         run: |
           cd artifacts
-          VERSION="${GITHUB_REF_NAME#v}"
           ls -la
           missing=0
           for f in \
@@ -227,28 +312,60 @@ jobs:
           done
           cat SHA256SUMS.txt
 
-      # Created as a draft: publishing is a deliberate human step, so the assets
-      # can be checked first. `gh release edit <tag> --draft=false` ships it.
-      - name: Create the draft release
+      # Published outright rather than as a draft. Drafting was meant to allow a
+      # human check, but a draft is invisible to every install path — the
+      # /releases/latest API (scripts/install.sh), the release page, and
+      # electron-updater all skip drafts — so a forgotten manual
+      # `gh release edit --draft=false` silently strands users on the previous
+      # version. That is what left v0.1.3 and v0.1.4 unreleased. The asset check
+      # above is the gate now; it is enforced on every run, which a human step is
+      # not. Bump the version only when you intend to ship.
+      #
+      # --latest explicitly: GitHub does not re-evaluate "latest" when a release
+      # is flipped out of draft, so v0.1.4 stayed non-latest even after being
+      # published until make_latest was set by hand. Stating it removes that
+      # dependence on creation order.
+      #
+      # Idempotent, so re-running a failed publish job repairs the release rather
+      # than dying on "already exists".
+      #
+      # --target pins the release to this run's commit, and creates the tag there
+      # if it does not exist yet — which is how a push to main gets tagged. For a
+      # tag push the tag already exists and --target is ignored, so both paths run
+      # the same command.
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft \
-            --title "${GITHUB_REF_NAME#v}" \
-            --generate-notes \
-            artifacts/*
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG exists — re-uploading assets and publishing"
+            gh release upload "$TAG" artifacts/* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft=false \
+              --latest
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$VERSION" \
+              --generate-notes \
+              --latest \
+              artifacts/*
+          fi
 
-  # Point the Homebrew tap at the new version. Runs only for tagged releases and
-  # only when a tap token is configured; the tap repo itself is
+  # Point the Homebrew tap at the new version. Runs only for published releases
+  # and only when a tap token is configured; the tap repo itself is
   # JonathanConn/homebrew-lursor (see docs/DISTRIBUTION.md).
   homebrew:
-    needs: publish
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, publish]
+    if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAG: ${{ needs.gate.outputs.tag }}
+      VERSION: ${{ needs.gate.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -257,12 +374,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           ASSET="Lursor-${VERSION}-mac-arm64.dmg"
 
           # Reuse the checksum the publish job generated rather than
           # re-downloading a 400 MB image just to hash it.
-          gh release download "$GITHUB_REF_NAME" \
+          gh release download "$TAG" \
             --pattern "SHA256SUMS.txt" --output sums.txt
           SHA="$(awk -v a="$ASSET" '$2 == a || $2 == "*" a {print $1}' sums.txt | head -n 1)"
           if [ -z "$SHA" ]; then
