@@ -29,6 +29,7 @@ import {
   type TemplateDef,
 } from "@/components/panes/layout-templates"
 import {
+  isPaneKind,
   WORKSPACE_KINDS,
   type PaneKind,
   type PaneParams,
@@ -39,6 +40,7 @@ import {
   gridPanels,
   isDeckCollapsed,
   isDeckEmpty,
+  serializedDeckSize,
 } from "@/components/panes/terminal-deck"
 import {
   useCustomLayouts,
@@ -154,30 +156,81 @@ export function LayoutsDialog({
   )
 
   /**
+   * The panes a saved arrangement is short of, in the kinds it was saved with.
+   *
+   * `fillsFor`'s counterpart, working from better information: a template rosters its
+   * kinds by hand, while a saved arrangement's own panel map records exactly what was
+   * open when it was saved. So a shortfall is filled with the arrangement's own panes
+   * rather than a guess — in the arrangement's own layout order, so the zone that held
+   * a chat gets a chat.
+   *
+   * And a shell for the deck if the arrangement had one and the drawer is empty now,
+   * which is the same rule `fillsFor` applies to a shape that draws the deck's band.
+   */
+  const restoreFills = useCallback(
+    (saved: SerializedDockview): PaneKind[] => {
+      const api = layout.api
+      if (!api) return []
+      const allowed = (kind: PaneKind) =>
+        hasWorkspace || !WORKSPACE_KINDS.includes(kind)
+      const wanted: PaneKind[] =
+        serializedDeckSize(saved) > 0 && isDeckEmpty(api) && allowed("terminal")
+          ? ["terminal"]
+          : []
+
+      const panels = gridPanels(api)
+      const shortfall = countZones(saved.grid.root) - panels.length
+      if (shortfall <= 0) return wanted
+
+      const open = new Set(
+        panels.map((panel) => (panel.params as PaneParams | undefined)?.kind)
+      )
+      const missing: PaneKind[] = []
+      for (const id of zoneViews(saved.grid.root as SerializedNode).flat()) {
+        const kind = (saved.panels?.[id] as { params?: PaneParams } | undefined)
+          ?.params?.kind
+        if (!isPaneKind(kind)) continue
+        if (open.has(kind) || missing.includes(kind) || !allowed(kind)) continue
+        missing.push(kind)
+      }
+      return [...wanted, ...missing.slice(0, shortfall)]
+    },
+    [layout.api, hasWorkspace]
+  )
+
+  /**
    * Applying a *saved* layout.
    *
    * A saved arrangement carries the pane ids of the workspace it was saved in, so
    * replaying it verbatim in another workspace would name panes that do not exist
-   * and drop the ones that do. What transfers is the *shape*: how many zones, how
-   * they are split. So the geometry is read off the saved layout and the live panes
-   * are dealt into it — which is the same thing `buildTemplate` does, one step less
-   * opinionated about which pane goes where.
+   * and drop the ones that do. So it is applied as a shape re-derived over the live
+   * pane set — the same thing `applyTemplate` does, including opening the panes the
+   * shape is short of. Refusing with "open two more first" made restoring your own
+   * arrangement the one thing in this dialog that did not simply work.
    */
   const applyCustom = useCallback(
     (item: CustomLayout) => {
-      if (!layout.api) return
-      const panels = gridPanels(layout.api)
-      if (panels.length === 0) return
+      const api = layout.api
+      if (!api) return
       const zones = countZones(item.layout.grid.root)
-      const reshaped = reshape(
-        item.layout,
-        layout.api,
-        panels,
-        layout.api.activePanel?.api.id
-      )
+      // Read before opening anything, for the same reason `applyTemplate` does:
+      // `openPane` focuses what it adds, and restoring a layout should not move the
+      // cursor off the pane you were in.
+      const active = api.activePanel?.api.id
+      for (const kind of restoreFills(item.layout)) layout.openPane(kind)
+
+      const panels = gridPanels(api)
+      const reshaped = reshape(item.layout, api, panels, active)
       if (!reshaped) {
+        // Only reachable where a pane cannot be opened to close the gap: a global
+        // layout, whose kinds are filtered out of the fills above, or an arrangement
+        // saved over an empty grid before `saveCurrent` started refusing those.
         toast.info(
-          `"${item.name}" needs ${zones} panes; open ${zones - panels.length} more to use it.`
+          zones === 0
+            ? `"${item.name}" was saved with no panes in it — there is no arrangement to restore.`
+            : panels.length === 0
+              ? `"${item.name}" needs a pane to arrange — open one first.`
+              : `"${item.name}" needs ${zones} panes; open ${zones - panels.length} more to use it.`
         )
         return
       }
@@ -185,13 +238,16 @@ export function LayoutsDialog({
       if (panels.length > zones) {
         // Not a silent cap: a shape with fewer zones than panes tabs the extras
         // together, and saying so is cheaper than letting someone wonder where a
-        // pane went.
+        // pane went. Phrased without a count, deliberately — the row above it is
+        // labelled in `describedZones`, which counts the deck, and this one is about
+        // grid zones, which does not. Two different numbers for "zones" in the same
+        // corner of the screen is worse than no number at all.
         toast.info(
-          `Applied "${item.name}" — ${zones} ${zones === 1 ? "zone" : "zones"}, so some panes share one.`
+          `Applied "${item.name}" — it has fewer zones than you have panes, so some share a zone.`
         )
       }
     },
-    [layout.api, apply]
+    [layout, apply, restoreFills]
   )
 
   /**
@@ -223,6 +279,13 @@ export function LayoutsDialog({
 
   const saveCurrent = useCallback(() => {
     if (!layout.api) return
+    // `hasPanes` is true anywhere the pane layer is mounted, which is not the same as
+    // the grid having something in it — the empty-state cards are a legal state, and
+    // an arrangement of no zones is one nothing can ever be restored into.
+    if (gridPanels(layout.api).length === 0) {
+      toast.info("Open a pane first — there is no arrangement to save yet.")
+      return
+    }
     custom.save(name || `Layout ${custom.items.length + 1}`, layout.api.toJSON())
     setName("")
     toast.success("Arrangement saved")
@@ -299,7 +362,9 @@ export function LayoutsDialog({
                         {item.name}
                       </button>
                       <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                        {countZones(item.layout.grid.root)} zones
+                        {describedZones(item.layout) === 1
+                          ? "1 zone"
+                          : `${describedZones(item.layout)} zones`}
                       </span>
                       <Button
                         variant="ghost"
@@ -412,22 +477,55 @@ function countZones(node: unknown): number {
 }
 
 /**
+ * How many regions of the window a saved arrangement describes — **the deck included**.
+ *
+ * The one count in this file that is not `countZones`, and the difference is who is
+ * reading it. Everywhere else a "zone" is a cell of the *grid*: `reshape` deals panes
+ * into those, and `advertisedZones` measures a shortfall against them, and neither has
+ * any business finding a pane for the drawer — that is exactly why `advertisedZones`
+ * subtracts the deck's band from the schematic it reads.
+ *
+ * This one is a label on a row someone clicks to recognise something they saved, and a
+ * chat beside a diff with a terminal underneath is three things on screen. Counting it
+ * as two was the grid's bookkeeping showing through the UI.
+ *
+ * An *empty* drawer does not count. It is not a region of the arrangement, and a deck
+ * that was closed when the arrangement was saved has no shells in it by construction —
+ * `closeDeck` ends them before it hides the strip.
+ */
+function describedZones(saved: SerializedDockview): number {
+  return countZones(saved.grid.root) + (serializedDeckSize(saved) > 0 ? 1 : 0)
+}
+
+/** Each zone's view list, in the order `reshape`'s walk visits the leaves. */
+function zoneViews(node: SerializedNode): string[][] {
+  if (node.type === "leaf") return [(node.data as { views: string[] }).views]
+  return (node.data as SerializedNode[]).flatMap(zoneViews)
+}
+
+/**
  * Re-deal the live panes into a saved layout's geometry.
  *
- * Walks the saved tree in order, replacing each zone's view list with a slice of
- * the live panes, and takes `panels` and the deck from the **live** layout rather
- * than the saved one. The saved map is keyed by the pane ids of the workspace it
- * came from; reusing it would hand `fromJSON` a layout whose views name panels it has
- * no state for, and whose real panels are absent and therefore destroyed. That is the
- * §3.7 failure mode wearing a different hat — and the deck's shells are the sharpest
- * case of it, since they are named nowhere in the grid at all.
+ * `panels` and the panel *map* come from the **live** layout, never the saved one.
+ * The saved map is keyed by the pane ids of the workspace it came from; reusing it
+ * would hand `fromJSON` a layout whose views name panels it has no state for, and whose
+ * real panels are absent and therefore destroyed. That is the §3.7 failure mode wearing
+ * a different hat — and the deck's shells are the sharpest case of it, since they are
+ * named nowhere in the grid at all.
+ *
+ * But the saved *rosters* are honoured wherever their ids are still live, which is the
+ * common case: an arrangement saved in this workspace names the very panes in front of
+ * you. Dealing by position instead — which is what this used to do — meant restoring
+ * your own arrangement put whichever pane dockview happened to register first into the
+ * zone you had kept for a chat. The shape came back and the contents did not, which is
+ * the half of "restore" nobody notices is missing until it moves their chat.
  *
  * `panels` is the *grid's* panes, for the same reason a template arranges only those:
- * a saved shape is a shape for the grid, and the deck stays as the user left it.
+ * a saved shape is a shape for the grid, and the deck is handled by `applyLayout`.
  *
- * Extra panes join the last zone rather than being dropped. A shape with *more*
- * zones than panes is refused outright, because an empty zone is not a legal
- * layout.
+ * Panes the arrangement never saw fill any zone its own roster left empty, then join
+ * the last zone. A shape with *more* zones than panes is refused outright, because an
+ * empty zone is not a legal layout.
  */
 function reshape(
   saved: SerializedDockview,
@@ -437,21 +535,62 @@ function reshape(
 ): SerializedDockview | null {
   if (panels.length === 0) return null
   const zones = countZones(saved.grid.root)
+  // A zero-zone arrangement is one saved over an empty grid. There is no shape to
+  // restore, and dealing panes into no zones used to walk off the end of the roster
+  // list and throw — which the dialog swallowed, so the saved entry simply did
+  // nothing when clicked. `saveCurrent` refuses to make new ones; this covers those
+  // already in storage.
+  if (zones === 0) return null
   if (panels.length < zones) return null
 
   const paneIds = panels.map((panel) => panel.api.id)
-  const groups: string[][] = Array.from({ length: zones }, () => [])
-  paneIds.forEach((id, index) => groups[Math.min(index, zones - 1)].push(id))
+  const liveIds = new Set(paneIds)
+  const rosters = zoneViews(saved.grid.root as SerializedNode).map((views) =>
+    views.filter((id) => liveIds.has(id))
+  )
+  const claimed = new Set(rosters.flat())
+  // Panes the arrangement has no opinion about: opened since it was saved, or — when
+  // it came from another workspace, where none of its ids resolve — every pane there is.
+  const spare = paneIds.filter((id) => !claimed.has(id))
+
+  // Every zone needs at least one pane. A spare if there is one, else borrowed from
+  // whichever zone has the most to give, so a lopsided restore still lands a legal
+  // layout rather than being refused with enough panes open to satisfy it.
+  const take = (): string | undefined => {
+    const next = spare.shift()
+    if (next) return next
+    const donor = rosters.reduce((most, r) => (r.length > most.length ? r : most))
+    return donor.length > 1 ? donor.pop() : undefined
+  }
+  for (const roster of rosters) {
+    if (roster.length === 0) {
+      const id = take()
+      if (id) roster.push(id)
+    }
+  }
+  if (rosters.some((roster) => roster.length === 0)) return null
+  if (spare.length > 0) rosters[rosters.length - 1].push(...spare)
 
   let cursor = 0
   let activeGroup: string | undefined
   const walk = (node: SerializedNode): SerializedNode => {
     if (node.type === "leaf") {
-      const views = groups[cursor] ?? []
-      const data = node.data as { id: string }
+      const views = rosters[cursor] ?? []
+      const data = node.data as { id: string; activeView?: string }
       cursor += 1
       if (activePanelId && views.includes(activePanelId)) activeGroup = data.id
-      return { ...node, data: { ...data, views, activeView: views[0] } }
+      return {
+        ...node,
+        data: {
+          ...data,
+          views,
+          // The tab the arrangement was left on, when it is still one of them.
+          activeView:
+            data.activeView && views.includes(data.activeView)
+              ? data.activeView
+              : views[0],
+        },
+      }
     }
     return { ...node, data: (node.data as SerializedNode[]).map(walk) }
   }
@@ -465,9 +604,11 @@ function reshape(
     // Every live pane, deck included: the grid names only the ones dealt above, and
     // anything missing from here is a pane `fromJSON` destroys.
     panels: live.panels,
-    // The deck as it is now, not as it was when this arrangement was saved — same
-    // reason. Its serialized state names the pane ids of another workspace.
-    edgeGroups: live.edgeGroups,
+    // The deck as the arrangement saved it, falling back to the live one when it
+    // predates the deck. Only the geometry survives the trip — `applyLayout` reads
+    // this as an intent and supplies the live shells itself, because the saved roster
+    // names the pane ids of another workspace.
+    edgeGroups: saved.edgeGroups ?? live.edgeGroups,
     activeGroup,
     // Dropped: a saved layout's floating and popout groups. They reference the same
     // stale ids, and we do not ship popouts (open question 7 deferred them).

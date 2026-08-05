@@ -208,6 +208,9 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   const mru = useRef<string[]>([])
   // The workspace whose layout is currently loaded. Guards the write.
   const loadedFor = useRef<string | undefined>(undefined)
+  // Set while `load` is swapping one workspace's layout for another's. See the
+  // `onDidRemovePanel` handler: those removals are not closures.
+  const loading = useRef(false)
 
   const write = useCallback((target: DockviewApi, ws?: string) => {
     try {
@@ -219,47 +222,56 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
 
   const load = useCallback(
     (target: DockviewApi, ws?: string) => {
-      const stored = readLayout(ws)
-      // The deck is structural: created once per dockview instance and untouched by
-      // `clear()` or `fromJSON`. It belongs to a workspace, because a terminal with
-      // no workspace has no directory to run in — and this is only the starting
-      // point, since a layout that remembers the deck closed restores that below.
-      ensureDeck(target)
-      setDeckVisible(target, Boolean(ws))
-      if (!stored && !ws) {
-        // A *global* layout has no sensible default. `defaultLayout` seeds a chat
-        // pane, and a chat with no workspace has nothing to talk to — so start
-        // empty and let the route that brought you here ensure its own pane (see
-        // `PANE_ROUTES` in the shell). The empty-state cards cover arriving with no
-        // route at all.
-        target.clear()
-        loadedFor.current = ws
-        mru.current = []
-        return
-      }
-      const layout = stored ?? defaultLayout()
+      // Every panel of the outgoing workspace is about to be removed. They are being
+      // *unloaded*, not closed, so `onDidRemovePanel` must not treat them as closures
+      // and drop their `lursor:tab:<id>:*` state — the layout still names those ids and
+      // will restore them the moment the workspace comes back.
+      loading.current = true
       try {
-        target.fromJSON(layout)
-      } catch {
-        // A layout dockview refuses (a hand-edited key, a shape from a future
-        // version) must not leave an empty window with no way back.
-        target.clear()
-        if (ws) target.fromJSON(defaultLayout())
+        const stored = readLayout(ws)
+        // The deck is structural: created once per dockview instance and untouched by
+        // `clear()` or `fromJSON`. It belongs to a workspace, because a terminal with
+        // no workspace has no directory to run in — and this is only the starting
+        // point, since a layout that remembers the deck closed restores that below.
+        ensureDeck(target)
+        setDeckVisible(target, Boolean(ws))
+        if (!stored && !ws) {
+          // A *global* layout has no sensible default. `defaultLayout` seeds a chat
+          // pane, and a chat with no workspace has nothing to talk to — so start
+          // empty and let the route that brought you here ensure its own pane (see
+          // `PANE_ROUTES` in the shell). The empty-state cards cover arriving with no
+          // route at all.
+          target.clear()
+          loadedFor.current = ws
+          mru.current = []
+          return
+        }
+        const layout = stored ?? defaultLayout()
+        try {
+          target.fromJSON(layout)
+        } catch {
+          // A layout dockview refuses (a hand-edited key, a shape from a future
+          // version) must not leave an empty window with no way back.
+          target.clear()
+          if (ws) target.fromJSON(defaultLayout())
+        }
+        loadedFor.current = ws
+        mru.current = target.activePanel ? [target.activePanel.api.id] : []
+        // A layout saved before the deck existed has its terminals as zones of the
+        // grid. Move them in, and open the drawer if it just inherited a shell —
+        // migrating someone's terminal into a closed drawer looks like losing it.
+        // Guarded on the absence of `edgeGroups`, which every layout written since
+        // carries, so this runs once per workspace and never again.
+        if (!stored?.edgeGroups && adoptGridTerminals(target)) revealDeck(target)
+        // Commit immediately rather than waiting for the first change. Dockview only
+        // fires `onDidLayoutChange` when something *changes*, so a migrated or
+        // defaulted layout would otherwise never be written — and would be re-derived
+        // from the legacy key on every launch, handing the chat pane a new id each
+        // time and losing whatever it had stored.
+        write(target, ws)
+      } finally {
+        loading.current = false
       }
-      loadedFor.current = ws
-      mru.current = target.activePanel ? [target.activePanel.api.id] : []
-      // A layout saved before the deck existed has its terminals as zones of the
-      // grid. Move them in, and open the drawer if it just inherited a shell —
-      // migrating someone's terminal into a closed drawer looks like losing it.
-      // Guarded on the absence of `edgeGroups`, which every layout written since
-      // carries, so this runs once per workspace and never again.
-      if (!stored?.edgeGroups && adoptGridTerminals(target)) revealDeck(target)
-      // Commit immediately rather than waiting for the first change. Dockview only
-      // fires `onDidLayoutChange` when something *changes*, so a migrated or
-      // defaulted layout would otherwise never be written — and would be re-derived
-      // from the legacy key on every launch, handing the chat pane a new id each
-      // time and losing whatever it had stored.
-      write(target, ws)
     },
     [write]
   )
@@ -303,8 +315,13 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       }),
       // A closed pane is gone for good, so drop whatever it persisted rather
       // than leaving an orphaned `lursor:tab:<id>:*` entry behind.
+      //
+      // Not during a `load`, though: switching workspaces removes every pane of the
+      // outgoing one, and those are unloads. Clearing there would wipe the preview
+      // URLs and open buffers of the workspace you just left, and the layout that
+      // still names those ids would restore them empty on the way back.
       api.onDidRemovePanel((panel) => {
-        clearTabStorage(panel.api.id)
+        if (!loading.current) clearTabStorage(panel.api.id)
         mru.current = mru.current.filter((x) => x !== panel.api.id)
       }),
     ]

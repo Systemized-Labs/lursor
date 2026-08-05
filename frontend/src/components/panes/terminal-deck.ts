@@ -38,6 +38,9 @@ import type { PaneParams } from "@/components/panes/pane-kinds"
 /** Dockview allows one edge group per side. The deck is the bottom one. */
 const EDGE = "bottom" as const
 
+/** The deck's entry in a serialized layout: its geometry, and its roster. */
+type DeckState = NonNullable<SerializedEdgeGroups[typeof EDGE]>
+
 /** The deck's group id, which is what a saved layout's `edgeGroups` entry names. */
 export const DECK_ID = "deck"
 
@@ -260,6 +263,21 @@ export function watchDeck(
  * `toJSON` records the expanded height as `size` even while collapsed, precisely so
  * restoring without the flag reopens it where the user last left it.
  */
+/**
+ * How many shells a *serialized* deck was holding.
+ *
+ * For a saved arrangement, which has to answer "did this layout have a terminal in
+ * it?" without a live deck to ask. The roster itself is useless — those ids name the
+ * shells of the workspace it was saved in — but its *length* is the whole question,
+ * and it is the one part of a saved deck that transfers.
+ */
+export function serializedDeckSize(layout: SerializedDockview): number {
+  const group = layout.edgeGroups?.[EDGE]?.group as
+    | { views?: unknown }
+    | undefined
+  return Array.isArray(group?.views) ? group.views.length : 0
+}
+
 export function withDeckOpen(
   edgeGroups: SerializedEdgeGroups | undefined
 ): SerializedEdgeGroups | undefined {
@@ -288,20 +306,25 @@ export function withDeckOpen(
  * invisible: a pane's DOM node is never reparented, so a shell cannot tell it was
  * briefly somewhere else.
  *
- * The deck's own state is taken from `next.edgeGroups` as an *intent* — dockview's
- * shell is left out of the round trip entirely, since it holds the live drawer and
- * has nothing to restore.
+ * The deck's own state is read from `next.edgeGroups` as an *intent*: its geometry —
+ * shown or not, put away or not, and at what height — is restored, while its roster
+ * is discarded in favour of the live shells carried through above.
  */
 export function applyLayout(api: DockviewApi, next: SerializedDockview): void {
   const carried = deckGroup(api)?.panels.map((panel) => panel.api.id) ?? []
-  // Absent `edgeGroups`, the layout says nothing about the drawer and it stays as
-  // the user had it. Clearing empties the deck, which trips dockview's
-  // collapse-when-empty, so this has to be re-asserted either way.
-  const open = next.edgeGroups?.[EDGE]
-    ? !next.edgeGroups[EDGE]?.collapsed
+  // Absent `edgeGroups` — or absent a deck to apply them to — the layout says nothing
+  // about the drawer and it stays as the user had it. Clearing empties the deck, which
+  // trips dockview's collapse-when-empty, so this has to be re-asserted either way.
+  const intent = api.getEdgeGroup(EDGE) ? next.edgeGroups?.[EDGE] : undefined
+  const wantVisible = intent?.visible ?? api.isEdgeGroupVisible(EDGE)
+  // A drawer that is not in the window is not open, whatever its collapsed flag says
+  // — a deck is hidden by closing it, which empties it first, so that flag is a
+  // leftover from before the shells went rather than a state anyone chose.
+  const wantOpen = intent
+    ? intent.visible && !intent.collapsed
     : !isDeckCollapsed(api)
 
-  api.fromJSON(withCarried(next, carried), { reuseExistingPanels: true })
+  api.fromJSON(withCarried(next, carried, intent), { reuseExistingPanels: true })
 
   const group = deckGroup(api)
   if (group) {
@@ -311,22 +334,50 @@ export function applyLayout(api: DockviewApi, next: SerializedDockview): void {
         ?.api.moveTo({ group, position: "center", skipSetActive: true })
     }
   }
-  if (open && carried.length > 0) revealDeck(api)
+
+  // A layout that had the drawer closed is honoured, but never at the price of a
+  // running shell: hiding takes even the strip away, and `closeDeck` is the only
+  // thing allowed to end a terminal. With shells in it, "closed" degrades to "put
+  // away" — recoverable, and the shells keep running.
+  setDeckVisible(api, wantVisible || carried.length > 0)
+  // Nothing to show is not a reason to open: an expanded empty drawer is a band of
+  // background with a `+` in the corner.
+  if (wantOpen && carried.length > 0) revealDeck(api)
   else api.getEdgeGroup(EDGE)?.collapse()
 }
 
 /**
- * The layout to hand `fromJSON`: the deck's panes parked in a zone, the deck's own
- * state left out.
+ * The layout to hand `fromJSON`: the deck's panes parked in a zone, and the deck's
+ * own geometry with an empty roster.
  *
- * They go in the zone the layout marks active, and at the end of its tab list so the
- * zone opens on the tab the template chose rather than on a terminal in transit.
+ * The panes go in the zone the layout marks active, and at the end of its tab list so
+ * the zone opens on the tab the template chose rather than on a terminal in transit.
+ *
+ * The geometry has to go through dockview rather than be re-applied afterwards,
+ * because `size` — the height `expand()` comes back to — is reachable *only* through
+ * `fromJSON`; no public method sets it. The roster is emptied on the way, since that
+ * is the one part dockview would rebuild from serialized state, and a rebuilt terminal
+ * is a new PTY and a lost session (see above). So: geometry from the layout, panes
+ * from the live deck.
  */
 function withCarried(
   next: SerializedDockview,
-  carried: string[]
+  carried: string[],
+  intent: DeckState | undefined
 ): SerializedDockview {
-  const { edgeGroups: _deck, ...rest } = next
+  const { edgeGroups: _saved, ...base } = next
+  const rest: SerializedDockview = intent
+    ? {
+        ...base,
+        edgeGroups: {
+          [EDGE]: {
+            size: intent.size,
+            visible: intent.visible,
+            collapsed: intent.collapsed,
+          },
+        },
+      }
+    : base
   if (carried.length === 0) return rest
 
   const host = leafIds(rest.grid.root as SerializedNode)
