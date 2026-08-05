@@ -1,0 +1,353 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>Connect to a backend</title>
+    <!--
+      Deliberately plain HTML with inline styles, not part of the React app.
+
+      This screen has to work *before* the app has a backend to talk to — it is how
+      you choose one — so it cannot depend on anything the renderer bundle fetches
+      at startup. It is the same reasoning behind the splash and error screens in
+      main.cjs, which are inline data: URLs; this one needs inputs and IPC, so it
+      gets a file.
+
+      Colours are hardcoded here for the same reason: the app's theme tokens live in
+      the Tailwind bundle this page doesn't load. This is system chrome, not app UI.
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: #000;
+        color: #e5e5e5;
+        font:
+          13px -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+      }
+      main {
+        width: 100%;
+        max-width: 30rem;
+      }
+      h1 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+      .sub {
+        color: #8a8a8a;
+        margin: 0 0 20px;
+        line-height: 1.5;
+      }
+      ul {
+        list-style: none;
+        margin: 0 0 16px;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border: 1px solid #262626;
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #0a0a0a;
+      }
+      li:hover {
+        border-color: #3d3d3d;
+      }
+      .pick {
+        flex: 1;
+        text-align: left;
+        background: none;
+        border: 0;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+        padding: 0;
+      }
+      .name {
+        font-weight: 500;
+      }
+      .where {
+        color: #7a7a7a;
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      .tag {
+        font-size: 11px;
+        color: #7a7a7a;
+        border: 1px solid #262626;
+        border-radius: 999px;
+        padding: 1px 7px;
+      }
+      .del {
+        background: none;
+        border: 0;
+        color: #7a7a7a;
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        padding: 2px 4px;
+      }
+      .del:hover {
+        color: #e5e5e5;
+      }
+      form {
+        border-top: 1px solid #1f1f1f;
+        padding-top: 16px;
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+      }
+      form.open {
+        display: flex;
+      }
+      label {
+        color: #8a8a8a;
+        font-size: 12px;
+      }
+      input {
+        width: 100%;
+        background: #0a0a0a;
+        border: 1px solid #262626;
+        border-radius: 6px;
+        color: #e5e5e5;
+        font: inherit;
+        padding: 8px 10px;
+      }
+      input:focus {
+        outline: none;
+        border-color: #4a4a4a;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 4px;
+      }
+      button.primary,
+      button.ghost {
+        font: inherit;
+        border-radius: 6px;
+        padding: 7px 14px;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #e5e5e5;
+        color: #000;
+        border: 0;
+        font-weight: 500;
+      }
+      button.ghost {
+        background: none;
+        color: #b5b5b5;
+        border: 1px solid #262626;
+      }
+      #add {
+        background: none;
+        border: 1px dashed #2f2f2f;
+        border-radius: 8px;
+        color: #8a8a8a;
+        cursor: pointer;
+        font: inherit;
+        padding: 9px;
+        width: 100%;
+      }
+      #add:hover {
+        color: #e5e5e5;
+        border-color: #4a4a4a;
+      }
+      .error {
+        color: #f8a5a5;
+        line-height: 1.5;
+        min-height: 1.2em;
+      }
+      .hint {
+        color: #6a6a6a;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Connect to a backend</h1>
+      <p class="sub" id="sub">
+        Run Lursor's backend on this machine, or point the app at one running
+        elsewhere so agents keep working while this machine is asleep.
+      </p>
+
+      <ul id="list"></ul>
+      <button id="add" type="button">Add a remote backend</button>
+
+      <form id="form" autocomplete="off">
+        <div>
+          <label for="name">Name</label>
+          <input id="name" placeholder="VPS" />
+        </div>
+        <div>
+          <label for="url">Address</label>
+          <input id="url" placeholder="https://lursor.example.com" spellcheck="false" />
+        </div>
+        <div>
+          <label for="token">Token</label>
+          <input
+            id="token"
+            type="password"
+            placeholder="LURSOR_AUTH_TOKEN"
+            spellcheck="false"
+          />
+          <p class="hint">
+            The token the remote backend was started with. It grants full access to
+            that machine — treat it like an SSH key.
+          </p>
+        </div>
+        <p class="error" id="error"></p>
+        <div class="row">
+          <button class="ghost" id="cancel" type="button">Cancel</button>
+          <button class="primary" id="save" type="submit">Save and connect</button>
+        </div>
+      </form>
+    </main>
+
+    <script>
+      const listEl = document.getElementById("list")
+      const formEl = document.getElementById("form")
+      const errorEl = document.getElementById("error")
+      const addEl = document.getElementById("add")
+      const subEl = document.getElementById("sub")
+
+      const fields = {
+        name: document.getElementById("name"),
+        url: document.getElementById("url"),
+        token: document.getElementById("token"),
+      }
+
+      /** Set when the form is editing an existing remote rather than adding one. */
+      let editingId = null
+
+      function openForm(connection) {
+        editingId = connection?.id ?? null
+        fields.name.value = connection?.name ?? ""
+        fields.url.value = connection?.url ?? ""
+        fields.token.value = connection?.token ?? ""
+        errorEl.textContent = ""
+        formEl.classList.add("open")
+        addEl.style.display = "none"
+        fields.name.focus()
+      }
+
+      function closeForm() {
+        editingId = null
+        formEl.classList.remove("open")
+        addEl.style.display = ""
+        errorEl.textContent = ""
+      }
+
+      async function render() {
+        const connections = await window.lursorConnect.list()
+        listEl.replaceChildren(
+          ...connections.map((c) => {
+            const li = document.createElement("li")
+
+            const pick = document.createElement("button")
+            pick.className = "pick"
+            pick.type = "button"
+            const name = document.createElement("div")
+            name.className = "name"
+            name.textContent = c.name
+            const where = document.createElement("div")
+            where.className = "where"
+            where.textContent =
+              c.kind === "local" ? "Bundled backend, started on demand" : c.url
+            pick.append(name, where)
+            pick.addEventListener("click", () => window.lursorConnect.select(c.id))
+
+            li.append(pick)
+
+            if (c.kind === "local") {
+              const tag = document.createElement("span")
+              tag.className = "tag"
+              tag.textContent = "local"
+              li.append(tag)
+            } else {
+              const edit = document.createElement("button")
+              edit.className = "del"
+              edit.type = "button"
+              edit.title = `Edit ${c.name}`
+              edit.textContent = "✎"
+              edit.addEventListener("click", () => openForm(c))
+
+              const del = document.createElement("button")
+              del.className = "del"
+              del.type = "button"
+              del.title = `Forget ${c.name}`
+              del.textContent = "×"
+              del.addEventListener("click", async () => {
+                await window.lursorConnect.remove(c.id)
+                render()
+              })
+              li.append(edit, del)
+            }
+
+            return li
+          })
+        )
+      }
+
+      formEl.addEventListener("submit", async (event) => {
+        event.preventDefault()
+        errorEl.textContent = ""
+        const result = await window.lursorConnect.save({
+          id: editingId,
+          name: fields.name.value,
+          url: fields.url.value,
+          token: fields.token.value,
+        })
+        if (result.error) {
+          errorEl.textContent = result.error
+          return
+        }
+        closeForm()
+        // Saving is also selecting: you came here to connect to something.
+        window.lursorConnect.select(result.connection.id)
+      })
+
+      document.getElementById("cancel").addEventListener("click", closeForm)
+      addEl.addEventListener("click", () => openForm(null))
+
+      // A message from the main process when a connection attempt failed, so the
+      // reason is on the screen you act on rather than in a console nobody opens.
+      const reason = window.lursorConnect.lastError
+      if (reason) {
+        subEl.textContent = reason
+        subEl.style.color = "#f8a5a5"
+      }
+
+      render()
+    </script>
+  </body>
+</html>

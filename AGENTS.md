@@ -44,9 +44,9 @@ frontend/         Vite + React 19 + Tailwind v4 + shadcn/ui  (frontend/README.md
                   settings/ (the settings dialog), shell/ (pane bodies), ui/
   src/pages/      one dir per destination
   electron/       desktop main + preload
-docs/             INSTALL / ELECTRON / DISTRIBUTION
+docs/             INSTALL / ELECTRON / DISTRIBUTION / REMOTE
 packaging/        Homebrew cask template (rendered by CI)
-scripts/          dev.sh, install.sh, update.sh
+scripts/          dev.sh, install.sh, update.sh, install-server.sh
 ```
 
 ## 3. Commands
@@ -58,6 +58,7 @@ scripts/          dev.sh, install.sh, update.sh
 cd backend
 uv sync --extra dev                   # add --extra hindsight for the memory provider
 uv run uvicorn app.main:app --reload --port 8791
+uv run lursor-service install         # ... or as a supervised service (docs/REMOTE.md)
 uv run pytest                         # offline; no API key needed
 uv run ruff check app tests
 
@@ -1025,16 +1026,60 @@ Each of these has already cost a debugging session.
     turn with web search on a local model. A filter that allowlists by name needs
     a test that every entry is a name some build really registers; a subset
     assertion passes a dead entry silently (`tests/test_tool_loading.py`).
+15. **Auth middleware is registered *before* CORS, which makes it inner.**
+    `add_middleware` inserts at the front of the list and the stack is built in
+    reverse, so the middleware added **last** is outermost. Registering auth second
+    would put it outside `CORSMiddleware`, strip `access-control-allow-origin` from
+    every 401, and turn each one into `TypeError: Failed to fetch` — invariant 11
+    again, one layer up. `tests/test_auth.py` asserts the header on a 401 precisely
+    so a reorder fails loudly.
+16. **A new WebSocket route is authenticated for free; a new *client* is not.**
+    Browsers can't set headers on a WebSocket, so the token rides as a
+    `lursor.bearer.<token>` subprotocol and `TokenAuthMiddleware` wraps `send` to
+    echo it back on accept — which is why the four route handlers call a bare
+    `accept()` and know nothing about any of it. Keep it that way: a route that
+    selects its own subprotocol will fight the wrapper. Any new client must go
+    through `connectWs()` in `api/client.ts`, which is also the only place the ws/wss
+    scheme is derived — four call sites used to carry their own copy.
+17. **Never persist a *reachable* preview URL, only a canonical one.** A forwarded
+    port is chosen per session, so a remembered `127.0.0.1:58608` points at nothing
+    next launch — and a URL saved on a phone used to carry that phone's view of the
+    network back to the desktop. `lib/preview-reach.ts` keeps the two apart:
+    canonical for storage, comparison and display; reachable only for the iframe and
+    `openExternal`.
 
 ## 8. Desktop and distribution
 
-The Electron app **owns its backend**: packaged builds ship a frozen standalone
-CPython and spawn `uvicorn` themselves, with `LURSOR_DATA_DIR=~/.lursor` so all
-writable state stays out of the read-only bundle. The port isn't known at build
-time, so the resolved API base is passed to the renderer via
-`additionalArguments` and re-exposed as `window.electron.apiBase`. `HashRouter`
-in Electron (history routing doesn't work from `file://`), `BrowserRouter` in the
-browser.
+The Electron app **owns its backend by default**: packaged builds ship a frozen
+standalone CPython and spawn `uvicorn` themselves, with `LURSOR_DATA_DIR=~/.lursor`
+so all writable state stays out of the read-only bundle. `HashRouter` in Electron
+(history routing doesn't work from `file://`), `BrowserRouter` in the browser.
+
+It can also be a **thin client** against a backend on another machine — a VPS over
+https with a bearer token — in which case nothing is spawned locally at all. The
+connection is resolved before the app document loads, which shapes the bootstrap:
+
+- Connections live in `~/.lursor/connections.json` (`electron/connections.cjs`).
+  The **local one is synthesized, never persisted**, so a fresh install has no config
+  file, boots straight into local mode and never sees the picker. Remote tokens are
+  encrypted with `safeStorage`.
+- The API base and token reach the renderer through a **synchronous** `sendSync` in
+  the preload, not `additionalArguments`. `api/client.ts` resolves `API_BASE` and
+  `AUTH_TOKEN` at module scope, and the connection isn't known when the window is
+  created — the picker may not have run yet. This replaced the old
+  `--lursor-api-base=` argument.
+- Subresource loads (`<img>`, `<video>`, download links) can't be given a header
+  from JS, so the main process injects `Authorization` via
+  `webRequest.onBeforeSendHeaders`, scoped to the active connection's origin.
+- Remote dev-server previews are reached by **forwarding the port**, not proxying
+  HTTP: `electron/port-forward.cjs` listens on the same port number locally and pipes
+  each connection to `/api/tunnel` (`api/tunnel.py`). Rewriting HTML/CSS/HMR payloads
+  behind a path prefix is the alternative, and it breaks on every framework that
+  emits root-absolute asset paths. See both files' docstrings.
+- Auto-update is skipped on a remote connection: it wouldn't touch the backend the
+  agents are on, and quitting to install would drop the connection mid-run.
+
+`docs/REMOTE.md` is the user-facing runbook.
 
 macOS release builds are signed and notarized. Notarization requires *every*
 nested binary to be signed, so `scripts/sign-backend-bundle.cjs` discovers every
@@ -1050,8 +1095,18 @@ Details, secrets and the release runbook: [`docs/DISTRIBUTION.md`](docs/DISTRIBU
 
 ## 9. Deliberately not built
 
-**Deferred by design:** auth / multi-tenancy (every table already carries a
-nullable `user_id`), Docker sandbox execution, MCP + HTTP tool wiring
+**Deferred by design:** multi-*user* auth and tenancy (every table still carries a
+nullable `user_id`; the shipped auth is one token for one operator — see
+`app/auth.py`), serving the SPA from the backend so a browser could reach a remote
+instance (it would need a login screen and a session cookie, because a browser can't
+put a header on a navigation or an iframe load), a container image for the backend
+(`scripts/install-server.sh` + `app/service.py` install it from source under systemd
+or launchd instead), resuming a turn interrupted by a backend restart (run state is
+in-memory, so supervision means "the API comes back", not "the work continues" — see
+`reconcile_interrupted_runs`), app-managed SSH tunnels (the shipped remote path is
+https direct; a tunnel is supervised outside the app — `docs/REMOTE.md`), restarting a
+*local* backend that crashes (Electron logs the exit and leaves the window a dead
+shell), Docker sandbox execution, MCP + HTTP tool wiring
 (`Tool` rows are catalogued but not yet passed to agents), Alembic, encryption or
 OS keychain for stored secrets, an always-on scheduler daemon, catch-up fires,
 non-cron triggers, chained schedules, a budget ceiling that disables a schedule,

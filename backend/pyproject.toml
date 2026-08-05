@@ -1,6 +1,6 @@
 [project]
 name = "lursor-backend"
-version = "0.1.5"
+version = "0.1.6"
 description = "Lursor agent-harness backend (FastAPI + pydantic-deepagents)"
 license = "Apache-2.0"
 requires-python = ">=3.11,<3.13"
@@ -19,6 +19,13 @@ dependencies = [
     "pydantic-ai-slim[duckduckgo,exa,tavily]>=2.20.0",
     "croniter>=6.2.4",
 ]
+
+[project.scripts]
+# Installs the backend as a supervised service (see app/service.py). A console
+# script rather than a bare module so the documented command is short enough to
+# paste, and so `uv run lursor-service` resolves the right interpreter — which is
+# what the generated unit is derived from.
+lursor-service = "app.service:main"
 
 [project.optional-dependencies]
 dev = [

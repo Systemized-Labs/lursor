@@ -1,4 +1,4 @@
-import { API_BASE, api } from "./client"
+import { api, connectWs } from "./client"
 
 import type { BackgroundProcess } from "@/lib/processes"
 
@@ -7,13 +7,9 @@ export interface ProcessSnapshot {
   processes: BackgroundProcess[]
 }
 
-/** Build the WebSocket URL for a workspace's background-process feed. */
-export function previewWsUrl(workspaceId: string): string {
-  const url = new URL(
-    `${API_BASE.replace(/\/$/, "")}/workspaces/${workspaceId}/preview/ws`
-  )
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-  return url.toString()
+/** Open a workspace's background-process feed. */
+export function connectPreviewWs(workspaceId: string): WebSocket {
+  return connectWs(`/workspaces/${workspaceId}/preview/ws`)
 }
 
 /** Stop a running background process. */

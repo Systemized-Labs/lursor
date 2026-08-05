@@ -1,14 +1,15 @@
 import { FolderOpen, GitBranch } from "@phosphor-icons/react"
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { toast } from "sonner"
 
 import type { Workspace } from "@/api/types"
-import { useCreateWorkspace, workspacesApi } from "@/api/workspaces"
+import { useCreateWorkspace } from "@/api/workspaces"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { GitHubRepoPickerDialog } from "@/pages/workspaces/github-repo-picker-dialog"
+import { useFolderPicker } from "@/pages/workspaces/use-folder-picker"
 
 interface WorkspaceStepProps {
   /** Whether the clone route is available (set in the previous step). */
@@ -30,29 +31,18 @@ export function WorkspaceStep({ githubReady, onCreated }: WorkspaceStepProps) {
   const create = useCreateWorkspace()
   const [name, setName] = useState("")
   const [path, setPath] = useState("")
-  const [browsing, setBrowsing] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  async function handleBrowse() {
-    setBrowsing(true)
-    try {
-      const picked = await workspacesApi.pickFolder()
-      if (picked.path) {
-        const folder =
-          picked.path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? ""
-        setPath(picked.path)
-        // Only fill the name if the user hasn't typed one — the folder is a good
-        // default, not an override.
-        setName((prev) => (prev.trim() ? prev : folder))
-      }
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Could not open the folder picker"
-      )
-    } finally {
-      setBrowsing(false)
-    }
-  }
+  const applyPickedPath = useCallback((picked: string) => {
+    const folder = picked.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? ""
+    setPath(picked)
+    // Only fill the name if the user hasn't typed one — the folder is a good
+    // default, not an override.
+    setName((prev) => (prev.trim() ? prev : folder))
+  }, [])
+
+  const { browse: handleBrowse, browsing, dialog: folderBrowser } =
+    useFolderPicker(applyPickedPath)
 
   async function handleCreate() {
     const trimmed = name.trim()
@@ -168,6 +158,7 @@ export function WorkspaceStep({ githubReady, onCreated }: WorkspaceStepProps) {
         navigateOnClone={false}
         onCloned={onCreated}
       />
+      {folderBrowser}
     </div>
   )
 }

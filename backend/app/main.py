@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -17,6 +18,7 @@ from app.api import (
     chat,
     env_vars,
     files,
+    fs,
     git,
     github,
     images,
@@ -32,6 +34,7 @@ from app.api import (
     terminal,
     threads,
     tools,
+    tunnel,
     videos,
     workspace_folders,
     workspaces,
@@ -39,6 +42,7 @@ from app.api import (
 from app.api import (
     settings as settings_api,
 )
+from app.auth import TokenAuthMiddleware
 from app.config import get_settings
 from app.db.prompt_seed import seed_prompt_templates
 from app.db.session import async_session_factory, init_db
@@ -99,13 +103,38 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
+# --- Middleware ------------------------------------------------------------
+#
+# ORDER MATTERS, and not in the direction it reads. ``add_middleware`` inserts at
+# the front of the list and the stack is built in reverse, so the middleware added
+# *last* ends up outermost. Auth therefore goes in first so that CORS wraps it:
+# otherwise a 401 carries no ``access-control-allow-origin``, the browser refuses
+# to let the app read the response, and every auth failure looks like the backend
+# being unreachable. Same trap as invariant 11, one layer up.
+if settings.auth_token:
+    app.add_middleware(TokenAuthMiddleware, token=settings.auth_token)
+else:
+    # The one warning that an exposed instance is wide open. Harmless and expected
+    # on loopback, which is where nearly every instance runs.
+    logger.warning(
+        "LURSOR_AUTH_TOKEN is not set: every route, including the terminal PTY, is "
+        "reachable without credentials. Safe on loopback only — see docs/REMOTE.md "
+        "before binding to any other interface."
+    )
+
 # Allow any origin. Using a regex (rather than allow_origins=["*"]) so the
 # request origin is reflected back, which browsers require when credentials are
 # enabled — this makes any localhost port (Vite may drift to 5174/5175/...) work.
+#
+# ``allow_credentials`` is dropped once a token is in play: authentication is by
+# header, so nothing needs cookies to ride along, and reflecting an arbitrary
+# origin *with* credentials on an authenticated API is a combination worth not
+# having. Origin reflection itself stays — the desktop app's origin is
+# ``file://``, and the token is the actual access control here.
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=".*",
-    allow_credentials=True,
+    allow_credentials=not settings.auth_token,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -145,6 +174,25 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "app": settings.app_name}
 
 
+@app.get("/api/server-info", tags=["health"])
+async def server_info() -> dict[str, object]:
+    """Facts about the host this backend runs on, for a client that isn't on it.
+
+    Separate from ``/api/health`` on purpose: health is the liveness probe the
+    desktop app polls on a timer and during startup, and it should stay the
+    cheapest possible route with the smallest possible answer.
+
+    ``can_pick_folder`` is the one the UI acts on — false means offer the remote
+    directory browser (``api/fs.py``) instead of the native OS dialog.
+    """
+    return {
+        "app": settings.app_name,
+        "platform": sys.platform,
+        "can_pick_folder": workspaces.can_pick_folder(),
+        "auth_required": bool(settings.auth_token),
+    }
+
+
 for module in (
     agents,
     analytics,
@@ -162,6 +210,7 @@ for module in (
     models,
     terminal,
     files,
+    fs,
     git,
     github,
     integrations,
@@ -169,6 +218,7 @@ for module in (
     videos,
     images,
     preview,
+    tunnel,
     settings_api,
 ):
     app.include_router(module.router, prefix="/api")

@@ -1,6 +1,6 @@
 import { HttpAgent } from "@ag-ui/client"
 
-import { API_BASE } from "@/api/client"
+import { API_BASE, authHeaders } from "@/api/client"
 
 /**
  * Builds the AG-UI chat endpoint URL for a given thread. The backend speaks the
@@ -31,5 +31,8 @@ export function createThreadAgent(threadId: string): HttpAgent {
   return new HttpAgent({
     url: chatUrl(threadId),
     threadId,
+    // A remote backend requires the bearer token on the chat POST like any other
+    // request. Empty on a local backend, which needs no credential.
+    headers: authHeaders(),
   })
 }

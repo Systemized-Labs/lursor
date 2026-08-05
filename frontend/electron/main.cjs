@@ -1,18 +1,39 @@
 // Electron main process for the Lursor desktop app.
 //
-// The desktop app owns its backend: on launch it starts the bundled FastAPI
-// server (a frozen, self-contained Python interpreter shipped under the app's
-// resources), waits for it to become healthy, then loads the renderer. In
+// By default the desktop app owns its backend: on launch it starts the bundled
+// FastAPI server (a frozen, self-contained Python interpreter shipped under the
+// app's resources), waits for it to become healthy, then loads the renderer. In
 // development it instead runs the backend from source via `uv` and loads the
 // Vite dev server. See docs/ELECTRON.md.
+//
+// It can also be a thin client. A saved *remote* connection points it at a backend
+// on another machine — typically a VPS over https with a bearer token — and then
+// nothing is spawned locally at all: agents run there and keep running with this
+// machine asleep. See electron/connections.cjs and docs/REMOTE.md.
+//
+// The connection is therefore resolved before anything else happens, and everything
+// downstream (health check, API base, port forwarding, teardown) branches on it.
 
 const path = require("node:path")
 const os = require("node:os")
 const fs = require("node:fs")
 const http = require("node:http")
+const https = require("node:https")
 const net = require("node:net")
 const { spawn, execFile } = require("node:child_process")
-const { app, BrowserWindow, nativeImage, shell, ipcMain, dialog } = require("electron")
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  nativeImage,
+  session,
+  shell,
+  ipcMain,
+  dialog,
+} = require("electron")
+
+const connections = require("./connections.cjs")
+const portForward = require("./port-forward.cjs")
 
 const isDev = !app.isPackaged
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:8888"
@@ -34,10 +55,17 @@ const APP_ICON = nativeImage.createFromPath(
 let mainWindow = null
 /** @type {import("node:child_process").ChildProcess | null} */
 let backendProc = null
-/** Set once the backend port is chosen; the renderer talks to this base. */
-let apiBase = ""
 /** Guards teardown so we only kill the backend once. */
 let backendKilled = false
+/**
+ * The connection the renderer is talking to, once resolved: the saved
+ * {@link connections.Connection} plus the API base it produced. Read synchronously
+ * by the preload, so it must be set before the app document loads.
+ * @type {{ id: string, name: string, kind: string, apiBase: string, token: string } | null}
+ */
+let activeConnection = null
+/** Why the last connection attempt failed, surfaced on the picker. */
+let lastConnectionError = ""
 
 // ---------------------------------------------------------------------------
 // Backend lifecycle
@@ -123,6 +151,9 @@ function startBackend(port) {
   })
 
   backendProc = proc
+  // Re-arm the teardown guard: a previous local backend may have been killed on a
+  // connection switch, and this new process still has to be killable.
+  backendKilled = false
   return proc
 }
 
@@ -143,32 +174,62 @@ function killBackend() {
 }
 
 /**
- * Poll the backend's health endpoint until it responds ok or we time out.
- * @returns {Promise<boolean>}
+ * Ping a backend's health endpoint once.
+ *
+ * Resolves to the HTTP status, or 0 when the request never got an answer. The
+ * distinction is the whole point: 200 is healthy, 401 means the token is wrong and
+ * waiting will never help, and 0 means try again.
+ *
+ * @returns {Promise<number>}
  */
-function waitForHealth(port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs
-  const url = `http://127.0.0.1:${port}/api/health`
-
-  const pingOnce = () =>
-    new Promise((resolve) => {
-      const req = http.get(url, (res) => {
+function pingHealth(apiBase, token, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    let url
+    try {
+      url = new URL(`${apiBase.replace(/\/$/, "")}/health`)
+    } catch {
+      return resolve(0)
+    }
+    const transport = url.protocol === "https:" ? https : http
+    const req = transport.get(
+      url,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      (res) => {
         res.resume()
-        resolve(res.statusCode === 200)
-      })
-      req.on("error", () => resolve(false))
-      req.setTimeout(2000, () => {
-        req.destroy()
-        resolve(false)
-      })
+        resolve(res.statusCode ?? 0)
+      }
+    )
+    req.on("error", () => resolve(0))
+    req.setTimeout(timeoutMs, () => {
+      req.destroy()
+      resolve(0)
     })
+  })
+}
+
+/**
+ * Poll a backend's health endpoint until it answers or we give up.
+ *
+ * `watchProcess` is for the local backend only: if the process we spawned has died
+ * there is nothing left to wait for, so failing immediately beats burning the whole
+ * timeout. A remote backend has no such signal — and must not be given one, because
+ * `backendProc` is null in remote mode and would end every attempt on the first
+ * poll.
+ *
+ * @returns {Promise<{ ok: boolean, status: number }>}
+ */
+function waitForHealth(apiBase, token, timeoutMs, watchProcess) {
+  const deadline = Date.now() + timeoutMs
 
   return new Promise((resolve) => {
     const attempt = async () => {
-      if (await pingOnce()) return resolve(true)
-      // Bail early if the backend process died on us.
-      if (!backendProc) return resolve(false)
-      if (Date.now() >= deadline) return resolve(false)
+      const status = await pingHealth(apiBase, token)
+      if (status === 200) return resolve({ ok: true, status })
+      // A rejected credential is a permanent answer; retrying just delays telling
+      // the user the one thing they can act on.
+      if (status === 401 || status === 403) return resolve({ ok: false, status })
+      if (watchProcess && !backendProc) return resolve({ ok: false, status })
+      if (Date.now() >= deadline) return resolve({ ok: false, status })
       setTimeout(attempt, 500)
     }
     attempt()
@@ -222,9 +283,10 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      // Hand the resolved API base to the renderer synchronously via the preload
-      // (the backend port may be ephemeral, so it can't be baked in at build).
-      additionalArguments: [`--lursor-api-base=${apiBase}`],
+      // No `additionalArguments` for the API base any more: the connection isn't
+      // known when the window is created (the picker may not have run yet), and a
+      // launch argument is fixed for the window's lifetime. The preload reads it
+      // synchronously over IPC instead, which also survives a connection switch.
     },
   })
 
@@ -261,6 +323,13 @@ function loadApp() {
   }
 }
 
+/** Show the connection picker, optionally explaining what just went wrong. */
+function loadPicker(reason = "") {
+  lastConnectionError = reason
+  if (!mainWindow) return
+  mainWindow.loadFile(path.join(__dirname, "connect.html"))
+}
+
 function showBackendError() {
   if (!mainWindow) return
   mainWindow.loadURL(
@@ -282,6 +351,221 @@ ipcMain.handle("open-external", (_event, url) => {
     return shell.openExternal(url)
   }
 })
+
+// ---------------------------------------------------------------------------
+// Connections
+// ---------------------------------------------------------------------------
+
+/**
+ * Attach the bearer token to requests the *browser* makes on our behalf.
+ *
+ * `api/client.ts` can set the header on anything it fetches itself, but a
+ * subresource load can't be intercepted from JS: `<img src>` for chat attachments
+ * and generated images, `<video src>` for generated video, and download links all
+ * go straight out through Chromium. Signing every one of those URLs server-side
+ * would mean a second auth mechanism; one hook here covers all of them, plus
+ * anything added later.
+ *
+ * Scoped to the active connection's origin so the token never leaks to anywhere
+ * else the renderer might load from.
+ */
+function installAuthHeaderInjection(apiBase, token) {
+  const filter = { urls: ["<all_urls>"] }
+  let origin
+  try {
+    origin = new URL(apiBase).origin
+  } catch {
+    return
+  }
+
+  session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+    let sameOrigin = false
+    try {
+      sameOrigin = new URL(details.url).origin === origin
+    } catch {
+      sameOrigin = false
+    }
+    if (sameOrigin && token) {
+      callback({
+        requestHeaders: { ...details.requestHeaders, Authorization: `Bearer ${token}` },
+      })
+      return
+    }
+    callback({ requestHeaders: details.requestHeaders })
+  })
+}
+
+/** Forget any header injection from a previous connection. */
+function clearAuthHeaderInjection() {
+  session.defaultSession.webRequest.onBeforeSendHeaders(null)
+}
+
+/**
+ * Bring up a connection and load the app on it.
+ *
+ * Local: spawn the bundled backend, exactly as the app always has. Remote: spawn
+ * nothing and check we can reach it. Either way the app only loads once the backend
+ * answers, so the renderer never races a backend that isn't up.
+ */
+async function connectTo(connection) {
+  clearAuthHeaderInjection()
+  portForward.configure(null)
+
+  if (connection.kind === "local") {
+    const port = await findFreePort(PREFERRED_PORT)
+    const apiBase = `http://127.0.0.1:${port}/api`
+    activeConnection = { ...connection, apiBase, token: "" }
+
+    mainWindow?.loadURL(screenHtml("Starting Lursor", "Bringing up the backend…", true))
+    startBackend(port)
+
+    const { ok } = await waitForHealth(apiBase, "", HEALTH_TIMEOUT_MS, true)
+    if (!ok) {
+      showBackendError()
+      return
+    }
+    connections.setLastUsed(connection.id)
+    loadApp()
+    return
+  }
+
+  const apiBase = connections.apiBaseFor(connection.url)
+  activeConnection = { ...connection, apiBase }
+
+  mainWindow?.loadURL(
+    screenHtml("Connecting to Lursor", `Reaching ${connection.name}…`, true)
+  )
+
+  // Shorter than the local timeout on purpose: the local one is sized for a cold
+  // first boot importing a large dependency tree, while a remote backend is already
+  // running or it isn't. Waiting 90s to say "unreachable" is just a worse error.
+  const { ok, status } = await waitForHealth(apiBase, connection.token, 20_000, false)
+  if (!ok) {
+    loadPicker(
+      status === 401 || status === 403
+        ? `${connection.name} rejected the token. Check it matches the LURSOR_AUTH_TOKEN the backend was started with.`
+        : `Could not reach ${connection.name} at ${connection.url}. Check the backend is running and the address is right.`
+    )
+    return
+  }
+
+  installAuthHeaderInjection(apiBase, connection.token)
+  portForward.configure({ apiBase, token: connection.token })
+  connections.setLastUsed(connection.id)
+  loadApp()
+}
+
+/**
+ * Decide what to connect to at launch.
+ *
+ * The picker only appears when there is something to choose between — a remote has
+ * been added — or when the last-used connection is a remote we can't reach. A user
+ * who never adds one sees the same launch they always have: splash, backend, app.
+ */
+async function bootConnection() {
+  if (process.argv.includes("--lursor-pick-connection") && connections.hasRemotes()) {
+    loadPicker()
+    return
+  }
+  await connectTo(connections.lastUsed())
+}
+
+/** Tear down whatever the current connection owns, without quitting. */
+function releaseConnection() {
+  portForward.closeAll()
+  clearAuthHeaderInjection()
+  killBackend()
+  activeConnection = null
+}
+
+// Read synchronously by the preload before the document runs, because
+// `api/client.ts` resolves its API base and token at module scope.
+ipcMain.on("connection:active", (event) => {
+  event.returnValue = activeConnection
+})
+
+ipcMain.on("connection:last-error", (event) => {
+  event.returnValue = lastConnectionError
+  // One-shot: a message about a failed attempt shouldn't reappear the next time the
+  // picker opens for an unrelated reason.
+  lastConnectionError = ""
+})
+
+ipcMain.handle("connection:list", () => connections.list())
+ipcMain.handle("connection:save", (_event, input) => connections.save(input ?? {}))
+ipcMain.handle("connection:remove", (_event, id) => connections.remove(id))
+
+ipcMain.handle("connection:select", async (_event, id) => {
+  const connection = connections.get(id)
+  if (!connection) {
+    loadPicker("That connection no longer exists.")
+    return
+  }
+  releaseConnection()
+  await connectTo(connection)
+})
+
+ipcMain.handle("connection:switch", async () => {
+  releaseConnection()
+  loadPicker()
+})
+
+ipcMain.handle("forward:open", async (_event, port) => portForward.forward(port))
+
+/**
+ * Application menu, for the one item that has to live outside the React app:
+ * switching connections is only reachable when the app can't load.
+ *
+ * Built from the default template rather than replacing it, so the standard
+ * Edit/View/Window menus (and the macOS app menu) all survive.
+ */
+function installMenu() {
+  const switchItem = {
+    label: "Switch Connection…",
+    click: () => {
+      releaseConnection()
+      loadPicker()
+    },
+  }
+
+  const template = [
+    ...(process.platform === "darwin"
+      ? [
+          {
+            // A plain label rather than `role: "appMenu"`: a role comes with its own
+            // predefined submenu, and overriding one while also naming the role is
+            // asking two mechanisms for the same answer. macOS labels the first menu
+            // with the app name regardless of what is put here.
+            label: app.name,
+            submenu: [
+              { role: "about" },
+              { type: "separator" },
+              switchItem,
+              { type: "separator" },
+              { role: "services" },
+              { type: "separator" },
+              { role: "hide" },
+              { role: "hideOthers" },
+              { role: "unhide" },
+              { type: "separator" },
+              { role: "quit" },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [
+        ...(process.platform === "darwin" ? [] : [switchItem, { type: "separator" }]),
+        process.platform === "darwin" ? { role: "close" } : { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 // ---------------------------------------------------------------------------
 // Auto-update
@@ -517,33 +801,45 @@ if (!gotLock) {
       applicationVersion: app.getVersion(),
     })
 
-    const port = await findFreePort(PREFERRED_PORT)
-    apiBase = `http://127.0.0.1:${port}/api`
+    installMenu()
 
+    // The window comes up first now, showing the splash while the connection is
+    // resolved — which may mean waiting on a network round trip to a VPS, or on the
+    // user choosing from the picker.
     createWindow()
-    startBackend(port)
+    await bootConnection()
 
-    const healthy = await waitForHealth(port, HEALTH_TIMEOUT_MS)
-    if (healthy) {
-      loadApp()
-      // Only look for updates once the app is actually usable, so a slow or
-      // failing update check never delays startup.
-      initAutoUpdate()
-    } else {
-      showBackendError()
-    }
+    // Only look for updates once the app is actually usable, so a slow or failing
+    // update check never delays startup. Skipped in remote mode: updating the
+    // client wouldn't touch the backend the agents are actually running on, and
+    // quitting to install would drop the connection mid-run.
+    if (activeConnection?.kind === "local") initAutoUpdate()
 
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    app.on("activate", async () => {
+      if (BrowserWindow.getAllWindows().length !== 0) return
+      createWindow()
+      // The window was closed, so whatever it was connected to has to be brought
+      // back up — on macOS the app is still running and the backend may still be
+      // alive, in which case the health check simply passes immediately.
+      await connectTo(activeConnection ?? connections.lastUsed())
     })
   })
 }
 
 app.on("window-all-closed", () => {
+  // Forwards belong to the window that asked for them; a new one re-requests what
+  // it needs from the process feed.
+  portForward.closeAll()
   if (process.platform !== "darwin") app.quit()
 })
 
-// Tear the backend down whenever the app is shutting down.
-app.on("before-quit", killBackend)
-app.on("will-quit", killBackend)
-process.on("exit", killBackend)
+/** Everything the app owns outside its own process. */
+function teardown() {
+  portForward.closeAll()
+  killBackend()
+}
+
+// Tear down whenever the app is shutting down.
+app.on("before-quit", teardown)
+app.on("will-quit", teardown)
+process.on("exit", teardown)

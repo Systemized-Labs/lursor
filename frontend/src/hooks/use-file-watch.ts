@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react"
 
-import { fileWatchWsUrl } from "@/api/files"
+import { connectFileWatchWs } from "@/api/files"
 import type { FileChange } from "@/api/files"
 
 /**
@@ -34,7 +34,7 @@ export function useFileWatch(
 
     const connect = () => {
       const openedAt = Date.now()
-      socket = new WebSocket(fileWatchWsUrl(workspaceId))
+      socket = connectFileWatchWs(workspaceId)
       socket.onmessage = (event) => {
         let batch: { changes?: FileChange[] }
         try {

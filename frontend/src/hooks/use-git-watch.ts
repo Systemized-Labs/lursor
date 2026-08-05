@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react"
 
-import { gitWatchWsUrl } from "@/api/git"
+import { connectGitWatchWs } from "@/api/git"
 
 /**
  * Subscribe to a workspace's git-watch WebSocket, invoking `onChange` whenever
@@ -34,7 +34,7 @@ export function useGitWatch(
 
     const connect = () => {
       const openedAt = Date.now()
-      socket = new WebSocket(gitWatchWsUrl(workspaceId))
+      socket = connectGitWatchWs(workspaceId)
       socket.onmessage = () => cbRef.current()
       socket.onclose = () => {
         if (closed) return

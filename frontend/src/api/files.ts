@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 
-import { API_BASE, ApiError, api } from "./client"
+import { API_BASE, ApiError, api, connectWs } from "./client"
 
 /** A single entry (file or directory) in a workspace directory listing. */
 export interface DirEntry {
@@ -197,11 +197,7 @@ export function useDirectory(workspaceId: string | undefined, path: string) {
   })
 }
 
-/** Build the WebSocket URL for a workspace's file-watch endpoint. */
-export function fileWatchWsUrl(workspaceId: string): string {
-  const url = new URL(
-    `${API_BASE.replace(/\/$/, "")}/workspaces/${workspaceId}/files/watch`
-  )
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-  return url.toString()
+/** Open a workspace's file-watch socket. */
+export function connectFileWatchWs(workspaceId: string): WebSocket {
+  return connectWs(`/workspaces/${workspaceId}/files/watch`)
 }

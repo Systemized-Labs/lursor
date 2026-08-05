@@ -4,14 +4,11 @@ import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
 import "@xterm/xterm/css/xterm.css"
 
-import { API_BASE } from "@/api/client"
+import { connectWs } from "@/api/client"
 
-/** Build the WebSocket URL for the PTY endpoint from the REST API base. */
-function terminalWsUrl(workspaceId?: string): string {
-  const url = new URL(`${API_BASE.replace(/\/$/, "")}/terminal/ws`)
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-  if (workspaceId) url.searchParams.set("workspace_id", workspaceId)
-  return url.toString()
+/** Open the PTY socket, scoped to a workspace when there is one. */
+function connectTerminal(workspaceId?: string): WebSocket {
+  return connectWs("/terminal/ws", workspaceId ? { workspace_id: workspaceId } : undefined)
 }
 
 // Shared scratch canvas: the 2D context normalizes any browser-valid CSS color
@@ -88,7 +85,7 @@ export function TerminalPanel({ workspaceId }: TerminalPanelProps) {
     term.loadAddon(new WebLinksAddon())
     term.open(host)
 
-    const ws = new WebSocket(terminalWsUrl(workspaceId))
+    const ws = connectTerminal(workspaceId)
     ws.binaryType = "arraybuffer"
     const encoder = new TextEncoder()
 
