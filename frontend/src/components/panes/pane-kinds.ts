@@ -152,7 +152,7 @@ export function isPaneKind(value: unknown): value is PaneKind {
  * The dockview import this needs is `import type`, and has to stay that way:
  * `pane-kinds` is reached from the shell on every route, so a value import would
  * pull dockview into the entry chunk past the lazy pane host. Same rule as
- * `layout-shapes` and `terminal-deck`; see the note on `HORIZONTAL`.
+ * `layout-shapes` and `bottom-panel`; see the note on `HORIZONTAL`.
  */
 export function paneParamsOf(panel: IDockviewPanel): PaneParams | undefined {
   return panel.params as PaneParams | undefined

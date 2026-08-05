@@ -88,27 +88,16 @@
 }
 
 /**
- * The terminal deck — dockview's bottom edge group.
+ * A collapsed bottom panel is its tab strip and nothing else, so the strip's own bottom
+ * border would draw a second line hard against the bottom of the window.
  *
- * It sits outside the grid, in the shell around it, so the grid's own separators do
- * not run along the top of it: the border is the only thing distinguishing a
- * collapsed drawer from the pane above, and without it the strip reads as part of
- * whatever zone happens to be sitting on top.
- *
- * Only while the deck is *shown*. A layout with no workspace has no deck, and
- * dockview hides an edge group by giving its view a height of 0 rather than removing
- * it — a border on the group itself would overflow that as a stray hairline along the
- * bottom of the window. `.visible` is the splitview's own marker for the difference.
+ * The top border needs nothing: the panel is a row of the grid, so the gridview's own
+ * separator runs along the top of it like it does between any two zones.
+ * `lursor-bottom-panel` and `lursor-bottom-collapsed` are put on the group by
+ * `syncBottomPanel` — dockview has no class of its own for "this row is the bottom one",
+ * because to dockview it is just a row.
  */
-.dockview-theme-lursor .dv-view.visible > .dv-edge-group {
-  border-top: 1px solid var(--border);
-}
-
-/**
- * A collapsed drawer is its tab strip and nothing else, so the strip's own bottom
- * border would draw a second line directly under the one above.
- */
-.dockview-theme-lursor .dv-edge-collapsed .dv-tabs-and-actions-container {
+.dockview-theme-lursor .lursor-bottom-collapsed .dv-tabs-and-actions-container {
   border-bottom: none;
 }
 

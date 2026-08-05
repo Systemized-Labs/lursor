@@ -19,6 +19,7 @@ import { useAllThreads } from "@/hooks/use-all-threads"
 import { useOptimisticRuns } from "@/hooks/use-optimistic-runs"
 import { markThreadRead, seedThreadReads } from "@/hooks/use-thread-reads"
 import { useThreadState } from "@/hooks/use-thread-state"
+import { requestOpenThread } from "@/lib/open-thread"
 import { useWorkspaceVisits } from "@/hooks/use-workspace-visits"
 
 /**
@@ -170,7 +171,15 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
     if (openThread) markThreadRead(openThread.id, openThread.updated_at)
   }, [threads.threads, activeThreadId])
 
+  // A new session goes through the request channel, not through the URL. Navigating
+  // to `/workspaces/:id/chat` is still needed — the pane layer is keyed on the
+  // workspace and this may be a different one — but dropping `?c=` is no longer a
+  // way to ask for a blank conversation: a chat pane reads its thread from its own
+  // params, so arriving on the route just restores the layout with the thread it
+  // already held. `threadId: null` is the ask, and the shell routes it to the chat
+  // pane you are looking at.
   const newConversation = (workspaceId: string) => {
+    requestOpenThread({ workspaceId, threadId: null })
     navigate(`/workspaces/${workspaceId}/chat`)
     closeMobile()
   }

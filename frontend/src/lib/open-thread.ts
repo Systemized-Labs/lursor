@@ -17,7 +17,16 @@ import { createRequestChannel } from "@/lib/request-channel"
  */
 export interface OpenThreadRequest {
   workspaceId: string
-  threadId: string
+  /**
+   * The conversation to open, or `null` for a *new* one.
+   *
+   * Null is here for the same reason the channel is: "new session" used to be a
+   * navigation — `/workspaces/:id/chat` with no `?c=` — and a pane cannot be
+   * addressed by the absence of a query param. It is the request `PaneLayout.openThread`
+   * already understands, so a `+` in the sidebar and a click on a row travel the
+   * same path and land in the same chat pane.
+   */
+  threadId: string | null
 }
 
 /** The channel itself, for the shell's `usePendingRequest`. See `open-file`. */

@@ -1,15 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import {
-  ArrowLineDown,
-  CaretDown,
-  CaretUp,
-  Plus,
-  Terminal,
-  X,
-} from "@phosphor-icons/react"
+import { CaretDown, CaretUp, Plus } from "@phosphor-icons/react"
 import {
   DockviewReact,
-  getPanelData,
   type DockviewApi,
   type DockviewReadyEvent,
   type DockviewTheme,
@@ -35,24 +27,22 @@ import {
 } from "@/components/panes/pane-kinds"
 import type { PaneLayout } from "@/components/panes/use-pane-layout"
 import {
-  claimBottomDrops,
-  closeDeck,
-  dropInDeck,
-  gridPanels,
-  isDeckOpen,
-} from "@/components/panes/terminal-deck"
-import { cn } from "@/lib/utils"
+  bottomPanelId,
+  collapseBottomPanel,
+  expandBottomPanel,
+  gridPanes,
+  isBottomCollapsed,
+} from "@/components/panes/bottom-panel"
 import "@/components/panes/pane-theme.css"
 
 /**
  * Our theme, declared to dockview rather than only set as a class.
  *
- * Dockview applies `className` to the **shell** — the wrapper it puts around the grid
- * to hold its edge groups — precisely so the grid and the deck inherit the same
- * tokens. Handing it the class on the dockview element instead leaves the shell with
- * the default (`dockview-theme-abyss`, dark), and the deck then sits *outside* the
- * themed subtree: a dark drawer under a light window. See `pane-theme.css` for the
- * tokens themselves.
+ * Dockview applies `className` to the **shell** — the wrapper it puts around the grid —
+ * rather than to the element it is given, so the class has to be declared here for the
+ * tokens to reach anything at all. Handing it on the dockview element instead leaves the
+ * shell with the default (`dockview-theme-abyss`, dark) showing through wherever the grid
+ * does not cover. See `pane-theme.css` for the tokens themselves.
  *
  * `tabGroupIndicator: 'none'` is dockview's abyss default, which the app inherited
  * before it declared a theme of its own — the tab component draws its own underline.
@@ -63,9 +53,6 @@ const PANE_THEME = {
   name: "lursor",
   className: "dockview-theme-lursor",
   tabGroupIndicator: "none",
-  // Matches `--dv-tabs-and-actions-container-height`. The deck measures its real
-  // strip and prefers that, so this only covers the frame before the first measure.
-  edgeGroupCollapsedSize: 36,
 } as const satisfies DockviewTheme
 
 interface PaneHostProps {
@@ -126,87 +113,30 @@ export function PaneHost({
     [onReady]
   )
 
-  // The deck answers for itself: its `+` opens a shell rather than asking which
-  // kind, and it is the one group with somewhere to collapse to.
+  // One strip for every zone. The bottom row gets one control more than the rest — see
+  // `ZoneActions`.
   const rightActions = useCallback(
-    (props: IDockviewHeaderActionsProps) =>
-      props.location?.type === "edge" ? (
-        <DeckActions {...props} layout={layout} />
-      ) : (
-        <AddPaneMenu
-          layout={layout}
-          groupId={props.group.api.id}
-          hasWorkspace={Boolean(workspaceId)}
-        />
-      ),
+    (props: IDockviewHeaderActionsProps) => (
+      <ZoneActions
+        {...props}
+        layout={layout}
+        hasWorkspace={Boolean(workspaceId)}
+      />
+    ),
     [layout, workspaceId]
   )
 
-  const leftActions = useCallback(
-    (props: IDockviewHeaderActionsProps) => <DeckLabel {...props} />,
-    []
-  )
-
-  // A *grid* with no panes would be a window with no way back in. Dockview will
+  // A grid with no panes would be a window with no way back in. Dockview will
   // happily hold an empty one, so offer the same "open one" cards the dock's empty
-  // state did — counting the deck's terminals would leave the grid blank and the
-  // cards hidden behind a drawer.
+  // state did — counting the bottom row's terminals would leave the zones blank and the
+  // cards hidden behind it.
   const [empty, setEmpty] = useState(false)
   useEffect(() => {
     if (!api) return
-    const check = () => setEmpty(gridPanels(api).length === 0)
+    const check = () => setEmpty(gridPanes(api).length === 0)
     check()
     const sub = api.onDidLayoutChange(check)
     return () => sub.dispose()
-  }, [api])
-
-  /**
-   * Whether to offer the drawer's drop band — a pane is being dragged, and the drawer
-   * is not already open.
-   *
-   * Decided once, when the drag starts, rather than read live: the answer cannot change
-   * mid-drag (nothing opens the drawer while you are holding a pane), and a band that
-   * appeared or vanished under the cursor would move the drop target out from under a
-   * drag in progress.
-   *
-   * The end of a drag is taken from the document rather than from dockview, because a
-   * drag abandoned outside the window — released over another app, or cancelled with
-   * escape — never reaches dockview at all, and the band has to come down anyway.
-   *
-   * `dragend` and `drop` end an HTML5 drag, which is what a mouse produces; `pointerup`
-   * ends a touch or pen one, which dockview drives from pointer events instead and which
-   * fires no `dragend`. **Not `pointercancel`**, tempting as the pair looks: Chromium
-   * fires it the instant a press becomes an HTML5 drag, so it took the band back down in
-   * the same tick `onWillDragPanel` put it up — measured, with a drag that then landed on
-   * dockview's own collapsed strip and hid the pane in a shut drawer.
-   */
-  /**
-   * A pane dropped along the bottom of the grid is the drawer, wherever in the bottom
-   * band it landed — see {@link claimBottomDrops}. The band above is how you find that
-   * out; this is what makes it true a few pixels higher up, where dockview would
-   * otherwise have built a zone that looks like a drawer and has none of its controls.
-   *
-   * Workspace-only, like the drawer itself: without one there is no deck to claim for,
-   * so the drop stays dockview's.
-   */
-  useEffect(() => {
-    if (!api || !workspaceId) return
-    const sub = claimBottomDrops(api)
-    return () => sub.dispose()
-  }, [api, workspaceId])
-
-  const [dragging, setDragging] = useState(false)
-  useEffect(() => {
-    if (!api) return
-    const start = () => setDragging(!isDeckOpen(api))
-    const stop = () => setDragging(false)
-    const ends = ["dragend", "drop", "pointerup"] as const
-    for (const event of ends) document.addEventListener(event, stop)
-    const subs = [api.onWillDragPanel(start), api.onWillDragGroup(start)]
-    return () => {
-      for (const event of ends) document.removeEventListener(event, stop)
-      subs.forEach((sub) => sub.dispose())
-    }
   }, [api])
 
   return (
@@ -216,7 +146,6 @@ export function PaneHost({
         theme={PANE_THEME}
         components={components}
         tabComponents={{ pane: PaneTab }}
-        leftHeaderActionsComponent={leftActions}
         rightHeaderActionsComponent={rightActions}
         onReady={handleReady}
         singleTabMode="default"
@@ -224,83 +153,6 @@ export function PaneHost({
       {empty ? (
         <EmptyLayout layout={layout} hasWorkspace={Boolean(workspaceId)} />
       ) : null}
-      {/* Workspace-only, like the deck itself: a global layout has no directory for a
-          shell to run in, so it has no drawer to drop into either. */}
-      {dragging && api && workspaceId ? <DrawerDropZone api={api} /> : null}
-    </div>
-  )
-}
-
-/**
- * The drawer's drop zone: a band across the whole bottom of the window.
- *
- * The third thing a dragged pane can become, beside a tab of a zone and a zone of its
- * own — the drawer, spanning the full width under everything else. Dockview cannot
- * offer it, and not for want of a drop target: every drop it resolves lands somewhere
- * in the *grid*, and the deck is the shell's bottom edge rather than a cell of it (see
- * `terminal-deck`). So the closest a drag could get to "along the bottom" was splitting
- * whichever zone happened to be lowest, which is a column with something under it and
- * not a drawer at all.
- *
- * **Ours rather than dockview's, deliberately.** Dockview does have outer-edge drop
- * targets, but a group's own content target sits inside them and marks the drag event
- * handled before the outer one is reached, so the edge only wins where no group covers
- * the cursor. Yielding to it would mean suppressing the group's overlay by mirroring
- * dockview's own edge arithmetic — two internals to keep in step for a band we would
- * then have to relabel anyway. This element is a *sibling* of the dockview container,
- * so a drag over it never reaches dockview's targets: the band is the only thing
- * offering a drop, and it says what dropping there does.
- *
- * Only mounted while a pane is being dragged, so it costs the layout nothing at rest —
- * and only while the drawer is shut, since an open one is already a group you can drop
- * onto (see {@link isDeckOpen}).
- */
-function DrawerDropZone({ api }: { api: DockviewApi }) {
-  const [over, setOver] = useState(false)
-
-  /**
-   * Accept the drag, if it is one of ours.
-   *
-   * `getPanelData` is dockview's transfer store, and empty for anything that is not a
-   * pane — a file dragged from the tree, a link, an image. Those are left unaccepted
-   * rather than swallowed: without a `preventDefault` the browser refuses the drop and
-   * the band never sees one.
-   */
-  const accept = (event: React.DragEvent): boolean => {
-    if (!getPanelData()) return false
-    event.preventDefault()
-    event.dataTransfer.dropEffect = "move"
-    return true
-  }
-
-  return (
-    <div
-      onDragEnter={(event) => setOver(accept(event))}
-      // Every `dragover` re-accepts: the browser drops the target's willingness the
-      // moment one goes unhandled.
-      onDragOver={(event) => setOver(accept(event))}
-      onDragLeave={() => setOver(false)}
-      onDrop={(event) => {
-        const data = getPanelData()
-        if (!data) return
-        event.preventDefault()
-        setOver(false)
-        dropInDeck(api, data)
-      }}
-      className={cn(
-        // Above dockview's own overlays, which the theme puts at `z-index: 40`.
-        "absolute inset-x-0 bottom-0 z-50 flex h-14 items-center justify-center gap-2 border-t border-dashed text-xs transition-colors",
-        // Opaque at rest, so the band reads as one strip rather than as a haze over the
-        // put-away drawer it is sitting on; tinted while hovered, which is the same
-        // dashed-primary-over-content language as dockview's own drop overlays
-        // (`--dv-drag-over-*` in `pane-theme.css`).
-        over
-          ? "border-primary bg-primary/15 text-foreground"
-          : "border-border bg-card text-muted-foreground"
-      )}
-    >
-      <ArrowLineDown className="size-4" />
-      Drop here for the drawer
     </div>
   )
 }
@@ -391,50 +243,49 @@ function Pane({
 }
 
 /**
- * The deck's own strip: put it away, bring it back, or add a shell.
+ * A zone's tab-strip controls: add a pane, and — on the bottom row — collapse it.
  *
- * The collapsed state is read from dockview rather than tracked here — an edge group
- * knows whether it is collapsed, and it is the only thing that does. `collapse()`
- * pins the drawer to the height of this very strip until `expand()`, which is why
- * there is no size arithmetic anywhere in this component. See `terminal-deck.ts`.
+ * One component for every zone, which is the point. There is no drawer to render chrome
+ * for: the caret appears on whichever zone is currently the bottom row, because collapsing
+ * onto a strip is the one thing that means something there and nowhere else. Panes close
+ * from their own tabs, here as anywhere.
+ *
+ * Both pieces of state are derived from the whole layout rather than from this group, so
+ * they are recomputed on `onDidLayoutChange`: whether this zone is the bottom row depends
+ * on what is above it, and whether it is collapsed is ours to track (see
+ * `bottom-panel.ts`).
  */
-function DeckActions({
-  api,
+function ZoneActions({
   containerApi,
-  panels,
+  group,
   layout,
-}: IDockviewHeaderActionsProps & { layout: PaneLayout }) {
-  const [collapsed, setCollapsed] = useState(() => api.isCollapsed())
-  useEffect(() => {
-    setCollapsed(api.isCollapsed())
-    const sub = api.onDidCollapsedChange((event) =>
-      setCollapsed(event.isCollapsed)
-    )
-    return () => sub.dispose()
-  }, [api])
-
-  const putAway = collapsed ? "Show the terminal deck" : "Hide the terminal deck"
-  // Say what it takes with it. The caret next door means the drawer keeps running,
-  // so the one that does not had better be specific about the difference.
-  //
-  // Counted as panes rather than shells: anything can be dragged into the drawer, so a
-  // count of "shells" is a guess that a Changes pane parked down there makes wrong.
-  const held = panels.length === 1 ? "1 pane" : `${panels.length} panes`
-  const close =
-    panels.length > 0
-      ? `Close the terminal deck (${held})`
-      : "Close the terminal deck"
+  hasWorkspace,
+}: IDockviewHeaderActionsProps & {
+  layout: PaneLayout
+  hasWorkspace: boolean
+}) {
+  useLayoutTick(containerApi)
+  const isBottom = bottomPanelId(containerApi) === group.api.id
+  const collapsed = isBottom && isBottomCollapsed(containerApi)
+  const label = collapsed ? "Expand the bottom panel" : "Collapse the bottom panel"
 
   return (
     <div className="mr-1 flex items-center">
-      {/* Nothing to reveal in an empty drawer: until there is a shell in it, the
-          strip's only jobs are the `+` and the `×`. */}
-      {panels.length > 0 ? (
+      <AddPaneMenu
+        layout={layout}
+        groupId={group.api.id}
+        hasWorkspace={hasWorkspace}
+      />
+      {isBottom ? (
         <button
           type="button"
-          onClick={() => (collapsed ? api.expand() : api.collapse())}
-          title={putAway}
-          aria-label={putAway}
+          onClick={() =>
+            collapsed
+              ? expandBottomPanel(containerApi)
+              : collapseBottomPanel(containerApi)
+          }
+          title={label}
+          aria-label={label}
           aria-expanded={!collapsed}
           className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
@@ -445,43 +296,23 @@ function DeckActions({
           )}
         </button>
       ) : null}
-      <button
-        type="button"
-        onClick={() => layout.openPane("terminal", { target: "deck" })}
-        title="New terminal"
-        aria-label="New terminal"
-        className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-      >
-        <Plus className="size-4" />
-      </button>
-      <button
-        type="button"
-        onClick={() => closeDeck(containerApi)}
-        title={close}
-        aria-label={close}
-        className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
-      >
-        <X className="size-4" />
-      </button>
     </div>
   )
 }
 
 /**
- * The deck's name, while it has no tabs to show one.
+ * Re-render on any layout change.
  *
- * A 36px band with a lone `+` in the corner reads as something half-rendered. The
- * label only appears on an empty deck: once a shell is in there its tab says the
- * same thing, and two of them is noise.
+ * The chrome above is a function of the *layout*, not of the group it is drawn on — a zone
+ * becomes the bottom row when one appears above it, and stops being one when that one
+ * closes — and dockview hands a header component no signal for either.
  */
-function DeckLabel({ location, panels }: IDockviewHeaderActionsProps) {
-  if (location?.type !== "edge" || panels.length > 0) return null
-  return (
-    <span className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground">
-      <Terminal className="size-3.5" />
-      Terminal
-    </span>
-  )
+function useLayoutTick(api: DockviewApi): void {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const sub = api.onDidLayoutChange(() => setTick((tick) => tick + 1))
+    return () => sub.dispose()
+  }, [api])
 }
 
 /** The `+` on a zone's tab strip. */
@@ -498,10 +329,8 @@ function AddPaneMenu({
   // A Changes pane would have no repo to diff, and a terminal no directory to run in.
   //
   // Every entry honours the "here" a `+` on a zone implies, Terminal included: it opens
-  // in the zone you clicked, tabbed beside whatever is already there. The deck is where
-  // a shell goes when nobody named a zone — the drawer's own `+`, or a template that
-  // draws its band — and getting a closed drawer back is those templates' job rather
-  // than this menu's.
+  // in the zone you clicked, tabbed beside whatever is already there — on the bottom row's
+  // strip, that means the bottom row.
   const kinds = ADDABLE_KINDS.filter(
     (kind) => hasWorkspace || !WORKSPACE_KINDS.includes(kind)
   )
@@ -512,7 +341,7 @@ function AddPaneMenu({
           type="button"
           title="Add pane"
           aria-label="Add pane"
-          className="mr-1 flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Plus className="size-4" />
         </button>

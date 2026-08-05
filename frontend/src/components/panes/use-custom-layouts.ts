@@ -19,7 +19,7 @@ export interface CustomLayout {
  *
  * **Not per workspace, deliberately.** The pane *layout* is per workspace — that is
  * what `lursor:layout:<id>` is for — but a saved arrangement is a way of working,
- * and a "Terminal deck" you built in one repo is the one you want in the next. So
+ * and a "Terminal below" you built in one repo is the one you want in the next. So
  * these live under a single global key.
  *
  * There is a real consequence, and it is worth stating rather than discovering: a

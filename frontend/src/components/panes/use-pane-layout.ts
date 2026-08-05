@@ -17,25 +17,37 @@ import {
   type PaneParams,
 } from "@/components/panes/pane-kinds"
 import {
-  adoptGridTerminals,
-  ensureDeck,
-  gridPanels,
-  openInDeck,
-  revealDeck,
+  bottomPanelId,
+  gridPanes,
+  migrateEdgeGroup,
+  openInBottomPanel,
+  readPanelState,
+  restorePanelState,
   revealPanel,
-  setDeckVisible,
-  watchDeck,
-} from "@/components/panes/terminal-deck"
+  syncBottomPanel,
+  type BottomPanelState,
+} from "@/components/panes/bottom-panel"
 import { clearTabStorage } from "@/lib/tab-storage"
 
 const LAYOUT_PREFIX = "lursor:layout:"
 /** The right dock's old per-workspace key, read once for the migration. */
 const LEGACY_PREFIX = "lursor:dock:"
+/**
+ * The bottom panel's own key: collapsed or not, and the height to come back to.
+ *
+ * Beside the layout rather than inside it, because the layout is dockview's
+ * `SerializedDockview` verbatim and these two are ours — constraints do not serialize. Its
+ * own key also means a corrupt or absent entry costs the panel's collapsed memory and not
+ * the whole arrangement.
+ */
+const PANEL_PREFIX = "lursor:bottom:"
 
 const layoutKey = (workspaceId?: string) =>
   `${LAYOUT_PREFIX}${workspaceId ?? "_global"}`
 const legacyKey = (workspaceId?: string) =>
   `${LEGACY_PREFIX}${workspaceId ?? "_global"}`
+const panelKey = (workspaceId?: string) =>
+  `${PANEL_PREFIX}${workspaceId ?? "_global"}`
 
 /** A one-chat-pane layout, for a workspace with nothing saved. */
 function defaultLayout(): SerializedDockview {
@@ -130,35 +142,49 @@ function migrateLegacy(workspaceId?: string): SerializedDockview | null {
 function readLayout(workspaceId?: string): SerializedDockview | null {
   try {
     const raw = localStorage.getItem(layoutKey(workspaceId))
-    if (raw) return JSON.parse(raw) as SerializedDockview
+    // `migrateEdgeGroup` on the way out, always: a layout saved while the bottom panel was
+    // dockview's edge group names its panes in `edgeGroups`, and handing that to `fromJSON`
+    // would have dockview build the edge group back.
+    if (raw) return migrateEdgeGroup(JSON.parse(raw) as SerializedDockview)
   } catch {
     // Corrupt or unreadable: fall through to the migration, then the default.
   }
   return migrateLegacy(workspaceId)
 }
 
+function readPanel(workspaceId?: string): Partial<BottomPanelState> | null {
+  try {
+    const raw = localStorage.getItem(panelKey(workspaceId))
+    if (raw) return JSON.parse(raw) as Partial<BottomPanelState>
+  } catch {
+    // Best-effort: the panel opens at its default height.
+  }
+  return null
+}
+
 /**
- * Where a pane with no zone of its own goes — a grid zone, never the deck.
+ * Where a pane with no zone of its own goes — never the bottom row.
  *
- * Dockview's own answer is "the active group", and that answer became wrong the day
- * the deck arrived: with a terminal focused, "open Changes" would tab a diff in
- * behind the shell and then hide it with the drawer. Undefined means dockview's
- * answer is already a grid zone and can stand.
+ * Dockview's own answer is "the active group", and that answer is wrong when the active
+ * group is the bottom row: with a terminal focused, "open Changes" would tab a diff in
+ * behind the shell and then collapse it out of sight with the panel. Undefined means
+ * dockview's answer is already an ordinary zone and can stand.
  *
  * The zone chosen is the one the user last worked in — the same MRU rule `ensurePane`
- * follows, and for the same reason: it is the zone they are looking at. A grid with
- * nothing left in it gets a new zone rather than borrowing the drawer.
+ * follows, and for the same reason: it is the zone they are looking at. A layout with
+ * nothing else left in it gets a new zone rather than borrowing the bottom row.
  */
 function gridGroupId(api: DockviewApi, mru: string[]): string | undefined {
-  if (api.activeGroup?.api.location.type !== "edge") return undefined
+  const bottom = bottomPanelId(api)
+  if (!bottom || api.activeGroup?.api.id !== bottom) return undefined
   const byId = new Map(api.panels.map((panel) => [panel.api.id, panel]))
   const recent = mru
     .map((id) => byId.get(id))
     .find(
       (panel): panel is IDockviewPanel =>
-        panel !== undefined && panel.api.group.api.location.type === "grid"
+        panel !== undefined && panel.api.group.api.id !== bottom
     )
-  const inGrid = recent ?? gridPanels(api)[0]
+  const inGrid = recent ?? gridPanes(api)[0]
   return inGrid ? inGrid.api.group.api.id : api.addGroup().api.id
 }
 
@@ -172,10 +198,10 @@ export interface PaneLayout {
    * threads, are legitimate layouts; each carries its own state under its own id.
    *
    * Where it lands is the *caller's* to say, and the same for every kind:
-   * `groupId` for a named zone, `target: 'deck'` for the drawer, neither for the zone
-   * the user last worked in. Terminals used to be routed to the drawer by kind here,
-   * which meant a `+` on a zone's strip quietly ignored the zone you clicked — see
-   * `target` below.
+   * `groupId` for a named zone, `target: 'bottom'` for the bottom row, neither for the zone
+   * the user last worked in. Terminals used to be routed to the bottom by kind here, which
+   * meant a `+` on a zone's strip quietly ignored the zone you clicked — see `target`
+   * below.
    */
   openPane: (
     kind: PaneKind,
@@ -183,14 +209,14 @@ export interface PaneLayout {
       params?: Partial<PaneParams>
       groupId?: string
       /**
-       * Put it in the terminal deck instead of the grid.
+       * Put it in the bottom row — creating the row if there is not one yet.
        *
-       * A property of the *request*, not of the kind. Only two things ask for it: the
-       * deck's own `+`, and a template whose schematic draws the drawer's band. Anything
-       * else — a zone's `+`, an empty-state card, a route — is asking for a pane in the
-       * grid, and a terminal is not special enough to overrule that.
+       * A property of the *request*, not of the kind. Only a template whose schematic draws
+       * the bottom band asks for it. Anything else — a zone's `+`, an empty-state card, a
+       * route, a drag — is asking for a pane in a named zone, and a terminal is not special
+       * enough to overrule that.
        */
-      target?: "deck"
+      target?: "bottom"
     }
   ) => void
   /**
@@ -234,6 +260,10 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   const write = useCallback((target: DockviewApi, ws?: string) => {
     try {
       localStorage.setItem(layoutKey(ws), JSON.stringify(target.toJSON()))
+      // The bottom panel's two fields ride alongside. `toJSON` records the row's height like
+      // any other zone's — what it cannot record is that a 36px row is *collapsed* rather
+      // than dragged that small, or the height it should come back to.
+      localStorage.setItem(panelKey(ws), JSON.stringify(readPanelState(target)))
     } catch {
       // Ignore quota / disabled-storage errors — persistence is best-effort.
     }
@@ -248,12 +278,6 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       loading.current = true
       try {
         const stored = readLayout(ws)
-        // The deck is structural: created once per dockview instance and untouched by
-        // `clear()` or `fromJSON`. It belongs to a workspace, because a terminal with
-        // no workspace has no directory to run in — and this is only the starting
-        // point, since a layout that remembers the deck closed restores that below.
-        ensureDeck(target)
-        setDeckVisible(target, Boolean(ws))
         if (!stored && !ws) {
           // A *global* layout has no sensible default. `defaultLayout` seeds a chat
           // pane, and a chat with no workspace has nothing to talk to — so start
@@ -263,6 +287,7 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
           target.clear()
           loadedFor.current = ws
           mru.current = []
+          restorePanelState(target, null)
           return
         }
         const layout = stored ?? defaultLayout()
@@ -276,12 +301,10 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
         }
         loadedFor.current = ws
         mru.current = target.activePanel ? [target.activePanel.api.id] : []
-        // A layout saved before the deck existed has its terminals as zones of the
-        // grid. Move them in, and open the drawer if it just inherited a shell —
-        // migrating someone's terminal into a closed drawer looks like losing it.
-        // Guarded on the absence of `edgeGroups`, which every layout written since
-        // carries, so this runs once per workspace and never again.
-        if (!stored?.edgeGroups && adoptGridTerminals(target)) revealDeck(target)
+        // The bottom panel's own two fields, which the grid tree cannot carry: collapsed or
+        // not, and the height to come back to. Must follow `fromJSON` — the group it pins is
+        // the one that call just built.
+        restorePanelState(target, readPanel(ws))
         // Commit immediately rather than waiting for the first change. Dockview only
         // fires `onDidLayoutChange` when something *changes*, so a migrated or
         // defaulted layout would otherwise never be written — and would be re-derived
@@ -324,9 +347,15 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       write(api, workspaceId)
     }
     const subs = [
-      api.onDidLayoutChange(persist),
-      // The deck is not in the grid, so `onDidLayoutChange` says nothing about it.
-      ...watchDeck(api, persist),
+      // The bottom panel is a zone, so its size and its contents arrive on this one event
+      // like everything else — it had two subscriptions of its own as an edge group.
+      // `syncBottomPanel` first: it re-applies the pin after a `fromJSON` builds new groups,
+      // and tracks the height a sash drag left the panel at, both of which the write that
+      // follows is meant to capture.
+      api.onDidLayoutChange(() => {
+        syncBottomPanel(api)
+        persist()
+      }),
       api.onDidActivePanelChange((event) => {
         if (!event.panel) return
         const id = event.panel.api.id
@@ -353,7 +382,7 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
       opts?: {
         params?: Partial<PaneParams>
         groupId?: string
-        target?: "deck"
+        target?: "bottom"
       }
     ) => {
       if (!api) return
@@ -365,13 +394,13 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
         renderer: PANE_KINDS[kind].renderer,
         params: { kind, ...opts?.params } satisfies PaneParams,
       }
-      // The drawer, for the callers that mean the drawer. This used to be
-      // `kind === "terminal"`, which made it impossible to open a shell anywhere else:
-      // the branch returned before `groupId` was ever read, so a `+` on a zone's strip
-      // dropped a terminal into the deck and revealed it — indistinguishable, from the
-      // outside, from the app inventing a new drawer.
-      if (opts?.target === "deck") {
-        openInDeck(api, panel)
+      // The bottom row, for the callers that mean the bottom row. This used to be
+      // `kind === "terminal"`, which made it impossible to open a shell anywhere else: the
+      // branch returned before `groupId` was ever read, so a `+` on a zone's strip dropped a
+      // terminal along the bottom and expanded it — indistinguishable, from the outside,
+      // from the app inventing a panel nobody asked for.
+      if (opts?.target === "bottom") {
+        openInBottomPanel(api, panel)
         return
       }
       // A `+` on a zone's strip means "here", not "wherever dockview decides". For
@@ -407,15 +436,15 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
     (kind: PaneKind) => {
       if (!api) return
       // No terminal branch: a terminal is found by the same rule as everything else.
-      // `api.panels` includes the deck's, and `revealPanel` opens the drawer when the
-      // pane it picked turns out to live down there — which is all the old special
-      // case did, except it also ignored every terminal in the grid and opened a
-      // second shell beside one already running.
+      // `api.panels` includes the bottom row's, and `revealPanel` expands the panel when the
+      // pane it picked turns out to live down there — which is all the old special case did,
+      // except it also ignored every terminal in a zone and opened a second shell beside one
+      // already running.
       const panels = api.panels
       const active = api.activePanel
       if (active && paneKindOf(active) === kind) {
-        // Already the pane in focus — though it may be one someone parked in the
-        // deck, in which case the drawer still has to come up.
+        // Already the pane in focus — though it may be one someone parked at the bottom, in
+        // which case the panel still has to come up.
         revealPanel(api, active)
         return
       }

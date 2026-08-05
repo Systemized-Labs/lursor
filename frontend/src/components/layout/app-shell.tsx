@@ -214,8 +214,9 @@ export function AppShell() {
     (request: OpenThreadRequest) => {
       consumePendingThread(workspaceId)
       if (isMobile) {
-        // No panes on a phone: the single chat surface reads `?c=`, which the row's
-        // own navigation has already set. Switching to it is still ours to do —
+        // No panes on a phone: the single chat surface reads `?c=`, which the
+        // requester's own navigation has already set — or cleared, which is how a
+        // new session still reaches it here. Switching to chat is ours to do —
         // tapping a conversation while looking at the terminal means show me the
         // conversation.
         setMobileView("chat")

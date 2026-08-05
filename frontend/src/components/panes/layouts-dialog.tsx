@@ -27,6 +27,7 @@ import {
   children,
   countLeaves,
   leafViews,
+  leaves,
   mapLeaves,
   type SerializedNode,
 } from "@/components/panes/layout-shapes"
@@ -46,11 +47,14 @@ import {
 import type { PaneLayout } from "@/components/panes/use-pane-layout"
 import {
   applyLayout,
-  gridPanels,
-  isDeckCollapsed,
-  isDeckEmpty,
-  serializedDeckSize,
-} from "@/components/panes/terminal-deck"
+  bottomPaneIds,
+  bottomRowId,
+  expandBottomPanel,
+  gridPanes,
+  hasBottomPanel,
+  isBottomCollapsed,
+  savedBottomViews,
+} from "@/components/panes/bottom-panel"
 import {
   useCustomLayouts,
   type CustomLayout,
@@ -66,7 +70,8 @@ interface LayoutsDialogProps {
   /**
    * Whether the layout belongs to a workspace. A global layout cannot hold a
    * terminal or a Changes pane, so a template is not allowed to open one there —
-   * the same rule the zone's `+` menu applies.
+   * the same rule the zone's `+` menu applies, and the reason a global layout never grows
+   * a bottom row: the only pane a shape puts down there is a shell.
    */
   hasWorkspace: boolean
   side: SidebarSide
@@ -81,7 +86,9 @@ interface LayoutsDialogProps {
  * is what keeps a running terminal running across a switch. Phase 0 measured both
  * paths: with the flag nothing remounts, without it everything does. See the plan's
  * §3.7 — and note that the flag alone is not enough, which is why every shape is
- * built over the *live* pane set rather than shipped as a constant.
+ * built over the *live* pane set rather than shipped as a constant. The bottom panel is a
+ * row of that grid, so the flag covers its shells too and there is nothing to carry by
+ * hand.
  */
 export function LayoutsDialog({
   open,
@@ -95,7 +102,7 @@ export function LayoutsDialog({
   const custom = useCustomLayouts()
   const [name, setName] = useState("")
 
-  /** Apply a serialized layout, preserving every live pane — deck included. */
+  /** Apply a serialized layout, preserving every live pane — the bottom row's included. */
   const apply = useCallback(
     (next: SerializedDockview | null) => {
       if (!layout.api || !next) return
@@ -111,7 +118,7 @@ export function LayoutsDialog({
    * A template is a function of the *live* pane set (see `buildTemplate`), so with
    * a lone chat open — or none, which is what an emptied layout looks like — every
    * shape collapses onto what is there and the picker used to close having done
-   * nothing. Picking "Workbench" is a request for its two zones and a drawer, so the
+   * nothing. Picking "Workbench" is a request for its two zones and a panel below, so the
    * missing ones get the kinds the template rosters. Kinds already open are skipped,
    * nothing is closed, and the roster is trimmed to the shortfall: with a chat
    * already up, Workbench opens a Changes pane and a shell rather than three panes.
@@ -120,16 +127,15 @@ export function LayoutsDialog({
    * a terminal or a Changes pane at all (the rule the zone's `+` menu applies), so
    * those are filtered out and the shape stays whatever the live panes can make.
    *
-   * Counted over the *grid*, and grid panes are all this returns. The deck's own shell
-   * is {@link needsDeckShell}, requested separately, because it is not a zone being
-   * filled — it is the drawer's band, and a pane bound for the drawer now has to say so
-   * rather than being recognised by its kind.
+   * Counted over the zones the roster fills, and their panes are all this returns. The
+   * bottom row's own shell is {@link needsBottomShell}, requested separately, because it
+   * goes at the bottom rather than in whichever zone the roster is up to.
    */
   const fillsFor = useCallback(
     (template: TemplateDef): PaneKind[] => {
       const api = layout.api
       if (!api) return []
-      const panels = gridPanels(api)
+      const panels = gridPanes(api)
       const shortfall = gridZones(template) - panels.length
       if (shortfall <= 0) return []
       const open = new Set(panels.map(paneKindOf))
@@ -145,18 +151,18 @@ export function LayoutsDialog({
   )
 
   /**
-   * Whether this shape has to open a shell in the drawer.
+   * Whether this shape has to open a shell in the bottom row.
    *
-   * Only when the drawer is empty: one already down there is the one the band is
-   * promising to show, and a second nobody asked for is not an improvement. A *global*
-   * layout never does — no workspace, so no directory for a shell to run in.
+   * Only when there is no bottom row: one already down there is what the band is promising
+   * to show, and a second pane nobody asked for is not an improvement. A *global* layout
+   * never does — no workspace, so no directory for a shell to run in.
    */
-  const needsDeckShell = useCallback(
+  const needsBottomShell = useCallback(
     (template: TemplateDef): boolean =>
-      Boolean(template.deck) &&
+      Boolean(template.bottom) &&
       hasWorkspace &&
       layout.api !== null &&
-      isDeckEmpty(layout.api),
+      !hasBottomPanel(layout.api),
     [layout.api, hasWorkspace]
   )
 
@@ -168,13 +174,17 @@ export function LayoutsDialog({
       // layout picker should rearrange the window without moving the cursor —
       // the same rule `buildTemplate` follows for the zone it marks active.
       const active = api.activePanel?.api.id
-      if (needsDeckShell(template)) {
-        layout.openPane("terminal", { target: "deck" })
+      if (needsBottomShell(template)) {
+        layout.openPane("terminal", { target: "bottom" })
       }
       for (const kind of fillsFor(template)) layout.openPane(kind)
       apply(buildTemplate(template.id, api, active ?? api.activePanel?.api.id))
+      // The shape decides whether the bottom panel is *expanded*, never whether it exists:
+      // the tree carries whatever is down there either way (see `buildTemplate`), and a
+      // collapsed panel that a shape draws should come out.
+      if (template.bottom) expandBottomPanel(api)
     },
-    [layout, apply, fillsFor, needsDeckShell]
+    [layout, apply, fillsFor, needsBottomShell]
   )
 
   /**
@@ -186,7 +196,9 @@ export function LayoutsDialog({
    * rather than a guess — in the arrangement's own layout order, so the zone that held
    * a chat gets a chat.
    *
-   * Grid panes only, like `fillsFor` — the drawer's shell is {@link savedNeedsDeckShell}.
+   * Zone panes only, like `fillsFor` — the bottom row's shell is
+   * {@link savedNeedsBottomShell}, and its zone is subtracted here for the same reason
+   * `gridZones` subtracts the band from a template's schematic.
    */
   const restoreFills = useCallback(
     (saved: SerializedDockview): PaneKind[] => {
@@ -195,8 +207,8 @@ export function LayoutsDialog({
       const allowed = (kind: PaneKind) =>
         hasWorkspace || !WORKSPACE_KINDS.includes(kind)
 
-      const panels = gridPanels(api)
-      const shortfall = countLeaves(saved.grid.root) - panels.length
+      const panels = gridPanes(api)
+      const shortfall = savedGridZones(saved) - panels.length
       if (shortfall <= 0) return []
 
       const open = new Set(panels.map(paneKindOf))
@@ -214,18 +226,18 @@ export function LayoutsDialog({
   )
 
   /**
-   * Whether a saved arrangement has to open a shell in the drawer.
+   * Whether a saved arrangement has to open a shell in the bottom row.
    *
-   * {@link needsDeckShell} for saved layouts: the arrangement had shells and the drawer
-   * is empty now. The saved roster's *ids* are another workspace's, but its length is
-   * transferable — see `serializedDeckSize`.
+   * {@link needsBottomShell} for saved layouts: the arrangement had a bottom row and there
+   * is none now. The saved roster's *ids* are another workspace's, but whether it had one at
+   * all is transferable — see `savedBottomViews`.
    */
-  const savedNeedsDeckShell = useCallback(
+  const savedNeedsBottomShell = useCallback(
     (saved: SerializedDockview): boolean =>
-      serializedDeckSize(saved) > 0 &&
+      savedBottomViews(saved).length > 0 &&
       hasWorkspace &&
       layout.api !== null &&
-      isDeckEmpty(layout.api),
+      !hasBottomPanel(layout.api),
     [layout.api, hasWorkspace]
   )
 
@@ -248,12 +260,12 @@ export function LayoutsDialog({
       // `openPane` focuses what it adds, and restoring a layout should not move the
       // cursor off the pane you were in.
       const active = api.activePanel?.api.id
-      if (savedNeedsDeckShell(item.layout)) {
-        layout.openPane("terminal", { target: "deck" })
+      if (savedNeedsBottomShell(item.layout)) {
+        layout.openPane("terminal", { target: "bottom" })
       }
       for (const kind of restoreFills(item.layout)) layout.openPane(kind)
 
-      const panels = gridPanels(api)
+      const panels = api.panels
       const reshaped = reshape(item.layout, api, panels, active)
       if (!reshaped) {
         // Only reachable where a pane cannot be opened to close the gap: a global
@@ -269,19 +281,22 @@ export function LayoutsDialog({
         return
       }
       apply(reshaped)
+      // The bottom row is drawn by the arrangement, so it comes back as the row it was
+      // saved as — but *collapsed* is our own flag, and it belongs to the workspace rather
+      // than to the arrangement. Restoring one that has panes in it expands it, for the
+      // reason `expandBottomPanel` exists at all: a pane nobody can see reads as a pane
+      // that was lost.
+      if (savedBottomViews(reshaped).length > 0) expandBottomPanel(api)
       if (panels.length > zones) {
         // Not a silent cap: a shape with fewer zones than panes tabs the extras
         // together, and saying so is cheaper than letting someone wonder where a
-        // pane went. Phrased without a count, deliberately — the row above it is
-        // labelled in `describedZones`, which counts the deck, and this one is about
-        // grid zones, which does not. Two different numbers for "zones" in the same
-        // corner of the screen is worse than no number at all.
+        // pane went.
         toast.info(
           `Applied "${item.name}" — it has fewer zones than you have panes, so some share a zone.`
         )
       }
     },
-    [layout, apply, restoreFills, savedNeedsDeckShell]
+    [layout, apply, restoreFills, savedNeedsBottomShell]
   )
 
   /**
@@ -298,12 +313,12 @@ export function LayoutsDialog({
     const api = layout.api
     if (!api) return "Open a workspace to arrange its panes."
     // Mirrors `applyTemplate`, both halves: one about to open panes — in the grid or
-    // in the drawer — changes something by definition. Only once it has them is it
+    // at the bottom — changes something by definition. Only once it has them is it
     // judged on its shape.
-    if (fillsFor(template).length > 0 || needsDeckShell(template)) return null
-    // And a shape that shows the deck changes the window whenever the drawer is
-    // shut, whatever the grid above it already looks like.
-    if (template.deck && isDeckCollapsed(api)) return null
+    if (fillsFor(template).length > 0 || needsBottomShell(template)) return null
+    // And a shape that draws a bottom row changes the window whenever that row is
+    // collapsed, whatever the zones above it already look like.
+    if (template.bottom && isBottomCollapsed(api)) return null
     const next = buildTemplate(template.id, api, api.activePanel?.api.id)
     if (!next) return "Open a pane to arrange."
     if (shapeKey(next) !== currentShape) return null
@@ -317,7 +332,7 @@ export function LayoutsDialog({
     // `hasPanes` is true anywhere the pane layer is mounted, which is not the same as
     // the grid having something in it — the empty-state cards are a legal state, and
     // an arrangement of no zones is one nothing can ever be restored into.
-    if (gridPanels(layout.api).length === 0) {
+    if (gridPanes(layout.api).length === 0) {
       toast.info("Open a pane first — there is no arrangement to save yet.")
       return
     }
@@ -397,9 +412,9 @@ export function LayoutsDialog({
                         {item.name}
                       </button>
                       <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                        {describedZones(item.layout) === 1
+                        {countLeaves(item.layout.grid.root) === 1
                           ? "1 zone"
-                          : `${describedZones(item.layout)} zones`}
+                          : `${countLeaves(item.layout.grid.root)} zones`}
                       </span>
                       <Button
                         variant="ghost"
@@ -477,8 +492,7 @@ export function LayoutsDialog({
  * so they are dropped; the nesting is kept, because a column split in two and two
  * zones side by side hold the same panes in the same order and are not the same
  * layout. Orientation only counts once there is a split — a single zone is the
- * whole window whichever axis it claims, which is why the deck reads as a no-op
- * with one pane open rather than as a change.
+ * whole window whichever axis it claims.
  */
 function shapeKey(layout: SerializedDockview): string {
   const walk = (node: SerializedNode): unknown =>
@@ -488,24 +502,17 @@ function shapeKey(layout: SerializedDockview): string {
 }
 
 /**
- * How many regions of the window a saved arrangement describes — **the deck included**.
+ * How many zones of a saved arrangement take a pane off the fills roster.
  *
- * The one count in this file that is not `countZones`, and the difference is who is
- * reading it. Everywhere else a "zone" is a cell of the *grid*: `reshape` deals panes
- * into those, and `gridZones` measures a shortfall against them, and neither has any
- * business finding a pane for the drawer — that is exactly why `gridZones` subtracts
- * the deck's band from the schematic it reads.
- *
- * This one is a label on a row someone clicks to recognise something they saved, and a
- * chat beside a diff with a terminal underneath is three things on screen. Counting it
- * as two was the grid's bookkeeping showing through the UI.
- *
- * An *empty* drawer does not count. It is not a region of the arrangement, and a deck
- * that was closed when the arrangement was saved has no shells in it by construction —
- * `closeDeck` ends them before it hides the strip.
+ * `gridZones`' counterpart for a saved layout, and the same subtraction: `countLeaves`
+ * counts the regions a user sees, which is the right number for the label on the row and
+ * the wrong one for "how many panes does this need" — the bottom row's is a shell, opened
+ * by {@link savedNeedsBottomShell} rather than dealt from the roster.
  */
-function describedZones(saved: SerializedDockview): number {
-  return countLeaves(saved.grid.root) + (serializedDeckSize(saved) > 0 ? 1 : 0)
+function savedGridZones(saved: SerializedDockview): number {
+  return (
+    countLeaves(saved.grid.root) - (savedBottomViews(saved).length > 0 ? 1 : 0)
+  )
 }
 
 /**
@@ -515,8 +522,7 @@ function describedZones(saved: SerializedDockview): number {
  * The saved map is keyed by the pane ids of the workspace it came from; reusing it
  * would hand `fromJSON` a layout whose views name panels it has no state for, and whose
  * real panels are absent and therefore destroyed. That is the §3.7 failure mode wearing
- * a different hat — and the deck's shells are the sharpest case of it, since they are
- * named nowhere in the grid at all.
+ * a different hat.
  *
  * But the saved *rosters* are honoured wherever their ids are still live, which is the
  * common case: an arrangement saved in this workspace names the very panes in front of
@@ -525,8 +531,11 @@ function describedZones(saved: SerializedDockview): number {
  * zone you had kept for a chat. The shape came back and the contents did not, which is
  * the half of "restore" nobody notices is missing until it moves their chat.
  *
- * `panels` is the *grid's* panes, for the same reason a template arranges only those:
- * a saved shape is a shape for the grid, and the deck is handled by `applyLayout`.
+ * `panels` is **every** live pane, the bottom row's included, because that row is a zone of
+ * the tree being filled like any other. Its roster is not dealt positionally, though: the
+ * live bottom row's own panes are pinned to it up front, so restoring an arrangement cannot
+ * promote a shell into a column or park a chat under one. Whatever is down there stays down
+ * there.
  *
  * Panes the arrangement never saw fill any zone its own roster left empty, then join
  * the last zone. A shape with *more* zones than panes is refused outright, because an
@@ -550,8 +559,16 @@ function reshape(
 
   const paneIds = panels.map((panel) => panel.api.id)
   const liveIds = new Set(paneIds)
-  const rosters = leafViews(saved.grid.root).map((views) =>
-    views.filter((id) => liveIds.has(id))
+  // The arrangement's bottom row is filled from the live one rather than from the saved
+  // roster, whose ids may belong to another workspace entirely — whatever is at the bottom
+  // now stays at the bottom. Every other zone honours what it was saved with, wherever
+  // those ids are still live.
+  const savedBottom = bottomRowId(saved.grid)
+  const atBottom = bottomPaneIds(api)
+  const rosters = leaves(saved.grid.root).map((zone) =>
+    zone.id === savedBottom && atBottom.length > 0
+      ? [...atBottom]
+      : zone.views.filter((id) => liveIds.has(id) && !atBottom.includes(id))
   )
   const claimed = new Set(rosters.flat())
   // Panes the arrangement has no opinion about: opened since it was saved, or — when
@@ -599,14 +616,14 @@ function reshape(
   return {
     ...saved,
     grid: { ...saved.grid, root },
-    // Every live pane, deck included: the grid names only the ones dealt above, and
-    // anything missing from here is a pane `fromJSON` destroys.
+    // Every live pane: the grid names only the ones dealt above, and anything missing
+    // from here is a pane `fromJSON` destroys.
     panels: live.panels,
-    // The deck as the arrangement saved it, falling back to the live one when it
-    // predates the deck. Only the geometry survives the trip — `applyLayout` reads
-    // this as an intent and supplies the live shells itself, because the saved roster
-    // names the pane ids of another workspace.
-    edgeGroups: saved.edgeGroups ?? live.edgeGroups,
+    // Never the saved layout's edge group. An arrangement saved before the bottom row moved
+    // into the grid still carries one, and handing that back to dockview would have it build
+    // the edge group again — the migration on read strips it, and this is the other door
+    // into `fromJSON`.
+    edgeGroups: undefined,
     activeGroup,
     // Dropped: a saved layout's floating and popout groups. They reference the same
     // stale ids, and we do not ship popouts (open question 7 deferred them).
