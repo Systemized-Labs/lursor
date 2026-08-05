@@ -317,7 +317,15 @@ function TabStrip({
   return (
     <div
       className={cn(
-        "flex h-9 min-w-0 shrink-0 items-stretch border-b border-border/40 bg-muted/30 transition-colors",
+        // No bottom border here: the strip's lower edge is drawn by its children
+        // so the active tab can *interrupt* it (see the tab's own `border-b`).
+        //
+        // 32px against the dock strip's 36px. The dock strip says which *panel*
+        // this is; this one says which *file* is open inside it, and a nested
+        // thing that reads as smaller is a hierarchy the eye resolves before it
+        // has read either label. `SideViewSwitch` in `file-viewer.tsx` matches,
+        // so the two columns' header rows still line up.
+        "flex h-8 min-w-0 shrink-0 items-stretch bg-muted/30 transition-colors",
         dropActive && "bg-accent/60"
       )}
       onDragOver={
@@ -367,30 +375,34 @@ function TabStrip({
             }}
             title={f.path}
             className={cn(
-              "group relative flex items-center gap-1.5 px-3 text-xs whitespace-nowrap cursor-pointer outline-none transition-colors",
-              // The active tab takes the editor's own surface (`card`) so it
-              // reads as one continuous panel; others stay on the muted strip.
-              // Layering, not borders, separates them — no lines between tabs.
+              // `font-mono` is the split against the dock's pane tabs, which are
+              // uppercase and letterspaced in `--font-sans` ("Geist Pixel"). A
+              // pane tab is a *label* — FILES, CHAT — and a file tab is a
+              // *filename*, so setting them in genuinely different faces is the
+              // typography agreeing with what they are. Both are single-width
+              // faces at a glance, so this only reads once the strips are side by
+              // side, which is exactly when it needs to.
+              "group relative flex shrink-0 items-center gap-1.5 border-b px-2.5 font-mono text-[11px] whitespace-nowrap cursor-pointer outline-none transition-colors",
+              // The active tab takes the editor's own surface (`card`) and
+              // *notches through* the strip's bottom edge — a transparent border
+              // lets its own fill run into the editor below, so the two read as
+              // one continuous panel. Shape alone carries "active" here; the
+              // `primary` accent is reserved for the dock's pane tabs, one level
+              // up, so a Files pane shows exactly one accent bar rather than two
+              // stacked rails a few pixels apart.
               isActive
-                ? "bg-card text-foreground"
-                : "text-muted-foreground hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50"
+                ? "border-transparent bg-card"
+                : "border-border/40 text-muted-foreground hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50",
+              // With a split, the group that doesn't have focus still shows which
+              // file it holds — it just says so quietly, since the next file
+              // opened from the tree lands in the other one.
+              isActive && (focused ? "text-foreground" : "text-muted-foreground")
             )}
           >
-            {/* Active rail — mirrors the tree's left rail across the top of the
-                tab. Faded in a group that doesn't have focus, so with a split it
-                is clear which side the next opened file will land in. */}
-            {isActive && (
-              <span
-                className={cn(
-                  "absolute inset-x-0 top-0 h-0.5 bg-primary",
-                  !focused && "opacity-30"
-                )}
-              />
-            )}
             <Glyph
               className={cn(
-                "h-3.5 w-3.5 shrink-0",
-                isActive ? "text-foreground" : "text-muted-foreground/80"
+                "h-3 w-3 shrink-0",
+                isActive && focused ? "text-foreground" : "text-muted-foreground/80"
               )}
             />
             <span>{f.name}</span>
@@ -418,6 +430,10 @@ function TabStrip({
           </div>
         )
       })}
+      {/* Carries the strip's bottom edge across whatever the tabs don't fill.
+          Grows but never shrinks, so once the tabs overflow and scroll it
+          collapses to nothing instead of stealing width from them. */}
+      <div aria-hidden className="grow shrink-0 basis-0 border-b border-border/40" />
       </div>
       {/* Fold the split away. Only on the secondary group: group 0 is the pane
           itself, and its tabs come back here when this one closes. */}
@@ -427,9 +443,9 @@ function TabStrip({
           onClick={onCloseGroup}
           title="Close this group (its tabs move to the other one)"
           aria-label="Close editor group"
-          className="flex w-9 shrink-0 items-center justify-center border-l border-border/40 text-muted-foreground outline-none transition-colors hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50"
+          className="flex w-8 shrink-0 items-center justify-center border-b border-l border-border/40 text-muted-foreground outline-none transition-colors hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50"
         >
-          <ArrowLineLeft className="h-4 w-4" />
+          <ArrowLineLeft className="h-3.5 w-3.5" />
         </button>
       )}
       {/* Pinned to the right of the scrolling tabs so it's always reachable —
@@ -442,12 +458,12 @@ function TabStrip({
           title={sidebarHidden ? "Show file tree" : "Hide file tree"}
           aria-label={sidebarHidden ? "Show file tree" : "Hide file tree"}
           className={cn(
-            "flex w-9 shrink-0 items-center justify-center border-l border-border/40 outline-none transition-colors hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50",
+            "flex w-8 shrink-0 items-center justify-center border-b border-l border-border/40 outline-none transition-colors hover:bg-card/50 hover:text-foreground focus-visible:bg-card/50",
             sidebarHidden ? "text-muted-foreground" : "text-foreground"
           )}
         >
           <SidebarSimple
-            className="h-4 w-4 -scale-x-100"
+            className="h-3.5 w-3.5 -scale-x-100"
             weight={sidebarHidden ? "regular" : "fill"}
           />
         </button>
