@@ -31,6 +31,22 @@ class Settings(BaseSettings):
     # Origins allowed to call the API (the Vite dev server by default).
     cors_origins: list[str] = ["http://localhost:8888", "http://127.0.0.1:8888"]
 
+    # Bearer token every HTTP request and WebSocket connection must present.
+    #
+    # Unset (the default) means no authentication at all — the original
+    # single-user-on-loopback posture, unchanged. Set it and the desktop app can
+    # reach this backend from another machine, which is the only reason it exists:
+    # see ``app/auth.py`` and ``docs/REMOTE.md``.
+    #
+    # Treat the value as equivalent to an SSH key for this host. Anyone holding it
+    # gets a PTY (``/api/terminal/ws``) and every stored provider key
+    # (``GET /api/settings``), so never bind to a non-loopback interface without
+    # one, and never carry one over plain HTTP.
+    auth_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LURSOR_AUTH_TOKEN", "auth_token"),
+    )
+
     # --- Data root ---
     # When set (env ``LURSOR_DATA_DIR``), every on-disk path that isn't explicitly
     # overridden is rebased under this directory. The packaged desktop app sets

@@ -1,14 +1,10 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { GitBranch, FolderOpen } from "@phosphor-icons/react"
 import { toast } from "sonner"
 
 import type { Workspace, WorkspaceInput } from "@/api/types"
-import {
-  useCreateWorkspace,
-  useUpdateWorkspace,
-  workspacesApi,
-} from "@/api/workspaces"
+import { useCreateWorkspace, useUpdateWorkspace } from "@/api/workspaces"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -21,6 +17,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { GitHubRepoPickerDialog } from "./github-repo-picker-dialog"
+import { useFolderPicker } from "./use-folder-picker"
 
 interface FormState {
   name: string
@@ -43,33 +40,26 @@ export function WorkspaceFormDialog({
 }: WorkspaceFormDialogProps) {
   const navigate = useNavigate()
   const [form, setForm] = useState<FormState>(EMPTY)
-  const [isBrowsing, setIsBrowsing] = useState(false)
   const [repoPickerOpen, setRepoPickerOpen] = useState(false)
   const createWorkspace = useCreateWorkspace()
   const updateWorkspace = useUpdateWorkspace()
   const isEdit = Boolean(workspace)
   const isSaving = createWorkspace.isPending || updateWorkspace.isPending
 
-  async function handleBrowse() {
-    setIsBrowsing(true)
-    try {
-      const { path } = await workspacesApi.pickFolder()
-      if (path) {
-        const folderName = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? ""
-        setForm((prev) => ({
-          ...prev,
-          path,
-          name: prev.name.trim() ? prev.name : folderName,
-        }))
-      }
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Could not open folder picker"
-      )
-    } finally {
-      setIsBrowsing(false)
-    }
-  }
+  const applyPickedPath = useCallback((path: string) => {
+    const folderName = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? ""
+    setForm((prev) => ({
+      ...prev,
+      path,
+      name: prev.name.trim() ? prev.name : folderName,
+    }))
+  }, [])
+
+  const {
+    browse: handleBrowse,
+    browsing: isBrowsing,
+    dialog: folderBrowser,
+  } = useFolderPicker(applyPickedPath)
 
   useEffect(() => {
     if (open) {
@@ -216,6 +206,7 @@ export function WorkspaceFormDialog({
       defaultName={form.name}
       onCloned={() => onOpenChange(false)}
     />
+    {folderBrowser}
     </>
   )
 }

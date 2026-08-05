@@ -63,14 +63,11 @@ _FOLDER_DIALOGS: dict[str, list[list[str]]] = {
 }
 
 
-def _pick_folder_dialog() -> str | None:
-    """Open the OS folder picker and return the chosen path, or None if cancelled.
-
-    Blocking: call from a threadpool (a sync route) so the event loop is free.
-    """
+def _dialog_candidates() -> list[list[str]]:
+    """The folder-picker commands worth trying on this platform, best first."""
     if sys.platform.startswith("win"):
         # PowerShell's FolderBrowserDialog; empty output means the user cancelled.
-        candidates = [
+        return [
             [
                 "powershell",
                 "-NoProfile",
@@ -81,9 +78,36 @@ def _pick_folder_dialog() -> str | None:
                 "if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }",
             ]
         ]
-    else:
-        key = "darwin" if sys.platform == "darwin" else "linux"
-        candidates = _FOLDER_DIALOGS[key]
+    key = "darwin" if sys.platform == "darwin" else "linux"
+    return _FOLDER_DIALOGS[key]
+
+
+def can_pick_folder() -> bool:
+    """Whether this host can actually show a native folder dialog.
+
+    Asked by ``GET /api/server-info`` so the client knows whether to open the OS
+    picker or its own remote directory browser. A backend on a VPS has neither, and
+    finding that out by watching the dialog route fail is a bad first experience.
+
+    Two conditions, because either alone gives the wrong answer on a server: a
+    picker binary has to exist, *and* on Linux there has to be a display to show it
+    on. Plenty of server images carry ``zenity`` as a transitive dependency of
+    something else, and running it with no ``DISPLAY`` blocks until the 300s
+    timeout rather than failing fast.
+    """
+    if not any(shutil.which(c[0]) for c in _dialog_candidates()):
+        return False
+    if sys.platform.startswith("linux"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
+
+
+def _pick_folder_dialog() -> str | None:
+    """Open the OS folder picker and return the chosen path, or None if cancelled.
+
+    Blocking: call from a threadpool (a sync route) so the event loop is free.
+    """
+    candidates = _dialog_candidates()
 
     cmd = next((c for c in candidates if shutil.which(c[0]) is not None), None)
     if cmd is None:

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { API_BASE, api } from "./client"
+import { api, connectWs } from "./client"
 
 /** Coarse kind of change for a file in the working tree. */
 export type ChangeStatus = "added" | "modified" | "deleted"
@@ -97,14 +97,10 @@ export const gitKeys = {
   branches: (workspaceId: string) => ["git", workspaceId, "branches"] as const,
 }
 
-/** Build the WebSocket URL for a workspace's git-watch endpoint (state changes
- *  like commits, staging, and branch switches — see {@link useGitWatch}). */
-export function gitWatchWsUrl(workspaceId: string): string {
-  const url = new URL(
-    `${API_BASE.replace(/\/$/, "")}/workspaces/${workspaceId}/git/watch`
-  )
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-  return url.toString()
+/** Open a workspace's git-watch socket (state changes like commits, staging, and
+ *  branch switches — see {@link useGitWatch}). */
+export function connectGitWatchWs(workspaceId: string): WebSocket {
+  return connectWs(`/workspaces/${workspaceId}/git/watch`)
 }
 
 /** Fetch the workspace's uncommitted diff (powers the Changes panel). */

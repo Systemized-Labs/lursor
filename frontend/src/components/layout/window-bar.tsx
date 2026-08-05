@@ -1,6 +1,7 @@
 import { useEffect } from "react"
 import { Gear, List, SidebarSimple, SquaresFour } from "@phosphor-icons/react"
 
+import { ConnectionStatus } from "@/components/layout/connection-status"
 import { useSidebar } from "@/components/ui/sidebar"
 import { isMacElectron } from "@/lib/platform"
 import { cn } from "@/lib/utils"
@@ -117,6 +118,11 @@ export function WindowBar({
           existing, and leaving it implicit is how the old four-surface version
           started. */}
       {isMacElectron ? <div aria-hidden className="w-[88px] shrink-0" /> : null}
+
+      {/* Which machine this window is driving, when that is a question worth
+          answering — it renders nothing at all against a local backend. This bar is
+          the only surface mounted for every route, which is why it lives here. */}
+      <ConnectionStatus />
 
       <div className="min-w-0 flex-1" />
 

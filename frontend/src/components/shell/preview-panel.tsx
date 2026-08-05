@@ -10,6 +10,13 @@ import {
 
 import { cn } from "@/lib/utils"
 import { consumePendingPreview, subscribeOpenPreview } from "@/lib/open-preview"
+import {
+  ensureForward,
+  normalizeUrl,
+  reachableIfKnown,
+  sameUrl,
+  toReachableUrl,
+} from "@/lib/preview-reach"
 import { tabStorageKey } from "@/lib/tab-storage"
 import {
   usePreviewServersFor,
@@ -18,65 +25,6 @@ import {
 
 /** Common local dev-server ports, offered as one-tap shortcuts in the empty state. */
 const COMMON_PORTS = [3000, 5173, 8000, 8080] as const
-
-/** Loopback hosts a dev server reports itself on — none of which resolve to the
- *  machine running it when the UI is opened from another device. */
-const LOOPBACK_HOSTS = new Set([
-  "localhost",
-  "127.0.0.1",
-  "0.0.0.0",
-  "::1",
-  "[::1]",
-])
-
-/**
- * The browser's hostname, but only when it's a real network host worth
- * preferring over a loopback address — i.e. the UI is being viewed from another
- * device (a phone hitting the Mac's LAN IP). Returns `null` on the Electron /
- * `file:` desktop shell or when already on localhost, so those keep loopback
- * URLs untouched.
- */
-function originHost(): string | null {
-  if (typeof window === "undefined") return null
-  const host = window.location.hostname
-  if (!host || LOOPBACK_HOSTS.has(host)) return null
-  return host
-}
-
-/**
- * Rewrite a loopback dev-server URL's host to the browser's origin host, so a
- * preview opened from another device (a phone on the LAN) hits the machine
- * actually running the server instead of the phone's own `localhost`. Scheme,
- * port, and path are preserved; non-loopback hosts and unparseable input pass
- * through unchanged. A no-op on the desktop shell (see {@link originHost}).
- */
-function toBrowserHost(raw: string): string {
-  const host = originHost()
-  if (!host) return raw
-  try {
-    const u = new URL(raw)
-    if (LOOPBACK_HOSTS.has(u.hostname)) {
-      u.hostname = host
-      return u.toString()
-    }
-    return raw
-  } catch {
-    return raw
-  }
-}
-
-/**
- * True when two addresses point at the same server. Compared after rewriting
- * loopback hosts to the origin host, so a detected `http://localhost:3000` and
- * the `http://<lan-ip>:3000` actually loaded in the iframe count as one — which
- * keeps the "already loaded" dedup and the starting→ready auto-reload working.
- */
-function sameUrl(a: string, b: string): boolean {
-  const na = normalizeUrl(a)
-  const nb = normalizeUrl(b)
-  if (na === null || nb === null) return false
-  return toBrowserHost(na) === toBrowserHost(nb)
-}
 
 const STORAGE_PREFIX = "lursor:preview:"
 const keyFor = (workspaceId?: string) => `${STORAGE_PREFIX}${workspaceId ?? "_global"}`
@@ -128,24 +76,6 @@ function urlLabel(raw: string): string | null {
   try {
     const u = new URL(raw)
     return u.port ? `:${u.port}` : u.hostname
-  } catch {
-    return null
-  }
-}
-
-/**
- * Normalize a user-typed address into a loadable URL, or `null` if it can't be
- * made into one. A bare host/port (`localhost:3000`) gets an `http://` scheme so
- * the common "paste the port the dev server printed" case just works.
- */
-function normalizeUrl(raw: string): string | null {
-  const trimmed = raw.trim()
-  if (!trimmed) return null
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `http://${trimmed}`
-  try {
-    return new URL(withScheme).toString()
   } catch {
     return null
   }
@@ -251,14 +181,20 @@ export function PreviewPanel({
 }: PreviewPanelProps) {
   // Dev servers the backend detected for this workspace (stream-derived).
   const detected = usePreviewServersFor(workspaceId)
-  // The committed URL currently loaded in the iframe. A URL saved on the desktop
-  // shell (loopback) is rewritten to this browser's host on restore, so opening
-  // the same workspace from a phone loads the right machine.
-  const [url, setUrl] = useState<string>(() =>
-    toBrowserHost(readSavedUrl(workspaceId, tabId))
+  // The committed address, as the dev server reports it or the user typed it. This
+  // is what gets persisted, compared and shown in the address bar.
+  const [canonical, setCanonical] = useState<string>(() =>
+    readSavedUrl(workspaceId, tabId)
   )
-  // The editable address-bar value (may differ from `url` while typing).
-  const [draft, setDraft] = useState<string>(url)
+  // The same address, made reachable from here: the origin host on a LAN device, a
+  // forwarded local port against a remote backend, unchanged otherwise. Only this
+  // one is ever loaded. Seeded synchronously so a same-machine preview paints on
+  // the first frame; the effect below settles the cases that need to await.
+  const [url, setUrl] = useState<string>(() =>
+    reachableIfKnown(readSavedUrl(workspaceId, tabId))
+  )
+  // The editable address-bar value (may differ from `canonical` while typing).
+  const [draft, setDraft] = useState<string>(canonical)
   // Bumping this key forces the iframe to remount, which reloads the page even
   // when the URL is unchanged (iframes give us no reliable programmatic reload).
   const [reloadKey, setReloadKey] = useState(0)
@@ -290,28 +226,46 @@ export function PreviewPanel({
   useEffect(() => {
     if (wsRef.current === workspaceId) return
     wsRef.current = workspaceId
-    const saved = toBrowserHost(readSavedUrl(workspaceId, tabId))
-    setUrl(saved)
+    const saved = readSavedUrl(workspaceId, tabId)
+    setCanonical(saved)
     setDraft(saved)
   }, [workspaceId, tabId])
 
+  // Resolve the committed address to one reachable from here. Separate from
+  // `navigate` because the address can also change on mount, on a workspace switch,
+  // and — when a forward has to be opened first — a moment after either.
+  useEffect(() => {
+    let cancelled = false
+    if (!canonical) {
+      setUrl("")
+      return
+    }
+    void toReachableUrl(canonical).then((reachable) => {
+      if (!cancelled) setUrl(reachable)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [canonical])
+
   // Keep the dock tab labelled with what this preview is showing, so duplicate
   // Preview tabs read as ":3000" and ":5173" rather than two identical chips.
+  // Labelled from the canonical address: the port the dev server announced is the
+  // one that means something, not the local port a forward happened to land on.
   useEffect(() => {
     if (!tabId) return
-    onDetail?.(tabId, urlLabel(url))
-  }, [tabId, onDetail, url])
+    onDetail?.(tabId, urlLabel(canonical))
+  }, [tabId, onDetail, canonical])
 
   const navigate = useCallback(
     (raw: string) => {
       const normalized = normalizeUrl(raw)
       if (!normalized) return
-      // Prefer the machine actually running the server over a loopback address,
-      // so a preview opened from a phone on the LAN loads correctly.
-      const target = toBrowserHost(normalized)
-      setUrl(target)
-      setDraft(target)
-      writeSavedUrl(workspaceId, tabId, target)
+      setCanonical(normalized)
+      setDraft(normalized)
+      // Persist the canonical form, never the reachable one: a forwarded port is
+      // chosen per session, and a remembered one would point at nothing next launch.
+      writeSavedUrl(workspaceId, tabId, normalized)
       setLoading(true)
       setReloadKey((k) => k + 1)
     },
@@ -325,7 +279,7 @@ export function PreviewPanel({
   }, [url])
 
   const clear = useCallback(() => {
-    setUrl("")
+    setCanonical("")
     setDraft("")
     setLoading(false)
     writeSavedUrl(workspaceId, tabId, "")
@@ -351,6 +305,14 @@ export function PreviewPanel({
     return subscribeOpenPreview(tryOpen)
   }, [workspaceId, navigate, active])
 
+  // Against a remote backend a detected port is unreachable until it is forwarded,
+  // which is an IPC round trip. Open them as soon as they are detected so a chip or
+  // an auto-navigate loads immediately rather than after a visible stall. A no-op
+  // for a local backend.
+  useEffect(() => {
+    for (const server of detected) void ensureForward(server.port)
+  }, [detected])
+
   // When the server currently in the iframe transitions starting -> ready,
   // reload it so a first-load "connection refused" gives way to the live app.
   const prevStatuses = useRef<Record<string, DetectedServer["status"]>>({})
@@ -360,8 +322,8 @@ export function PreviewPanel({
       if (
         prev === "starting" &&
         server.status === "ready" &&
-        url &&
-        sameUrl(url, server.url)
+        canonical &&
+        sameUrl(canonical, server.url)
       ) {
         setLoading(true)
         setReloadKey((k) => k + 1)
@@ -370,11 +332,11 @@ export function PreviewPanel({
     prevStatuses.current = Object.fromEntries(
       detected.map((s) => [s.url, s.status])
     )
-  }, [detected, url])
+  }, [detected, canonical])
 
-  const hasUrl = url !== ""
+  const hasUrl = canonical !== ""
   // Detected servers not already loaded — offered as one-tap chips.
-  const otherServers = detected.filter((s) => !sameUrl(url, s.url))
+  const otherServers = detected.filter((s) => !sameUrl(canonical, s.url))
 
   const isMobile = viewport !== "desktop"
   const dims = isMobile ? VIEWPORT_DIMS[viewport] : null
@@ -382,7 +344,12 @@ export function PreviewPanel({
 
   // The framed page — slotted full-bleed (desktop) or into a phone chassis
   // (mobile). Same element in both, so switching device reloads once.
-  const stackEl = (
+  //
+  // Nothing is framed until the address is actually reachable. Against a remote
+  // backend that takes a moment — the port has to be forwarded first — and loading
+  // the un-forwarded address meanwhile would flash a "connection refused" page
+  // before correcting itself.
+  const stackEl = url ? (
     <iframe
       key={reloadKey}
       src={url}
@@ -390,6 +357,10 @@ export function PreviewPanel({
       onLoad={() => setLoading(false)}
       className="absolute inset-0 h-full w-full border-0 bg-white"
     />
+  ) : (
+    <div className="absolute inset-0 flex items-center justify-center">
+      <p className="text-sm text-muted-foreground">Connecting to {canonical}…</p>
+    </div>
   )
 
   return (

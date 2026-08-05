@@ -1,6 +1,6 @@
 import { useEffect } from "react"
 
-import { previewWsUrl, type ProcessSnapshot } from "@/api/preview"
+import { connectPreviewWs, type ProcessSnapshot } from "@/api/preview"
 import { requestOpenPreview } from "@/lib/open-preview"
 import { useProcessesStore } from "@/lib/processes"
 
@@ -34,7 +34,7 @@ export function usePreviewWatch(workspaceId: string | undefined) {
 
     const connect = () => {
       const openedAt = Date.now()
-      socket = new WebSocket(previewWsUrl(workspaceId))
+      socket = connectPreviewWs(workspaceId)
       socket.onmessage = (event) => {
         let snapshot: ProcessSnapshot
         try {

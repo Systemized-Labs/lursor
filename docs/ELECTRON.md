@@ -5,41 +5,95 @@ In **packaged** builds the app owns its backend: it ships a frozen, self-contain
 Python interpreter and starts/stops the FastAPI server itself. In **development**
 it runs the backend from source via `uv` and loads the Vite dev server.
 
+It can also run as a **thin client** against a backend on another machine, in which
+case it spawns nothing. See [REMOTE.md](REMOTE.md) for the user-facing side.
+
+## Connections
+
+Everything below branches on which connection is active, so it is resolved first
+(`electron/connections.cjs`):
+
+- **Local** — the bundled backend, spawned on demand. Synthesized rather than stored,
+  so a fresh install has no config file and boots straight into local mode without
+  ever showing a picker.
+- **Remote** — a saved `{ name, url, token }` in `~/.lursor/connections.json`, with
+  the token encrypted via `safeStorage` (plaintext plus a logged warning where no
+  keychain exists). `http://` is refused for non-loopback hosts: a bearer token over
+  plain HTTP is a giveaway. Loopback is allowed so remote mode can be tested locally.
+
+The picker (`electron/connect.html`) appears when a remote exists and the last-used
+one can't be reached, or on demand from **Switch Connection…** in the app menu. It is
+plain HTML with inline styles on purpose — it has to work before there is a backend
+to talk to, which is the same reason the splash and error screens are `data:` URLs.
+
 ## Backend lifecycle (main process)
 
 On launch (`electron/main.cjs`):
 
-1. Pick a port (prefers `8791`, falls back to an ephemeral port if taken).
-2. Show a splash window and spawn the backend:
+1. Create the window, showing the splash, and resolve the connection.
+2. **Local**: pick a port (prefers `8791`, ephemeral if taken) and spawn the backend:
    - **Packaged**: `<Resources>/backend/python/bin/python -m uvicorn app.main:app`,
      with `LURSOR_DATA_DIR=~/.lursor` so all writable state stays out of the
      read-only app bundle.
    - **Dev**: `uv run uvicorn app.main:app` from `../../backend` (no data-dir
      override, so dev keeps its existing DB next to the backend).
-3. Poll `GET /api/health` until ok, then load the renderer (dev server URL or
-   `dist/index.html`). Show an error screen if the backend never comes up.
-4. The resolved API base (`http://127.0.0.1:<port>/api`) is passed to the renderer
-   via `webPreferences.additionalArguments` and re-exposed by the preload as
-   `window.electron.apiBase` — the port isn't known at build time.
-5. The backend is spawned in its own process group and killed on quit
-   (`before-quit`/`will-quit`), and a single-instance lock prevents port clashes.
+
+   **Remote**: spawn nothing.
+3. Poll `GET /api/health` (with the bearer token, if any) until ok, then load the
+   renderer. A `401`/`403` is treated as final rather than retried — the token is
+   wrong and waiting won't fix it — and sends you back to the picker with that
+   said out loud. Local failures still show the backend-error screen.
+4. The renderer reads the API base and token **synchronously** from the preload
+   (`ipcRenderer.sendSync("connection:active")`), because `src/api/client.ts`
+   resolves them at module scope. This replaced `webPreferences.additionalArguments`,
+   which is fixed when the window is created — too early, now that the connection may
+   not be chosen yet.
+5. On a remote connection the main process also injects `Authorization` into requests
+   to that origin via `webRequest.onBeforeSendHeaders`, covering `<img>`, `<video>`
+   and download URLs that no JS layer can add a header to.
+6. The backend is spawned in its own process group and killed on quit
+   (`before-quit`/`will-quit`), along with any open port forwards. A single-instance
+   lock prevents port clashes.
+
+## Port forwarding
+
+`electron/port-forward.cjs` reaches dev servers on a remote backend's loopback
+interface: a local `net` listener on the *same* port number pipes each TCP connection
+over a WebSocket to `/api/tunnel`. The renderer asks for one through
+`window.electron.forwardPort(port)`; `src/lib/preview-reach.ts` decides when to.
+
+Forwarding rather than HTTP-proxying because dev servers emit root-absolute asset
+paths and their own HMR sockets — a path-prefixed proxy means rewriting HTML, CSS and
+socket payloads per framework. Keeping the port number identical also keeps the
+address the dev server printed the address that works.
 
 ## Layout
 
 ```
 frontend/
   electron/
-    main.cjs      Main process: backend lifecycle (spawn/health/teardown), window,
-                  splash/error screens, external-link routing, single-instance lock.
-    preload.cjs   contextIsolation bridge: window.electron = { isElectron, platform,
-                  apiBase, openExternal }.
+    main.cjs           Main process: connection bootstrap, backend lifecycle
+                       (spawn/health/teardown), window, splash/error screens,
+                       auth-header injection, menu, single-instance lock.
+    connections.cjs    Saved connections: read/write, token encryption, URL rules.
+    connect.html       The connection picker (plain HTML — runs before any backend).
+    port-forward.cjs   Local TCP listeners piped to /api/tunnel on a remote backend.
+    preload.cjs        contextIsolation bridges: window.electron (the app) and
+                       window.lursorConnect (the picker).
 ```
 
 Key wiring:
 - `vite.config.ts` sets `base: "./"` so built assets resolve under `file://`.
 - `src/main.tsx` uses `HashRouter` when `window.electron?.isElectron` is set
   (history routing doesn't work from `file://`), and `BrowserRouter` in the browser.
-- `src/api/client.ts` prefers `window.electron.apiBase` when present.
+- `src/api/client.ts` prefers `window.electron.apiBase` when present, and is the one
+  place the token is attached — to fetches via `authHeaders()` and to WebSockets via
+  `connectWs()`, which carries it as a subprotocol because browsers can't set headers
+  on a socket.
+- `src/lib/preview-reach.ts` maps a canonical dev-server address to one reachable
+  from here (origin host on a LAN device, forwarded port on a remote backend).
+- `src/components/layout/connection-status.tsx` shows which machine you're driving,
+  and renders nothing at all in local mode.
 - `src/vite-env.d.ts` declares the `window.electron` type.
 
 ## Develop

@@ -1,3 +1,5 @@
+import { authHeaders } from "@/api/client"
+
 import { streamUrl } from "./agent"
 import type { AgentGoalStatus, AgentTodo, GoalRunStatus, TodoStatus } from "./types"
 
@@ -125,7 +127,10 @@ export async function consumeThreadStream(
   handlers: ChatEventHandlers,
   signal: AbortSignal
 ): Promise<void> {
-  const res = await fetch(streamUrl(threadId), { signal })
+  // Hand-rolled `fetch` rather than the shared `api` client (which parses JSON),
+  // so the auth header has to be attached here explicitly. This and `api/client.ts`
+  // are the only two places the app calls `fetch` directly.
+  const res = await fetch(streamUrl(threadId), { signal, headers: authHeaders() })
   if (!res.ok || !res.body) {
     throw new Error(`Reconnect failed with status ${res.status}`)
   }

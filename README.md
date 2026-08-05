@@ -49,6 +49,13 @@ day.
 **Any model.** OpenRouter out of the box; add custom providers, or drive local
 models — pull, serve, VRAM — through a **laios** daemon.
 
+**A backend that doesn't need your laptop open.** Point the desktop app at a Lursor
+backend on a VPS or a machine that stays on, over https with a token, and it becomes
+a thin client: runs, goal loops and schedules keep going while your laptop is shut,
+and you reconnect to whatever they got to. Even dev-server previews work — the app
+forwards the remote port so `localhost:5173` is the app it started.
+[docs/REMOTE.md](docs/REMOTE.md).
+
 Also in the box: file upload, GitHub integration on the changes panel, and a seeded
 library of prompt templates.
 
@@ -155,12 +162,17 @@ lursor/
 
 ## Security
 
-**Lursor is single-user and local-first: there is no authentication, and the
-backend is as privileged as a shell on your machine.** It hands agents a real PTY
-and unsandboxed command execution, stores provider API keys unencrypted in SQLite,
-and accepts requests from any origin. Keep it bound to `127.0.0.1` — the desktop
-app already does; `scripts/dev.sh` binds `0.0.0.0` for LAN convenience — and never
-expose the port to the internet or an untrusted network.
+**Lursor is single-user, and the backend is as privileged as a shell on your
+machine.** It hands agents a real PTY and unsandboxed command execution, stores
+provider API keys unencrypted in SQLite, and accepts requests from any origin.
+
+By default it runs **unauthenticated on loopback** — keep it there. The desktop app
+already does; `scripts/dev.sh` binds `0.0.0.0` for LAN convenience. Never expose an
+unauthenticated port to the internet or an untrusted network.
+
+To run it on another machine, set `LURSOR_AUTH_TOKEN` and put TLS in front of it.
+Every route then requires that token — treat it as an SSH key for that host, because
+that is what it is worth. [docs/REMOTE.md](docs/REMOTE.md) is the runbook.
 
 [SECURITY.md](SECURITY.md) has the full threat model, safe-operation notes, and how
 to report a vulnerability privately.
