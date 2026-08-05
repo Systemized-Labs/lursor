@@ -7,6 +7,12 @@
 # survives a reboot, a crash and an OOM kill. Re-run it to upgrade: it pulls, re-syncs
 # and restarts the service, keeping your database, workspaces and token.
 #
+# The desktop app can also trigger an upgrade over the API, which runs
+# scripts/self-update.sh rather than this script. That one does the same fetch/sync but
+# restarts instead of reinstalling, because the running backend does not know which
+# port it was installed on and `lursor-service install` prints the token — see the
+# header of that script.
+#
 # This is the *server* half. It does not install the desktop app (scripts/install.sh
 # does that) — you point that app at this backend afterwards, and the token printed at
 # the end is how it authenticates. See docs/REMOTE.md.

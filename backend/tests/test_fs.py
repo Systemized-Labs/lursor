@@ -11,6 +11,8 @@ import sys
 import pytest
 from httpx import AsyncClient
 
+from app import __version__
+
 
 async def _dirs(client: AsyncClient, **params) -> dict:
     res = await client.get("/fs/dirs", params=params)
@@ -113,3 +115,14 @@ async def test_server_info_reports_capabilities(client: AsyncClient) -> None:
     assert isinstance(body["can_pick_folder"], bool)
     # The suite runs without a token, which is the default posture.
     assert body["auth_required"] is False
+
+    # The frontend/backend version handshake. This endpoint carries it because the
+    # client needs it on connect: a remote backend is the one configuration where the
+    # two halves can drift, and the UI has to be able to say so before anyone asks it
+    # to check for updates.
+    assert body["version"] == __version__
+    assert body["install_kind"] in ("checkout", "bundled")
+    assert body["managed_by"] in ("desktop", "service", "none")
+    # No token in the suite, so self-update can never be offered here.
+    assert body["self_updatable"] is False
+    assert body["self_update_blocked_reason"]

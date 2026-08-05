@@ -157,4 +157,17 @@ to update — fall back to `scripts/update.sh`, run from Terminal after the app
 quits. See [DISTRIBUTION.md](./DISTRIBUTION.md) for that fallback, the release
 runbook, the CI secrets, and the Homebrew tap.
 
+The *offer* is the renderer's, not a native dialog. `publishUpdateState()` mirrors
+one state object (`phase`/`version`/`percent`/`mechanism`) to the window over
+`update:state`, and the renderer answers with `update:install`, `update:later` or
+`update:check`. Two details are load-bearing: the state is replayed on
+`did-finish-load`, because a check can resolve before the renderer mounts and a
+reload throws away what it knew — and since `autoInstallOnAppQuit` stays false, an
+offer nobody receives means an update that never installs. And `onUpdateState`
+returns its own unsubscribe function, or every HMR cycle in dev leaves another
+listener attached and one transition fires the toast N times. `mechanism`
+distinguishes the two paths because they offer different things: Squirrel restarts,
+the script updater quits into Terminal. See `src/hooks/use-desktop-update.ts` and
+`src/components/update/`.
+
 Windows remains unbuilt.

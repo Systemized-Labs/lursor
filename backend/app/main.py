@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app import __version__, updater
 from app.agents import scheduler
 from app.agents.hindsight import close_hindsight_clients
 from app.api import (
@@ -35,6 +36,7 @@ from app.api import (
     threads,
     tools,
     tunnel,
+    update,
     videos,
     workspace_folders,
     workspaces,
@@ -105,7 +107,7 @@ async def lifespan(app: FastAPI):
     await close_hindsight_clients()
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)
 
 # --- Middleware ------------------------------------------------------------
 #
@@ -188,12 +190,20 @@ async def server_info() -> dict[str, object]:
 
     ``can_pick_folder`` is the one the UI acts on — false means offer the remote
     directory browser (``api/fs.py``) instead of the native OS dialog.
+
+    The version block is the frontend/backend handshake. It belongs here rather than
+    on ``/api/health`` for the reason above, and rather than on ``/api/update/status``
+    because the client needs it on *connect* — a remote backend is the one
+    configuration where the two halves can drift, and the UI has to be able to say
+    so before anyone asks it to check for updates. Everything in it is local and
+    cheap; see ``app/updater.py``.
     """
     return {
         "app": settings.app_name,
         "platform": sys.platform,
         "can_pick_folder": workspaces.can_pick_folder(),
         "auth_required": bool(settings.auth_token),
+        **updater.describe(),
     }
 
 
@@ -223,6 +233,7 @@ for module in (
     images,
     preview,
     tunnel,
+    update,
     settings_api,
 ):
     app.include_router(module.router, prefix="/api")

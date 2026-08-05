@@ -32,6 +32,25 @@ export interface ServerInfo {
    */
   can_pick_folder: boolean
   auth_required: boolean
+
+  /**
+   * The backend's own version. Compare against `__APP_VERSION__` to detect skew:
+   * over a remote connection the two halves are updated independently and can
+   * legitimately differ, and that mismatch is the explanation for a whole class of
+   * otherwise baffling symptoms.
+   */
+  version: string
+  /** `bundled` is the frozen copy inside the desktop app; `checkout` is from git. */
+  install_kind: "bundled" | "checkout"
+  /** Who owns the process — Electron, a supervisor, or nothing. */
+  managed_by: "desktop" | "service" | "none"
+  /** Whether `POST /api/update` will do anything. Only ever true for a remote host. */
+  self_updatable: boolean
+  /**
+   * Why not, when it isn't. Prose rather than a flag because each case has a
+   * different next step, and a greyed-out button with no reason reads as a bug.
+   */
+  self_update_blocked_reason: string | null
 }
 
 export const fsApi = {

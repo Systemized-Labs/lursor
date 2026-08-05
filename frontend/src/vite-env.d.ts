@@ -36,6 +36,50 @@ interface ElectronBridge {
    * connection is local and forwarding is unnecessary.
    */
   readonly forwardPort: (port: number) => Promise<number | null>
+
+  /** Subscribe to desktop update state. Returns its own unsubscribe function. */
+  readonly onUpdateState: (
+    callback: (state: DesktopUpdateState) => void
+  ) => () => void
+  /** The current state, for a renderer that mounted after the first check. */
+  readonly getUpdateState: () => Promise<DesktopUpdateState>
+  /** Re-check now, for the button in Settings. */
+  readonly checkForUpdates: () => Promise<DesktopUpdateState>
+  /** Restart into the new version, or hand off to Terminal on the script path. */
+  readonly installUpdate: () => Promise<void>
+  /** Keep the download but don't restart now — it installs on the next quit. */
+  readonly deferUpdate: () => Promise<void>
+}
+
+/**
+ * Update state pushed from the Electron main process (see `publishUpdateState` in
+ * electron/main.cjs). This is the *client* update; a remote backend's version is a
+ * separate stream over HTTP (see `src/api/update.ts`).
+ */
+interface DesktopUpdateState {
+  /**
+   * `unsupported` is a real, common answer: a `.deb` is owned by apt and a dev build
+   * has no feed at all, and both need explaining rather than silence.
+   */
+  phase:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "error"
+    | "unsupported"
+  version: string | null
+  percent: number | null
+  error: string | null
+  /**
+   * `squirrel` downloads in the background and then needs a restart. `script` quits
+   * the app and finishes in a Terminal window — so the two offer different actions,
+   * and promising "Restart now" on the script path would be a lie.
+   */
+  mechanism: "squirrel" | "script" | "none"
+  /** Human-readable detail for the `unsupported` and `script` cases. */
+  note: string | null
 }
 
 interface Window {

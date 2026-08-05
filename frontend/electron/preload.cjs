@@ -33,6 +33,26 @@ contextBridge.exposeInMainWorld("electron", {
   // Forward a port on the backend host to 127.0.0.1 here, resolving to the local
   // port it landed on. Null in local mode, where the port is already local.
   forwardPort: (port) => ipcRenderer.invoke("forward:open", port),
+
+  // --- Desktop updates ---
+  // The offer lives in the React app rather than in a native dialog, so main has to
+  // be able to push state in and take an answer back out.
+  //
+  // Returns its own unsubscribe function: without one, every HMR cycle in dev leaves
+  // another listener attached and a single transition fires the toast N times.
+  onUpdateState: (callback) => {
+    const handler = (_event, state) => callback(state)
+    ipcRenderer.on("update:state", handler)
+    return () => ipcRenderer.off("update:state", handler)
+  },
+  // For a renderer that mounted after the first check resolved — the push alone
+  // would have missed it.
+  getUpdateState: () => ipcRenderer.invoke("update:get-state"),
+  checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  // Restarts into the new version (or hands off to Terminal on the script path).
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  // Keep the download but don't restart now; it installs on the next quit.
+  deferUpdate: () => ipcRenderer.invoke("update:later"),
 })
 
 contextBridge.exposeInMainWorld("lursorConnect", {
