@@ -196,20 +196,6 @@ export function revealPanel(api: DockviewApi, panel: IDockviewPanel): void {
 }
 
 /**
- * Focus the terminal the deck is already holding, or report that it has none.
- *
- * For "give me a terminal" requests arriving from elsewhere in the app: reusing the
- * shell that is already down there beats opening a second one nobody asked for.
- */
-export function focusDeckTerminal(api: DockviewApi): boolean {
-  const group = deckGroup(api)
-  const panel = group?.activePanel ?? group?.panels[0]
-  if (!panel) return false
-  revealPanel(api, panel)
-  return true
-}
-
-/**
  * Move terminals out of the grid and into the deck.
  *
  * The migration for a layout saved before the deck existed, where terminals are

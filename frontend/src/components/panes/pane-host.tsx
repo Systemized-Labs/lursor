@@ -303,7 +303,7 @@ function DeckActions({
       ) : null}
       <button
         type="button"
-        onClick={() => layout.openPane("terminal")}
+        onClick={() => layout.openPane("terminal", { target: "deck" })}
         title="New terminal"
         aria-label="New terminal"
         className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -353,11 +353,11 @@ function AddPaneMenu({
   // A global layout offers only the kinds that mean something without a workspace.
   // A Changes pane would have no repo to diff, and a terminal no directory to run in.
   //
-  // Terminal is the one entry here that does not honour the "here" a `+` on a zone
-  // implies — it opens in the deck, wherever it was asked for. That is the deliberate
-  // trade for having a way back: the deck's own `+` is unreachable once someone has
-  // closed the deck, and a terminal you cannot reopen is worse than a menu item that
-  // opens it one band lower than you clicked.
+  // Every entry honours the "here" a `+` on a zone implies, Terminal included: it opens
+  // in the zone you clicked, tabbed beside whatever is already there. The deck is where
+  // a shell goes when nobody named a zone — the drawer's own `+`, or a template that
+  // draws its band — and getting a closed drawer back is those templates' job rather
+  // than this menu's.
   const kinds = ADDABLE_KINDS.filter(
     (kind) => hasWorkspace || !WORKSPACE_KINDS.includes(kind)
   )

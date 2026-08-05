@@ -17,7 +17,6 @@ import {
 import {
   adoptGridTerminals,
   ensureDeck,
-  focusDeckTerminal,
   gridPanels,
   openInDeck,
   revealDeck,
@@ -169,10 +168,28 @@ export interface PaneLayout {
    * Add a pane of `kind` and focus it — always a new one, even when one of that
    * kind is already open. Two previews on different ports, or two chats on two
    * threads, are legitimate layouts; each carries its own state under its own id.
+   *
+   * Where it lands is the *caller's* to say, and the same for every kind:
+   * `groupId` for a named zone, `target: 'deck'` for the drawer, neither for the zone
+   * the user last worked in. Terminals used to be routed to the drawer by kind here,
+   * which meant a `+` on a zone's strip quietly ignored the zone you clicked — see
+   * `target` below.
    */
   openPane: (
     kind: PaneKind,
-    opts?: { params?: Partial<PaneParams>; groupId?: string }
+    opts?: {
+      params?: Partial<PaneParams>
+      groupId?: string
+      /**
+       * Put it in the terminal deck instead of the grid.
+       *
+       * A property of the *request*, not of the kind. Only two things ask for it: the
+       * deck's own `+`, and a template whose schematic draws the drawer's band. Anything
+       * else — a zone's `+`, an empty-state card, a route — is asking for a pane in the
+       * grid, and a terminal is not special enough to overrule that.
+       */
+      target?: "deck"
+    }
   ) => void
   /**
    * Reveal a pane of `kind` for a request arriving from elsewhere in the app.
@@ -331,7 +348,11 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   const openPane = useCallback(
     (
       kind: PaneKind,
-      opts?: { params?: Partial<PaneParams>; groupId?: string }
+      opts?: {
+        params?: Partial<PaneParams>
+        groupId?: string
+        target?: "deck"
+      }
     ) => {
       if (!api) return
       const panel = {
@@ -342,15 +363,17 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
         renderer: PANE_KINDS[kind].renderer,
         params: { kind, ...opts?.params } satisfies PaneParams,
       }
-      // Terminals have one home. Wherever the request came from — a card, a
-      // template, the deck's own `+` — a new shell opens in the deck and the drawer
-      // comes up on it, so there is exactly one place to look for a terminal and
-      // one thing to put away when you are done with it.
-      if (kind === "terminal") {
+      // The drawer, for the callers that mean the drawer. This used to be
+      // `kind === "terminal"`, which made it impossible to open a shell anywhere else:
+      // the branch returned before `groupId` was ever read, so a `+` on a zone's strip
+      // dropped a terminal into the deck and revealed it — indistinguishable, from the
+      // outside, from the app inventing a new drawer.
+      if (opts?.target === "deck") {
         openInDeck(api, panel)
         return
       }
-      // A `+` on a zone's strip means "here", not "wherever dockview decides".
+      // A `+` on a zone's strip means "here", not "wherever dockview decides". For
+      // every kind: a terminal goes where you dropped it, like a diff or a preview.
       const groupId = opts?.groupId ?? gridGroupId(api, mru.current)
       api.addPanel({
         ...panel,
@@ -381,13 +404,11 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   const ensurePane = useCallback(
     (kind: PaneKind) => {
       if (!api) return
-      // A terminal is wherever the deck is: no MRU to consult, and reopening the
-      // drawer *is* the request when a shell is already in there.
-      if (kind === "terminal") {
-        if (!focusDeckTerminal(api)) openPane(kind)
-        return
-      }
-
+      // No terminal branch: a terminal is found by the same rule as everything else.
+      // `api.panels` includes the deck's, and `revealPanel` opens the drawer when the
+      // pane it picked turns out to live down there — which is all the old special
+      // case did, except it also ignored every terminal in the grid and opened a
+      // second shell beside one already running.
       const panels = api.panels
       const kindOf = (panel: IDockviewPanel) =>
         (panel.params as PaneParams | undefined)?.kind

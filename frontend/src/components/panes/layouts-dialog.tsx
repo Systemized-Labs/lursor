@@ -112,33 +112,45 @@ export function LayoutsDialog({
    * a terminal or a Changes pane at all (the rule the zone's `+` menu applies), so
    * those are filtered out and the shape stays whatever the live panes can make.
    *
-   * Counted over the *grid*: the deck is the shell's bottom edge, so a terminal in
-   * it does not fill a zone. A shape that draws the deck asks for a shell of its own
-   * — and only when the drawer is empty, because one already down there is the one
-   * the band is promising to show.
+   * Counted over the *grid*, and grid panes are all this returns. The deck's own shell
+   * is {@link needsDeckShell}, requested separately, because it is not a zone being
+   * filled — it is the drawer's band, and a pane bound for the drawer now has to say so
+   * rather than being recognised by its kind.
    */
   const fillsFor = useCallback(
     (template: TemplateDef): PaneKind[] => {
       const api = layout.api
       if (!api) return []
-      const allowed = (kind: PaneKind) =>
-        hasWorkspace || !WORKSPACE_KINDS.includes(kind)
-      const wanted: PaneKind[] =
-        template.deck && isDeckEmpty(api) && allowed("terminal") ? ["terminal"] : []
-
       const panels = gridPanels(api)
       const shortfall = gridZones(template) - panels.length
-      if (shortfall <= 0) return wanted
+      if (shortfall <= 0) return []
       const open = new Set(
         panels.map((panel) => (panel.params as PaneParams | undefined)?.kind)
       )
-      return [
-        ...wanted,
-        ...template.fills
-          .filter((kind) => !open.has(kind) && allowed(kind))
-          .slice(0, shortfall),
-      ]
+      return template.fills
+        .filter(
+          (kind) =>
+            !open.has(kind) &&
+            (hasWorkspace || !WORKSPACE_KINDS.includes(kind))
+        )
+        .slice(0, shortfall)
     },
+    [layout.api, hasWorkspace]
+  )
+
+  /**
+   * Whether this shape has to open a shell in the drawer.
+   *
+   * Only when the drawer is empty: one already down there is the one the band is
+   * promising to show, and a second nobody asked for is not an improvement. A *global*
+   * layout never does — no workspace, so no directory for a shell to run in.
+   */
+  const needsDeckShell = useCallback(
+    (template: TemplateDef): boolean =>
+      Boolean(template.deck) &&
+      hasWorkspace &&
+      layout.api !== null &&
+      isDeckEmpty(layout.api),
     [layout.api, hasWorkspace]
   )
 
@@ -150,10 +162,13 @@ export function LayoutsDialog({
       // layout picker should rearrange the window without moving the cursor —
       // the same rule `buildTemplate` follows for the zone it marks active.
       const active = api.activePanel?.api.id
+      if (needsDeckShell(template)) {
+        layout.openPane("terminal", { target: "deck" })
+      }
       for (const kind of fillsFor(template)) layout.openPane(kind)
       apply(buildTemplate(template.id, api, active ?? api.activePanel?.api.id))
     },
-    [layout, apply, fillsFor]
+    [layout, apply, fillsFor, needsDeckShell]
   )
 
   /**
@@ -165,8 +180,7 @@ export function LayoutsDialog({
    * rather than a guess — in the arrangement's own layout order, so the zone that held
    * a chat gets a chat.
    *
-   * And a shell for the deck if the arrangement had one and the drawer is empty now,
-   * which is the same rule `fillsFor` applies to a shape that draws the deck's band.
+   * Grid panes only, like `fillsFor` — the drawer's shell is {@link savedNeedsDeckShell}.
    */
   const restoreFills = useCallback(
     (saved: SerializedDockview): PaneKind[] => {
@@ -174,14 +188,10 @@ export function LayoutsDialog({
       if (!api) return []
       const allowed = (kind: PaneKind) =>
         hasWorkspace || !WORKSPACE_KINDS.includes(kind)
-      const wanted: PaneKind[] =
-        serializedDeckSize(saved) > 0 && isDeckEmpty(api) && allowed("terminal")
-          ? ["terminal"]
-          : []
 
       const panels = gridPanels(api)
       const shortfall = countZones(saved.grid.root) - panels.length
-      if (shortfall <= 0) return wanted
+      if (shortfall <= 0) return []
 
       const open = new Set(
         panels.map((panel) => (panel.params as PaneParams | undefined)?.kind)
@@ -194,8 +204,24 @@ export function LayoutsDialog({
         if (open.has(kind) || missing.includes(kind) || !allowed(kind)) continue
         missing.push(kind)
       }
-      return [...wanted, ...missing.slice(0, shortfall)]
+      return missing.slice(0, shortfall)
     },
+    [layout.api, hasWorkspace]
+  )
+
+  /**
+   * Whether a saved arrangement has to open a shell in the drawer.
+   *
+   * {@link needsDeckShell} for saved layouts: the arrangement had shells and the drawer
+   * is empty now. The saved roster's *ids* are another workspace's, but its length is
+   * transferable — see `serializedDeckSize`.
+   */
+  const savedNeedsDeckShell = useCallback(
+    (saved: SerializedDockview): boolean =>
+      serializedDeckSize(saved) > 0 &&
+      hasWorkspace &&
+      layout.api !== null &&
+      isDeckEmpty(layout.api),
     [layout.api, hasWorkspace]
   )
 
@@ -218,6 +244,9 @@ export function LayoutsDialog({
       // `openPane` focuses what it adds, and restoring a layout should not move the
       // cursor off the pane you were in.
       const active = api.activePanel?.api.id
+      if (savedNeedsDeckShell(item.layout)) {
+        layout.openPane("terminal", { target: "deck" })
+      }
       for (const kind of restoreFills(item.layout)) layout.openPane(kind)
 
       const panels = gridPanels(api)
@@ -248,7 +277,7 @@ export function LayoutsDialog({
         )
       }
     },
-    [layout, apply, restoreFills]
+    [layout, apply, restoreFills, savedNeedsDeckShell]
   )
 
   /**
@@ -264,9 +293,10 @@ export function LayoutsDialog({
   const blockedReason = (template: TemplateDef): string | null => {
     const api = layout.api
     if (!api) return "Open a workspace to arrange its panes."
-    // Mirrors `applyTemplate`: one about to open panes changes something by
-    // definition. Only once it has them is it judged on its shape.
-    if (fillsFor(template).length > 0) return null
+    // Mirrors `applyTemplate`, both halves: one about to open panes — in the grid or
+    // in the drawer — changes something by definition. Only once it has them is it
+    // judged on its shape.
+    if (fillsFor(template).length > 0 || needsDeckShell(template)) return null
     // And a shape that shows the deck changes the window whenever the drawer is
     // shut, whatever the grid above it already looks like.
     if (template.deck && isDeckCollapsed(api)) return null
