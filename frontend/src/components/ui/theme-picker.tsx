@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTheme } from 'next-themes'
-import { CaretUpDown, Check, Clock, MagnifyingGlass, Sun, Moon } from '@phosphor-icons/react'
+import { CaretUpDown, Check, Clock, Sun, Moon } from '@phosphor-icons/react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ThemeSchedulePanel } from '@/components/ui/theme-schedule-panel'
@@ -80,7 +80,6 @@ export function ThemePicker({ trigger }: { trigger?: (open: () => void) => React
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('themes')
   const [modeFilter, setModeFilter] = useState<'light' | 'dark'>(systemModeOrDark)
-  const [query, setQuery] = useState('')
 
   // Every selection here is a deliberate human choice, so it also parks an
   // override that holds a running theme schedule off until its next boundary.
@@ -100,29 +99,10 @@ export function ThemePicker({ trigger }: { trigger?: (open: () => void) => React
     [schedule],
   )
 
-  const needle = query.trim().toLowerCase()
-  const matchesQuery = useCallback(
-    (t: ThemeOption) => !needle || t.label.toLowerCase().includes(needle),
-    [needle],
-  )
-
   // Filter by light/dark. Adaptive themes (no `mode`, e.g. System) always show.
   const visibleThemes = useMemo(
-    () =>
-      THEME_OPTIONS.filter(
-        (t) => (t.mode === undefined || t.mode === modeFilter) && matchesQuery(t),
-      ),
-    [modeFilter, matchesQuery],
-  )
-  /** Hits hiding behind the other mode filter, so a search never looks empty by accident. */
-  const hiddenByMode = useMemo(
-    () =>
-      needle
-        ? THEME_OPTIONS.filter(
-            (t) => t.mode !== undefined && t.mode !== modeFilter && matchesQuery(t),
-          ).length
-        : 0,
-    [needle, modeFilter, matchesQuery],
+    () => THEME_OPTIONS.filter((t) => t.mode === undefined || t.mode === modeFilter),
+    [modeFilter],
   )
 
   const MODE_FILTERS = [
@@ -134,7 +114,6 @@ export function ThemePicker({ trigger }: { trigger?: (open: () => void) => React
     // Land on the filter that contains the current theme so it's visible in the
     // list; adaptive themes have no side, so fall back to the OS preference.
     setModeFilter(active?.mode ?? systemModeOrDark())
-    setQuery('')
     setTab('themes')
     setOpen(true)
   }
@@ -268,18 +247,6 @@ export function ThemePicker({ trigger }: { trigger?: (open: () => void) => React
                 className="flex min-h-0 flex-1 flex-col"
               >
                 <div className="shrink-0 space-y-2.5 border-b border-border px-4 py-3">
-                  {/* search */}
-                  <div className="relative">
-                    <MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                    <input
-                      type="text"
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Search themes"
-                      aria-label="Search themes"
-                      className="h-8 w-full rounded-md border border-transparent bg-muted/60 pl-8 pr-3 text-xs text-foreground transition-colors placeholder:text-muted-foreground focus-visible:border-ring/40 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/15"
-                    />
-                  </div>
                   {/* light/dark filter */}
                   <div className="flex gap-1 rounded-md bg-muted/50 p-0.5">
                     {MODE_FILTERS.map(({ value, label, icon: Icon }) => (
@@ -309,20 +276,9 @@ export function ThemePicker({ trigger }: { trigger?: (open: () => void) => React
                 <ScrollArea className="min-h-0 flex-1">
                   <div className="p-2">
                     {visibleThemes.length === 0 && (
-                      <div className="px-2 py-8 text-center">
-                        <p className="text-sm text-muted-foreground">
-                          {needle ? `No ${modeFilter} themes match “${query.trim()}”.` : 'No themes match this filter.'}
-                        </p>
-                        {hiddenByMode > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setModeFilter(modeFilter === 'light' ? 'dark' : 'light')}
-                            className="mt-1 text-xs font-medium text-primary underline-offset-4 hover:underline"
-                          >
-                            {hiddenByMode} in {modeFilter === 'light' ? 'Dark' : 'Light'} — switch
-                          </button>
-                        )}
-                      </div>
+                      <p className="px-2 py-8 text-center text-sm text-muted-foreground">
+                        No themes match this filter.
+                      </p>
                     )}
                     {visibleThemes.map((opt) => {
                       const isSelected = opt.value === theme
