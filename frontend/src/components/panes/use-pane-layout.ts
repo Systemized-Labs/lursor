@@ -22,7 +22,7 @@ import {
   openInDeck,
   revealDeck,
   revealPanel,
-  setDeckPresent,
+  setDeckVisible,
   watchDeck,
 } from "@/components/panes/terminal-deck"
 import { clearTabStorage } from "@/lib/tab-storage"
@@ -221,10 +221,11 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
     (target: DockviewApi, ws?: string) => {
       const stored = readLayout(ws)
       // The deck is structural: created once per dockview instance and untouched by
-      // `clear()` or `fromJSON`. It is present only in a workspace, because a
-      // terminal with no workspace has no directory to run in.
+      // `clear()` or `fromJSON`. It belongs to a workspace, because a terminal with
+      // no workspace has no directory to run in — and this is only the starting
+      // point, since a layout that remembers the deck closed restores that below.
       ensureDeck(target)
-      setDeckPresent(target, Boolean(ws))
+      setDeckVisible(target, Boolean(ws))
       if (!stored && !ws) {
         // A *global* layout has no sensible default. `defaultLayout` seeds a chat
         // pane, and a chat with no workspace has nothing to talk to — so start

@@ -102,21 +102,40 @@ export function gridPanels(api: DockviewApi): IDockviewPanel[] {
 }
 
 /**
- * Whether the deck exists in this layout at all.
+ * Whether the deck is in the window at all — the third state, past collapsed.
  *
- * A *global* layout — the one behind `/analytics` and friends, keyed `_global` — has
- * no workspace, so it cannot hold a terminal, so it has no deck. Inside a workspace
- * the deck is always there: collapsed onto its strip it is a 36px handle with a `+`
- * on it, which is also the only obvious way to open a terminal. A deck that hid
- * itself when empty would take that with it.
+ * Collapsed leaves the strip as a handle; hidden takes even that away, which is what
+ * the strip's `×` is for and what a *global* layout gets unconditionally (no
+ * workspace, so no directory to run a shell in, so no deck). Dockview serializes it
+ * as the edge group's `visible`, so a deck someone closed stays closed across a
+ * reload without a key of our own.
+ *
+ * The way back is asking for a terminal: every path that opens or reveals one goes
+ * through {@link revealDeck}, which brings the deck back with it.
  */
-export function setDeckPresent(api: DockviewApi, present: boolean): void {
-  if (api.isEdgeGroupVisible(EDGE) === present) return
-  api.setEdgeGroupVisible(EDGE, present)
+export function setDeckVisible(api: DockviewApi, visible: boolean): void {
+  if (api.isEdgeGroupVisible(EDGE) === visible) return
+  api.setEdgeGroupVisible(EDGE, visible)
 }
 
 export function isDeckCollapsed(api: DockviewApi): boolean {
   return api.getEdgeGroup(EDGE)?.isCollapsed() ?? true
+}
+
+/**
+ * Close the deck: its panes go, and the strip goes with them.
+ *
+ * The `×` beside the collapse caret, and the difference between the two is the whole
+ * point of having both — the caret puts the drawer away with everything still running
+ * in it, this one is done with it. The shells are closed rather than left running
+ * behind a hidden strip: "close" already means close on a pane's own `×`, and a
+ * terminal nobody can see or reach is not a state worth serializing.
+ */
+export function closeDeck(api: DockviewApi): void {
+  const group = deckGroup(api)
+  // A copy: closing mutates the group's own list as it goes.
+  for (const panel of [...(group?.panels ?? [])]) panel.api.close()
+  setDeckVisible(api, false)
 }
 
 /**
@@ -130,7 +149,7 @@ export function isDeckCollapsed(api: DockviewApi): boolean {
 export function revealDeck(api: DockviewApi): void {
   const deck = api.getEdgeGroup(EDGE)
   if (!deck) return
-  setDeckPresent(api, true)
+  setDeckVisible(api, true)
   deck.expand()
 }
 

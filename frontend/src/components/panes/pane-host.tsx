@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { CaretDown, CaretUp, Plus, Terminal } from "@phosphor-icons/react"
+import { CaretDown, CaretUp, Plus, Terminal, X } from "@phosphor-icons/react"
 import {
   DockviewReact,
   type DockviewReadyEvent,
@@ -25,7 +25,7 @@ import {
   type PaneParams,
 } from "@/components/panes/pane-kinds"
 import type { PaneLayout } from "@/components/panes/use-pane-layout"
-import { gridPanels } from "@/components/panes/terminal-deck"
+import { closeDeck, gridPanels } from "@/components/panes/terminal-deck"
 import "@/components/panes/pane-theme.css"
 
 /**
@@ -258,6 +258,7 @@ function Pane({
  */
 function DeckActions({
   api,
+  containerApi,
   panels,
   layout,
 }: IDockviewHeaderActionsProps & { layout: PaneLayout }) {
@@ -270,18 +271,26 @@ function DeckActions({
     return () => sub.dispose()
   }, [api])
 
-  const label = collapsed ? "Show the terminal deck" : "Hide the terminal deck"
+  const putAway = collapsed ? "Show the terminal deck" : "Hide the terminal deck"
+  // Say what it takes with it. The caret next door means the drawer keeps running,
+  // so the one that does not had better be specific about the difference.
+  const shells =
+    panels.length === 1 ? "1 shell" : `${panels.length} shells`
+  const close =
+    panels.length > 0
+      ? `Close the terminal deck (${shells})`
+      : "Close the terminal deck"
 
   return (
-    <div className="flex items-center">
+    <div className="mr-1 flex items-center">
       {/* Nothing to reveal in an empty drawer: until there is a shell in it, the
-          strip's only job is the `+`. */}
+          strip's only jobs are the `+` and the `×`. */}
       {panels.length > 0 ? (
         <button
           type="button"
           onClick={() => (collapsed ? api.expand() : api.collapse())}
-          title={label}
-          aria-label={label}
+          title={putAway}
+          aria-label={putAway}
           aria-expanded={!collapsed}
           className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
@@ -297,9 +306,18 @@ function DeckActions({
         onClick={() => layout.openPane("terminal")}
         title="New terminal"
         aria-label="New terminal"
-        className="mr-1 flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
       >
         <Plus className="size-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => closeDeck(containerApi)}
+        title={close}
+        aria-label={close}
+        className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
+      >
+        <X className="size-4" />
       </button>
     </div>
   )
@@ -333,12 +351,15 @@ function AddPaneMenu({
   hasWorkspace: boolean
 }) {
   // A global layout offers only the kinds that mean something without a workspace.
-  // A Changes pane would have no repo to diff, and a terminal no directory to run
-  // in. Terminals are left out of this menu everywhere: a `+` on a zone's strip
-  // means "here", and a terminal opens in the deck — which has its own `+` for it.
+  // A Changes pane would have no repo to diff, and a terminal no directory to run in.
+  //
+  // Terminal is the one entry here that does not honour the "here" a `+` on a zone
+  // implies — it opens in the deck, wherever it was asked for. That is the deliberate
+  // trade for having a way back: the deck's own `+` is unreachable once someone has
+  // closed the deck, and a terminal you cannot reopen is worse than a menu item that
+  // opens it one band lower than you clicked.
   const kinds = ADDABLE_KINDS.filter(
-    (kind) =>
-      kind !== "terminal" && (hasWorkspace || !WORKSPACE_KINDS.includes(kind))
+    (kind) => hasWorkspace || !WORKSPACE_KINDS.includes(kind)
   )
   return (
     <DropdownMenu>
