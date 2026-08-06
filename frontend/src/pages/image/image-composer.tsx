@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react"
 import { toast } from "sonner"
 
 import { useImageModels, useSubmitImage } from "@/api/images"
+import { priceLabel } from "@/lib/media-price"
 import { AspectGlyph, Field, Segmented } from "@/components/generation-controls"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
@@ -27,7 +28,9 @@ import {
   OUTPUT_FORMATS,
   SIZE_OPTIONS,
   describeEstimate,
+  ratioLabel,
   summarize,
+  toHostedInput,
   toImageInput,
 } from "./image-settings"
 
@@ -49,14 +52,15 @@ const PLACEHOLDER =
  *   footer states it in units that can tell them apart.
  */
 export function ImageComposer({
-  connectionId,
+  source,
   composer,
 }: {
-  connectionId: string
+  /** Source ref — `"openrouter"` or `"laios:{id}"`. Chosen in Settings. */
+  source: string
   composer: ImageComposer
 }) {
-  const { options, controlReachable } = useImageModels(connectionId)
-  const submit = useSubmitImage(connectionId)
+  const { options, reason } = useImageModels(source)
+  const submit = useSubmitImage(source)
   const {
     model,
     setModel,
@@ -77,7 +81,7 @@ export function ImageComposer({
   // (both recipes are solo_only but a multi-node box can serve one each), so this
   // picks rather than assumes.
   useEffect(() => {
-    if (!model && options.length > 0) setModel(options[0].servedName)
+    if (!model && options.length > 0) setModel(options[0].id)
   }, [options, model, setModel])
 
   // "Reuse" lands the run in the form, which is above the card that was clicked —
@@ -88,7 +92,12 @@ export function ImageComposer({
     promptRef.current?.focus()
   }, [focusTick])
 
-  const estimate = describeEstimate(settings, profile)
+  const selected = options.find((option) => option.id === model)
+  const hosted = selected?.provider === "openrouter" ? selected : null
+  // A hosted model has no denoise loop and no measured wall clock, so the local
+  // step/CFG table simply does not describe it — see `image-settings.ts`.
+  const estimate = hosted ? null : describeEstimate(settings, profile)
+  const ratios = hosted?.openrouter?.aspect_ratios ?? []
   const activeSize = SIZE_OPTIONS.find(
     (option) => option.value === settings.size
   )
@@ -106,7 +115,9 @@ export function ImageComposer({
     }
     try {
       await submit.mutateAsync(
-        toImageInput(model.trim(), prompt.trim(), settings, profile)
+        hosted
+          ? toHostedInput(hosted, prompt.trim(), settings)
+          : toImageInput(model.trim(), prompt.trim(), settings, profile)
       )
       toast.success("Generating", {
         description: estimate
@@ -137,8 +148,14 @@ export function ImageComposer({
             </SelectTrigger>
             <SelectContent>
               {options.map((option) => (
-                <SelectItem key={option.servedName} value={option.servedName}>
+                <SelectItem key={option.ref} value={option.id}>
                   {option.label}
+                  {priceLabel(option.price) ? (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {priceLabel(option.price)}
+                    </span>
+                  ) : null}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -155,7 +172,18 @@ export function ImageComposer({
 
         <div className="ml-auto flex items-center gap-1">
           <span className="hidden text-xs tabular-nums text-muted-foreground sm:inline">
-            {summarize(settings, profile)}
+            {/* The header line must describe the request that will actually be
+                sent: "1024 × 1024 · 20 steps" over a hosted model names two
+                fields the body will not contain. */}
+            {hosted
+              ? [
+                  ratios.length ? ratioLabel(settings.size) : null,
+                  hosted.openrouter?.resolutions[0],
+                  hosted.openrouter?.formats.length ? settings.outputFormat : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : summarize(settings, profile)}
           </span>
           <Button
             variant="ghost"
@@ -175,15 +203,16 @@ export function ImageComposer({
         </div>
       </div>
 
-      {/* Two different reasons the picker can be empty, and the operator needs to
-          know which: nothing is serving, or the control plane isn't published
-          through the tunnel so we can't tell. */}
+      {/* Why the picker is empty. The reason is generated server-side because
+          only the resolver knows which of several it is. */}
       {options.length === 0 ? (
         <p className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           <WarningCircle className="mt-px h-3.5 w-3.5 shrink-0" />
-          {controlReachable
-            ? "No image-capable model is serving on this box — serve one from the LAIOS page, or name it directly above."
-            : "Could not read this box's model inventory (a tunnel without expose_control). Name the served model directly above."}
+          {/* The resolver's own sentence. It is the only thing that can say
+              *which* of the several reasons applies — nothing serving, no key,
+              an unreadable inventory — and it is the same sentence Settings and
+              the agent editor show. */}
+          {reason || "No image model is available. Name one directly above."}
         </p>
       ) : null}
 
@@ -192,7 +221,10 @@ export function ImageComposer({
           choice on the page — worth a line rather than only a name. */}
       {model ? (
         <p className="border-b border-border px-3 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
-          {profile.note}
+          {/* The catalogue's own description for a hosted model. Falling through
+              to the local profile table would print "not a model this build has
+              measured", which is true of every hosted model and useless. */}
+          {hosted ? hosted.note : profile.note}
         </p>
       ) : null}
 
@@ -215,23 +247,50 @@ export function ImageComposer({
 
       {advancedOpen ? (
         <div className="grid gap-5 border-t border-border px-3 py-4 sm:grid-cols-2">
-          <Field
-            label="Size"
-            value={activeSize ? settings.size.replace("x", " × ") : settings.size}
-            hint="1024² reshaped, every edge a multiple of 64. Neither image model pins its dimensions the way the video engine does."
-          >
-            <Segmented
-              ariaLabel="Size"
-              value={settings.size}
-              onChange={(value) => update({ size: value })}
-              options={SIZE_OPTIONS.map((option) => ({
-                value: option.value,
-                label: option.label,
-                glyph: <AspectGlyph w={option.w} h={option.h} />,
-              }))}
-            />
-          </Field>
+          {hosted ? (
+            ratios.length > 0 ? (
+              <Field
+                label="Aspect ratio"
+                value={ratioLabel(settings.size)}
+                hint="A hosted model is asked for a shape, not a pixel size — the provider picks the dimensions."
+              >
+                <Segmented
+                  ariaLabel="Aspect ratio"
+                  value={ratioLabel(settings.size)}
+                  onChange={(value) => update({ size: value })}
+                  options={ratios.map((ratio) => {
+                    const [w, h] = ratio.split(":").map(Number)
+                    return {
+                      value: ratio,
+                      label: ratio,
+                      glyph: <AspectGlyph w={w || 1} h={h || 1} />,
+                    }
+                  })}
+                />
+              </Field>
+            ) : null
+          ) : (
+            <Field
+              label="Size"
+              value={
+                activeSize ? settings.size.replace("x", " × ") : settings.size
+              }
+              hint="1024² reshaped, every edge a multiple of 64. Neither image model pins its dimensions the way the video engine does."
+            >
+              <Segmented
+                ariaLabel="Size"
+                value={settings.size}
+                onChange={(value) => update({ size: value })}
+                options={SIZE_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                  glyph: <AspectGlyph w={option.w} h={option.h} />,
+                }))}
+              />
+            </Field>
+          )}
 
+          {hosted ? null : (
           <Field
             label="Denoise steps"
             htmlFor="image-steps"
@@ -247,11 +306,12 @@ export function ImageComposer({
               onChange={(e) => update({ steps: Number(e.target.value) })}
             />
           </Field>
+          )}
 
           {/* Only for a model that has guidance at all. Z-Image is CFG-distilled
               and defaults negative_prompt to None, so offering these there would
               switch on something the checkpoint does not want. */}
-          {profile.guidance ? (
+          {!hosted && profile.guidance ? (
             <>
               <Field
                 label="Guidance (CFG)"
@@ -291,6 +351,7 @@ export function ImageComposer({
             </>
           ) : null}
 
+          {hosted && !hosted.openrouter?.seed ? null : (
           <Field
             label="Seed"
             htmlFor="image-seed"
@@ -323,19 +384,28 @@ export function ImageComposer({
               </Button>
             </div>
           </Field>
+          )}
 
-          <Field
-            label="Format"
-            value={settings.outputFormat}
-            hint="The engine returns JPEG unless asked otherwise. PNG is worth it when judging rendered text."
-          >
-            <Segmented
-              ariaLabel="Output format"
+          {hosted && !hosted.openrouter?.formats.length ? null : (
+            <Field
+              label="Format"
               value={settings.outputFormat}
-              onChange={(value) => update({ outputFormat: value })}
-              options={OUTPUT_FORMATS}
-            />
-          </Field>
+              hint="The engine returns JPEG unless asked otherwise. PNG is worth it when judging rendered text."
+            >
+              <Segmented
+                ariaLabel="Output format"
+                value={settings.outputFormat}
+                onChange={(value) => update({ outputFormat: value })}
+                options={
+                  hosted
+                    ? OUTPUT_FORMATS.filter((f) =>
+                        hosted.openrouter?.formats.includes(f.value)
+                      )
+                    : OUTPUT_FORMATS
+                }
+              />
+            </Field>
+          )}
         </div>
       ) : null}
 
@@ -345,6 +415,20 @@ export function ImageComposer({
             <>
               Roughly <span className="text-foreground">{estimate}</span> on the
               box. It keeps running if you navigate away.
+            </>
+          ) : hosted ? (
+            <>
+              Billed per image
+              {priceLabel(hosted.price) ? (
+                <>
+                  {" — "}
+                  <span className="text-foreground">
+                    {priceLabel(hosted.price)}
+                  </span>{" "}
+                  here so far
+                </>
+              ) : null}
+              . It keeps running if you navigate away.
             </>
           ) : (
             "No timing measured for this model — it keeps running if you navigate away."

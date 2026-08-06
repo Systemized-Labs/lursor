@@ -165,6 +165,55 @@ class CompactionDefaultsUpdate(BaseModel):
     model: str | None = None
 
 
+# Where images and clips are generated. "laios" resolves across the connected
+# boxes; "openrouter" uses OpenRouter's media APIs. See ``app/media/refs.py`` for
+# the ref grammar that names a specific model within a source.
+MediaSource = Literal["laios", "openrouter"]
+
+
+class MediaModalityRead(BaseModel):
+    """The configured source and model for one modality, and what it resolves to.
+
+    ``available`` / ``reason`` / ``effective_model`` come from the same resolver
+    the capability probe and the agent build use
+    (``agents/image_runtime.resolve_image_target``), so this card and the agent
+    editor's hint can never disagree about whether generation works.
+    """
+
+    source: MediaSource
+    # The pinned model ref, or null for "auto — the cheapest the source offers".
+    model: str | None = None
+    model_source: Literal["database", "auto"] = "auto"
+    # Whether a generation would succeed right now, and the one sentence saying
+    # why not. The source never falls back to the other one, so the reason has to
+    # carry that — otherwise an empty picker reads as a bug.
+    available: bool = False
+    reason: str = ""
+    # What a run would actually reach, as a display name.
+    effective_model: str | None = None
+
+
+class MediaSettingsRead(BaseModel):
+    """Both modalities plus the context the UI needs to explain a dead option."""
+
+    image: MediaModalityRead
+    video: MediaModalityRead
+    # So the section can say "add a key" rather than just "unavailable".
+    openrouter_configured: bool = False
+    laios_connected: bool = False
+
+
+class MediaSettingsUpdate(BaseModel):
+    # Partial, like ``WebSearchSettingsUpdate``: only fields present in the request
+    # body are applied (tracked via ``model_fields_set``), so the image and video
+    # choices save independently. A present-but-null model clears the pin back to
+    # "auto"; a present-but-null source reverts to the default ("laios").
+    image_source: MediaSource | None = None
+    image_model: str | None = None
+    video_source: MediaSource | None = None
+    video_model: str | None = None
+
+
 # Per-command default agent is an open ``dict[str, str]`` map (command name ->
 # agent id), handled directly in ``api/settings.py`` — no fixed schema, so a new
 # slash command needs no backend change (the frontend registry defines commands).

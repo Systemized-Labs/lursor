@@ -9,6 +9,8 @@ import type {
   DefaultAgentsSettings,
   MemorySettings,
   MemorySettingsInput,
+  MediaSettings,
+  MediaSettingsInput,
   MemoryTestResult,
   OpenRouterSettings,
   OpenRouterSettingsInput,
@@ -39,6 +41,10 @@ export const settingsApi = {
     api.get<DefaultAgentsSettings>("/settings/default-agents", signal),
   setDefaultAgents: (input: DefaultAgentsInput) =>
     api.put<DefaultAgentsSettings>("/settings/default-agents", input),
+  getMedia: (signal?: AbortSignal) =>
+    api.get<MediaSettings>("/settings/media", signal),
+  setMedia: (input: MediaSettingsInput) =>
+    api.put<MediaSettings>("/settings/media", input),
   getCompaction: (signal?: AbortSignal) =>
     api.get<CompactionDefaults>("/settings/compaction", signal),
   setCompaction: (input: CompactionDefaultsInput) =>
@@ -49,6 +55,7 @@ export const settingsKeys = {
   openrouter: ["settings", "openrouter"] as const,
   webSearch: ["settings", "web-search"] as const,
   memory: ["settings", "memory"] as const,
+  media: ["settings", "media"] as const,
   defaultAgents: ["settings", "default-agents"] as const,
   compaction: ["settings", "compaction"] as const,
 }
@@ -118,6 +125,36 @@ export function useSaveWebSearchSettings() {
     mutationFn: (input: WebSearchSettingsInput) => settingsApi.setWebSearch(input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: settingsKeys.webSearch })
+    },
+  })
+}
+
+/**
+ * Where images and clips are generated, app-wide.
+ *
+ * Read by the Settings section that edits it *and* by the Image and Video pages,
+ * which follow the configured source rather than offering their own picker — so
+ * there is exactly one place the choice is made.
+ */
+export function useMediaSettings() {
+  return useQuery({
+    queryKey: settingsKeys.media,
+    queryFn: ({ signal }) => settingsApi.getMedia(signal),
+  })
+}
+
+export function useSaveMediaSettings() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: MediaSettingsInput) => settingsApi.setMedia(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: settingsKeys.media })
+      // The capability probes, the model lists and every page that reads them all
+      // resolve through the source that just changed. Without this the Image page
+      // would keep offering the previous source's models until something else
+      // happened to refetch.
+      qc.invalidateQueries({ queryKey: ["images"] })
+      qc.invalidateQueries({ queryKey: ["videos"] })
     },
   })
 }

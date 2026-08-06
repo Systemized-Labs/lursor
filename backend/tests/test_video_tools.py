@@ -495,7 +495,7 @@ async def test_cancel_stops_a_running_job(box, monkeypatch):
     async with async_session_factory() as session:
         from app.agents.video_tools import _find_job
 
-        job = await _find_job(session, runtime.connection_id, "vid_test")
+        job = await _find_job(session, runtime, "vid_test")
         assert job is not None and job.status == "cancelled"
 
 

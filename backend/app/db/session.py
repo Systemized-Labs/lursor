@@ -310,10 +310,49 @@ async def _apply_lightweight_migrations(conn) -> None:
             "ALTER TABLE app_config ADD COLUMN compaction_threshold FLOAT"
         ),
         "compaction_ratio": "ALTER TABLE app_config ADD COLUMN compaction_ratio FLOAT",
+        # Where images and clips are generated, and which model within that source
+        # (see ``AppConfig.image_source``). All four NULL means "laios, cheapest
+        # available", which is precisely what every install did before this
+        # setting existed — so an upgrade changes nothing until someone opens
+        # Settings → Image & video.
+        "image_source": "ALTER TABLE app_config ADD COLUMN image_source VARCHAR",
+        "video_source": "ALTER TABLE app_config ADD COLUMN video_source VARCHAR",
+        "image_model": "ALTER TABLE app_config ADD COLUMN image_model VARCHAR",
+        "video_model": "ALTER TABLE app_config ADD COLUMN video_model VARCHAR",
     }
     for col, ddl in app_config_additions.items():
         if col not in app_config_cols:
             await conn.execute(text(ddl))
+
+    # Which source produced a generation, and what it cost. Every row that exists
+    # when this runs came from a laios box, so ``provider`` backfills to 'laios'
+    # and ``cost_usd`` stays NULL — a box reports a time and a peak, not a price.
+    # ``video_jobs.content_url`` is the OpenRouter retry handle and is meaningless
+    # for a laios job (see ``api/videos.py``).
+    for table, extras in (
+        ("image_generations", {"cost_usd": "FLOAT"}),
+        ("video_jobs", {"cost_usd": "FLOAT", "content_url": "VARCHAR"}),
+    ):
+        cols = await columns(table)
+        if "provider" not in cols:
+            await conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN provider VARCHAR DEFAULT 'laios'")
+            )
+            # SQLite's ADD COLUMN … DEFAULT does backfill, but saying so explicitly
+            # keeps the intent readable and is a no-op on every later boot.
+            await conn.execute(
+                text(f"UPDATE {table} SET provider = 'laios' WHERE provider IS NULL")
+            )
+        for col, sql_type in extras.items():
+            if col not in cols:
+                await conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN {col} {sql_type}")
+                )
+        await conn.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_provider ON {table} (provider)"
+            )
+        )
 
     # Plan/goal columns on threads (all default to a benign "chat"/idle state so
     # existing rows keep behaving exactly as before). ``status`` is the generalized

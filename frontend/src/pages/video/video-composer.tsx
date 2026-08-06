@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react"
 import { toast } from "sonner"
 
 import { useSubmitVideo, useVideoModels } from "@/api/videos"
+import { priceLabel } from "@/lib/media-price"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
 import { Input } from "@/components/ui/input"
@@ -33,9 +34,12 @@ import {
   estimateSeconds,
   formatEstimate,
   formatSeconds,
+  nearestDuration,
   summarize,
+  toHostedVideoInput,
   toVideoInput,
 } from "./video-settings"
+import type { VideoSettings } from "./video-settings"
 
 const PLACEHOLDER =
   "a paper boat drifting across a puddle at dusk, shallow depth of field"
@@ -55,14 +59,15 @@ const PLACEHOLDER =
  * see *before* committing.
  */
 export function VideoComposer({
-  connectionId,
+  source,
   composer,
 }: {
-  connectionId: string
+  /** Source ref — `"openrouter"` or `"laios:{id}"`. Chosen in Settings. */
+  source: string
   composer: VideoComposer
 }) {
-  const { options, controlReachable } = useVideoModels(connectionId)
-  const submit = useSubmitVideo(connectionId)
+  const { options, reason } = useVideoModels(source)
+  const submit = useSubmitVideo(source)
   const {
     model,
     setModel,
@@ -81,7 +86,7 @@ export function VideoComposer({
   // Preselect the only video model serving, which is the common case — one
   // MiniMax-H3 instance per box, since the recipe is solo_only.
   useEffect(() => {
-    if (!model && options.length > 0) setModel(options[0].servedName)
+    if (!model && options.length > 0) setModel(options[0].id)
   }, [options, model, setModel])
 
   // "Reuse" lands the run in the form, which is halfway up the page from the card
@@ -92,7 +97,37 @@ export function VideoComposer({
     promptRef.current?.focus()
   }, [focusTick])
 
-  const estimate = estimateSeconds(settings.steps)
+  const selected = options.find((option) => option.id === model)
+  const hosted = selected?.provider === "openrouter" ? selected : null
+  // A hosted model has no denoise loop and runs on hardware we cannot time, so
+  // the local per-step estimate does not describe it.
+  const estimate = hosted ? null : estimateSeconds(settings.steps)
+  const ratios = hosted?.aspect_ratios ?? []
+  const durations = hosted?.durations ?? []
+  const cost = hosted?.price
+    ? hosted.price.amount * settings.durationSeconds
+    : null
+
+  // Snap the form onto what the chosen model actually offers. The defaults are
+  // H3's (16:9, 4s) and a hosted model may list neither, so submitting them
+  // unchanged would earn a rejection for a request nobody deliberately made.
+  useEffect(() => {
+    if (!hosted) return
+    const patch: Partial<VideoSettings> = {}
+    if (ratios.length && !ratios.includes(settings.aspectRatio)) {
+      patch.aspectRatio = ratios.includes("16:9") ? "16:9" : ratios[0]
+    }
+    if (durations.length && !durations.includes(settings.durationSeconds)) {
+      patch.durationSeconds = nearestDuration(
+        settings.durationSeconds,
+        durations
+      )
+    }
+    if (Object.keys(patch).length) update(patch)
+    // Keyed on the model alone: re-running on every settings edit would fight
+    // the user's own choice back to the default.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hosted?.id])
   const activeAspect = ASPECT_OPTIONS.find(
     (option) => option.value === settings.aspectRatio
   )
@@ -110,12 +145,16 @@ export function VideoComposer({
     }
     try {
       await submit.mutateAsync(
-        toVideoInput(model.trim(), prompt.trim(), settings)
+        hosted
+          ? toHostedVideoInput(hosted, prompt.trim(), settings)
+          : toVideoInput(model.trim(), prompt.trim(), settings)
       )
       toast.success("Generation submitted", {
         description: estimate
           ? `Expect ${formatEstimate(estimate)}. It keeps running if you leave.`
-          : undefined,
+          : cost !== null
+            ? `About $${cost.toFixed(2)}. It keeps running if you leave.`
+            : undefined,
       })
       setPrompt("")
     } catch (err) {
@@ -141,8 +180,14 @@ export function VideoComposer({
             </SelectTrigger>
             <SelectContent>
               {options.map((option) => (
-                <SelectItem key={option.servedName} value={option.servedName}>
+                <SelectItem key={option.ref} value={option.id}>
                   {option.label}
+                  {priceLabel(option.price) ? (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {priceLabel(option.price)}
+                    </span>
+                  ) : null}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -159,7 +204,18 @@ export function VideoComposer({
 
         <div className="ml-auto flex items-center gap-1">
           <span className="hidden text-xs tabular-nums text-muted-foreground sm:inline">
-            {summarize(settings)}
+            {/* The header must describe the request that will actually be sent:
+                "1344 × 768 · 8 steps" over a hosted model names a pixel size it
+                never receives and a knob it does not have. */}
+            {hosted
+              ? [
+                  ratios.length ? settings.aspectRatio : null,
+                  `${formatSeconds(settings.durationSeconds)}s`,
+                  hosted.resolutions[0],
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : summarize(settings)}
           </span>
           <Button
             variant="ghost"
@@ -179,15 +235,13 @@ export function VideoComposer({
         </div>
       </div>
 
-      {/* Two different reasons the picker can be empty, and the operator needs to
-          know which: nothing is serving, or the control plane isn't published
-          through the tunnel so we can't tell. */}
+      {/* Why the picker is empty. The reason is generated server-side because
+          only the resolver knows which of several it is: nothing serving, no key,
+          an unreadable inventory, or a model whose request shape we cannot drive. */}
       {options.length === 0 ? (
         <p className="flex items-start gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           <WarningCircle className="mt-px h-3.5 w-3.5 shrink-0" />
-          {controlReachable
-            ? "No video-capable model is serving on this box — serve one from the LAIOS page, or name it directly above."
-            : "Could not read this box's model inventory (a tunnel without expose_control). Name the served model directly above."}
+          {reason || "No video model is available. Name one directly above."}
         </p>
       ) : null}
 
@@ -215,49 +269,98 @@ export function VideoComposer({
               ariaLabel="Aspect ratio"
               value={settings.aspectRatio}
               onChange={(value) => update({ aspectRatio: value })}
-              options={ASPECT_OPTIONS.map((option) => ({
-                value: option.value,
-                label: option.label,
-                glyph: <AspectGlyph w={option.w} h={option.h} />,
-              }))}
+              options={
+                // The catalogue's list for a hosted model — most offer far more
+                // than H3's three, and offering only three would hide them.
+                hosted
+                  ? ratios.map((ratio) => {
+                      const [w, h] = ratio.split(":").map(Number)
+                      return {
+                        value: ratio,
+                        label: ratio,
+                        glyph: <AspectGlyph w={w || 1} h={h || 1} />,
+                      }
+                    })
+                  : ASPECT_OPTIONS.map((option) => ({
+                      value: option.value,
+                      label: option.label,
+                      glyph: <AspectGlyph w={option.w} h={option.h} />,
+                    }))
+              }
             />
           </Field>
 
-          {/* Stated, not offered. The engine takes exactly one short edge and
-              rejects the rest outright, so a picker here could only ever hand
-              you four ways to get a 400. The sizes are the engine's own, not
-              arithmetic on the ratio — see ASPECT_OPTIONS. */}
+          {/* Stated, not offered — but *what* is stated is per source. The
+              768px short edge is H3's own validation, not a fact about video, so
+              asserting it over a hosted model would be inventing a constraint. */}
           <Field
-            label="Output size"
-            value={activeAspect?.size ?? `${settings.shortEdge}px short edge`}
-            hint={`Fixed by ${model || "this model"} — it accepts a ${FIXED_SHORT_EDGE}px short edge only. Use the aspect ratio to change the shape.`}
+            label="Resolution"
+            value={
+              hosted
+                ? (hosted.resolutions[0] ?? "provider default")
+                : (activeAspect?.size ?? `${settings.shortEdge}px short edge`)
+            }
+            hint={
+              hosted
+                ? hosted.resolutions.length
+                  ? `${hosted.label} renders at ${hosted.resolutions.join(", ")}; the cheapest tier is used. Use the aspect ratio to change the shape.`
+                  : `${hosted.label} publishes no resolution tiers — the provider picks the dimensions.`
+                : `Fixed by ${model || "this model"} — it accepts a ${FIXED_SHORT_EDGE}px short edge only. Use the aspect ratio to change the shape.`
+            }
           >
             <div className="flex h-9 items-center rounded-lg bg-muted/60 px-3 text-xs tabular-nums text-muted-foreground">
-              {activeAspect?.size ?? "—"}
+              {hosted
+                ? (hosted.resolutions[0] ?? "—")
+                : (activeAspect?.size ?? "—")}
             </div>
           </Field>
 
           <Field
             label="Duration"
             htmlFor="video-duration"
-            value={`${formatSeconds(settings.durationSeconds)}s`}
+            value={
+              `${formatSeconds(settings.durationSeconds)}s` +
+              (cost !== null ? ` · ~$${cost.toFixed(2)}` : "")
+            }
+            hint={
+              hosted && durations.length
+                ? "This model takes specific lengths, not a range."
+                : undefined
+            }
           >
-            <Slider
-              id="video-duration"
-              min={DURATION_RANGE.min}
-              max={DURATION_RANGE.max}
-              step={DURATION_RANGE.step}
-              ticks={DURATION_TICKS}
-              value={settings.durationSeconds}
-              onChange={(e) =>
-                update({ durationSeconds: Number(e.target.value) })
-              }
-            />
+            {/* Discrete, not a range: `supported_durations` is an enumeration and
+                a model listing whole seconds rejects 4.5 outright. */}
+            {hosted && durations.length ? (
+              <Segmented
+                ariaLabel="Duration"
+                value={String(settings.durationSeconds)}
+                onChange={(value) =>
+                  update({ durationSeconds: Number(value) })
+                }
+                options={durations.map((d) => ({
+                  value: String(d),
+                  label: `${formatSeconds(d)}s`,
+                }))}
+              />
+            ) : (
+              <Slider
+                id="video-duration"
+                min={DURATION_RANGE.min}
+                max={DURATION_RANGE.max}
+                step={DURATION_RANGE.step}
+                ticks={DURATION_TICKS}
+                value={settings.durationSeconds}
+                onChange={(e) =>
+                  update({ durationSeconds: Number(e.target.value) })
+                }
+              />
+            )}
           </Field>
 
           {/* No hint here on purpose: the readout gives the cost and the tick
               labels name both landmarks, so a sentence repeating them would only
               make this cell taller than the one beside it. */}
+          {hosted ? null : (
           <Field
             label="Denoise steps"
             htmlFor="video-steps"
@@ -273,7 +376,9 @@ export function VideoComposer({
               onChange={(e) => update({ steps: Number(e.target.value) })}
             />
           </Field>
+          )}
 
+          {hosted && !hosted.seed ? null : (
           <Field
             label="Seed"
             htmlFor="video-seed"
@@ -307,6 +412,7 @@ export function VideoComposer({
               </Button>
             </div>
           </Field>
+          )}
         </div>
       ) : null}
 
@@ -317,6 +423,14 @@ export function VideoComposer({
               Roughly <span className="text-foreground">{formatEstimate(estimate)}</span> on
               the box. It keeps running if you navigate away.
             </>
+          ) : cost !== null ? (
+            <>
+              About <span className="text-foreground">${cost.toFixed(2)}</span>{" "}
+              for {formatSeconds(settings.durationSeconds)}s. It keeps running if
+              you navigate away.
+            </>
+          ) : hosted ? (
+            "Billed by the provider — it keeps running if you navigate away."
           ) : (
             "Steps must be a positive number."
           )}

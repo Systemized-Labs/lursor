@@ -1,14 +1,22 @@
-"""Which boxes generate this run's images, what they cost, and which to reach for.
+"""Which models generate this run's images, what they cost, and which to reach for.
 
 ``build_deep_agent`` is synchronous, but deciding whether an agent gets the image
-tool needs a session (the connection rows) *and* the network (what each box is
-actually serving). So the async work happens here, once, and the result is handed to
-the builder as a single value — the same shape as
-:class:`~app.agents.video_runtime.VideoRuntime` and
+tool needs a session (the connection rows and the app's source setting) *and* the
+network (what each box is actually serving, or what OpenRouter offers). So the
+async work happens here, once, and the result is handed to the builder as a single
+value — the same shape as :class:`~app.agents.video_runtime.VideoRuntime` and
 :class:`~app.agents.skill_runtime.SkillRuntime`.
 
 ``None`` means "build without the image tool": the agent's ``include_image`` flag is
-off, there is no laios connection, or nothing connected is serving an image model.
+off, or the configured source cannot serve.
+
+**The source never falls back.** ``AppConfig.image_source`` picks laios or
+OpenRouter, and a run resolves within that source or not at all — even when the
+other one is sitting right there and working. Silently crossing would be worse
+than failing in both directions: onto OpenRouter it spends money nobody
+authorised, and onto a box it quietly swaps a chosen model for a different one.
+So every "no" here comes with a sentence, and the sentence names the source, or
+the empty picker reads as a bug rather than a choice.
 
 **Two deliberate differences from ``video_runtime.py``**, and both are worth the
 words because this module otherwise reads as its copy.
@@ -46,7 +54,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.api.laios import ServedModel, image_served_models
-from app.db.models import LaiosConnection
+from app.db.models import AppConfig, LaiosConnection
+from app.media import openrouter as openrouter_media
+from app.media import refs
+from app.media.history import observed_image_costs
+from app.media.openrouter import ORImageModel, PriceQuote
 
 logger = logging.getLogger(__name__)
 
@@ -164,21 +176,84 @@ def profile_for(model: str) -> ImageProfile:
 
 @dataclass(frozen=True)
 class ImageModel:
-    """One image model an agent could reach, and what it costs."""
+    """One image model an agent could reach, and what it costs.
+
+    Covers both sources. A laios model carries a :class:`ImageProfile` (this
+    build's own measurements, since a box publishes none) and a connection; an
+    OpenRouter model carries the catalogue entry it came from (which *is* its
+    declaration) and no connection. Exactly one of ``profile`` / ``catalogue`` is
+    set, and ``provider`` says which.
+    """
 
     connection_id: str
     connection_name: str
-    # The *served* name, which is what the gateway routes on — never a recipe id.
+    # The *served* name for laios (what the gateway routes on — never a recipe id),
+    # or the model slug for OpenRouter.
     model: str
-    profile: ImageProfile
+    # Positional third-after-model so that ``ImageModel(cid, name, served, profile)``
+    # — the laios shape this class had before OpenRouter existed — still reads.
+    profile: ImageProfile | None = None
+    provider: str = refs.LAIOS
+    catalogue: ORImageModel | None = None
+    # Mean USD this install has actually paid per image on this model, over its
+    # completed runs. The only honest price for an OpenRouter image before the
+    # first one (see ``app/media/history.py``); always None on laios, which bills
+    # in electricity and reports no number.
+    observed_cost: float | None = None
+
+    @property
+    def ref(self) -> str:
+        """The stable id for this model across both sources."""
+        return refs.format_model_ref(self.provider, self.model, self.connection_id)
+
+    @property
+    def source(self) -> str:
+        """The source ref to submit against."""
+        return refs.format_source(self.provider, self.connection_id)
+
+    @property
+    def is_openrouter(self) -> bool:
+        return self.provider == refs.OPENROUTER
+
+    @property
+    def label(self) -> str:
+        if self.catalogue is not None:
+            return self.catalogue.label
+        return self.profile.label if self.profile else self.model
+
+    @property
+    def note(self) -> str:
+        if self.catalogue is not None:
+            return self.catalogue.note
+        return self.profile.note if self.profile else ""
+
+    @property
+    def price(self) -> PriceQuote | None:
+        """A per-image price, when one is known. See ``app/media/history.py``."""
+        if self.observed_cost is None:
+            return None
+        return PriceQuote(amount=self.observed_cost, unit="image", approximate=True)
 
     @property
     def recognised(self) -> bool:
-        """False when this build has no measurements for it (see fail-open above)."""
-        return self.profile is not GENERIC_PROFILE
+        """Whether this build knows how to size a request for it.
+
+        For laios this is "we have measurements" (see the fail-open note above).
+        For OpenRouter it is always true: the catalogue states the model's own
+        parameters, so there is nothing left to guess at.
+        """
+        if self.provider == refs.OPENROUTER:
+            return True
+        return self.profile is not None and self.profile is not GENERIC_PROFILE
 
     def estimate_seconds(self, steps: int, guidance: bool) -> float | None:
-        """Expected wall clock, or None for a model with no measurement."""
+        """Expected wall clock, or None when there is no measurement.
+
+        Always None on OpenRouter: a hosted render's latency is queue time plus
+        someone else's hardware, and neither is knowable from here.
+        """
+        if self.profile is None:
+            return None
         per_step = self.profile.seconds_per_step
         if per_step is None:
             return None
@@ -189,28 +264,40 @@ class ImageModel:
 
 @dataclass(frozen=True)
 class ImageRuntime:
-    """Every serving image model across every connection, plus which one to use."""
+    """Every image model the configured source offers, plus which one to use."""
 
     models: tuple[ImageModel, ...]
     default: ImageModel
     # True when at least one model was reached but none is one this build has
     # measured. Surfaced so the agent editor can say "this works, but untested"
-    # rather than leaving the operator to infer it from a log line.
+    # rather than leaving the operator to infer it from a log line. Never true on
+    # OpenRouter, where the catalogue is the declaration.
     assumed: bool = field(default=False)
+    # Which source resolved. Every model in ``models`` is on it — the resolver
+    # never mixes the two.
+    provider: str = refs.LAIOS
+    # True when ``default`` is a model the user pinned in Settings rather than the
+    # source's own cheapest. Surfaced so a summary can say "pinned" instead of
+    # implying the resolver chose it.
+    pinned: bool = False
 
     def find(self, name: str | None) -> ImageModel | None:
         """The model the agent named, matched leniently, or the default for None.
 
-        Exact match on the served name first, then a unique substring — an operator
-        serving ``qwen-image-2512`` should not punish an agent that asked for
-        ``qwen-image``. An ambiguous substring resolves to nothing rather than to a
-        guess, and the caller lists what is available.
+        Exact match on the served name (or slug) first, then a unique substring —
+        an operator serving ``qwen-image-2512`` should not punish an agent that
+        asked for ``qwen-image``, and neither should ``openai/gpt-image-2`` punish
+        one that asked for ``gpt-image``. An ambiguous substring resolves to
+        nothing rather than to a guess, and the caller lists what is available.
+
+        A full ref (``openrouter:openai/gpt-image-2``) also matches, so the string
+        stored in Settings can be handed straight back in.
         """
         wanted = (name or "").strip().lower()
         if not wanted:
             return self.default
         for candidate in self.models:
-            if candidate.model.lower() == wanted:
+            if wanted in (candidate.model.lower(), candidate.ref.lower()):
                 return candidate
         matches = [c for c in self.models if wanted in c.model.lower()]
         return matches[0] if len(matches) == 1 else None
@@ -222,11 +309,18 @@ def _cost_key(model: ImageModel) -> tuple[Any, ...]:
     An unmeasured model sorts last rather than free: unknown cost is not zero cost,
     and defaulting to one would quietly make the untested path the common one. Ties
     break alphabetically so the choice is stable across runs.
+
+    The two sources measure different things — seconds of local GPU versus dollars
+    — and they are never in the same list, so there is nothing to reconcile. What
+    they share is the shape: a known cost, then an unknown one, then the name.
     """
-    per_step = model.profile.seconds_per_step
+    if model.provider == refs.OPENROUTER:
+        return (model.observed_cost is None, model.observed_cost or 0.0, model.model)
+    profile = model.profile or GENERIC_PROFILE
+    per_step = profile.seconds_per_step
     return (
         per_step is None,
-        model.profile.default_steps * (per_step or 0.0),
+        profile.default_steps * (per_step or 0.0),
         model.model,
     )
 
@@ -260,54 +354,144 @@ async def load_image_runtime(
     return (await resolve_image_target(session))[0]
 
 
+async def app_config(session: AsyncSession) -> AppConfig | None:
+    """The single settings row, or None before anything has been saved."""
+    return (await session.execute(select(AppConfig))).scalars().first()
+
+
 async def resolve_image_target(
     session: AsyncSession,
 ) -> tuple[ImageRuntime | None, str]:
     """The runtime plus a sentence saying why, for surfaces that must explain.
 
-    Same resolution as :func:`load_image_runtime` (and the same cache), but it also
-    answers "why not" — which the agent editor needs, because a checkbox that
-    silently does nothing is indistinguishable from a broken one.
+    Same resolution as :func:`load_image_runtime` (and the same caches), but it
+    also answers "why not" — which the agent editor and the Settings card both
+    need, because a checkbox that silently does nothing is indistinguishable from
+    a broken one.
+
+    Branches on the configured source and stays inside it (see the module note).
     """
-    result = await session.execute(
-        select(LaiosConnection).order_by(LaiosConnection.created_at)
-    )
-    connections = list(result.scalars().all())
+    cfg = await app_config(session)
+    source = refs.parse_source(cfg.image_source if cfg else None)
+    pinned = cfg.image_model if cfg else None
+
+    if source.is_openrouter:
+        found, unavailable = await _openrouter_models(session)
+    else:
+        found, unavailable = await _laios_models(session, source.connection_id)
+    if unavailable is not None:
+        return None, unavailable
+
+    return _assemble(found, pinned, source.provider, "image")
+
+
+async def _laios_models(
+    session: AsyncSession, connection_id: str
+) -> tuple[list[ImageModel], str | None]:
+    """Every image model the connected boxes are serving."""
+    query = select(LaiosConnection).order_by(LaiosConnection.created_at)
+    if connection_id:
+        query = query.where(LaiosConnection.id == connection_id)
+    connections = list((await session.execute(query)).scalars().all())
     if not connections:
-        return None, "no laios connection is configured"
+        return [], "no laios connection is configured"
 
-    found: list[ImageModel] = []
-    for conn in connections:
-        for served in await _image_models(conn):
-            found.append(
-                ImageModel(
-                    connection_id=conn.id,
-                    connection_name=conn.name,
-                    model=served.served_name,
-                    profile=profile_for(served.served_name),
-                )
-            )
-
+    found = [
+        ImageModel(
+            connection_id=conn.id,
+            connection_name=conn.name,
+            model=served.served_name,
+            provider=refs.LAIOS,
+            profile=profile_for(served.served_name),
+        )
+        for conn in connections
+        for served in await _image_models(conn)
+    ]
     if not found:
-        return None, "no connected box is serving an image model"
+        return [], (
+            "LAIOS is the configured image source, but no connected box is serving "
+            "an image model — serve one, or switch the source in Settings → "
+            "Image & video"
+        )
+    return found, None
 
+
+async def _openrouter_models(
+    session: AsyncSession,
+) -> tuple[list[ImageModel], str | None]:
+    """Every image model OpenRouter offers, priced by what we have paid for it."""
+    if not openrouter_media.configured():
+        return [], (
+            "OpenRouter is the configured image source, but no OpenRouter API key "
+            "is set — add one in Settings → Providers"
+        )
+    catalogue = await openrouter_media.image_models()
+    if not catalogue:
+        return [], (
+            "OpenRouter is the configured image source, but its image catalogue "
+            "could not be read. Nothing will run on a LAIOS box while OpenRouter "
+            "is selected"
+        )
+    observed = await observed_image_costs(session, refs.OPENROUTER)
+    return [
+        ImageModel(
+            connection_id="",
+            connection_name="OpenRouter",
+            model=entry.slug,
+            provider=refs.OPENROUTER,
+            catalogue=entry,
+            observed_cost=observed.get(entry.slug),
+        )
+        for entry in catalogue
+    ], None
+
+
+def _assemble(
+    found: list[ImageModel], pinned: str | None, provider: str, kind: str
+) -> tuple[ImageRuntime | None, str]:
+    """Order the candidates, honour the pin, and write the summary sentence.
+
+    A pin that no longer resolves **fails** rather than quietly reverting to the
+    cheapest. The pin is a decision about what to spend and what a result should
+    look like, and swapping it for a different model without saying so is the same
+    class of surprise as crossing sources. "Auto" is the setting for anyone who
+    wants the resolver to choose.
+    """
     ordered = tuple(sorted(found, key=_cost_key))
     default = ordered[0]
+
+    if pinned:
+        chosen = next((m for m in ordered if m.ref == pinned), None)
+        if chosen is None:
+            available = ", ".join(m.ref for m in ordered[:4]) or "nothing"
+            return None, (
+                f"the pinned {kind} model {pinned!r} is not available from "
+                f"{provider} right now (offering: {available}) — pick another in "
+                f"Settings → Image & video, or choose Auto"
+            )
+        default = chosen
+
     runtime = ImageRuntime(
         models=ordered,
         default=default,
         assumed=not any(m.recognised for m in ordered),
+        provider=provider,
+        pinned=bool(pinned),
     )
 
     logger.info(
-        "image tools resolved to %r on %r (%d model(s) available%s)",
+        "%s tools resolved to %r on %r (%d model(s) available%s%s)",
+        kind,
         default.model,
         default.connection_name,
         len(ordered),
+        ", pinned" if runtime.pinned else "",
         ", none measured by this build" if runtime.assumed else "",
     )
 
     reason = f"{default.model} on {default.connection_name}"
+    if runtime.pinned:
+        reason += " (pinned)"
     if len(ordered) > 1:
         reason += f" (+{len(ordered) - 1} more)"
     if not default.recognised:

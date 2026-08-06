@@ -7,12 +7,13 @@ import {
 import { useMemo } from "react"
 
 import { API_BASE, api } from "./client"
-import { useLaiosModels } from "./laios"
 import type {
   ImageCapability,
   LaiosImageInput,
   LaiosImageRun,
   LaiosImageStatus,
+  MediaModelList,
+  MediaModelOption,
 } from "./types"
 
 // Statuses that will not change again. Everything else is worth polling.
@@ -22,23 +23,39 @@ export function isImageActive(run: LaiosImageRun): boolean {
   return !TERMINAL.has(run.status)
 }
 
+/**
+ * Everything here is keyed by a **source ref**, not a laios connection id.
+ *
+ * An OpenRouter generation has no connection to be keyed on, and run ids were
+ * already uuids — so `(connection, run)` collapsed to `run`, and a content URL
+ * needs no source at all. `source` is optional on the reads: omitting it returns
+ * every source's history, which is what the gallery and the artifacts pane want.
+ */
 export const imagesApi = {
-  list: (cid: string, signal?: AbortSignal) =>
-    api.get<LaiosImageRun[]>(`/laios/connections/${cid}/images`, signal),
-  create: (cid: string, input: LaiosImageInput) =>
-    api.post<LaiosImageRun>(`/laios/connections/${cid}/images`, input),
-  // A row read — the backend's own task is what advances a generation, so unlike
-  // the video equivalent this touches no network and costs nothing to poll.
-  status: (cid: string, runId: string, signal?: AbortSignal) =>
-    api.get<LaiosImageRun>(`/laios/connections/${cid}/images/${runId}`, signal),
-  // Removes the run. Not a cancel: the engine has no cancel on this API, so a
-  // generation already on the GPU keeps it — this stops the backend waiting for
-  // it and drops the row.
-  remove: (cid: string, runId: string) =>
-    api.delete<{ deleted: string }>(
-      `/laios/connections/${cid}/images/${runId}`
+  list: (source?: string, signal?: AbortSignal) =>
+    api.get<LaiosImageRun[]>(
+      source ? `/media/images?source=${encodeURIComponent(source)}` : "/media/images",
+      signal
     ),
-  // Not connection-scoped: "can anything connected generate images".
+  create: (input: LaiosImageInput) =>
+    api.post<LaiosImageRun>("/media/images", input),
+  // A row read — the backend's own task is what advances a generation, on either
+  // source, so unlike the video equivalent this touches no network.
+  status: (runId: string, signal?: AbortSignal) =>
+    api.get<LaiosImageRun>(`/media/images/${runId}`, signal),
+  // Removes the run. Not a cancel: neither source offers one on its image API, so
+  // a generation already running keeps going — this stops the backend waiting for
+  // it and drops the row.
+  remove: (runId: string) =>
+    api.delete<{ deleted: string }>(`/media/images/${runId}`),
+  models: (source?: string, signal?: AbortSignal) =>
+    api.get<MediaModelList<MediaModelOption>>(
+      source
+        ? `/media/images/models?source=${encodeURIComponent(source)}`
+        : "/media/images/models",
+      signal
+    ),
+  // Not source-scoped: "can this app generate images at all, and with what".
   capability: (signal?: AbortSignal) =>
     api.get<ImageCapability>("/image/capability", signal),
 }
@@ -48,23 +65,24 @@ export const imagesApi = {
  *
  * Not routed through the JSON client — the browser fetches it itself. Already on
  * disk by the time a run is `completed`: the backend stores the image as part of
- * finishing, so this never blocks on the gateway.
+ * finishing, whichever source produced it, so this never blocks on an upstream.
  */
-export function imageContentUrl(cid: string, runId: string): string {
-  return `${API_BASE}/laios/connections/${cid}/images/${runId}/content`
+export function imageContentUrl(runId: string): string {
+  return `${API_BASE}/media/images/${runId}/content`
 }
 
 export const imageKeys = {
   all: ["images"] as const,
   capability: ["images", "capability"] as const,
-  runs: (cid: string) => ["images", cid, "runs"] as const,
-  run: (cid: string, runId: string) => ["images", cid, "run", runId] as const,
+  models: (source?: string) => ["images", "models", source ?? ""] as const,
+  runs: (source?: string) => ["images", "runs", source ?? ""] as const,
+  run: (runId: string) => ["images", "run", runId] as const,
 }
 
 /**
- * Whether any connected box can generate images, and which model would be used.
+ * Whether the configured source can generate images, and which model would run.
  *
- * Behind the same 5-minute resolver cache the agent build uses, so this is cheap;
+ * Behind the same resolver cache the agent build uses, so this is cheap;
  * `enabled` lets a caller skip it entirely until a dialog is open.
  */
 export function useImageCapability(enabled = true) {
@@ -77,12 +95,17 @@ export function useImageCapability(enabled = true) {
   })
 }
 
-/** Every generation submitted to this connection. */
-export function useImageRuns(cid: string | undefined) {
+/**
+ * Generations, optionally narrowed to one source.
+ *
+ * Passing nothing returns all of them on purpose. Switching the source in
+ * Settings must not empty the gallery — the images are still on disk, and a
+ * history that vanished on a settings change would read as data loss.
+ */
+export function useImageRuns(source?: string) {
   return useQuery({
-    queryKey: cid ? imageKeys.runs(cid) : imageKeys.all,
-    queryFn: ({ signal }) => imagesApi.list(cid as string, signal),
-    enabled: Boolean(cid),
+    queryKey: imageKeys.runs(source),
+    queryFn: ({ signal }) => imagesApi.list(source, signal),
     refetchOnWindowFocus: false,
     retry: false,
   })
@@ -97,7 +120,7 @@ export function useImageRuns(cid: string | undefined) {
  * looks like it happened, and the poll is a local row read either way.
  */
 export function useImageRunSync(
-  cid: string | undefined,
+  source: string | undefined,
   runs: LaiosImageRun[] | undefined
 ) {
   const qc = useQueryClient()
@@ -108,17 +131,16 @@ export function useImageRunSync(
 
   useQueries({
     queries: active.map((runId) => ({
-      queryKey: imageKeys.run(cid as string, runId),
+      queryKey: imageKeys.run(runId),
       queryFn: async ({ signal }: { signal: AbortSignal }) => {
-        const fresh = await imagesApi.status(cid as string, runId, signal)
+        const fresh = await imagesApi.status(runId, signal)
         // Fold straight into the list so the grid re-renders without a second
         // round trip, and stop polling as soon as it lands.
-        qc.setQueryData<LaiosImageRun[]>(imageKeys.runs(cid as string), (prev) =>
+        qc.setQueryData<LaiosImageRun[]>(imageKeys.runs(source), (prev) =>
           prev?.map((r) => (r.id === runId ? fresh : r))
         )
         return fresh
       },
-      enabled: Boolean(cid),
       refetchInterval: 1_500,
       refetchOnWindowFocus: false,
       retry: false,
@@ -126,69 +148,48 @@ export function useImageRunSync(
   })
 }
 
-export function useSubmitImage(cid: string | undefined) {
+export function useSubmitImage(source?: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input: LaiosImageInput) =>
-      imagesApi.create(cid as string, input),
+      imagesApi.create(source ? { source, ...input } : input),
     onSuccess: () => {
-      if (cid) qc.invalidateQueries({ queryKey: imageKeys.runs(cid) })
+      qc.invalidateQueries({ queryKey: imageKeys.all })
     },
   })
 }
 
-export function useDeleteImage(cid: string | undefined) {
+export function useDeleteImage() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (runId: string) => imagesApi.remove(cid as string, runId),
+    mutationFn: (runId: string) => imagesApi.remove(runId),
     onSuccess: () => {
-      if (cid) qc.invalidateQueries({ queryKey: imageKeys.runs(cid) })
+      qc.invalidateQueries({ queryKey: imageKeys.all })
     },
   })
-}
-
-/** A served model that generates images rather than tokens. */
-export interface ImageModelOption {
-  /** The name to put in the request's `model` field. */
-  servedName: string
-  /** Human label from the model inventory. */
-  label: string
 }
 
 /**
- * Image-capable models currently serving on this connection.
+ * The image models one source offers, priced where a price is known.
  *
- * The same join the video page relies on, against `capabilities: [image]`: the
- * gateway's own `/v1/models` is a flat OpenAI list with no capability field, so it
- * cannot tell a diffusion model from an LLM. Reading the control plane's
- * inventory is what keeps an image model out of a chat picker and a chat model out
- * of this page.
- *
- * `controlReachable` is false when the inventory could not be read at all — a
- * tunnelled box without `expose_control` set. The page falls back to a free-text
- * model field in that case rather than showing an empty picker.
+ * The capability join that used to happen here — filtering the laios inventory on
+ * `capabilities: [image]` and a running instance — now happens server-side, which
+ * is also what lets one hook serve both sources. `reason` says why the list is
+ * empty when it is, and it is never "unavailable" without one: the source does
+ * not fall back, so an empty picker has to explain itself or it reads as a bug.
  */
-export function useImageModels(cid: string | undefined) {
-  const { data, isLoading, isError } = useLaiosModels(cid)
-
-  const options = useMemo<ImageModelOption[]>(() => {
-    if (!data) return []
-    return data
-      .filter(
-        (m) =>
-          m.capabilities.includes("image") &&
-          m.running_instance?.status === "running"
-      )
-      .map((m) => ({
-        servedName: m.running_instance?.served_name ?? m.served_model_name,
-        label: m.name || m.id,
-      }))
-      .filter((o) => Boolean(o.servedName))
-  }, [data])
+export function useImageModels(source?: string) {
+  const query = useQuery({
+    queryKey: imageKeys.models(source),
+    queryFn: ({ signal }) => imagesApi.models(source, signal),
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
 
   return {
-    options,
-    isLoading,
-    controlReachable: !isError,
+    options: query.data?.models ?? [],
+    available: query.data?.available ?? false,
+    reason: query.data?.reason ?? "",
+    isLoading: query.isLoading,
   }
 }

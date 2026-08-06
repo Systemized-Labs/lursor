@@ -369,7 +369,7 @@ async def test_a_slow_render_times_out_without_being_cancelled(tmp_path, monkeyp
     from app.api import images as images_mod
 
     async with async_session_factory() as session:
-        rows = await images_mod.list_images(cid, session)
+        rows = await images_mod.list_images(f"laios:{cid}", session)
     assert [r["status"] for r in rows] == ["completed"]
 
 

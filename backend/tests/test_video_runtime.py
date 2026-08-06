@@ -413,9 +413,14 @@ async def test_the_capability_endpoint_explains_itself(client: AsyncClient, monk
     assert r.status_code == 200, r.text
     assert r.json() == {
         "available": False,
+        # The source is the first thing the editor has to say, because a "no" that
+        # does not name it reads as broken rather than as unconfigured.
+        "source": None,
         "model": None,
         "connection_name": None,
         "assumed": False,
+        "price": None,
+        "pinned": False,
         "reason": "no laios connection is configured",
     }
 

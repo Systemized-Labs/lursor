@@ -28,5 +28,14 @@ export function useImageHint(enabled = true): string | null {
   }
   const others = data.models.length - 1
   const extra = others > 0 ? `, +${others} more` : ""
-  return `Generates with ${data.model}${where}${extra} — seconds per image.`
+  // A hosted image costs money and a local one costs seconds, and which of the
+  // two applies is the thing an operator most needs to know before flipping a
+  // toggle that lets an agent use it unprompted.
+  const cost =
+    data.source === "openrouter"
+      ? data.price
+        ? ` — about $${data.price.amount.toFixed(3)} an image`
+        : " — billed per image"
+      : " — seconds per image"
+  return `Generates with ${data.model}${where}${extra}${cost}.`
 }

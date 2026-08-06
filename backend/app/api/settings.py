@@ -15,18 +15,25 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Body, Depends, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.agents import hindsight
+from app.agents.image_runtime import reset_image_model_cache
+from app.agents.video_runtime import reset_video_model_cache
 from app.agents.web_search import DEFAULT_WEB_SEARCH_PROVIDER
 from app.config import get_settings
-from app.db.models import AppConfig
+from app.db.models import AppConfig, LaiosConnection
 from app.db.session import async_session_factory, get_session
+from app.media import openrouter as openrouter_media
+from app.media import refs
 from app.schemas.settings import (
     CompactionDefaultsRead,
     CompactionDefaultsUpdate,
+    MediaModalityRead,
+    MediaSettingsRead,
+    MediaSettingsUpdate,
     MemorySettingsRead,
     MemorySettingsUpdate,
     MemoryTestResult,
@@ -244,6 +251,111 @@ async def set_web_search(
     session.add(cfg)
     await session.commit()
     return await get_web_search(session)
+
+
+# --- Image & video --------------------------------------------------------------
+# Which source generates images and clips: a connected laios box, or OpenRouter.
+# Read per run straight off the row, like web search and unlike the compaction
+# knobs — there is nothing to push into the running process.
+#
+# What a save *does* have to do is drop the resolver caches. Both runtimes cache
+# "what is this box serving" for five minutes and the OpenRouter catalogues for
+# fifteen, so without this the reason sentence shown immediately after a change
+# would describe the previous choice — which reads as the save not having worked.
+
+
+async def _media_modality(
+    session: AsyncSession, cfg: AppConfig | None, kind: str
+) -> MediaModalityRead:
+    """The configured source/model for one modality, plus what it resolves to.
+
+    ``available`` / ``reason`` come from the same resolver the capability probe
+    and ``build_deep_agent`` use, so this card cannot disagree with the agent
+    editor's hint about whether generation works.
+    """
+    from app.agents.image_runtime import resolve_image_target
+    from app.agents.video_runtime import resolve_video_target
+
+    if kind == "image":
+        source = (cfg.image_source if cfg else None) or refs.LAIOS
+        pinned = (cfg.image_model if cfg else None) or None
+        runtime, reason = await resolve_image_target(session)
+        effective = runtime.default.model if runtime else None
+    else:
+        source = (cfg.video_source if cfg else None) or refs.LAIOS
+        pinned = (cfg.video_model if cfg else None) or None
+        runtime, reason = await resolve_video_target(session)
+        effective = runtime.model if runtime else None
+
+    return MediaModalityRead(
+        source=source,  # type: ignore[arg-type]
+        model=pinned,
+        model_source="database" if pinned else "auto",
+        available=runtime is not None,
+        reason=reason,
+        effective_model=effective,
+    )
+
+
+@router.get("/media", response_model=MediaSettingsRead)
+async def get_media(session: AsyncSession = Depends(get_session)):
+    cfg = await _get_config(session)
+    connections = (await session.execute(select(LaiosConnection))).scalars().first()
+    return MediaSettingsRead(
+        image=await _media_modality(session, cfg, "image"),
+        video=await _media_modality(session, cfg, "video"),
+        openrouter_configured=bool(get_settings().openrouter_api_key),
+        laios_connected=connections is not None,
+    )
+
+
+@router.put("/media", response_model=MediaSettingsRead)
+async def set_media(
+    payload: MediaSettingsUpdate, session: AsyncSession = Depends(get_session)
+):
+    cfg = await _get_config(session)
+    if cfg is None:
+        cfg = AppConfig()
+
+    # Partial, like web search: the image and video choices save independently.
+    fields = payload.model_fields_set
+    if "image_source" in fields:
+        cfg.image_source = payload.image_source
+    if "video_source" in fields:
+        cfg.video_source = payload.video_source
+    if "image_model" in fields:
+        cfg.image_model = (payload.image_model or "").strip() or None
+    if "video_model" in fields:
+        cfg.video_model = (payload.video_model or "").strip() or None
+
+    # A pin that names the other source is rejected rather than stored, because
+    # the resolver would then have to choose between honouring the pin (crossing
+    # a source the user did not select) and ignoring it (silently). Neither is a
+    # state worth being able to reach.
+    for kind, source, pinned in (
+        ("image", cfg.image_source, cfg.image_model),
+        ("video", cfg.video_source, cfg.video_model),
+    ):
+        try:
+            ref = refs.parse_model_ref(pinned)
+        except refs.RefError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if ref is not None and not refs.belongs_to(ref, refs.parse_source(source)):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"the pinned {kind} model {pinned!r} is not on the selected "
+                f"{kind} source ({source or refs.LAIOS})",
+            )
+
+    session.add(cfg)
+    await session.commit()
+
+    # See the section note: a stale resolver would describe the old choice.
+    reset_image_model_cache()
+    reset_video_model_cache()
+    openrouter_media.reset_catalogues()
+
+    return await get_media(session)
 
 
 # --- Memory -------------------------------------------------------------------

@@ -48,10 +48,16 @@ from typing import Any
 from fastapi import HTTPException
 
 from app import media_store
-from app.agents.image_runtime import ImageModel, ImageProfile, ImageRuntime
+from app.agents.image_runtime import (
+    GENERIC_PROFILE,
+    ImageModel,
+    ImageProfile,
+    ImageRuntime,
+)
 from app.agents.workspace_paths import relative_to_workspace, slug, write_gitignore
 from app.api import images as images_api
 from app.db.session import async_session_factory
+from app.media import refs
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +102,32 @@ _OUTPUT_FORMATS = ("png", "jpeg", "webp")
 # One generation at a time per box, keyed by connection id. See the module docstring:
 # pydantic-ai dispatches the tool calls in a single model response concurrently, and
 # "give me three variations" is the most natural thing a model does with this tool.
+#
+# **laios only.** This is a GPU-contention fix, not a rate limiter: one box cannot
+# run three renders at Qwen's 58.5 GB peak. OpenRouter is a hosted API with no such
+# constraint, and serialising there would triple the latency of exactly the request
+# this exists to make safe. See :func:`_lock_for`.
 _locks: dict[str, asyncio.Lock] = {}
 
 
-def _lock_for(connection_id: str) -> asyncio.Lock:
-    lock = _locks.get(connection_id)
+class _NullLock:
+    """A lock that never blocks, for a source with nothing to contend over."""
+
+    async def acquire(self) -> bool:
+        return True
+
+    def release(self) -> None:
+        return None
+
+
+def _lock_for(target: ImageModel) -> Any:
+    """The serialising lock for this target's box, or a no-op for a hosted model."""
+    if target.is_openrouter:
+        return _NullLock()
+    lock = _locks.get(target.connection_id)
     if lock is None:
         lock = asyncio.Lock()
-        _locks[connection_id] = lock
+        _locks[target.connection_id] = lock
     return lock
 
 
@@ -215,7 +239,7 @@ def make_image_tools(
 
         target = submission.target
         queued_from = time.monotonic()
-        lock = _lock_for(target.connection_id)
+        lock = _lock_for(target)
         try:
             await asyncio.wait_for(lock.acquire(), timeout=MAX_WAIT_SECONDS)
         except TimeoutError:
@@ -237,7 +261,7 @@ def make_image_tools(
             try:
                 async with async_session_factory() as session:
                     row = await images_api.create_image(
-                        target.connection_id, submission.body, session
+                        {**submission.body, "source": str(target.source)}, session
                     )
             except HTTPException as exc:
                 # The engine is the authority on its own constraints, so its
@@ -251,7 +275,7 @@ def make_image_tools(
             if not run_id:
                 return _join(delivered, "Error: the image run was created without an id.")
 
-            payload = await _await_terminal(target.connection_id, run_id, deadline)
+            payload = await _await_terminal(run_id, deadline)
         finally:
             lock.release()
 
@@ -285,9 +309,7 @@ def make_image_tools(
         for run_id, waiting in list(pending.items()):
             try:
                 async with async_session_factory() as session:
-                    payload = await images_api.image_status(
-                        waiting.target.connection_id, run_id, session
-                    )
+                    payload = await images_api.image_status(run_id, session)
             except HTTPException:
                 # The row is gone (the operator deleted it). Nothing to deliver and
                 # nothing to say — it was never promised.
@@ -333,7 +355,7 @@ def make_image_tools(
 # --- waiting ---------------------------------------------------------------------
 
 
-async def _await_terminal(cid: str, run_id: str, deadline: float) -> dict[str, Any]:
+async def _await_terminal(run_id: str, deadline: float) -> dict[str, Any]:
     """Poll the row until it is terminal or the deadline passes.
 
     **Every read gets its own session**, which is worth a paragraph because the
@@ -360,7 +382,7 @@ async def _await_terminal(cid: str, run_id: str, deadline: float) -> dict[str, A
     payload: dict[str, Any] = {}
     while True:
         async with async_session_factory() as session:
-            payload = await images_api.image_status(cid, run_id, session)
+            payload = await images_api.image_status(run_id, session)
         if str(payload.get("status") or "") in images_api.TERMINAL:
             return payload
         remaining = deadline - time.monotonic()
@@ -406,7 +428,20 @@ def _build_request(
             f"no image model matching {model!r}. Available: {available}. "
             "Omit `model` for the fastest one."
         )
-    profile = target.profile
+
+    if target.is_openrouter:
+        return _openrouter_request(
+            target,
+            prompt=prompt,
+            size=size,
+            steps=steps,
+            seed=seed,
+            guidance=guidance,
+            negative_prompt=negative_prompt,
+            output_format=output_format,
+        )
+
+    profile = target.profile or GENERIC_PROFILE
 
     resolved_size = _resolve_size(size)
     step_count = _resolve_steps(steps, profile, target.model)
@@ -449,6 +484,149 @@ def _build_request(
         guidance=profile.guidance and "true_cfg_scale" not in guidance_fields,
         output_format=fmt,
     )
+
+
+def _openrouter_request(
+    target: ImageModel,
+    *,
+    prompt: str,
+    size: str,
+    steps: int | None,
+    seed: int | None,
+    guidance: bool | None,
+    negative_prompt: str | None,
+    output_format: str,
+) -> _Submission:
+    """The hosted body, built from what the catalogue says this model accepts.
+
+    A different shape from the laios one, and the difference is not cosmetic: a
+    hosted model takes an **aspect ratio** and (sometimes) a resolution tier, never
+    a pixel size, and has no denoise loop at all — so ``steps``, ``guidance`` and
+    ``negative_prompt`` have nothing to map onto.
+
+    Those three are **dropped with a note rather than raised on**, the same call
+    ``_guidance_fields`` makes for a CFG-distilled checkpoint and for the same
+    reason: the model has no such knob, so the request is still exactly what was
+    asked for, and a note costs the agent nothing while an error costs it a turn.
+    Every knob the catalogue *does* list is validated locally against it, because
+    a rejected request here costs real money in latency and none of the useful
+    part of the message is knowable only upstream.
+    """
+    catalogue = target.catalogue
+    assert catalogue is not None  # guaranteed by ``provider == openrouter``
+    notes: list[str] = []
+
+    body: dict[str, Any] = {"model": target.model, "prompt": prompt.strip()}
+
+    ratio = _aspect_ratio(size)
+    if catalogue.aspect_ratios:
+        if ratio not in catalogue.aspect_ratios:
+            raise _Invalid(
+                f"{target.model} does not offer aspect ratio {ratio!r}. It takes: "
+                f"{', '.join(catalogue.aspect_ratios)}."
+            )
+        body["aspect_ratio"] = ratio
+    elif ratio != "1:1":
+        notes.append(
+            f"{target.model} publishes no aspect ratios, so {size!r} was not sent "
+            "and the model's own default shape applies."
+        )
+
+    if catalogue.resolutions:
+        # The cheapest tier the model offers. Sizes are named ("1K", "2K"), not
+        # pixels, so there is nothing to derive from ``size`` — and defaulting to
+        # the largest would quietly spend more than was asked for.
+        body["resolution"] = catalogue.resolutions[0]
+
+    fmt = (output_format or "png").strip().lower()
+    if fmt == "jpg":
+        fmt = "jpeg"
+    if catalogue.formats:
+        if fmt not in catalogue.formats:
+            raise _Invalid(
+                f"{target.model} does not emit {fmt!r}. It emits: "
+                f"{', '.join(catalogue.formats)}."
+            )
+        body["output_format"] = fmt
+    elif fmt != "png":
+        notes.append(
+            f"{target.model} does not take output_format, so {fmt!r} was not sent."
+        )
+
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError) as exc:
+            raise _Invalid(f"seed must be a whole number, got {seed!r}") from exc
+        if seed < 0:
+            raise _Invalid(f"seed must not be negative, got {seed}.")
+        if catalogue.seed:
+            body["seed"] = seed
+        else:
+            notes.append(
+                f"{target.model} does not take a seed, so {seed} was not sent and "
+                "this image is not reproducible."
+            )
+
+    dropped = [
+        name
+        for name, given in (
+            ("steps", steps is not None),
+            ("guidance", guidance is not None),
+            ("negative_prompt", bool((negative_prompt or "").strip())),
+        )
+        if given
+    ]
+    if dropped:
+        notes.append(
+            f"{', '.join(dropped)} {'do' if len(dropped) > 1 else 'does'} not apply "
+            f"on OpenRouter — {target.model} takes a prompt and a shape, not a "
+            "denoise loop — so it was not sent."
+        )
+
+    return _Submission(
+        body=body,
+        notes=notes,
+        target=target,
+        size=ratio,
+        steps=0,
+        seed=seed if catalogue.seed else None,
+        guidance=False,
+        output_format=fmt,
+    )
+
+
+def _aspect_ratio(size: str) -> str:
+    """The aspect ratio a ``size`` argument means, for a model that takes ratios.
+
+    A ratio passes through. A literal ``WxH`` is reduced — ``1344x768`` is ``7:4``
+    by arithmetic but ``16:9`` by intent, so the reduction snaps to the nearest of
+    the ratios this tool advertises rather than emitting whatever the gcd gives.
+    """
+    raw = (size or "").strip().lower()
+    if not raw:
+        return "1:1"
+    if ":" in raw:
+        return raw
+    match = _SIZE_RE.match(raw)
+    if not match:
+        raise _Invalid(
+            f"size {size!r} is not a size. Use an aspect ratio like \"16:9\", or a "
+            'literal like "1024x1024".'
+        )
+    width, height = int(match.group(1)), int(match.group(2))
+    if not height:
+        raise _Invalid("height must not be zero.")
+    wanted = width / height
+    return min(
+        _SIZE_BY_RATIO,
+        key=lambda r: abs(wanted - _ratio_value(r)),
+    )
+
+
+def _ratio_value(ratio: str) -> float:
+    left, _, right = ratio.partition(":")
+    return float(left) / float(right)
 
 
 def _resolve_size(size: str) -> str:
@@ -562,19 +740,26 @@ def _deliver(
     # answerable.
     took = f"{measured:.1f}s" if measured is not None else f"{waited:.1f}s wall clock"
 
-    detail = [submission.size, f"{submission.steps} steps"]
+    # Steps and CFG are laios vocabulary. A hosted model has neither, so naming
+    # them — even as "0 steps" — would describe a request that was never made.
+    detail = [submission.size]
+    if submission.steps:
+        detail.append(f"{submission.steps} steps")
     detail.append(
         f"seed {submission.seed}"
         if submission.seed is not None
         else "seed: engine's choice"
     )
-    if target.profile.guidance and not submission.guidance:
+    if target.profile is not None and target.profile.guidance and not submission.guidance:
         detail.append("no CFG")
     if submission.output_format != "png":
         detail.append(submission.output_format)
 
+    cost = _as_float(payload.get("cost_usd"))
     lines = [
-        f"Generated with {target.model} on {target.connection_name!r} ({took}).",
+        f"Generated with {target.model} on {target.connection_name!r} ({took}"
+        + (f", ${cost:.3f}" if cost is not None else "")
+        + ").",
         f"  {relative_to_workspace(root, dest)}",
         f"  {' · '.join(detail)}",
     ]
@@ -648,23 +833,46 @@ def _timed_out(submission: _Submission, waited: float) -> str:
     return "\n".join(lines)
 
 
+def _price_note(candidate: ImageModel) -> str:
+    """What one image on this model has cost, when we have ever paid for one.
+
+    Nothing at all when we have not. OpenRouter's catalogue publishes no image
+    price (see ``app/media/history.py``), and putting a guess in front of the model
+    would be worse than leaving it to ask.
+    """
+    quote = candidate.price
+    if quote is None:
+        return ""
+    return f"about ${quote.amount:.3f} an image, measured here"
+
+
 def _model_menu(runtime: ImageRuntime, video_available: bool) -> str:
     """The tail of the tool docstring: what is serving, and what it costs.
 
     Generated rather than written, so the model never reads about a checkpoint this
     box is not running.
     """
-    lines = ["Models available here (omit `model` for the first):"]
+    where = "OpenRouter" if runtime.provider == refs.OPENROUTER else "here"
+    lines = [f"Models available {where} (omit `model` for the first):"]
     for candidate in runtime.models:
         marker = " (default)" if candidate is runtime.default else ""
-        lines.append(f"  {candidate.model}{marker} — {candidate.profile.note}")
+        parts = [p for p in (_price_note(candidate), candidate.note) if p]
+        detail = f" — {' · '.join(parts)}" if parts else ""
+        lines.append(f"  {candidate.model}{marker}{detail}")
     lines += [
         "",
         f"The wait is capped at {MAX_WAIT_SECONDS // 60} minutes. Past that the "
         "render keeps going and the next call to this tool hands it to you.",
-        "There is no cancel: the engine's image API has none, so a submitted "
-        "generation always runs to completion.",
+        "There is no cancel: neither source offers one on its image API, so a "
+        "submitted generation always runs to completion.",
     ]
+    if runtime.provider == refs.OPENROUTER:
+        lines += [
+            "",
+            "These are billed per image. `steps`, `guidance` and `negative_prompt` "
+            "do not exist here and are ignored with a note; `size` is read as an "
+            "aspect ratio.",
+        ]
     if video_available:
         lines += [
             "",

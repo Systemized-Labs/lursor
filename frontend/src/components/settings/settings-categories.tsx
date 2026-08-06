@@ -6,6 +6,7 @@ import {
   Gear,
   GitBranch,
   Globe,
+  ImageSquare,
   Info,
   Keyboard,
   Palette,
@@ -33,6 +34,7 @@ import { AppearanceSection } from "@/pages/settings/appearance-section"
 import { CompactionSection } from "@/pages/settings/compaction-section"
 import { DefaultAgentsSection } from "@/pages/settings/default-agents-section"
 import { IntegrationsSection } from "@/pages/settings/integrations-section"
+import { MediaSection } from "@/pages/settings/media-section"
 import { MemorySection } from "@/pages/settings/memory-section"
 import { OpenRouterSection } from "@/pages/settings/openrouter-section"
 import { WebSearchSection } from "@/pages/settings/web-search-section"
@@ -122,6 +124,13 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     group: "Services",
     icon: Globe,
     render: () => <WebSearchSection />,
+  },
+  {
+    id: "media",
+    label: "Image & video",
+    group: "Services",
+    icon: ImageSquare,
+    render: () => <MediaCategory />,
   },
   {
     id: "laios",
@@ -269,6 +278,29 @@ function EnvCategory() {
  * to nest them, so they are categories of their own and this is model sources
  * only.
  */
+/**
+ * Where images and clips are generated. One tab per modality, because the two
+ * choices are independent: a local box is the obvious answer for images (seconds,
+ * free) while a hosted model may well be the only answer for video.
+ */
+function MediaCategory() {
+  const [tab, setTab] = useState("image")
+  return (
+    <Tabs value={tab} onValueChange={setTab} className="space-y-4">
+      <TabsList>
+        <TabsTrigger value="image">Images</TabsTrigger>
+        <TabsTrigger value="video">Video</TabsTrigger>
+      </TabsList>
+      <TabsContent value="image">
+        <MediaSection kind="image" />
+      </TabsContent>
+      <TabsContent value="video">
+        <MediaSection kind="video" />
+      </TabsContent>
+    </Tabs>
+  )
+}
+
 function ProvidersCategory() {
   const [tab, setTab] = useState("openrouter")
   return (

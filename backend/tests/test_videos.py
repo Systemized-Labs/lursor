@@ -135,8 +135,9 @@ async def test_submit_poll_and_play(client: AsyncClient, monkeypatch):
 
     # Submit. The body is relayed as sent and the master_key travels as Bearer.
     r = await client.post(
-        f"/laios/connections/{cid}/videos",
+        "/media/videos",
         json={
+            "source": f"laios:{cid}",
             "model": "minimax-h3",
             "prompt": "a paper boat drifting across a puddle at dusk",
             "task": "t2va",
@@ -154,28 +155,28 @@ async def test_submit_poll_and_play(client: AsyncClient, monkeypatch):
     # the gateway's in-memory map — and it reconciles the active rows on the way
     # out (see ``_refresh_active``), which is what advances a job whose submitter
     # went away. That reconcile is this listing's poll.
-    listed = (await client.get(f"/laios/connections/{cid}/videos")).json()
+    listed = (await client.get(f"/media/videos?source=laios:{cid}")).json()
     assert [j["job_id"] for j in listed] == ["vid_1"]
     assert listed[0]["status"] == "in_progress"
     assert listed[0]["progress"] == 0.5
 
     # Polling folds the gateway's status into the row.
-    r = await client.get(f"/laios/connections/{cid}/videos/vid_1")
+    r = await client.get("/media/videos/vid_1")
     assert r.json()["status"] == "completed"
 
     # A terminal job is answered from the row without touching the network.
     before = polls["n"]
-    r = await client.get(f"/laios/connections/{cid}/videos/vid_1")
+    r = await client.get("/media/videos/vid_1")
     assert r.json()["status"] == "completed"
     assert polls["n"] == before, "a finished job should not be re-polled"
 
     # The clip downloads, is stored, and the row records its media_id.
-    r = await client.get(f"/laios/connections/{cid}/videos/vid_1/content")
+    r = await client.get("/media/videos/vid_1/content")
     assert r.status_code == 200, r.text
     assert r.content.startswith(b"\x00\x00\x00\x18ftyp")
     assert captured["variant"] == "0"
 
-    listed = (await client.get(f"/laios/connections/{cid}/videos")).json()
+    listed = (await client.get(f"/media/videos?source=laios:{cid}")).json()
     assert listed[0]["media_id"], "the stored clip should be recorded on the row"
 
 
@@ -184,7 +185,6 @@ async def test_forgotten_job_is_recorded_not_raised(client: AsyncClient, monkeyp
     in-memory). That is a terminal state for the row, not a 404 to the UI —
     otherwise the page polls a job that will never advance, forever."""
     conn = await _make_connection(client, name="forgetful", base_url="http://f:7420")
-    cid = conn["id"]
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/videos" and request.method == "POST":
@@ -196,10 +196,10 @@ async def test_forgotten_job_is_recorded_not_raised(client: AsyncClient, monkeyp
     _patch_gateway(monkeypatch, handler)
 
     await client.post(
-        f"/laios/connections/{cid}/videos",
-        json={"model": "minimax-h3", "prompt": "x"},
+        "/media/videos",
+        json={"model": "minimax-h3", "prompt": "x", "source": f"laios:{conn['id']}"},
     )
-    r = await client.get(f"/laios/connections/{cid}/videos/vid_gone")
+    r = await client.get("/media/videos/vid_gone")
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "failed"
     assert "no longer knows" in r.json()["error"]
@@ -208,9 +208,9 @@ async def test_forgotten_job_is_recorded_not_raised(client: AsyncClient, monkeyp
 async def test_submit_requires_a_model(client: AsyncClient):
     """Only the submission names a model, so an empty one is rejected here rather
     than becoming an opaque gateway error."""
-    conn = await _make_connection(client, name="nomodel", base_url="http://n:7420")
+    await _make_connection(client, name="nomodel", base_url="http://n:7420")
     r = await client.post(
-        f"/laios/connections/{conn['id']}/videos", json={"prompt": "x"}
+        "/media/videos", json={"prompt": "x"}
     )
     assert r.status_code == 400
     assert "model is required" in r.json()["detail"]
@@ -225,8 +225,8 @@ async def test_unreachable_gateway_is_502(client: AsyncClient, monkeypatch):
     _patch_gateway(monkeypatch, handler)
 
     r = await client.post(
-        f"/laios/connections/{conn['id']}/videos",
-        json={"model": "minimax-h3", "prompt": "x"},
+        "/media/videos",
+        json={"model": "minimax-h3", "prompt": "x", "source": f"laios:{conn['id']}"},
     )
     assert r.status_code == 502, r.text
 
@@ -276,8 +276,8 @@ async def test_engine_validation_message_reaches_the_client(
     _patch_gateway(monkeypatch, handler)
 
     r = await client.post(
-        f"/laios/connections/{conn['id']}/videos",
-        json={"model": "minimax-h3", "prompt": "x"},
+        "/media/videos",
+        json={"model": "minimax-h3", "prompt": "x", "source": f"laios:{conn['id']}"},
     )
     assert r.status_code == 400, r.text
     assert r.json()["detail"] == (
@@ -307,8 +307,8 @@ async def test_pydantic_style_validation_list_is_flattened(
     _patch_gateway(monkeypatch, handler)
 
     r = await client.post(
-        f"/laios/connections/{conn['id']}/videos",
-        json={"model": "minimax-h3", "prompt": "x"},
+        "/media/videos",
+        json={"model": "minimax-h3", "prompt": "x", "source": f"laios:{conn['id']}"},
     )
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == "target.duration_seconds: must be in [4, 15]"
@@ -327,8 +327,8 @@ async def test_openai_shaped_error_still_unwraps(client: AsyncClient, monkeypatc
     _patch_gateway(monkeypatch, handler)
 
     r = await client.post(
-        f"/laios/connections/{conn['id']}/videos",
-        json={"model": "minimax-h3", "prompt": "x"},
+        "/media/videos",
+        json={"model": "minimax-h3", "prompt": "x", "source": f"laios:{conn['id']}"},
     )
     assert r.status_code == 404, r.text
     assert r.json()["detail"] == "no such job (video_not_found)"
@@ -358,6 +358,7 @@ async def test_fl2va_keyframes_relay_as_json_and_are_not_stored_inline(
 
     inline = "data:image/png;base64," + ("A" * 4096)
     body = {
+        "source": f"laios:{cid}",
         "model": "minimax-h3",
         "prompt": "the frame continues with calm, natural motion",
         "task": "fl2va",
@@ -371,7 +372,7 @@ async def test_fl2va_keyframes_relay_as_json_and_are_not_stored_inline(
         },
         "num_inference_steps": 8,
     }
-    r = await client.post(f"/laios/connections/{cid}/videos", json=body)
+    r = await client.post("/media/videos", json=body)
     assert r.status_code == 201, r.text
 
     # Relayed verbatim, JSON, keyframe intact: the engine gets the pixels.
@@ -410,12 +411,17 @@ async def test_listing_reconciles_a_job_nobody_is_polling(
     _patch_gateway(monkeypatch, handler)
 
     r = await client.post(
-        f"/laios/connections/{cid}/videos",
-        json={"model": "minimax-h3", "prompt": "x", "num_inference_steps": 8},
+        "/media/videos",
+        json={
+            "source": f"laios:{cid}",
+            "model": "minimax-h3",
+            "prompt": "x",
+            "num_inference_steps": 8,
+        },
     )
     assert r.json()["status"] == "queued"
 
-    listed = (await client.get(f"/laios/connections/{cid}/videos")).json()
+    listed = (await client.get(f"/media/videos?source=laios:{cid}")).json()
     assert listed[0]["status"] == "completed"
     assert listed[0]["progress"] == 1.0
 
@@ -434,13 +440,14 @@ async def test_listing_survives_an_unreachable_box(client: AsyncClient, monkeypa
 
     _patch_gateway(monkeypatch, submit)
     await client.post(
-        f"/laios/connections/{cid}/videos", json={"model": "minimax-h3", "prompt": "x"}
+        "/media/videos",
+        json={"model": "minimax-h3", "prompt": "x", "source": f"laios:{cid}"},
     )
 
     def dead(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("no route", request=request)
 
     _patch_gateway(monkeypatch, dead)
-    r = await client.get(f"/laios/connections/{cid}/videos")
+    r = await client.get(f"/media/videos?source=laios:{cid}")
     assert r.status_code == 200, r.text
     assert r.json()[0]["status"] == "queued"

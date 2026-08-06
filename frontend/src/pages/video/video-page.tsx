@@ -4,6 +4,7 @@ import { Link } from "react-router-dom"
 
 import { useLaiosConnections } from "@/api/laios"
 import type { LaiosVideoJob } from "@/api/types"
+import { useMediaSettings } from "@/api/settings"
 import { isVideoActive, useVideoJobSync, useVideoJobs } from "@/api/videos"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
@@ -20,12 +21,13 @@ import { VideoComposer } from "./video-composer"
 import { VideoRunCard } from "./video-run-card"
 
 const DESCRIPTION =
-  "Generate audio-video on a LAIOS box. A clip is a job, not a completion — submit, watch it denoise, play it back."
+  "Generate audio-video on whichever source is configured in Settings → Image & video. A clip is a job, not a completion — submit, watch it render, play it back."
 
 // Shared with the LAIOS page so switching connection there carries over here.
 const ACTIVE_KEY = "laios.activeConnectionId"
 
 export function VideoPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const { data: media, isLoading: mediaLoading } = useMediaSettings()
   const { data: connections, isLoading: connectionsLoading } =
     useLaiosConnections()
 
@@ -41,13 +43,23 @@ export function VideoPage({ embedded = false }: { embedded?: boolean } = {}) {
     }
   }, [connections, connectionId])
 
-  const { data: jobs } = useVideoJobs(connectionId)
-  useVideoJobSync(connectionId, jobs)
+  // The page follows the configured source; Settings → Image & video is the one
+  // place that choice is made. The history is unfiltered, so clips made under a
+  // previous source stay visible.
+  const onLaios = (media?.video.source ?? "laios") === "laios"
+  const source = onLaios
+    ? connectionId
+      ? `laios:${connectionId}`
+      : undefined
+    : "openrouter"
+
+  const { data: jobs } = useVideoJobs()
+  useVideoJobSync(undefined, jobs)
 
   // Held at the page so a run card can load a past run back into the form.
   const composer = useVideoComposer()
 
-  const hasConnections = Boolean(connections && connections.length > 0)
+  const ready = onLaios ? Boolean(connections && connections.length > 0) : true
 
   return (
     <div className="space-y-6">
@@ -56,7 +68,7 @@ export function VideoPage({ embedded = false }: { embedded?: boolean } = {}) {
         embedded={embedded}
         description={DESCRIPTION}
         actions={
-          connections && connections.length > 1 ? (
+          onLaios && connections && connections.length > 1 ? (
             <Select
               value={connectionId ?? ""}
               onValueChange={(value) => {
@@ -79,21 +91,17 @@ export function VideoPage({ embedded = false }: { embedded?: boolean } = {}) {
         }
       />
 
-      {connectionsLoading ? (
+      {mediaLoading || (onLaios && connectionsLoading) ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <DotGridLoader size="xs" />
           Loading connections…
         </div>
-      ) : !hasConnections ? (
+      ) : !ready ? (
         <NoConnection />
-      ) : connectionId ? (
+      ) : source ? (
         <>
-          <VideoComposer connectionId={connectionId} composer={composer} />
-          <Runs
-            connectionId={connectionId}
-            jobs={jobs}
-            onReuse={composer.loadRun}
-          />
+          <VideoComposer source={source} composer={composer} />
+          <Runs jobs={jobs} onReuse={composer.loadRun} />
         </>
       ) : null}
     </div>
@@ -117,12 +125,18 @@ function NoConnection() {
         Connect a LAIOS box first
       </h2>
       <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-        Clips are generated on your own GPUs, through a LAIOS daemon's inference
-        gateway. Add a connection and serve a video-capable model, then come back.
+        LAIOS is the configured video source, so clips are generated on your own
+        GPUs through a daemon\'s inference gateway. Add a connection and serve a
+        video-capable model — or switch the source to OpenRouter.
       </p>
-      <Button asChild className="mt-4">
-        <Link to="/laios">Go to LAIOS</Link>
-      </Button>
+      <div className="mt-4 flex items-center justify-center gap-2">
+        <Button asChild>
+          <Link to="/?settings=laios">Go to LAIOS</Link>
+        </Button>
+        <Button asChild variant="ghost">
+          <Link to="/?settings=media">Change the source</Link>
+        </Button>
+      </div>
     </div>
   )
 }
@@ -137,11 +151,9 @@ function NoConnection() {
  * once.
  */
 function Runs({
-  connectionId,
   jobs,
   onReuse,
 }: {
-  connectionId: string
   jobs: LaiosVideoJob[] | undefined
   onReuse: (job: LaiosVideoJob) => void
 }) {
@@ -195,7 +207,6 @@ function Runs({
         {jobs.map((job) => (
           <VideoRunCard
             key={job.id}
-            connectionId={connectionId}
             job={job}
             onReuse={onReuse}
           />

@@ -45,6 +45,7 @@ from sqlmodel import select
 
 from app.agents.video_runtime import (
     SCHEMA_MINIMAX_H3,
+    SCHEMA_OPENROUTER_VIDEO,
     SCHEMA_SGLANG_VIDEO,
     VideoConstraints,
     VideoRuntime,
@@ -55,6 +56,7 @@ from app.agents.workspace_paths import write_gitignore as _write_shared_gitignor
 from app.api import videos as videos_api
 from app.db.models import VideoJob
 from app.db.session import async_session_factory
+from app.media import refs
 from app.media_store import mime_for_path
 
 logger = logging.getLogger(__name__)
@@ -121,25 +123,19 @@ def make_video_tools(
     ) -> str:
         """Start generating a video clip with synchronised audio. Returns a job id.
 
-        This does NOT wait for the clip: generation runs for minutes on a GPU box
-        (about 44 seconds per step, so 8 steps is ~6 minutes and 50 steps ~35
-        minutes). It returns immediately with a job id; call ``video_status`` to
-        wait for the result and get the file.
+        This does NOT wait for the clip: generation runs for minutes. It returns
+        immediately with a job id; call ``video_status`` to wait for the result and
+        get the file.
 
-        Cost discipline matters. Draft at ``steps=8`` first, look at the result with
-        ``view_video``, and only spend a 50-step render once the shot is right —
-        keeping the same ``seed`` makes the final the same shot, sharper.
-
-        Clips are capped at 15 seconds. Build anything longer as several shots and
-        join them with ffmpeg; pass the previous shot's last frame as
-        ``first_frame`` so they actually continue into each other.
+        {menu}
 
         Args:
             prompt: What to generate. Describe the shot, the motion and the sound.
-            aspect_ratio: "16:9", "9:16" or "1:1". Use "auto" with a supplied frame
-                to inherit that frame's own geometry.
-            duration_seconds: Clip length, 4 to 15.
-            steps: Denoise steps, 4 to 50. 8 drafts, 50 finals.
+            aspect_ratio: The shape of the clip — see the ratios listed above. Use
+                "auto" with a supplied frame to inherit that frame's own geometry.
+            duration_seconds: Clip length, within the range listed above.
+            steps: Denoise steps, on models that have them. Ignored with a note on
+                models that do not.
             seed: Fixed seed for a reproducible shot. Omit to let the engine pick.
             first_frame: Image file (workspace path) to use as the clip's first
                 frame — how one shot is made to continue from another.
@@ -163,7 +159,7 @@ def make_video_tools(
         try:
             async with async_session_factory() as session:
                 row = await videos_api.create_video(
-                    runtime.connection_id, submission.body, session
+                    {**submission.body, "source": _source(runtime)}, session
                 )
         except HTTPException as exc:
             # The engine is the authority on its own constraints, so its rejection
@@ -175,16 +171,37 @@ def make_video_tools(
             return f"Error: could not submit the video job: {exc}"
 
         job_id = str(row.get("job_id") or "")
-        estimate = submission.steps * limits.seconds_per_step
+        shape = (
+            f"  {_size_for(limits, submission.aspect_ratio)} · "
+            f"{_seconds(submission.duration_seconds)}s"
+        )
+        if submission.steps:
+            shape += f" · {submission.steps} steps"
+        shape += f" · seed {seed}" if seed is not None else " · seed: engine's choice"
+
         lines = [
             f"Submitted job {job_id} to {runtime.model} on {runtime.connection_name!r}.",
             f"  task: {submission.label}"
             + (f" ({', '.join(submission.notes)})" if submission.notes else ""),
-            f"  {_size_for(limits, submission.aspect_ratio)} · "
-            f"{_seconds(submission.duration_seconds)}s · {submission.steps} steps"
-            + (f" · seed {seed}" if seed is not None else " · seed: engine's choice"),
-            f"  estimated wall clock: {_estimate(estimate)} "
-            f"({submission.steps} steps × {limits.seconds_per_step}s)",
+            shape,
+        ]
+        # A per-step estimate on a box, a price on a hosted model, and nothing at
+        # all where neither is known — a made-up number here is one the agent plans
+        # around.
+        if submission.steps and limits.seconds_per_step:
+            estimate = submission.steps * limits.seconds_per_step
+            lines.append(
+                f"  estimated wall clock: {_estimate(estimate)} "
+                f"({submission.steps} steps × {limits.seconds_per_step}s)"
+            )
+        if runtime.price is not None:
+            about = "from " if runtime.price.approximate else ""
+            cost = runtime.price.amount * submission.duration_seconds
+            lines.append(
+                f"  estimated cost: {about}${cost:.2f} "
+                f"(${runtime.price.amount:.2f} a second)"
+            )
+        lines += [
             "",
             "Nothing advances until you poll. Next: "
             f'video_status("{job_id}", wait_seconds={MAX_WAIT_SECONDS})',
@@ -215,7 +232,7 @@ def make_video_tools(
 
         try:
             async with async_session_factory() as session:
-                job = await _find_job(session, runtime.connection_id, job_id)
+                job = await _find_job(session, runtime, job_id)
                 if job is None:
                     return (
                         f"Error: no video job {job_id!r} on "
@@ -224,9 +241,7 @@ def make_video_tools(
                     )
                 payload: dict[str, Any] = {}
                 while True:
-                    payload = await videos_api.video_status(
-                        runtime.connection_id, job_id, session
-                    )
+                    payload = await videos_api.video_status(job_id, session)
                     state = str(payload.get("status") or "")
                     if state in videos_api.TERMINAL:
                         break
@@ -237,7 +252,7 @@ def make_video_tools(
 
                 state = str(payload.get("status") or "")
                 if state == "completed":
-                    job = await _find_job(session, runtime.connection_id, job_id)
+                    job = await _find_job(session, runtime, job_id)
                     assert job is not None  # it was there a moment ago
                     return await _deliver(job, session, root, limits)
                 if state == "failed":
@@ -253,12 +268,15 @@ def make_video_tools(
             return f"Error: could not check job {job_id}: {exc}"
 
     async def cancel_video(job_id: str) -> str:
-        """Stop a video job that is still running, freeing the box.
+        """Stop tracking a video job that is still running.
 
         Use this the moment you know you do not want a render — a wrong prompt, a
         superseded shot, or a job you started before the user changed their mind.
-        A generation holds the GPU for minutes, and nothing else can use it
-        meanwhile.
+
+        On a laios box this really cancels: a generation holds the GPU for minutes
+        and nothing else can use it meanwhile, so this frees it. On OpenRouter
+        there is no cancel — the render continues and is billed either way, and
+        this only stops you waiting on it. The result says which happened.
 
         The job stays in the history as cancelled, with the settings it was
         submitted with. A job that already finished is not affected.
@@ -271,7 +289,7 @@ def make_video_tools(
             return "Error: job_id is required."
         try:
             async with async_session_factory() as session:
-                job = await _find_job(session, runtime.connection_id, job_id)
+                job = await _find_job(session, runtime, job_id)
                 if job is None:
                     return (
                         f"Error: no video job {job_id!r} on "
@@ -281,17 +299,21 @@ def make_video_tools(
                     return (
                         f"Job {job_id} is already {job.status}; nothing to cancel."
                     )
-                row = await videos_api.cancel_video(
-                    runtime.connection_id, job_id, session
-                )
+                row = await videos_api.cancel_video(job_id, session)
         except HTTPException as exc:
             return f"Error: {exc.detail}"
         except Exception as exc:  # noqa: BLE001 - a tool never raises
             logger.warning("cancel_video(%s) failed: %s", job_id, exc)
             return f"Error: could not cancel job {job_id}: {exc}"
         return (
-            f"Job {job_id} cancelled ({row.get('status')}). The box is free; the "
-            "attempt stays in the history."
+            f"Job {job_id} cancelled ({row.get('status')}). "
+            + (
+                "OpenRouter has no cancel, so the render continues and will still "
+                "be billed — you have only stopped waiting on it."
+                if runtime.is_openrouter
+                else "The box is free."
+            )
+            + " The attempt stays in the history."
         )
 
     async def view_video(
@@ -371,6 +393,17 @@ def make_video_tools(
             ]
         return "\n".join(lines)
 
+    # Interpolated into the *middle* of the docstring, not appended: pydantic-ai
+    # derives the argument descriptions by parsing the Google-style ``Args:``
+    # section, and anything after that section is read as part of the last
+    # argument's description. Indented to match, so the common-prefix dedent every
+    # docstring parser applies still finds one. Same trap as ``image_tools``.
+    menu = _video_menu(runtime)
+    indented = "\n".join(
+        (f"        {line}" if line else "") for line in menu.split("\n")
+    ).strip()
+    generate_video.__doc__ = (generate_video.__doc__ or "").replace("{menu}", indented)
+
     return [generate_video, video_status, cancel_video, view_video]
 
 
@@ -448,7 +481,19 @@ def _build_request(
         step_count = int(steps)
     except (TypeError, ValueError) as exc:
         raise _Invalid(f"steps must be a whole number, got {steps!r}") from exc
-    if not limits.min_steps <= step_count <= limits.max_steps:
+
+    step_notes: list[str] = []
+    if limits.max_steps <= 0:
+        # A model with no denoise loop (every hosted one). Dropped with a note
+        # rather than refused: the argument has a non-zero default, so raising here
+        # would make the plainest possible call fail on an entire source.
+        if step_count:
+            step_notes.append(
+                f"steps does not apply to {runtime.model} — it takes a duration and "
+                "a resolution, not a denoise count — so it was not sent"
+            )
+        step_count = 0
+    elif not limits.min_steps <= step_count <= limits.max_steps:
         raise _Invalid(
             f"steps must be in [{limits.min_steps}, {limits.max_steps}], "
             f"got {step_count}."
@@ -495,16 +540,17 @@ def _build_request(
     # one to shrink.
     if frames:
         size = len(json.dumps(body))
-        if size > _GATEWAY_BODY_LIMIT:
+        limit = _body_limit(runtime)
+        if size > limit:
             raise _Invalid(
                 f"the request is {size} bytes with the frame(s) inlined, over the "
-                f"gateway's {_GATEWAY_BODY_LIMIT}-byte body limit. {_REENCODE_HINT}."
+                f"{limit}-byte body limit for this source. {_REENCODE_HINT}."
             )
     # A neutral label: H3 names its own task, other schemas do not have the concept.
     label = str(body.get("task") or ("image-to-video" if frames else "text-to-video"))
     return _Submission(
         body=body,
-        notes=notes,
+        notes=[*step_notes, *notes],
         label=label,
         aspect_ratio=ratio,
         duration_seconds=duration,
@@ -552,7 +598,7 @@ def _build_minimax_h3(
         conditions.append(
             {
                 "type": "image",
-                "uri": _data_uri(root, candidate, label),
+                "uri": _data_uri(root, candidate, label, _body_limit(runtime)),
                 "role": "keyframe",
                 "frame_index": 0 if label == "first_frame" else -1,
             }
@@ -612,14 +658,79 @@ def _build_sglang_video(
                 f"{runtime.model} takes a first frame only ({SCHEMA_SGLANG_VIDEO} has "
                 "no last-frame conditioning), so last_frame cannot be used."
             )
-        body["input_reference"] = _data_uri(root, candidate, label)
+        body["input_reference"] = _data_uri(root, candidate, label, _body_limit(runtime))
         notes.append(f"{label}={candidate}")
+    return body, notes
+
+
+def _build_openrouter_video(
+    runtime: VideoRuntime,
+    root: Path,
+    *,
+    prompt: str,
+    ratio: str,
+    duration: float,
+    steps: int,
+    seed: int | None,
+    frames: list[tuple[str, str]],
+) -> tuple[dict[str, Any], list[str]]:
+    """OpenRouter's body (:data:`SCHEMA_OPENROUTER_VIDEO`).
+
+    One shape for every model behind it — that is the point of a broker — with the
+    per-model variation expressed as which fields the catalogue says are allowed
+    (``agents/video_runtime.constraints_from_openrouter``).
+
+    Keyframes are ``frame_images`` entries tagged ``first_frame`` / ``last_frame``,
+    so unlike the generic SGLang path a last frame is a real capability here rather
+    than something to refuse — when the model lists it.
+    """
+    entry = runtime.catalogue
+    body: dict[str, Any] = {"model": runtime.model, "prompt": prompt}
+    notes: list[str] = []
+
+    if duration:
+        body["duration"] = int(duration) if float(duration).is_integer() else duration
+    if ratio and ratio != "auto":
+        body["aspect_ratio"] = ratio
+    if entry is not None and entry.resolutions:
+        # The lowest tier the model offers, for the same reason the image builder
+        # takes the cheapest: silently spending more than was asked for is worse
+        # than a clip that could have been sharper.
+        body["resolution"] = entry.resolutions[0]
+    if seed is not None:
+        if entry is None or entry.seed:
+            body["seed"] = seed
+        else:
+            notes.append(
+                f"{runtime.model} does not take a seed, so {seed} was not sent and "
+                "this shot is not reproducible."
+            )
+
+    allowed = entry.frame_images if entry is not None else ()
+    frame_images = []
+    for label, candidate in frames:
+        if allowed and label not in allowed:
+            raise _Invalid(
+                f"{runtime.model} does not take a {label} "
+                f"({'it takes ' + ', '.join(allowed) if allowed else 'it takes none'})."
+            )
+        frame_images.append(
+            {
+                "frame_type": label,
+                "image_url": _data_uri(root, candidate, label, _body_limit(runtime)),
+            }
+        )
+        notes.append(f"{label}={candidate}")
+    if frame_images:
+        body["frame_images"] = frame_images
+
     return body, notes
 
 
 _BUILDERS: dict[str, Any] = {
     SCHEMA_MINIMAX_H3: _build_minimax_h3,
     SCHEMA_SGLANG_VIDEO: _build_sglang_video,
+    SCHEMA_OPENROUTER_VIDEO: _build_openrouter_video,
 }
 
 
@@ -643,11 +754,31 @@ _IMAGE_MIMES = {
 # not. This is the real ceiling on a keyframe — tighter than anything the engine
 # itself imposes, and invisible until you send a photographic frame, because a
 # synthetic one compresses to a tenth of the size.
+#
+# **A fact about one axum server, not about video generation.** Applying it to
+# OpenRouter would refuse keyframes that would have worked, so the limit is chosen
+# per source (:func:`_body_limit`).
 _GATEWAY_BODY_LIMIT = 2 * 1024 * 1024
 
-# Base64 inflates by 4/3, so one frame can never exceed three quarters of the body
-# budget. Two frames share it, which the assembled-body check below is for.
-_MAX_FRAME_BYTES = (_GATEWAY_BODY_LIMIT * 3) // 4
+# OpenRouter publishes no body limit. This is ours: generous enough that any frame
+# worth conditioning on fits, small enough that a mistake does not turn into a
+# multi-megabyte upload nobody asked for. Unmeasured, and labelled as ours in the
+# message so nobody reads it as the provider's rule.
+_OPENROUTER_BODY_LIMIT = 16 * 1024 * 1024
+
+
+def _body_limit(runtime: VideoRuntime) -> int:
+    """The largest request body this source will accept, in bytes."""
+    return _OPENROUTER_BODY_LIMIT if runtime.is_openrouter else _GATEWAY_BODY_LIMIT
+
+
+def _max_frame_bytes(runtime: VideoRuntime) -> int:
+    """Base64 inflates by 4/3, so one frame can never exceed 3/4 of the budget.
+
+    Two frames share it, which the assembled-body check in ``_build_request`` is
+    for.
+    """
+    return (_body_limit(runtime) * 3) // 4
 
 _REENCODE_HINT = (
     "Re-encode it smaller — a JPEG of a 768p frame is a few hundred KB: "
@@ -655,7 +786,7 @@ _REENCODE_HINT = (
 )
 
 
-def _data_uri(root: Path, candidate: str, label: str) -> str:
+def _data_uri(root: Path, candidate: str, label: str, limit: int) -> str:
     """Read a workspace image and inline it as a ``data:`` URI.
 
     The engine resolves a condition's ``uri`` as a local path, an ``http(s)`` URL or
@@ -679,11 +810,12 @@ def _data_uri(root: Path, candidate: str, label: str) -> str:
         raw = resolved.read_bytes()
     except OSError as exc:
         raise _Invalid(f"{label}: could not read {candidate!r}: {exc}") from exc
-    if len(raw) > _MAX_FRAME_BYTES:
+    max_frame = (limit * 3) // 4
+    if len(raw) > max_frame:
         raise _Invalid(
-            f"{label} is {len(raw)} bytes, over the {_MAX_FRAME_BYTES}-byte limit for "
-            f"an inlined frame (the gateway caps the whole request at "
-            f"{_GATEWAY_BODY_LIMIT} bytes and base64 adds a third). {_REENCODE_HINT}."
+            f"{label} is {len(raw)} bytes, over the {max_frame}-byte limit for an "
+            f"inlined frame (the request body is capped at {limit} bytes and base64 "
+            f"adds a third). {_REENCODE_HINT}."
         )
     return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
 
@@ -691,13 +823,20 @@ def _data_uri(root: Path, candidate: str, label: str) -> str:
 # --- delivery -------------------------------------------------------------------
 
 
-async def _find_job(session, connection_id: str, job_id: str) -> VideoJob | None:
-    result = await session.execute(
-        select(VideoJob).where(
-            VideoJob.connection_id == connection_id, VideoJob.job_id == job_id
-        )
+async def _find_job(session, runtime: VideoRuntime, job_id: str) -> VideoJob | None:
+    """This run's job by id, scoped to the source the runtime resolved to.
+
+    Scoped rather than global so an agent cannot poll a job that was submitted
+    somewhere it cannot reach — the ids come from ``generate_video``, and one that
+    does not match this source is a stale id from before a settings change rather
+    than a job this run owns.
+    """
+    query = select(VideoJob).where(
+        VideoJob.job_id == job_id, VideoJob.provider == runtime.provider
     )
-    return result.scalars().first()
+    if runtime.connection_id:
+        query = query.where(VideoJob.connection_id == runtime.connection_id)
+    return (await session.execute(query)).scalars().first()
 
 
 async def _deliver(
@@ -988,7 +1127,92 @@ def _size_for(limits: VideoConstraints, aspect_ratio: str) -> str:
     known = limits.sizes.get(aspect_ratio)
     if known:
         return f"{known} ({aspect_ratio})"
+    if limits.short_edge is None:
+        # A hosted model takes a resolution *tier* and a ratio; the pixel pairing is
+        # the provider's business, so claiming one would be inventing it.
+        return aspect_ratio or "auto"
     return f"{limits.short_edge}p {aspect_ratio or 'auto'}"
+
+
+def _source(runtime: VideoRuntime) -> str:
+    """The source ref to submit this runtime's jobs against."""
+    return refs.format_source(runtime.provider, runtime.connection_id)
+
+
+def _video_menu(runtime: VideoRuntime) -> str:
+    """The middle of ``generate_video``'s docstring: this model's real economics.
+
+    Generated rather than written, and that is the whole point. The prose this
+    replaces hardcoded MiniMax-H3's numbers — "about 44 seconds per step, so 8 steps
+    is ~6 minutes", "draft at steps=8 first", "clips are capped at 15 seconds" —
+    which is excellent advice for the one recipe it was measured on and actively
+    misleading for anything else. Handed to a model pointed at a hosted API it
+    would draft at a step count that does not exist and refuse durations the model
+    supports. The docstring *is* the agent's model of the world, so it has to
+    describe the model actually resolved.
+    """
+    limits = runtime.constraints
+    lines = [f"Generating with {runtime.model} on {runtime.connection_name}."]
+
+    if limits.aspect_ratios:
+        lines.append(f"  aspect_ratio: {', '.join(limits.aspect_ratios)}")
+    if limits.max_duration_seconds != float("inf"):
+        lines.append(
+            f"  duration_seconds: {_seconds(limits.min_duration_seconds)} to "
+            f"{_seconds(limits.max_duration_seconds)}"
+        )
+    if limits.max_steps > 0:
+        lines.append(f"  steps: {limits.min_steps} to {limits.max_steps}")
+    else:
+        lines.append("  steps: not a knob on this model — omit it")
+
+    if limits.seconds_per_step and limits.max_steps > 0:
+        low = _estimate(limits.min_steps * limits.seconds_per_step)
+        high = _estimate(limits.max_steps * limits.seconds_per_step)
+        lines += [
+            "",
+            f"About {limits.seconds_per_step}s per step, so a {limits.min_steps}-step "
+            f"draft is {low} and a {limits.max_steps}-step final is {high}. Draft "
+            "first, look at it with view_video, and only spend the full render once "
+            "the shot is right — keeping the same seed makes the final the same "
+            "shot, sharper.",
+        ]
+    if runtime.price is not None:
+        about = "from " if runtime.price.approximate else ""
+        lines += [
+            "",
+            f"This is billed per second of output: {about}"
+            f"${runtime.price.amount:.2f} a second, so a "
+            f"{_seconds(min(limits.max_duration_seconds, 8))}s clip is roughly "
+            f"${runtime.price.amount * min(limits.max_duration_seconds, 8):.2f}. "
+            "Keep drafts short.",
+        ]
+    if runtime.observed_cost is not None:
+        lines.append(
+            f"Clips on this model have cost ${runtime.observed_cost:.2f} on average "
+            "here."
+        )
+
+    if limits.max_duration_seconds != float("inf"):
+        lines += [
+            "",
+            f"Clips are capped at {_seconds(limits.max_duration_seconds)} seconds. "
+            "Build anything longer as several shots joined with ffmpeg; pass the "
+            "previous shot's last frame as first_frame so they continue into each "
+            "other.",
+        ]
+    if not limits.keyframes:
+        lines.append(
+            "This model does not take first_frame or last_frame — prompt only."
+        )
+    if not limits.emits_audio:
+        lines.append("This model produces no audio track.")
+    if runtime.is_openrouter:
+        lines.append(
+            "There is no cancel on OpenRouter: a submitted render runs to "
+            "completion and is billed either way."
+        )
+    return "\n".join(lines)
 
 
 def _seconds(value: float) -> str:

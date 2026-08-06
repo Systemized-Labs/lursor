@@ -1,4 +1,8 @@
-import type { LaiosImageInput, LaiosImageRun } from "@/api/types"
+import type {
+  LaiosImageInput,
+  LaiosImageRun,
+  MediaModelOption,
+} from "@/api/types"
 
 export {
   formatDuration,
@@ -348,16 +352,92 @@ export function toImageInput(
   }
 }
 
-/** The settings a run was submitted with, for its meta line. */
+/**
+ * The settings a run was submitted with, for its meta line.
+ *
+ * Branches on the source, because the two request shapes share almost no fields.
+ * Reading a hosted body through the laios lens is not a cosmetic mismatch — the
+ * defaults would fill in `1024x1024` and `20 steps` for a request that contained
+ * neither, so the card would state, in the same voice it states measured facts,
+ * two things that never happened.
+ */
 export function runSummary(run: LaiosImageRun): string {
+  if (run.provider === "openrouter") return summarizeHosted(run.request)
   const profile = profileFor(run.model)
   return summarize(settingsFromRequest(run.request, profile), profile)
 }
 
-/** What a run is expected to cost, from the body it was submitted with. */
+/**
+ * `"16:9 · 2K · png"` from a hosted body — only the fields it really carried.
+ *
+ * Nothing is defaulted in. An omitted `aspect_ratio` means the model's own shape
+ * applied, and naming a guess for it would be the same error as inventing steps.
+ */
+export function summarizeHosted(request: Record<string, unknown>): string {
+  const parts = [
+    request.aspect_ratio,
+    request.resolution,
+    request.quality,
+    request.output_format,
+  ]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .map((v) => v.toLowerCase())
+  if (typeof request.seed === "number") parts.push(`seed ${request.seed}`)
+  return parts.join(" · ") || "model defaults"
+}
+
+/**
+ * What a run is expected to cost, from the body it was submitted with.
+ *
+ * Always null for a hosted run: the wall clock is queue time plus hardware we
+ * cannot see, and this build has measured neither.
+ */
 export function runEstimate(run: LaiosImageRun): number | null {
+  if (run.provider === "openrouter") return null
   const profile = profileFor(run.model)
   return estimateSeconds(settingsFromRequest(run.request, profile), profile)
+}
+
+/**
+ * The request body for a hosted model.
+ *
+ * A different shape from {@link toImageInput}, and the difference is not
+ * cosmetic: a hosted model takes an aspect ratio and (sometimes) a resolution
+ * tier, never a pixel size, and has no denoise loop — so `size`, `steps` and the
+ * guidance fields have nothing to map onto and are simply absent. Every field is
+ * gated on the catalogue saying the model accepts it, because a hosted rejection
+ * costs a round trip and real money.
+ */
+export function toHostedInput(
+  option: MediaModelOption,
+  prompt: string,
+  settings: ImageSettings
+): LaiosImageInput {
+  const caps = option.openrouter
+  const ratio = ratioLabel(settings.size)
+  return {
+    model: option.id,
+    prompt,
+    ...(caps?.aspect_ratios.includes(ratio) ? { aspect_ratio: ratio } : {}),
+    ...(caps?.resolutions.length ? { resolution: caps.resolutions[0] } : {}),
+    ...(caps?.formats.includes(settings.outputFormat)
+      ? { output_format: settings.outputFormat }
+      : {}),
+    ...(caps?.seed && settings.seed !== null ? { seed: settings.seed } : {}),
+  }
+}
+
+/**
+ * The aspect ratio a stored `size` means.
+ *
+ * The composer carries geometry in one field for both sources, so this is either
+ * already a ratio (hosted) or a pixel size to look up (laios). `1344x768` is
+ * `7:4` by arithmetic and `16:9` by intent, which is why the table is consulted
+ * rather than the numbers reduced.
+ */
+export function ratioLabel(size: string): string {
+  if (size.includes(":")) return size
+  return SIZE_OPTIONS.find((o) => o.value === size)?.label ?? "1:1"
 }
 
 /** "~7s" / "~1m 58s", or null when this model has no measurement behind it. */

@@ -44,15 +44,13 @@ import {
  * on is fine detail — rendered glyphs — which a card-width thumbnail cannot show.
  */
 export function ImageRunCard({
-  connectionId,
   run,
   onReuse,
 }: {
-  connectionId: string
   run: LaiosImageRun
   onReuse: (run: LaiosImageRun) => void
 }) {
-  const remove = useDeleteImage(connectionId)
+  const remove = useDeleteImage()
   const active = isImageActive(run)
   const now = useTicker(active)
 
@@ -61,13 +59,17 @@ export function ImageRunCard({
     ? 0
     : Math.max(0, Math.floor((now - startedAt) / 1000))
 
-  const src = imageContentUrl(connectionId, run.id)
+  const src = imageContentUrl(run.id)
   const stats = measured(run)
 
   async function onDelete() {
     try {
       await remove.mutateAsync(run.id)
-      toast.success(active ? "Run removed — the box finishes it regardless" : "Run deleted")
+      toast.success(
+        active
+          ? "Run removed — the render finishes (and bills) regardless"
+          : "Run deleted"
+      )
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete")
     }
@@ -133,9 +135,14 @@ export function ImageRunCard({
         {/* The engine's own numbers, and the reason this page exists: comparing
             two models or two step counts is comparing these. Reported in every
             response, so nothing here had to be instrumented. */}
-        {stats ? (
+        {/* One line or the other, never both: a box reports a time and a peak, a
+            hosted model reports a price. Showing "$0.00" for a local render
+            would claim a measurement nobody took. */}
+        {stats || run.cost_usd !== null ? (
           <p className="truncate text-xs tabular-nums text-muted-foreground">
-            {stats}
+            {[stats, run.cost_usd !== null ? `$${run.cost_usd.toFixed(3)}` : null]
+              .filter(Boolean)
+              .join(" · ")}
           </p>
         ) : null}
 

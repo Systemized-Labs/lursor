@@ -54,15 +54,13 @@ const NO_PROGRESS_NOTE =
  * in the meta line below anyway.
  */
 export function VideoRunCard({
-  connectionId,
   job,
   onReuse,
 }: {
-  connectionId: string
   job: LaiosVideoJob
   onReuse: (job: LaiosVideoJob) => void
 }) {
-  const cancel = useCancelVideo(connectionId)
+  const cancel = useCancelVideo()
   const active = isVideoActive(job)
   const now = useTicker(active)
   const settings = settingsFromRequest(job.request)
@@ -76,7 +74,14 @@ export function VideoRunCard({
   async function onCancel() {
     try {
       await cancel.mutateAsync(job.job_id)
-      toast.success("Generation cancelled")
+      // Only a box can really be told to stop. On OpenRouter this removes the
+      // job from view and nothing else, and saying otherwise would be a lie
+      // about money.
+      toast.success(
+        job.provider === "openrouter"
+          ? "Stopped tracking it — OpenRouter has no cancel, so the render continues and will still be billed"
+          : "Generation cancelled"
+      )
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to cancel")
     }
@@ -99,7 +104,7 @@ export function VideoRunCard({
             controls
             preload="metadata"
             className="absolute inset-0 h-full w-full bg-black/90 object-contain"
-            src={videoContentUrl(connectionId, job.job_id)}
+            src={videoContentUrl(job.job_id)}
           />
         ) : active ? (
           <PendingFrame elapsed={elapsed} estimate={estimate} />
@@ -123,6 +128,15 @@ export function VideoRunCard({
           {job.model} · {jobSummary(job)}
         </p>
 
+        {/* What it actually cost. Only ever present on a hosted clip — a box
+            bills in electricity and reports no number, and "$0.00" would claim
+            otherwise. */}
+        {job.cost_usd !== null ? (
+          <p className="truncate text-xs tabular-nums text-muted-foreground">
+            ${job.cost_usd.toFixed(2)}
+          </p>
+        ) : null}
+
         {job.error ? (
           <p className="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
             {job.error}
@@ -145,7 +159,7 @@ export function VideoRunCard({
               {job.status === "completed" ? (
                 <Button variant="ghost" size="sm" asChild>
                   <a
-                    href={videoContentUrl(connectionId, job.job_id)}
+                    href={videoContentUrl(job.job_id)}
                     download={`${job.job_id}.mp4`}
                   >
                     <DownloadSimple className="h-4 w-4" />

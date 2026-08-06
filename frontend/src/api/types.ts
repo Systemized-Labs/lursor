@@ -1255,8 +1255,13 @@ export type LaiosVideoStatus =
 export interface LaiosVideoJob {
   /** Our row id. */
   id: string
+  /** Which source produced it. Every row written before the setting is `laios`. */
+  provider: MediaSource
+  /** The box it ran on, or `""` when the source is not a box. */
   connection_id: string
-  /** The gateway's job id (`vid_…`) — what every follow-up call routes on. */
+  /** What the provider says it cost. Null on laios, which reports no price. */
+  cost_usd: number | null
+  /** The upstream job id — what every follow-up call routes on. */
   job_id: string
   model: string
   prompt: string
@@ -1287,14 +1292,133 @@ export interface LaiosVideoJob {
  * backend knows how to drive, so the editor states the outcome rather than leaving
  * a checkbox that silently does nothing.
  */
+/**
+ * Where images and clips are generated.
+ *
+ * An app-wide choice, made in Settings → Image & video, not a per-agent or
+ * per-run one. `laios` is a self-hosted box (billed in electricity), `openrouter`
+ * is the hosted API (billed per image or per second).
+ *
+ * The source **never falls back**: if the configured one cannot serve, generation
+ * fails with a reason rather than quietly using the other. Every surface that can
+ * report "unavailable" therefore has to show the `reason` alongside it.
+ */
+export type MediaSource = "laios" | "openrouter"
+
+/** A rate, and what it is charged per. Null everywhere nothing is known. */
+export interface MediaPrice {
+  amount: number
+  /** `"image"` or `"second"` (of output video). */
+  unit: string
+  /**
+   * A floor rather than a quote.
+   *
+   * Video rates vary by resolution and by whether audio is on, and an image price
+   * is the mean of what past runs actually cost — so both are rendered with a
+   * qualifier ("from", "about") rather than as an exact number.
+   */
+  approximate: boolean
+}
+
+/** One image or video model, from either source, as the pickers render it. */
+export interface MediaModelOption {
+  /** The stable id: `openrouter:{slug}` or `laios:{connection}:{served}`. */
+  ref: string
+  /** The bare name to put in a request's `model` field. */
+  id: string
+  label: string
+  provider: MediaSource
+  note: string
+  price: MediaPrice | null
+  connection_name: string
+  /** Present only for an OpenRouter image model — the knobs it accepts. */
+  openrouter: {
+    aspect_ratios: string[]
+    resolutions: string[]
+    qualities: string[]
+    formats: string[]
+    seed: boolean
+  } | null
+  /** Present only for a laios image model — this build's own measurements. */
+  profile: {
+    label: string
+    default_steps: number
+    min_steps: number
+    max_steps: number
+    guidance: boolean
+    seconds_per_step: number | null
+  } | null
+}
+
+/** The video sibling: one flat shape covering both sources' constraints. */
+export interface MediaVideoModelOption {
+  ref: string
+  id: string
+  label: string
+  provider: MediaSource
+  note: string
+  price: MediaPrice | null
+  observed_cost: number | null
+  connection_name: string
+  resolutions: string[]
+  aspect_ratios: string[]
+  sizes: string[]
+  /** Discrete allowed lengths, not a range. Empty means unconstrained. */
+  durations: number[]
+  keyframes: boolean
+  audio: boolean
+  seed: boolean
+}
+
+/** What `/media/{images,videos}/models` returns for one source. */
+export interface MediaModelList<T> {
+  source: MediaSource
+  available: boolean
+  /** Why not, when `available` is false. Always worth showing. */
+  reason: string
+  models: T[]
+}
+
+/** The configured source and model for one modality, and what it resolves to. */
+export interface MediaModalitySettings {
+  source: MediaSource
+  /** The pinned model ref, or null for "auto — the cheapest the source offers". */
+  model: string | null
+  model_source: "database" | "auto"
+  available: boolean
+  reason: string
+  effective_model: string | null
+}
+
+export interface MediaSettings {
+  image: MediaModalitySettings
+  video: MediaModalitySettings
+  openrouter_configured: boolean
+  laios_connected: boolean
+}
+
+/** Partial: the image and video choices save independently. */
+export interface MediaSettingsInput {
+  image_source?: MediaSource
+  image_model?: string | null
+  video_source?: MediaSource
+  video_model?: string | null
+}
+
 export interface VideoCapability {
   available: boolean
+  /** Which source resolved, or null when none could. */
+  source: MediaSource | null
   /** Served name of the model that would be used, when one resolves. */
   model: string | null
   connection_name: string | null
   /** The request shape was inferred from the model's identity, not declared by its
    *  recipe — the one case where the backend trusts a measurement. */
   assumed: boolean
+  /** Published rate per second, when the source quotes one. */
+  price: MediaPrice | null
+  /** The model was pinned in Settings rather than chosen by the resolver. */
+  pinned: boolean
   /** One sentence: which model, or why none. */
   reason: string
 }
@@ -1308,7 +1432,15 @@ export interface VideoCapability {
  */
 export interface ImageCapability {
   available: boolean
-  /** Served name of the model that would be used by default (the fastest one). */
+  /**
+   * Which source resolved, or null when none could.
+   *
+   * The first thing the editor has to say: a "no" that does not name the source
+   * reads as broken rather than as a choice, because the source never falls back
+   * to the other one.
+   */
+  source: MediaSource | null
+  /** Served name (laios) or slug (OpenRouter) of the model that would be used. */
   model: string | null
   connection_name: string | null
   /** Every serving image model, so the editor can say there is more than one. */
@@ -1321,12 +1453,18 @@ export interface ImageCapability {
    * defaults and no time estimate.
    */
   unrecognised: boolean
+  /** What one image costs, when anything is known. Null is "we do not know". */
+  price: MediaPrice | null
+  /** The default is a model the user pinned in Settings, not the resolver's pick. */
+  pinned: boolean
   /** One sentence: which model, or why none. */
   reason: string
 }
 
 /** The knobs the video page sends. Relayed to the engine unaltered. */
 export interface LaiosVideoInput {
+  /** Source ref (`"openrouter"`, `"laios:{id}"`). Omit for the configured one. */
+  source?: string
   model: string
   prompt: string
   /**
@@ -1367,7 +1505,12 @@ export type LaiosImageStatus = "running" | "completed" | "failed"
 export interface LaiosImageRun {
   /** Our row id — what every route here is keyed by. */
   id: string
+  /** Which source produced it. Every row written before the setting is `laios`. */
+  provider: MediaSource
+  /** The box it ran on, or `""` when the source is not a box. */
   connection_id: string
+  /** What the provider says it cost. Null on laios, which reports no price. */
+  cost_usd: number | null
   model: string
   prompt: string
   /**
@@ -1401,6 +1544,8 @@ export interface LaiosImageRun {
  * want. The composer decides per model; this type just carries the result.
  */
 export interface LaiosImageInput {
+  /** Source ref (`"openrouter"`, `"laios:{id}"`). Omit for the configured one. */
+  source?: string
   model: string
   prompt: string
   /** `"1024x1024"` — the engine also accepts `width`/`height` separately. */
@@ -1412,6 +1557,10 @@ export interface LaiosImageInput {
   true_cfg_scale?: number
   /** `"png" | "jpeg" | "webp"`. The engine defaults to jpeg. */
   output_format?: string
+  /** OpenRouter only: a ratio rather than a pixel size, and a quality tier. */
+  aspect_ratio?: string
+  resolution?: string
+  quality?: string
 }
 
 /**
