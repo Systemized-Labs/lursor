@@ -45,9 +45,10 @@ from app.api import (
     settings as settings_api,
 )
 from app.auth import TokenAuthMiddleware
-from app.config import get_settings
+from app.config import BACKEND_DIR, get_settings
 from app.db.prompt_seed import seed_prompt_templates
 from app.db.session import async_session_factory, init_db
+from app.service import migrate_checkout_database
 from app.skills.seed import globalize_bundled, seed_bundled_skills
 from app.terminal_sessions import sessions as terminal_sessions
 
@@ -55,10 +56,47 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+def _migrate_legacy_database() -> None:
+    """Move a pre-0.1.10 checkout database into the data root, best effort.
+
+    Skipped when ``DATABASE_URL`` is set explicitly — that names a database on
+    purpose (the test suite does it), and moving files underneath it would be wrong.
+    Never allowed to stop startup: a failure here leaves the old file exactly where it
+    was, which is recoverable, whereas refusing to boot is not.
+    """
+    if "database_url" in settings.model_fields_set or settings.data_dir is None:
+        return
+    try:
+        moved = migrate_checkout_database(BACKEND_DIR, settings.data_dir.expanduser())
+    except OSError as exc:
+        logger.warning(
+            "Could not move the legacy database out of the checkout (%s). It is still "
+            "at %s; move it to %s by hand to keep its history.",
+            exc,
+            BACKEND_DIR / "lursor.db",
+            settings.data_dir,
+        )
+        return
+    if moved:
+        logger.warning("Moved your database out of the checkout to %s", moved)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     settings.apply_env()
+    # Relocate a database left inside the checkout by an older version, before
+    # anything opens a connection.
+    #
+    # Until 0.1.10 a source run defaulted the database to ``BACKEND_DIR/lursor.db``
+    # while the packaged app and the service put it under ``LURSOR_DATA_DIR``. Now
+    # everything uses the data root (``config.DEFAULT_DATA_ROOT``), which means an
+    # existing dev database would otherwise be silently orphaned and the backend would
+    # come up on an empty one — indistinguishable, from the outside, from having lost
+    # every thread. ``migrate_checkout_database`` moves it (with its ``-wal``/``-shm``
+    # sidecars) and never overwrites a database already in the destination, so it is a
+    # no-op on every subsequent boot and for anyone who never had one.
+    _migrate_legacy_database()
     await init_db()
     # Ship the curated built-in prompt templates on every start (idempotent),
     # register the skills catalog as a workspace so it can be chatted with, and

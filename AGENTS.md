@@ -1063,6 +1063,16 @@ Each of these has already cost a debugging session.
     and it would owe the dual-transport wiring in invariant 1 for nothing. `/api/update/*`
     plus Electron IPC is the whole mechanism. This is invariant 1's own advice —
     "the cheapest correct move is to add no new event type at all".
+20. **All writable state lives under one root, `config.DEFAULT_DATA_ROOT`.** There is
+    no "dev location" any more. Until 0.1.10 the database alone defaulted to
+    `BACKEND_DIR/lursor.db` while `workspaces_dir`, `skills_dir` and `media_dir`
+    already used `~/.lursor` — so the installed app and `bun run electron:dev` read
+    *different databases*, and a workspace created in one was simply missing from the
+    other with nothing to indicate why. The dev copy also sat inside a checkout that
+    `install-server.sh` runs `git reset --hard` on. A new writable path belongs in
+    `Settings` and gets rebased by `_rebase_under_data_dir`; do not reach for
+    `BACKEND_DIR`. `LURSOR_DATA_DIR` remains the override, which is how a second
+    isolated backend is run.
 
 ## 8. Desktop and distribution
 

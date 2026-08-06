@@ -82,7 +82,19 @@ checkout:
 That separation is the point. `~/lursor` is a git checkout the installer owns — it
 runs `git reset --hard` on every upgrade, and you should be able to delete or re-clone
 it without a second thought. Anything you leave inside it is one upgrade away from
-being someone else's problem, which is why the service sets `LURSOR_DATA_DIR`.
+being someone else's problem.
+
+**This holds for every way the backend starts, since 0.1.10.** It used not to: only
+the packaged app and the service set `LURSOR_DATA_DIR`, so a plain `uv run uvicorn`
+put its database at `backend/lursor.db` — inside the disposable checkout, and invisible
+to the installed app, which read `~/.lursor/lursor.db` instead. Two databases, one of
+them a `git clean` from gone, and workspaces created in one simply absent from the
+other. `~/.lursor` is now the default everywhere, and a backend that finds a database
+left in the checkout moves it (with its `-wal`/`-shm` sidecars) on the next start
+rather than quietly coming up empty.
+
+`LURSOR_DATA_DIR` is still the override, and still the way to run a second isolated
+backend — see "Testing without a VPS" below.
 
 Provider keys have two homes, and `backend/.env` is not one of them on a server:
 

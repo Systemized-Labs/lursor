@@ -35,8 +35,13 @@ On launch (`electron/main.cjs`):
    - **Packaged**: `<Resources>/backend/python/bin/python -m uvicorn app.main:app`,
      with `LURSOR_DATA_DIR=~/.lursor` so all writable state stays out of the
      read-only app bundle.
-   - **Dev**: `uv run uvicorn app.main:app` from `../../backend` (no data-dir
-     override, so dev keeps its existing DB next to the backend).
+   - **Dev**: `uv run uvicorn app.main:app` from `../../backend`. No data-dir
+     override is needed — since 0.1.10 `~/.lursor` is the default for every launch
+     mode, so dev and the packaged app read the *same* database. They used not to,
+     which meant a workspace created in one was missing from the other.
+
+   Both also get `LURSOR_MANAGED_BY=desktop`, which is how the backend knows to
+   refuse a self-update: Electron owns the process and would respawn the old code.
 
    **Remote**: spawn nothing.
 3. Poll `GET /api/health` (with the bearer token, if any) until ok, then load the
