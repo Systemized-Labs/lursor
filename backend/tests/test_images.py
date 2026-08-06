@@ -502,3 +502,43 @@ async def test_runs_are_scoped_to_their_connection(client: AsyncClient, monkeypa
     assert (
         await client.get(f"/laios/connections/{b['id']}/images/{run['id']}")
     ).status_code == 404
+
+
+async def test_a_new_run_is_tracked_before_the_route_returns(
+    client: AsyncClient, monkeypatch
+):
+    """``_active`` is populated synchronously, and things depend on it.
+
+    ``create_image`` registers the task with no ``await`` between the
+    ``create_task`` and the assignment, which is what makes ``_reap_orphans``
+    exact: a ``running`` row absent from the map means "nothing is generating
+    this". Slip an await in there and the very next read — the page's poll, or
+    ``agents/image_tools``' wait, which starts polling immediately — reaps a live
+    generation into a ``failed`` row blaming a restart that never happened.
+
+    Asserted the moment the response lands, before anything is settled.
+    """
+    from app.api import images as images_mod
+
+    conn = await _make_connection(client)
+    _patch_gateway(monkeypatch, _generations({}))
+
+    run = (
+        await client.post(
+            f"/laios/connections/{conn['id']}/images",
+            json={"model": "z-image-turbo", "prompt": "tracked"},
+        )
+    ).json()
+
+    assert run["status"] == "running"
+    assert run["id"] in images_mod._active, (
+        "a running row that is not in _active is the orphan case, and would be "
+        "reaped on the next read"
+    )
+
+    # And reading it right now must not fail it.
+    still = (
+        await client.get(f"/laios/connections/{conn['id']}/images/{run['id']}")
+    ).json()
+    assert still["status"] in {"running", "completed"}
+    await _settle(run["id"])

@@ -35,6 +35,7 @@ class AgentPromptContext(BaseModel):
     web_search: bool = False
     browser_qa: bool = False
     include_video: bool = False
+    include_image: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     skill_names: list[str] = []
     tool_names: list[str] = []
@@ -100,6 +101,11 @@ def _capability_lines(ctx: AgentPromptContext) -> str:
             "video generation (generate clips with synchronised audio on a "
             "connected laios box, then assemble them with ffmpeg; each render "
             "takes minutes of GPU time, so draft cheap before committing)"
+        )
+    if ctx.include_image:
+        caps.append(
+            "image generation (generate images on a connected laios box in seconds "
+            "and look at them; a generated image is also a starting frame for video)"
         )
     if ctx.tool_names:
         caps.append("tools: " + ", ".join(ctx.tool_names))

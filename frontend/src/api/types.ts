@@ -16,6 +16,7 @@ export interface Agent {
   web_search: boolean
   browser_qa: boolean
   include_video: boolean
+  include_image: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   /** Fraction of the context window at which this agent compacts, or null to use
@@ -43,6 +44,7 @@ export interface AgentInput {
   web_search: boolean
   browser_qa: boolean
   include_video: boolean
+  include_image: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   // Null clears the override and reverts to the app-wide default.
@@ -235,6 +237,7 @@ export interface Subagent {
   include_plan: boolean
   web_search: boolean
   include_video: boolean
+  include_image: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   /** Compaction overrides for this subagent's own context; null uses the app-wide
@@ -261,6 +264,7 @@ export interface SubagentInput {
   include_plan: boolean
   web_search: boolean
   include_video: boolean
+  include_image: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   compaction_threshold: number | null
@@ -330,6 +334,7 @@ export interface AgentPromptContext {
   web_search: boolean
   browser_qa: boolean
   include_video: boolean
+  include_image: boolean
   thinking: ThinkingLevel
   skill_names: string[]
   tool_names: string[]
@@ -1290,6 +1295,32 @@ export interface VideoCapability {
   /** The request shape was inferred from the model's identity, not declared by its
    *  recipe — the one case where the backend trusts a measurement. */
   assumed: boolean
+  /** One sentence: which model, or why none. */
+  reason: string
+}
+
+/**
+ * Whether anything connected can generate images, and what would be used.
+ *
+ * The image sibling of {@link VideoCapability}, gating the `include_image` agent
+ * toggle for the same reason: a checkbox with nothing serving is indistinguishable
+ * from a broken one.
+ */
+export interface ImageCapability {
+  available: boolean
+  /** Served name of the model that would be used by default (the fastest one). */
+  model: string | null
+  connection_name: string | null
+  /** Every serving image model, so the editor can say there is more than one. */
+  models: string[]
+  /**
+   * The default is a model this build has no measurements for.
+   *
+   * Not the same as video's `assumed`: an unmeasured image model genuinely works
+   * — the request shape is shared across recipes — it just gets conservative
+   * defaults and no time estimate.
+   */
+  unrecognised: boolean
   /** One sentence: which model, or why none. */
   reason: string
 }

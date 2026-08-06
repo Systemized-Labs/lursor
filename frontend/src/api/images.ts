@@ -8,7 +8,12 @@ import { useMemo } from "react"
 
 import { API_BASE, api } from "./client"
 import { useLaiosModels } from "./laios"
-import type { LaiosImageInput, LaiosImageRun, LaiosImageStatus } from "./types"
+import type {
+  ImageCapability,
+  LaiosImageInput,
+  LaiosImageRun,
+  LaiosImageStatus,
+} from "./types"
 
 // Statuses that will not change again. Everything else is worth polling.
 const TERMINAL: ReadonlySet<LaiosImageStatus> = new Set(["completed", "failed"])
@@ -33,6 +38,9 @@ export const imagesApi = {
     api.delete<{ deleted: string }>(
       `/laios/connections/${cid}/images/${runId}`
     ),
+  // Not connection-scoped: "can anything connected generate images".
+  capability: (signal?: AbortSignal) =>
+    api.get<ImageCapability>("/image/capability", signal),
 }
 
 /**
@@ -48,8 +56,25 @@ export function imageContentUrl(cid: string, runId: string): string {
 
 export const imageKeys = {
   all: ["images"] as const,
+  capability: ["images", "capability"] as const,
   runs: (cid: string) => ["images", cid, "runs"] as const,
   run: (cid: string, runId: string) => ["images", cid, "run", runId] as const,
+}
+
+/**
+ * Whether any connected box can generate images, and which model would be used.
+ *
+ * Behind the same 5-minute resolver cache the agent build uses, so this is cheap;
+ * `enabled` lets a caller skip it entirely until a dialog is open.
+ */
+export function useImageCapability(enabled = true) {
+  return useQuery({
+    queryKey: imageKeys.capability,
+    queryFn: ({ signal }) => imagesApi.capability(signal),
+    enabled,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
 }
 
 /** Every generation submitted to this connection. */

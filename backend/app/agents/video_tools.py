@@ -32,7 +32,6 @@ import base64
 import json
 import logging
 import math
-import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -51,12 +50,21 @@ from app.agents.video_runtime import (
     VideoRuntime,
 )
 from app.agents.vision import describe_image_bytes
+from app.agents.workspace_paths import relative_to_workspace, resolve_in_workspace, slug
+from app.agents.workspace_paths import write_gitignore as _write_shared_gitignore
 from app.api import videos as videos_api
 from app.db.models import VideoJob
 from app.db.session import async_session_factory
 from app.media_store import mime_for_path
 
 logger = logging.getLogger(__name__)
+
+# The workspace helpers under their local names, so the call sites below read the
+# way they always have. The implementations moved to ``agents/workspace_paths.py``
+# when ``agents/image_tools.py`` became their third user.
+_resolve = resolve_in_workspace
+_relative = relative_to_workspace
+_slug = slug
 
 # Where agent-owned video state lives, relative to the workspace root. ``.agents/``
 # is the established convention for agent-owned workspace state (``.agents/plan/``,
@@ -765,15 +773,8 @@ def _materialize(root: Path, job: VideoJob, source: Path) -> Path | str:
 
 
 def _write_gitignore(video_dir: Path) -> None:
-    """Ignore this whole tree, on first use.
-
-    A workspace is usually a git repo, and mp4 blobs would flood the git panel and
-    the file-tree decorations. Deliverables the user asked to keep live wherever
-    they named them and are the only video artifacts that should ever be committed.
-    """
-    marker = video_dir / ".gitignore"
-    if not marker.exists():
-        marker.write_text("# Agent-generated clips and frames; not source.\n*\n")
+    """Ignore this whole tree, on first use."""
+    _write_shared_gitignore(video_dir, "Agent-generated clips and frames; not source.")
 
 
 def _still_running(
@@ -969,28 +970,6 @@ async def _contact_sheet(stills: list[Path], out_dir: Path, count: int) -> Path 
 # --- formatting -----------------------------------------------------------------
 
 
-def _resolve(root: Path, candidate: str) -> Path | str:
-    """Resolve a tool-supplied path against the workspace, or return an error."""
-    if not (candidate or "").strip():
-        return "Error: a path is required."
-    path = Path(candidate)
-    resolved = path if path.is_absolute() else (root / path)
-    try:
-        resolved = resolved.resolve()
-    except OSError as exc:
-        return f"Error: could not resolve path {candidate!r}: {exc}"
-    if not resolved.is_file():
-        return f"Error: no such file: {candidate}"
-    return resolved
-
-
-def _relative(root: Path, path: Path) -> str:
-    try:
-        return str(path.relative_to(root.resolve()))
-    except ValueError:
-        return str(path)
-
-
 def _tileable(frames: Any) -> tuple[int, bool]:
     """The nearest frame count that tiles exactly, and whether it was snapped."""
     try:
@@ -1002,13 +981,6 @@ def _tileable(frames: Any) -> tuple[int, bool]:
     clamped = max(1, min(requested, max(_GRIDS)))
     nearest = min(_GRIDS, key=lambda n: (abs(n - clamped), n))
     return nearest, True
-
-
-def _slug(text: str) -> str:
-    """A short filename-safe stem from a prompt or an id."""
-    words = re.findall(r"[a-z0-9]+", (text or "").lower())
-    slug = "-".join(words)[:40].strip("-")
-    return slug
 
 
 def _size_for(limits: VideoConstraints, aspect_ratio: str) -> str:

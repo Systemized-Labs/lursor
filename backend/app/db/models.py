@@ -369,6 +369,12 @@ class Agent(TimestampMixin, table=True):
     # rather than arriving with an upgrade. Also gated at run time on a connection
     # actually serving a video-capable model.
     include_video: bool = False
+    # Let this agent generate images on a connected laios box (see
+    # ``agents/image_tools.py``). Off by default like its video sibling, though for
+    # a weaker reason: an image is seconds of GPU rather than minutes, so the
+    # argument here is consistency and explicit consent rather than cost. Also gated
+    # at run time on a connection actually serving an image-capable model.
+    include_image: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     # Force or forbid tool calls (see ToolChoice); "auto" leaves it to the model.
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
@@ -430,6 +436,10 @@ class Subagent(TimestampMixin, table=True):
     # so this flag decides whether a specialist may spend the parent's GPU budget,
     # not whether one can be found.
     include_video: bool = False
+    # Image generation, same flag as on :class:`Agent` and inherited the same way:
+    # the parent resolves the box and passes the runtime down, and this decides
+    # whether the specialist may use it.
+    include_image: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
 

@@ -29,6 +29,7 @@ const DEFAULTS: Omit<AgentInput, "name" | "model" | "instructions"> = {
   web_search: false,
   browser_qa: true,
   include_video: false,
+  include_image: false,
   thinking: "off",
   tool_choice: "auto",
   compaction_threshold: null,

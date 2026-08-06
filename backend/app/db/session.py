@@ -197,6 +197,9 @@ async def _apply_lightweight_migrations(conn) -> None:
         "include_video": (
             "ALTER TABLE subagents ADD COLUMN include_video BOOLEAN DEFAULT 0"
         ),
+        "include_image": (
+            "ALTER TABLE subagents ADD COLUMN include_image BOOLEAN DEFAULT 0"
+        ),
         "thinking": "ALTER TABLE subagents ADD COLUMN thinking VARCHAR DEFAULT 'off'",
         "tool_choice": "ALTER TABLE subagents ADD COLUMN tool_choice VARCHAR DEFAULT 'auto'",
         "extra_config": "ALTER TABLE subagents ADD COLUMN extra_config JSON DEFAULT '{}'",
@@ -244,6 +247,14 @@ async def _apply_lightweight_migrations(conn) -> None:
     if "include_video" not in agent_cols:
         await conn.execute(
             text("ALTER TABLE agents ADD COLUMN include_video BOOLEAN DEFAULT 0")
+        )
+    # Per-agent image generation toggle (see ``agents/image_tools.py``). Also 0, and
+    # deliberately not backfilled from ``include_video``: they are separate consents,
+    # and an upgrade that reads one as the other would hand a capability to agents
+    # whose operator never asked for it.
+    if "include_image" not in agent_cols:
+        await conn.execute(
+            text("ALTER TABLE agents ADD COLUMN include_image BOOLEAN DEFAULT 0")
         )
     # Per-agent context-compaction overrides (see ``agents/context_budget.py``).
     # NULL means "use the app-wide default", so an upgrade changes nothing.

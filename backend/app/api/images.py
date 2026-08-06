@@ -60,6 +60,41 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/laios/connections", tags=["images"])
 
+# The capability probe is not connection-scoped — "can any box do this" is the
+# question — so it gets its own router rather than a path under a connection id.
+capability_router = APIRouter(prefix="/image", tags=["images"])
+
+
+@capability_router.get("/capability")
+async def image_capability(session: AsyncSession = Depends(get_session)):
+    """Whether anything connected can generate images, and what would be used.
+
+    Exists for the agent editor, exactly as ``videos.video_capability`` does: the
+    ``include_image`` toggle is gated on a box actually serving an image model, and
+    a checkbox that silently does nothing is indistinguishable from a broken one.
+
+    The one difference from the video probe is ``unrecognised`` in place of
+    ``assumed``, and it is not a rename. Video's ``assumed`` means "we inferred the
+    request shape, so this might not work"; here an unmeasured model *does* work —
+    it just gets conservative defaults and no time estimate, because the request
+    shape is shared and only the sensible values are per-model
+    (``agents/image_runtime.py``).
+
+    Shares the resolver's 5-minute cache, so opening the dialog costs no round trip
+    once a run has already resolved.
+    """
+    from app.agents.image_runtime import resolve_image_target
+
+    runtime, reason = await resolve_image_target(session)
+    return {
+        "available": runtime is not None,
+        "model": runtime.default.model if runtime else None,
+        "connection_name": runtime.default.connection_name if runtime else None,
+        "models": [m.model for m in runtime.models] if runtime else [],
+        "unrecognised": (not runtime.default.recognised) if runtime else False,
+        "reason": reason,
+    }
+
 # Our own vocabulary (see :class:`ImageGeneration`), not the engine's — it has no
 # job states to report.
 TERMINAL = frozenset({"completed", "failed"})

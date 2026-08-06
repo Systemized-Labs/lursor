@@ -45,6 +45,7 @@ import {
   type CapabilityField,
 } from "@/components/capability-toggles"
 import { useMemoryHint } from "@/pages/settings/memory-hint"
+import { useImageHint } from "@/pages/agents/image-hint"
 import { useVideoHint } from "@/pages/agents/video-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
@@ -63,6 +64,7 @@ type BooleanFieldKey =
   | "include_plan"
   | "web_search"
   | "include_video"
+  | "include_image"
 
 const BOOLEAN_FIELDS: CapabilityField<BooleanFieldKey>[] = [
   {
@@ -99,6 +101,11 @@ const BOOLEAN_FIELDS: CapabilityField<BooleanFieldKey>[] = [
     label: "Video generation",
     hint: "Needs the delegating agent to have video on too.",
   },
+  {
+    key: "include_image",
+    label: "Image generation",
+    hint: "Needs the delegating agent to have image on too.",
+  },
 ]
 
 interface FormState {
@@ -113,6 +120,7 @@ interface FormState {
   include_plan: boolean
   web_search: boolean
   include_video: boolean
+  include_image: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   // Whole-percent text; "" means no override (see ``CompactionFields``).
@@ -135,6 +143,7 @@ function emptyState(): FormState {
     include_plan: false,
     web_search: false,
     include_video: false,
+    include_image: false,
     thinking: "off",
     tool_choice: "auto",
     compactionThresholdText: "",
@@ -157,6 +166,7 @@ function fromSubagent(subagent: Subagent): FormState {
     include_plan: subagent.include_plan,
     web_search: subagent.web_search,
     include_video: subagent.include_video,
+    include_image: subagent.include_image,
     thinking: subagent.thinking,
     tool_choice: subagent.tool_choice ?? "auto",
     compactionThresholdText: fractionToPercentText(subagent.compaction_threshold),
@@ -192,6 +202,7 @@ export function SubagentFormDialog({
   const memoryHint = useMemoryHint()
   // Only resolved while the dialog is open: it reaches the box behind a cache.
   const videoHint = useVideoHint(open)
+  const imageHint = useImageHint(open)
   const isEdit = Boolean(subagent)
   const isSaving = createSubagent.isPending || updateSubagent.isPending
 
@@ -285,6 +296,7 @@ export function SubagentFormDialog({
       include_plan: form.include_plan,
       web_search: form.web_search,
       include_video: form.include_video,
+      include_image: form.include_image,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
       compaction_threshold: threshold.value,
@@ -443,7 +455,11 @@ export function SubagentFormDialog({
             fields={BOOLEAN_FIELDS}
             values={form}
             onChange={update}
-            liveHints={{ include_memory: memoryHint, include_video: videoHint }}
+            liveHints={{
+              include_memory: memoryHint,
+              include_video: videoHint,
+              include_image: imageHint,
+            }}
           />
 
           <CompactionFields

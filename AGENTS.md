@@ -632,6 +632,11 @@ a resolved `VideoRuntime`. A subagent inherits the parent's runtime — it has n
 session to resolve one with — but only when its own `include_video` is on, so a
 video-enabled agent does not silently hand every specialist a GPU.
 
+An agent with both capabilities can also draw an opening still with `generate_image`
+and hand it to `generate_video` as a `first_frame` — the image tool's docstring says
+so, but only when video is actually available, and it asks for JPEG because a
+photographic 1024px PNG exceeds the gateway's inlined-keyframe budget.
+
 Everything ffmpeg — trim, concat, xfade, captions — is the `video-production` skill
 instead, because a tool is only justified when the work needs a credential, a DB row
 or app state, and ffmpeg needs none of the three. **ffmpeg is a real dependency**
@@ -689,10 +694,67 @@ time estimate rather than a confident wrong one. Switching model deliberately re
 steps and guidance: 9 steps is right for a distilled turbo checkpoint and undercooked
 on Qwen, so a number that is right for one is wrong for the other.
 
-No agent tools and no capability probe — this is an operator surface, so there is no
-`include_image` toggle to gate. The page is in the ⋯ menu rather than pinned to the
-rail beside Video, by Video's own argument for being pinned: you leave a clip and come
-back to it, while an image finishes while you watch.
+That table is also why the backend can have a profile table of its own
+(`agents/image_runtime.py`) without a recipe declaration to read: the two halves
+answer different questions — the frontend's drives sliders, the backend's drives
+validation ranges and a tool docstring — and the only field where drift produces a
+wrong *request* rather than a worse estimate is `guidance`, which is pinned by test
+on both sides.
+
+The page stays in the ⋯ menu rather than pinned to the rail beside Video, by Video's
+own argument for being pinned: you leave a clip and come back to it, while an image
+finishes while you watch.
+
+Agents reach it through one deferred tool (`agents/image_tools.py`): `generate_image`,
+which submits, **waits**, copies the file into `<workspace>/.agents/image/gen/` and
+returns the path. That is the deliberate opposite of `generate_video`, and the reason
+is latency, not taste — 6.5s (or worst case ~116s) is inside the range where waiting
+is simply the better interface, so there is no job id for the model to carry, no poll
+tool and no half-finished state to explain. Gated on `Agent.include_image` (default
+off) plus a resolved `ImageRuntime`, with the same subagent double opt-in as video.
+There is no `cancel_image`: the engine's image API has no cancel, so a submitted
+generation always runs to completion. There is no `view_image` either — every agent
+already has one.
+
+**The tool is not enough on its own, and this cost a round trip to learn.** An agent
+with `include_image` on, `generate_image` sitting in its roster next to `execute`, and
+a box serving z-image was asked for an image — and ran `curl` against
+`image.pollinations.ai` instead. The prompt left the machine for a third party, the
+user's own GPU stayed idle, and nothing landed in the media store, the Image pane or
+Artifacts. A tool description does not beat a model's prior about how a job is
+normally done, especially under a software-engineering persona where `execute` is the
+reflex. So `IMAGE_GENERATION_DIRECTIVE` (`agents/builder.py`) states the preference
+and **names the wrong path explicitly** — "use X" is much weaker than "use X, never
+Y" — closing both the external-API route and the draw-it-in-code route, while leaving
+charts-from-data alone. It is gated on the resolved runtime, not on the flag: telling
+an agent to use a tool it does not have is the same class of bug. This is the third
+directive of its kind, after `DEV_SERVER_DIRECTIVE` and `BROWSER_QA_DIRECTIVE`; any
+future capability a model won't reach for unaided needs one too.
+
+Three consequences of waiting, each handled rather than hoped away. The wait is capped
+at 240s and the render **is not cancelled** when it expires, so the message says so; a
+timed-out run is remembered and delivered by the next call, because with no run id
+there would otherwise be no way back to an image the agent paid for. And calls to one
+box are serialised behind a per-connection lock: pydantic-ai runs the tool calls in one
+model response concurrently, "three variations" is the obvious prompt, and two renders
+on one GPU is slower for both and at Qwen's 58.5 GB peak can be fatal for both. Queue
+time is deliberately not charged against the wait budget.
+
+`agents/image_runtime.py` **fails open** where `video_runtime.py` fails closed, and the
+asymmetry is the most load-bearing decision here. Video refuses to drive an undeclared
+model because the request shape is per-model and guessing returns HTTP 200 with a
+silently wrong clip; images share one request surface, so an unrecognised model still
+gets the tool with conservative defaults and no time estimate. Video's worst case was a
+wrong render, this one's is a mediocre default. Both still fail closed on
+*reachability* — an unreachable control plane means no tool either way. The runtime
+also resolves *every* serving model rather than one, with the fastest as the default
+and `model=` to override, because z-image and qwen differ ~20x in wall clock and the
+choice between them is a real tradeoff the agent is better placed to make.
+
+`api/laios.py`'s inventory join is shared: `_served_with_capability(conn, capability,
+profile_key=...)` with `video_served_models` / `image_served_models` as wrappers. Of
+the ~50 lines, three differ — the `running_instance.status == "running"` check in
+particular is a subtlety worth getting right only once.
 
 ### The pane layer
 
