@@ -6,6 +6,7 @@ import {
   type DockviewReadyEvent,
   type DockviewTheme,
   type IDockviewHeaderActionsProps,
+  type IDockviewPanel,
   type IDockviewPanelProps,
 } from "dockview-react"
 import "dockview-react/dist/styles/dockview.css"
@@ -33,7 +34,9 @@ import {
   expandBottomPanel,
   gridPanes,
   isBottomCollapsed,
+  revealPanel,
 } from "@/components/panes/bottom-panel"
+import { isElectron } from "@/lib/platform"
 import "@/components/panes/pane-theme.css"
 
 /**
@@ -138,6 +141,63 @@ export function PaneHost({
     check()
     const sub = api.onDidLayoutChange(check)
     return () => sub.dispose()
+  }, [api])
+
+  // ── ⌘W closes the active pane tab ────────────────────────────────────────
+  // Catches the window-close chord so it removes the focused dockview panel
+  // instead of tearing down the whole Electron window. The last tab closing
+  // simply leaves the empty grid behind — the same cards dockview already
+  // shows for a zero-pane layout. Desktop only: browsers claim ⌘W for their
+  // own tab close, so `preventDefault` would be wasted there.
+  useEffect(() => {
+    if (!api) return
+    if (!isElectron) return
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
+      if (e.key.toLowerCase() !== "w") return
+
+      const active = api.activePanel
+      if (!active) return
+
+      e.preventDefault()
+      active.api.close()
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [api])
+
+  // ── ⌘1…⌘9 switch pane tabs ───────────────────────────────────────────────
+  // Each digit jumps to the Nth visible tab across all groups, reading left to
+  // right (group order, then tab order within each group). Desktop only: in a
+  // browser ⌘/Ctrl+digit is the browser's own tab switcher.
+  useEffect(() => {
+    if (!api) return
+    if (!isElectron) return
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
+      const digit = Number(e.key)
+      if (!Number.isInteger(digit) || digit < 1 || digit > 9) return
+
+      // Flatten all tabs: groups in DOM order, panels within each group in tab order.
+      const panels: IDockviewPanel[] = []
+      for (const group of api.groups) {
+        for (const panel of group.panels) {
+          panels.push(panel)
+        }
+      }
+
+      const target = panels[digit - 1]
+      if (!target) return
+
+      e.preventDefault()
+      revealPanel(api, target)
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
   }, [api])
 
   return (

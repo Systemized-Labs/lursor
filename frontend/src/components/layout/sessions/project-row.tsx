@@ -1,6 +1,5 @@
 import {
   ArrowCounterClockwise,
-  CaretDown,
   CaretRight,
   FolderOpen,
   GitBranch,
@@ -61,19 +60,17 @@ export interface ProjectRowProps {
  * `cat-landing` could only be told apart by hovering. A full-width row says the
  * name outright and still has room for the icon and the status dot.
  *
- * It does not print its ⌘ digit. ⌘1–⌘9 still switch projects
- * (`use-workspace-switch`); the row just stops advertising it. A chord badge is
- * worth a slot on a row you are looking for and not on one you are reading past —
- * and with the caret now also on hover, two hint glyphs were arriving together on
- * the same edge every time the pointer crossed a project.
+ * It does not print a ⌘ digit. ⌘1–⌘9 switch pane tabs now (see `pane-host.tsx`),
+ * not workspaces. A chord badge was worth a slot on a row you are looking for
+ * and not on one you are reading past — and with the caret now also on hover,
+ * two hint glyphs were arriving together on the same edge every time the pointer
+ * crossed a project.
  *
- * **Two targets, two intents.** The name switches to the project (resuming the
- * session you were last in) *and* drills the list into it — "show me this
- * project" is one intent, so it is one click, and the rail this replaces earned
- * its keep as a one-click switcher. The caret only shows or hides this project's
- * sessions where they sit. Wanting a look at what is in a repo you are not in is
- * not the same as wanting to go there, and while the whole row was one link the
- * cheaper of those two asks cost a navigation, a drill, and a click back.
+ * **Two targets, two intents.** The name shows or hides this project's sessions
+ * inline — a quick peek at what is in a repo without leaving the one you are in.
+ * The arrow opens the workspace, switching to it and drilling the sidebar list
+ * into its sessions. Browsing and committing are different asks, and splitting
+ * them across the row's two halves keeps each one a single click.
  *
  * They are siblings rather than nested, because a button inside an anchor is
  * invalid HTML and browsers resolve it by giving the click to whichever they feel
@@ -100,7 +97,6 @@ export function ProjectRow({
   drag,
 }: ProjectRowProps) {
   const Icon = icon.Icon
-  const Caret = collapsed ? CaretRight : CaretDown
 
   return (
     <li>
@@ -123,10 +119,10 @@ export function ProjectRow({
               to={href}
               onClick={(event) => {
                 // Let ⌘/ctrl-click and middle-click do what they do everywhere
-                // else; anything else is a switch-and-drill.
+                // else; anything else toggles the sessions inline.
                 if (event.metaKey || event.ctrlKey || event.shiftKey) return
                 event.preventDefault()
-                onOpen()
+                onToggleCollapsed?.()
               }}
               aria-current={isActive ? "page" : undefined}
               // An anchor is a drag source by default, and the thing it drags is
@@ -142,11 +138,10 @@ export function ProjectRow({
                 className="size-4 shrink-0 text-sidebar-foreground/70"
                 weight={isActive ? "fill" : "regular"}
               />
-              {/* Underlined on hover, because this half of the row goes
-                  somewhere and the other half does not. Without it the two
-                  targets look identical and you learn the difference by
-                  being taken to a project you only wanted to peek at. */}
-              <span className="min-w-0 flex-1 truncate text-[13px] leading-5 tracking-tight group-hover/name:underline">
+              {/* No underline: this half of the row toggles the project's
+                  sessions inline rather than navigating anywhere. The arrow
+                  on the other end is the one that goes somewhere. */}
+              <span className="min-w-0 flex-1 truncate text-[13px] leading-5 tracking-tight">
                 {workspace.name}
               </span>
 
@@ -176,27 +171,19 @@ export function ProjectRow({
               <Plus className="size-3" />
             </button>
 
-            {/* On hover only, and it keeps its slot when hidden: a caret that
-                appeared out of nowhere would shift the name under the cursor.
-                Which way it points is not the state indicator — whether the
-                sessions are there is. */}
-            {onToggleCollapsed ? (
-              <button
-                type="button"
-                onClick={onToggleCollapsed}
-                aria-expanded={!collapsed}
-                aria-label={
-                  collapsed
-                    ? `Show ${workspace.name} sessions`
-                    : `Hide ${workspace.name} sessions`
-                }
-                className="flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 outline-none ring-sidebar-ring hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 group-hover/project:opacity-100"
-              >
-                <Caret className="size-3" />
-              </button>
-            ) : (
-              <span aria-hidden className="size-5 shrink-0" />
-            )}
+            {/* On hover only: the arrow opens this workspace in its own
+                sidebar, switching to it and drilling the list into its
+                sessions. Always rendered — opening a workspace is always a
+                meaningful action, even one with no sessions yet. */}
+            <button
+              type="button"
+              onClick={onOpen}
+              aria-label={`Open ${workspace.name}`}
+              title="Open workspace"
+              className="flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 outline-none ring-sidebar-ring hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 group-hover/project:opacity-100"
+            >
+              <CaretRight className="size-3" />
+            </button>
           </div>
         </ContextMenuTrigger>
 

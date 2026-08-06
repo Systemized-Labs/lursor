@@ -108,24 +108,15 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
   }, [isMobile, setOpenMobile])
 
   const { switchTo, hrefFor } = useWorkspaceSwitch({
-    // Tree order — groups' members counted where they sit — then the studio, so
-    // ⌘1…⌘9 match the digits shown on the rows, including the studio's at the end.
-    orderedIds: useMemo(
-      () => [
-        ...tree.ordered.map((ws) => ws.id),
-        ...(threads.studio ? [threads.studio.id] : []),
-      ],
-      [tree.ordered, threads.studio]
-    ),
     visits,
     byWorkspace: threads.byWorkspace,
     activeWorkspaceId,
     onNavigate: closeMobile,
   })
 
-  // ⌘1–⌘9 switch projects but do not drill: the shortcut's whole value is that it
-  // is one keystroke, and re-scoping the list underneath would make the sidebar
-  // jump on every hop between two repos.
+  // A workspace switch (double-⌘, tile click) should not drill: the shortcut's
+  // whole value is that it is one keystroke, and re-scoping the list underneath
+  // would make the sidebar jump on every hop between two repos.
   useEffect(() => {
     if (
       activeWorkspaceId &&
@@ -233,8 +224,8 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
     /* `offcanvas`, not `icon`. The collapsed state used to be the 68px rail —
        a better answer than a 3rem icon strip, and the reason the sidebar had two
        widths at all. With one column there is nothing to collapse *to*: ⌘B and the
-       WindowBar's toggle either show the sidebar or they don't, and ⌘1–⌘9 keep
-       projects reachable while it is away. */
+       WindowBar's toggle either show the sidebar or they don't, and double-⌘
+       still ping-pongs to the previous workspace while it is away. */
     <Sidebar collapsible="offcanvas" side={side}>
       <SessionsPane
         drill={drill}

@@ -4,11 +4,13 @@ import { isElectron, isMacElectron } from "@/lib/platform"
  * What the app's keyboard shortcuts are, for the Settings dialog to show.
  *
  * **This is documentation, not a binding layer.** Every chord below is still
- * registered at its own call site — `ui/sidebar.tsx` owns ⌘B, `command-palette`
- * owns ⌘K, `use-workspace-switch` owns ⌘1–⌘9 and the double-⌘ tap,
- * `editor-pane` owns find/replace, dockview owns pane maximize. The plan called this
- * "a table over the keybind registry"; there is no registry, and inventing one
- * would mean rewriting nine unrelated key handlers to serve a help table.
+ * owns ⌘K, `pane-host` owns ⌘1–⌘9 (pane tabs), ⌘W (close pane) and `use-workspace-switch` owns
+ * the double-⌘ tap, `editor-pane` owns find/replace, dockview owns pane maximize.
+ * owns ⌘K, `pane-host` owns ⌘1–⌘9 (pane tabs) and `use-workspace-switch` owns
+ * the double-⌘ tap, `editor-pane` owns find/replace, dockview owns pane maximize.
+ * The plan called this "a table over the keybind registry"; there is no registry,
+ * and inventing one would mean rewriting nine unrelated key handlers to serve a
+ * help table.
  *
  * The honest trade is stated rather than hidden: this list can drift from the
  * handlers. It is one file, next to nothing to keep in step, and a wrong help
@@ -69,8 +71,14 @@ export const SHORTCUTS: Shortcut[] = [
     group: "Navigation",
   },
   {
+    keys: chord(MOD, "W"),
+    description: "Close the active pane tab",
+    group: "Navigation",
+    desktopOnly: true,
+  },
+  {
     keys: `${chord(MOD, "1")}–${chord(MOD, "9")}`,
-    description: "Switch to the workspace at that position in the sidebar",
+    description: "Switch to the tab at that position",
     group: "Navigation",
     desktopOnly: true,
   },

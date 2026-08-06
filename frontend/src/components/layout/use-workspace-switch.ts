@@ -3,23 +3,18 @@ import { useNavigate } from "react-router-dom"
 
 import type { Thread } from "@/api/types"
 import type { WorkspaceVisits } from "@/hooks/use-workspace-visits"
-import { isElectron } from "@/lib/platform"
 import { resumeHref } from "@/lib/workspace-resume"
 
 /** How long a second ⌘ tap still counts as a double-tap. */
 const DOUBLE_TAP_MS = 400
-/** ⌘1…⌘9 — the tenth tile onward is reachable by click and ⌘K. */
-const MAX_DIGIT = 9
 
 interface UseWorkspaceSwitchOptions {
-  /** Rail order, so ⌘N lines up with the Nth tile. */
-  orderedIds: string[]
   visits: WorkspaceVisits
   /** Conversations bucketed by workspace, each newest-first. */
   byWorkspace: Map<string, Thread[]>
   activeWorkspaceId: string | undefined
   /**
-   * A switch landed — from a tile, ⌘1…⌘9 or double-⌘ alike. Used to point the
+   * A switch landed — from a tile or double-⌘. Used to point the
    * panel at the workspace's conversations and to close the mobile drawer.
    */
   onNavigate: () => void
@@ -39,20 +34,14 @@ export interface WorkspaceSwitch {
  * the command palette, so both routes into a workspace agree on where its home
  * is. What's here is the navigation and the bindings.
  *
- * Two bindings, because switching between a couple of repos all day is mostly
- * ping-pong between *two* of them, and that deserves a gesture rather than a
- * mouse trip to a 68px column:
+ * ⌘1–⌘9 are no longer workspace shortcuts — they switch pane tabs instead
+ * (see `pane-host.tsx`). The only remaining workspace key is:
  *
- * - **⌘1…⌘9** — the Nth tile, by rail position. Stable, so it can be learned.
- *   Desktop only: in a browser those keys are the browser's own tab switcher,
- *   and a web app stealing them is worse than not having the shortcut. See
- *   `isElectron` below — `workspace-tile` hides the hint on the same condition.
  * - **Double-⌘** — the workspace you were in before this one, ⌘-tab style.
  *   Because switching rewrites the MRU chain, tapping it again comes straight
  *   back, so the gesture ping-pongs without any special-casing.
  */
 export function useWorkspaceSwitch({
-  orderedIds,
   visits,
   byWorkspace,
   activeWorkspaceId,
@@ -73,29 +62,6 @@ export function useWorkspaceSwitch({
     },
     [navigate, hrefFor, onNavigate]
   )
-
-  // ── ⌘1…⌘9 ────────────────────────────────────────────────────────────────
-  // Ref'd so the listener can stay mounted for the app's life instead of being
-  // torn down and rebuilt every time a run finishes and reorders a thread list.
-  const target = useRef({ orderedIds, switchTo })
-  target.current = { orderedIds, switchTo }
-
-  useEffect(() => {
-    // ⌘/ctrl + digit is the browser's tab switcher, and it isn't ours to take.
-    if (!isElectron) return
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
-      const digit = Number(e.key)
-      if (!Number.isInteger(digit) || digit < 1 || digit > MAX_DIGIT) return
-      const id = target.current.orderedIds[digit - 1]
-      if (!id) return
-      e.preventDefault()
-      target.current.switchTo(id)
-    }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
 
   // ── Double-⌘ → previous workspace ─────────────────────────────────────────
   const mruTarget = useRef({ mru: visits.mru, activeWorkspaceId, switchTo })

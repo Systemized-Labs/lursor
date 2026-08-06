@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { X } from "@phosphor-icons/react"
 import type { IDockviewPanelHeaderProps } from "dockview-react"
 
@@ -8,8 +8,11 @@ import {
   paneParamsOf,
   type PaneParams,
 } from "@/components/panes/pane-kinds"
+import { DotGridLoader } from "@/components/ui/dot-grid-loader"
+import { useActiveRuns, useThread } from "@/api/threads"
+import { useOptimisticRuns } from "@/hooks/use-optimistic-runs"
+import { useThreadReads } from "@/hooks/use-thread-reads"
 import { cn } from "@/lib/utils"
-
 /**
  * A pane's tab: uppercase label, an active underline, and a close affordance that
  * appears on hover.
@@ -105,6 +108,41 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
     return () => sub.dispose()
   }, [props.api, def?.title])
 
+  // --- Chat tab status: running (grid dots) or unread (solid dot) -----------
+  // The threadId can change when a preview pane is re-addressed, so it is read
+  // from the live panel params rather than captured once at mount.
+  const [threadId, setThreadId] = useState<string | null>(
+    () => (props.params as PaneParams | undefined)?.threadId ?? null
+  )
+  useEffect(() => {
+    const read = () => {
+      const panel = props.containerApi.getPanel(props.api.id)
+      setThreadId(panel ? paneParamsOf(panel)?.threadId ?? null : null)
+    }
+    read()
+    const sub = props.api.onDidParametersChange(read)
+    return () => sub.dispose()
+  }, [props.api, props.containerApi])
+
+  const isChat = kind === "chat"
+  const threadQuery = useThread(isChat && threadId ? threadId : undefined)
+  const activeRunsQuery = useActiveRuns()
+  const optimisticRuns = useOptimisticRuns()
+  const activeRuns = useMemo(
+    () => new Set([...(activeRunsQuery.data ?? []), ...optimisticRuns]),
+    [activeRunsQuery.data, optimisticRuns]
+  )
+  const { isUnread } = useThreadReads()
+
+  const running = isChat && !!threadId && activeRuns.has(threadId)
+  const unread =
+    isChat &&
+    !!threadId &&
+    !running &&
+    !!threadQuery.data?.updated_at &&
+    isUnread(threadId, threadQuery.data.updated_at)
+
+
   const Icon = def?.icon
   // A named conversation labels its own tab; an unnamed one falls back to the kind,
   // which is also what a chat shows while its first turn is still being titled.
@@ -123,7 +161,16 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
           : "text-muted-foreground hover:text-foreground"
       )}
     >
-      {Icon ? <Icon className="size-3.5 shrink-0" /> : null}
+      {running ? (
+        <DotGridLoader size="2xs" label="Conversation active" />
+      ) : unread ? (
+        <span
+          aria-label="Unread reply"
+          className="size-2 shrink-0 rounded-full bg-current"
+        />
+      ) : Icon ? (
+        <Icon className="size-3.5 shrink-0" />
+      ) : null}
       <span
         title={named && named !== detail ? (detail ?? undefined) : undefined}
         className={cn(
