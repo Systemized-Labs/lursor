@@ -798,6 +798,54 @@ async def test_file_tree_exposes_plans_but_hides_rest_of_agents(client: AsyncCli
     assert read.status_code == 200 and read.json()["content"] == "x"
 
 
+async def test_file_tree_exposes_generated_media(client: AsyncClient):
+    """Generated images and clips are browsable; the machinery around them is not.
+
+    A deliverable the user can see in Artifacts but not in the file tree reads as a
+    bug, and did: ``.agents`` rendered as an expandable folder with nothing inside
+    it, because the container directories on the way down to ``gen/`` were hidden
+    and the tree is walked one level at a time.
+
+    ``frames/`` (contact-sheet stills the agent regenerates to look at its own work)
+    and the marker ``.gitignore`` stay hidden — the rule is deliverables, not
+    "everything the media tools write".
+    """
+    ws = (await client.post("/workspaces", json={"name": "MediaTree"})).json()
+    wid = ws["id"]
+
+    for path in (
+        ".agents/image/gen/a-red-bicycle-3f9c1a.png",
+        ".agents/image/.gitignore",
+        ".agents/video/gen/opening-shot-abc123.mp4",
+        ".agents/video/frames/opening/still-1.jpg",
+        ".agents/skills/note/SKILL.md",
+    ):
+        r = await client.put(
+            f"/workspaces/{wid}/files/write", json={"path": path, "content": "x"}
+        )
+        assert r.status_code == 200, r.text
+
+    async def names(path: str) -> set[str]:
+        r = await client.get(f"/workspaces/{wid}/files/list", params={"path": path})
+        assert r.status_code == 200, r.text
+        return {e["name"] for e in r.json()}
+
+    # The containers are reachable, which is the whole fix.
+    assert await names(".agents") == {"image", "video"}
+    # ...and the marker file is not mistaken for content.
+    assert await names(".agents/image") == {"gen"}
+    assert await names(".agents/image/gen") == {"a-red-bicycle-3f9c1a.png"}
+    # Deliverables yes, intermediates no.
+    assert await names(".agents/video") == {"gen"}
+    assert await names(".agents/video/gen") == {"opening-shot-abc123.mp4"}
+
+    # And the file really is readable, not just listed.
+    served = await client.get(
+        f"/workspaces/{wid}/files/serve/.agents/image/gen/a-red-bicycle-3f9c1a.png"
+    )
+    assert served.status_code == 200
+
+
 async def test_file_upload_rejects_traversal(client: AsyncClient):
     """A filename that climbs out of the workspace root is refused."""
     ws = (await client.post("/workspaces", json={"name": "Escape"})).json()

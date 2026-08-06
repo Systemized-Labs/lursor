@@ -731,6 +731,16 @@ an agent to use a tool it does not have is the same class of bug. This is the th
 directive of its kind, after `DEV_SERVER_DIRECTIVE` and `BROWSER_QA_DIRECTIVE`; any
 future capability a model won't reach for unaided needs one too.
 
+Generated media is also **browsable in the file tree**, which needed a change to
+`api/files.py`: `.agents/` is hidden wholesale, and the old plan-shaped exception
+only understood one subtree. `_VISIBLE_AGENT_SUBDIRS` now lists
+`.agents/{plan,image/gen,video/gen}`, and `_tree_hidden` un-hides *ancestors* of a
+visible subtree as well as its contents — without that the tree, which is walked one
+level at a time, never asks about `.agents/image/gen` because `.agents/image` was
+hidden, and `.agents` renders as an expandable folder containing nothing. Only the
+`gen/` folders: `.agents/video/frames/` is contact-sheet stills the agent
+regenerates at will, and each folder's `.gitignore` is plumbing.
+
 Three consequences of waiting, each handled rather than hoped away. The wait is capped
 at 240s and the render **is not cancelled** when it expires, so the message says so; a
 timed-out run is remembered and delivered by the next call, because with no run id
