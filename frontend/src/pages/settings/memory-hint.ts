@@ -6,8 +6,8 @@ import { useMemorySettings } from "@/api/settings"
  * The per-agent memory toggle says nothing about *where* memory lives — that is
  * an app-wide provider choice — so the agent and subagent editors show this
  * underneath it. Shared between the two forms so the wording can't drift.
- * Returns `null` while the setting is still loading, so the caller renders
- * nothing rather than a wrong claim.
+ * Returns `null` while the setting is still loading, so the caller keeps showing
+ * the toggle's static hint rather than a wrong claim.
  */
 export function useMemoryHint(): string | null {
   const { data } = useMemorySettings()

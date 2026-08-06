@@ -65,19 +65,39 @@ type BooleanFieldKey =
   | "include_video"
 
 const BOOLEAN_FIELDS: CapabilityField<BooleanFieldKey>[] = [
-  { key: "include_todo", label: "Include todo" },
-  { key: "include_subagents", label: "Include subagents" },
-  { key: "include_skills", label: "Include skills" },
+  {
+    key: "include_todo",
+    label: "Todo list",
+    hint: "Tracks multi-step work as a checklist.",
+  },
+  {
+    key: "include_subagents",
+    label: "Subagents",
+    hint: "Can delegate further to other subagents.",
+  },
+  {
+    key: "include_skills",
+    label: "Skills",
+    hint: "Loads every global and workspace skill.",
+  },
   // "Memory", not "Include memory": the toggle decides whether this subagent
   // remembers across runs; where that memory lives is an app-wide provider
-  // choice named in the hint below it (see ``useMemoryHint``).
-  { key: "include_memory", label: "Memory" },
-  { key: "include_plan", label: "Include plan" },
-  { key: "web_search", label: "Web search" },
+  // choice named in the live hint that replaces this one (see ``useMemoryHint``).
+  { key: "include_memory", label: "Memory", hint: "Recalls facts across runs." },
+  {
+    key: "include_plan",
+    label: "Planning",
+    hint: "Writes and follows a plan on large tasks.",
+  },
+  {
+    key: "web_search",
+    label: "Web search",
+    hint: "Looks up current facts on the web.",
+  },
   {
     key: "include_video",
     label: "Video generation",
-    hint: "Only takes effect when the delegating agent has video on too — it spends that agent's box.",
+    hint: "Needs the delegating agent to have video on too.",
   },
 ]
 

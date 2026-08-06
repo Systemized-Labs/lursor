@@ -73,22 +73,46 @@ type BooleanFieldKey =
   | "include_video"
 
 const BOOLEAN_FIELDS: CapabilityField<BooleanFieldKey>[] = [
-  { key: "include_todo", label: "Include todo" },
-  { key: "include_subagents", label: "Include subagents" },
-  { key: "include_skills", label: "Include skills" },
+  {
+    key: "include_todo",
+    label: "Todo list",
+    hint: "Tracks multi-step work as a checklist.",
+  },
+  {
+    key: "include_subagents",
+    label: "Subagents",
+    hint: "Delegates independent sub-tasks to specialists.",
+  },
+  {
+    key: "include_skills",
+    label: "Skills",
+    hint: "Loads every global and workspace skill.",
+  },
   // "Memory", not "Include memory": the toggle decides whether this agent
   // remembers across runs, while where that memory lives is an app-wide provider
-  // choice named in the hint below it (see ``useMemoryHint``).
-  { key: "include_memory", label: "Memory" },
-  { key: "include_plan", label: "Include plan" },
-  { key: "web_search", label: "Web search" },
-  { key: "browser_qa", label: "Browser QA" },
+  // choice named in the live hint that replaces this one (see ``useMemoryHint``).
+  { key: "include_memory", label: "Memory", hint: "Recalls facts across runs." },
+  {
+    key: "include_plan",
+    label: "Planning",
+    hint: "Writes and follows a plan on large tasks.",
+  },
+  {
+    key: "web_search",
+    label: "Web search",
+    hint: "Looks up current facts on the web.",
+  },
+  {
+    key: "browser_qa",
+    label: "Browser QA",
+    hint: "Opens the app in a browser to test what it built.",
+  },
   {
     key: "include_video",
     label: "Video generation",
-    // The live hint underneath names the model (or why there is none); this is
-    // what shows while that resolves.
-    hint: "Generate clips on a connected laios box.",
+    // The live hint names the model (or why there is none); this is what shows
+    // while that resolves.
+    hint: "Generates clips on a connected laios box.",
   },
 ]
 
