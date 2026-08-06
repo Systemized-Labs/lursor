@@ -43,6 +43,11 @@ LOG_NAME = "update.log"
 STATE_NAME = "update-state.json"
 EXIT_NAME = "update-exit-code"
 
+# How long a job may claim to be ``running`` before we stop believing it. Generous,
+# because a cold ``uv sync`` on a slow box genuinely takes minutes — but finite, so a
+# job that died without writing its exit status cannot block self-update permanently.
+_STALE_AFTER = 60 * 60
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -229,6 +234,20 @@ def read_state() -> dict[str, object] | None:
         try:
             code = int(exit_path().read_text().strip())
         except (OSError, ValueError):
+            # No verdict yet. Either it is genuinely still working, or the exit file
+            # never arrived — the job was SIGKILLed before its trap ran, the machine
+            # lost power, someone deleted it. Without a deadline that second case
+            # pins the state at ``running`` forever, and since the single-flight guard
+            # reads this, self-update stays wedged with no way to clear it from the
+            # UI. Time it out instead: the cost of being wrong is one concurrent run
+            # after an hour, against a feature that never works again.
+            started = state.get("started_at")
+            if isinstance(started, (int, float)) and time.time() - started > _STALE_AFTER:
+                state["state"] = "failed"
+                state["error"] = (
+                    "The update never reported back — it was interrupted, or its host "
+                    "restarted. Check the log; it is safe to try again."
+                )
             return state
         state["state"] = "ok" if code == 0 else "failed"
         state["returncode"] = code
@@ -318,10 +337,15 @@ def start_update(target_ref: str) -> dict[str, object]:
 
     # The script owns its own redirection, so that wrapping it in systemd-run (whose
     # stdout goes to the journal) doesn't quietly move the log somewhere else.
-    env = dict(os.environ)
-    env["LURSOR_UPDATE_LOG"] = str(log_path())
-    env["LURSOR_UPDATE_EXIT"] = str(exit_path())
-    env["LURSOR_UPDATE_REF"] = target_ref
+    #
+    # Kept as an explicit dict as well as an `env=` argument because the two spawn
+    # paths need it delivered two different ways — see `_JOB_ENV` use below.
+    job_env = {
+        "LURSOR_UPDATE_LOG": str(log_path()),
+        "LURSOR_UPDATE_EXIT": str(exit_path()),
+        "LURSOR_UPDATE_REF": target_ref,
+    }
+    env = {**os.environ, **job_env}
 
     state: dict[str, object] = {
         "state": "running",
@@ -338,10 +362,20 @@ def start_update(target_ref: str) -> dict[str, object]:
     argv = ["/bin/sh", str(update_script())]
     try:
         if sys.platform.startswith("linux") and shutil.which("systemd-run"):
-            env["LURSOR_UPDATE_RUNNER"] = "systemd-run"
+            job_env["LURSOR_UPDATE_RUNNER"] = "systemd-run"
             # Synchronous on purpose: systemd-run returns as soon as the transient
             # unit is started, so its exit code tells us whether the job is actually
             # running before we commit to reporting that it is.
+            #
+            # ``--setenv`` for every variable, and ``--working-directory``, because a
+            # transient unit is started by *systemd* from systemd's own environment —
+            # it does not inherit this process's env or cwd, so the ``env=`` below
+            # configures only the short-lived systemd-run client and reaches the job
+            # not at all. Measured on a real host, where this silently cost us the
+            # target ref: the script's own `${LURSOR_UPDATE_REF:-main}` default took
+            # over and the deployment tracked `main` instead of the release tag the
+            # API had resolved and reported. The log and exit paths defaulted to the
+            # right places, so nothing looked wrong.
             launched = subprocess.run(
                 [
                     "systemd-run",
@@ -349,6 +383,8 @@ def start_update(target_ref: str) -> dict[str, object]:
                     "--collect",
                     "--quiet",
                     f"--unit=lursor-self-update-{int(state['started_at'])}",
+                    f"--working-directory={repo_root()}",
+                    *[f"--setenv={k}={v}" for k, v in job_env.items()],
                     *argv,
                 ],
                 env=env,
@@ -365,11 +401,11 @@ def start_update(target_ref: str) -> dict[str, object]:
                     "the log will end at the restart: "
                     + (launched.stderr or launched.stdout).strip()
                 )
-                env["LURSOR_UPDATE_RUNNER"] = "detached"
+                job_env["LURSOR_UPDATE_RUNNER"] = "detached"
                 subprocess.Popen(
                     argv,
                     cwd=str(repo_root()),
-                    env=env,
+                    env={**env, **job_env},
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
@@ -377,11 +413,11 @@ def start_update(target_ref: str) -> dict[str, object]:
                 )
         else:
             state["runner"] = "detached"
-            env["LURSOR_UPDATE_RUNNER"] = "detached"
+            job_env["LURSOR_UPDATE_RUNNER"] = "detached"
             subprocess.Popen(
                 argv,
                 cwd=str(repo_root()),
-                env=env,
+                env={**env, **job_env},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,

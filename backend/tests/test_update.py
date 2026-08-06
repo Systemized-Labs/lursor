@@ -10,6 +10,8 @@ a checkout never hits by accident.
 from __future__ import annotations
 
 import json
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -255,3 +257,88 @@ def test_check_flags_a_newer_release(monkeypatch, data_dir) -> None:
         body = client.get("/api/update/check").json()
     assert body["latest"] == "99.0.0"
     assert body["update_available"] is True
+
+
+def test_systemd_run_gets_the_job_env_via_setenv(updatable, monkeypatch, data_dir) -> None:
+    """A transient unit does not inherit our environment, so it must be passed.
+
+    This is a regression test for a bug that only appeared on a real host and was
+    invisible when it did: `systemd-run` starts the unit from *systemd's* environment,
+    so `env=` on the client call reached the job not at all. Every variable fell back
+    to the script's own default, and `${LURSOR_UPDATE_REF:-main}` quietly moved the
+    deployment onto `main` instead of the release tag the API had resolved — while the
+    log and exit paths defaulted correctly, so the update looked entirely successful.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(updater.sys, "platform", "linux")
+    monkeypatch.setattr(updater.shutil, "which", lambda _n: "/usr/bin/systemd-run")
+    monkeypatch.setattr(updater.subprocess, "run", fake_run)
+
+    state = updater.start_update("v1.2.3")
+    assert state["runner"] == "systemd-run"
+
+    argv = captured["argv"]
+    # The ref in particular: this is the value whose loss was silent.
+    assert "--setenv=LURSOR_UPDATE_REF=v1.2.3" in argv, argv
+    assert "--setenv=LURSOR_UPDATE_RUNNER=systemd-run" in argv
+    assert any(a.startswith("--setenv=LURSOR_UPDATE_LOG=") for a in argv)
+    assert any(a.startswith("--setenv=LURSOR_UPDATE_EXIT=") for a in argv)
+    # cwd is not inherited either, and the script resolves the checkout from it.
+    assert any(a.startswith("--working-directory=") for a in argv)
+
+
+def test_detached_fallback_passes_env_directly(updatable, monkeypatch, data_dir) -> None:
+    """The non-systemd path is an ordinary child, so `env=` is the right mechanism."""
+    captured: dict[str, object] = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["env"] = kwargs.get("env")
+        captured["cwd"] = kwargs.get("cwd")
+        captured["new_session"] = kwargs.get("start_new_session")
+        return type("P", (), {"pid": 4242})()
+
+    monkeypatch.setattr(updater.sys, "platform", "darwin")
+    monkeypatch.setattr(updater.subprocess, "Popen", fake_popen)
+
+    state = updater.start_update("v1.2.3")
+    assert state["runner"] == "detached"
+    env = captured["env"]
+    assert env["LURSOR_UPDATE_REF"] == "v1.2.3"
+    assert env["LURSOR_UPDATE_RUNNER"] == "detached"
+    assert captured["new_session"] is True
+
+
+def test_a_running_job_that_never_reported_times_out(data_dir) -> None:
+    """A lost exit file must not wedge self-update forever.
+
+    The single-flight guard reads this state, so a job killed before its EXIT trap ran
+    would otherwise pin `running` permanently and every future update would be refused
+    with "already running" — unrecoverable from the UI.
+    """
+    updater.state_path().write_text(
+        json.dumps({"state": "running", "started_at": time.time() - 10})
+    )
+    assert updater.read_state()["state"] == "running"
+    assert updater.is_update_running() is True
+
+    updater.state_path().write_text(
+        json.dumps(
+            {"state": "running", "started_at": time.time() - updater._STALE_AFTER - 1}
+        )
+    )
+    stale = updater.read_state()
+    assert stale["state"] == "failed"
+    assert "never reported back" in stale["error"]
+    assert updater.is_update_running() is False
+
+
+def test_state_with_no_timestamp_is_not_timed_out(data_dir) -> None:
+    """Missing `started_at` means we cannot judge age — don't guess it is dead."""
+    updater.state_path().write_text(json.dumps({"state": "running"}))
+    assert updater.read_state()["state"] == "running"
