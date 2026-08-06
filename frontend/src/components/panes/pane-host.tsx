@@ -21,6 +21,7 @@ import { PaneTab } from "@/components/panes/pane-tab"
 import {
   ADDABLE_KINDS,
   PANE_KINDS,
+  paneParamsOf,
   WORKSPACE_KINDS,
   type PaneKind,
   type PaneParams,
@@ -160,12 +161,29 @@ export function PaneHost({
 /**
  * One pane, wired to its panel api.
  *
- * `params` are read reactively rather than from the initial props: dockview hands
- * the component its params at mount, but a chat pane's `threadId` changes while it
- * is mounted and the body has to follow.
+ * `params` are followed reactively rather than read once: a chat pane's `threadId`
+ * changes while it is mounted and the body has to follow.
+ *
+ * **Neither the props nor the api are the params.** Both are half-right in a way
+ * that costs a conversation if you trust either one alone:
+ *
+ * - `props.params` is correct at mount and never updated again, so a pane whose
+ *   thread changes under it would keep rendering the old one.
+ * - `api.getParameters()` is not the panel's params at all. It is a copy of the last
+ *   object handed to `updateParameters`, *replaced* wholesale each time and empty
+ *   until the first call — so it reads `{}` on a pane added with params already set
+ *   (a conversation opened into a new tab, which then sat on "start the
+ *   conversation" for a thread it had been handed), and after a one-key update like
+ *   `{ preview: undefined }` it reads exactly that, with `kind` and `threadId` gone.
+ *
+ * The panel's own `params` is the merged, live value — the one `use-pane-layout`
+ * matches threads on. So: seed from props, then read the panel on every change.
+ * `PaneTab` reads its flag the same way, for the same reason.
  */
 function Pane({
   api,
+  containerApi,
+  params: mounted,
   kind,
   workspaceId,
   onFocusedThreadChange,
@@ -175,14 +193,15 @@ function Pane({
   onFocusedThreadChange: (threadId: string | null) => void
 }) {
   const [params, setParams] = useState<PaneParams>(
-    () => (api.getParameters<PaneParams>() ?? { kind }) as PaneParams
+    () => (mounted ?? { kind }) as PaneParams
   )
   useEffect(() => {
     const sub = api.onDidParametersChange(() => {
-      setParams((api.getParameters<PaneParams>() ?? { kind }) as PaneParams)
+      const panel = containerApi.getPanel(api.id)
+      setParams(((panel && paneParamsOf(panel)) ?? { kind }) as PaneParams)
     })
     return () => sub.dispose()
-  }, [api, kind])
+  }, [api, containerApi, kind])
 
   // §3.4's gate: with `renderer: 'always'` a hidden pane keeps running, so each
   // kind is told when it is off screen and can stop the expensive half of its work
@@ -211,13 +230,28 @@ function Pane({
 
   const onThreadChange = useCallback(
     (threadId: string | null) => {
-      api.updateParameters({ ...params, threadId })
+      // The one key, not a spread of the rendered params: `update` merges, and a
+      // spread would write back whatever this render happened to hold — including a
+      // `preview: true` that the send which created this thread has just cleared.
+      api.updateParameters({ threadId })
       // Only the focused chat writes the URL. Two chats open on two threads
       // cannot both be `?c=`, and the one you are looking at is the honest answer.
       if (api.isActive) onFocusedThreadChange(threadId)
     },
-    [api, params, onFocusedThreadChange]
+    [api, onFocusedThreadChange]
   )
+
+  /**
+   * The pane has been used for what it is for, so it stops being a preview.
+   *
+   * Sending a turn is the chat equivalent of typing into a previewed file, and it is
+   * hooked to the send itself rather than to the pane streaming: a conversation whose
+   * agent is already running would otherwise promote itself the instant you looked at
+   * it, which is exactly the row a preview is most useful for.
+   */
+  const onCommit = useCallback(() => {
+    api.updateParameters({ preview: undefined })
+  }, [api])
 
   // Becoming the active pane re-asserts the address, so clicking between two chat
   // panes moves `?c=` with the focus.
@@ -237,6 +271,7 @@ function Pane({
         onDetail={onDetail}
         threadId={params.threadId ?? null}
         onThreadChange={onThreadChange}
+        onCommit={onCommit}
       />
     </div>
   )

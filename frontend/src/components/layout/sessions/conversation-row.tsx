@@ -51,7 +51,8 @@ export interface ConversationRowProps
  *
  * A plain click always opens the conversation — ⌘/ctrl toggles it in the bulk
  * selection and ⇧ extends a range, but nothing silently redefines an unmodified
- * click.
+ * click. It opens as a *preview* tab and a double-click keeps it, VS Code's rule:
+ * reading down a list of thirty sessions should not leave thirty tabs behind.
  */
 export function ConversationRow({
   thread,
@@ -84,9 +85,33 @@ export function ConversationRow({
       // another workspace and the pane layer is keyed on that. But the pane itself
       // is addressed through the request channel, because a pane reads its thread
       // from its own params rather than from `?c=`.
-      requestOpenThread({ workspaceId: thread.workspace_id, threadId: thread.id })
+      //
+      // A preview tab, VS Code style: reading down a project's sessions costs one
+      // tab, and the one you mean to keep is the one you double-click.
+      requestOpenThread({
+        workspaceId: thread.workspace_id,
+        threadId: thread.id,
+        mode: "preview",
+      })
       onNavigate()
     }
+  }
+
+  /**
+   * Double-click keeps the conversation open.
+   *
+   * No debounce pairing this with the click above: the first click of the pair has
+   * already previewed the row, so the request this parks finds the pane sitting on
+   * that thread and simply promotes it in place. Modified clicks are the selection's
+   * and never reach here as an open.
+   */
+  const handleDoubleClick = (e: MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return
+    requestOpenThread({
+      workspaceId: thread.workspace_id,
+      threadId: thread.id,
+      mode: "keep",
+    })
   }
 
   const title = thread.title || "Untitled"
@@ -98,6 +123,7 @@ export function ConversationRow({
           <Link
             to={`/workspaces/${thread.workspace_id}/chat?c=${thread.id}`}
             onClick={handleClick}
+            onDoubleClick={handleDoubleClick}
             aria-current={isActive ? "page" : undefined}
             className={cn(
               "group/row relative flex w-full min-w-0 select-none gap-2 rounded-md pl-2.5 pr-2 text-sidebar-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2",

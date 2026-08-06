@@ -10,10 +10,10 @@ import { createRequestChannel } from "@/lib/request-channel"
  * *from* the focused pane, not read to build the layout), so there is no longer a
  * URL path from a sidebar row down to the pane that should answer it.
  *
- * A row parks a request here; the shell routes it to a chat pane using the same
- * active → most-recently-used → leftmost rule every other open request follows, so
- * a conversation lands in the chat you are actually looking at rather than in one
- * you forgot was open.
+ * A row parks a request here; the shell hands it to `PaneLayout.openThread`, which
+ * opens the conversation as a *tab* — a preview one for a single click, a permanent
+ * one otherwise. It used to re-address the chat pane you were looking at, which
+ * meant browsing the sidebar destroyed whatever you were reading.
  */
 export interface OpenThreadRequest {
   workspaceId: string
@@ -27,6 +27,15 @@ export interface OpenThreadRequest {
    * same path and land in the same chat pane.
    */
   threadId: string | null
+  /**
+   * What kind of tab this asks for. See `PaneLayout.openThread`.
+   *
+   * Omitted is the honest default for an *arrival* — a `?c=` on load, a link out of
+   * an artifact, a new session. It focuses a pane already on the conversation exactly
+   * as it is and otherwise opens one that stays, so none of them can silently pin a
+   * preview the user was still skimming.
+   */
+  mode?: "preview" | "keep"
 }
 
 /** The channel itself, for the shell's `usePendingRequest`. See `open-file`. */

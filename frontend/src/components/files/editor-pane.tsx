@@ -683,7 +683,7 @@ function EditorBody({
             onChange={onChange}
           />
         ) : markdown && file.view === "preview" ? (
-          <MarkdownPreview content={file.content} />
+          <MarkdownPreview content={file.content} path={file.path} />
         ) : markdown && file.view === "split" ? (
           <ResizablePanelGroup
             direction="horizontal"
@@ -704,7 +704,7 @@ function EditorBody({
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel minSize={25} className="min-w-0">
-              <MarkdownPreview content={file.content} />
+              <MarkdownPreview content={file.content} path={file.path} />
             </ResizablePanel>
           </ResizablePanelGroup>
         ) : (
@@ -724,13 +724,18 @@ function EditorBody({
   )
 }
 
-/** Rendered Markdown in a scrollable, comfortably-padded reading column. */
-function MarkdownPreview({ content }: { content: string }) {
+/** Rendered Markdown in a scrollable, comfortably-padded reading column.
+ *
+ *  `path` is the file's own workspace-relative path — its folder is what the
+ *  document's relative image references resolve against, the same as any other
+ *  markdown viewer. */
+function MarkdownPreview({ content, path }: { content: string; path: string }) {
+  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""
   return (
     <div className="h-full overflow-auto bg-card px-6 py-5">
       <div className="mx-auto max-w-3xl">
         {content.trim() ? (
-          <MarkdownRenderer>{content}</MarkdownRenderer>
+          <MarkdownRenderer basePath={dir}>{content}</MarkdownRenderer>
         ) : (
           <p className="text-sm text-muted-foreground">This file is empty.</p>
         )}

@@ -16,6 +16,9 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { API_BASE } from '@/api/client'
+import { filesApi } from '@/api/files'
+import { useWorkspace } from '@/api/workspaces'
 import { cn, copyToClipboard } from '@/lib/utils'
 import { processChildrenWithIcons } from '@/lib/emoji-icons'
 import { openExternal } from '@/lib/open-external'
@@ -24,6 +27,11 @@ import { requestOpenPreview } from '@/lib/open-preview'
 interface MarkdownRendererProps {
   children: string
   className?: string
+  /** Directory that relative links/images in this markdown resolve against,
+   *  as a workspace-relative POSIX path ("" is the workspace root). Chat text
+   *  quotes paths from the workspace root, so the default is right there; a
+   *  previewed `.md` file passes its own folder. */
+  basePath?: string
 }
 
 /** Recursively flatten a React node tree back to plain text (for copy). */
@@ -140,7 +148,132 @@ function MarkdownLink({
   )
 }
 
-export function MarkdownRenderer({ children, className }: MarkdownRendererProps) {
+/** Collapse `.`/`..` segments in a POSIX-style path. */
+function normalizePath(path: string): string {
+  const out: string[] = []
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') out.pop()
+    else out.push(part)
+  }
+  return out.join('/')
+}
+
+/**
+ * Turn a markdown image `src` into something the browser can actually fetch.
+ *
+ * An agent that generates an image reports where it landed as a workspace-
+ * relative path (`.agents/image/gen/squirrel-<run>.png`), and models write that
+ * straight into an `![...]()`. The browser resolves it against the *page* URL —
+ * `/workspaces/<id>/threads/<id>/.agents/...` — which is a route, not a file, so
+ * the image breaks. Point it at the workspace file server instead.
+ *
+ * Returns null when the reference can't be served: no workspace in scope, or an
+ * absolute path outside the workspace root (the `/files/raw` endpoint confines
+ * every read to that root, so linking there would only 404 later).
+ */
+function resolveImageSrc(
+  src: string,
+  workspaceId: string | undefined,
+  workspaceRoot: string | undefined,
+  basePath: string,
+): string | null {
+  const raw = src.trim()
+  if (!raw) return null
+  // Already fetchable as-is.
+  if (/^(https?:|data:|blob:)/i.test(raw)) return raw
+  if (!workspaceId) return null
+
+  let path = raw
+  if (/^file:\/\//i.test(path)) {
+    try {
+      path = decodeURIComponent(new URL(path).pathname)
+    } catch {
+      return null
+    }
+  }
+
+  // A backend route quoted root-relative (`/api/images/<run>/content`) resolves
+  // against the *page* origin, which in dev and on the LAN is not the API's.
+  if (path.startsWith('/api/')) return `${API_BASE}${path.slice(4)}`
+
+  if (path.startsWith('/')) {
+    // Absolute on the backend's disk — only serveable if it's inside the
+    // workspace, in which case the endpoint wants the part below the root.
+    if (!workspaceRoot) return null
+    const root = workspaceRoot.replace(/\/+$/, '')
+    if (path !== root && !path.startsWith(`${root}/`)) return null
+    path = path.slice(root.length + 1)
+  } else {
+    path = basePath ? `${basePath}/${path}` : path
+  }
+
+  const relative = normalizePath(path)
+  if (!relative) return null
+  return filesApi.rawUrl(workspaceId, relative)
+}
+
+/**
+ * A markdown image, resolved against the workspace and rendered as a bounded,
+ * bordered block. A src we can't resolve — or bytes that fail to load — falls
+ * back to a labelled placeholder instead of the browser's broken-image icon, so
+ * a wrong path reads as a wrong path.
+ */
+function MarkdownImage({
+  src,
+  alt,
+  title,
+  basePath,
+}: {
+  src?: string
+  alt?: string
+  title?: string
+  basePath: string
+}) {
+  const { pathname } = useLocation()
+  const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
+  const { data: workspace } = useWorkspace(workspaceId)
+  // The URL that failed, not a boolean: mid-stream the src arrives a character
+  // at a time, so the first few loads 404 on a truncated path. Keyed this way,
+  // the finished URL gets its own attempt instead of inheriting the failure.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+
+  const raw = src ?? ''
+  const resolved = resolveImageSrc(raw, workspaceId, workspace?.path, basePath)
+
+  if (!resolved || failedSrc === resolved) {
+    return (
+      <span className="my-2 inline-flex max-w-full flex-col gap-0.5 rounded-md border border-dashed border-border bg-muted/30 px-3 py-2 align-middle">
+        <span className="text-xs text-muted-foreground">
+          {alt?.trim() || 'Image unavailable'}
+        </span>
+        {raw && (
+          <span className="truncate font-mono text-[11px] text-muted-foreground/70">
+            {raw}
+          </span>
+        )}
+      </span>
+    )
+  }
+
+  return (
+    <img
+      src={resolved}
+      alt={alt ?? ''}
+      title={title}
+      loading="lazy"
+      onError={() => setFailedSrc(resolved)}
+      // inline-block, not block: a row of badges in a README should stay a row.
+      className="my-3 inline-block max-h-[28rem] w-auto max-w-full rounded-lg border border-border object-contain align-middle"
+    />
+  )
+}
+
+export function MarkdownRenderer({
+  children,
+  className,
+  basePath = '',
+}: MarkdownRendererProps) {
   return (
     <div
       className={cn(
@@ -198,6 +331,14 @@ export function MarkdownRenderer({ children, className }: MarkdownRendererProps)
             <MarkdownLink href={href} {...props}>
               {children}
             </MarkdownLink>
+          ),
+          img: ({ src, alt, title }) => (
+            <MarkdownImage
+              src={typeof src === 'string' ? src : undefined}
+              alt={alt}
+              title={title}
+              basePath={basePath}
+            />
           ),
           p: ({ children }) => (
             <p>{processChildrenWithIcons(children, 'p')}</p>

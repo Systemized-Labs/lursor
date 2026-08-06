@@ -43,6 +43,11 @@ export interface PaneContentProps {
   /** Chat only: the open conversation, and how to report a change to it. */
   threadId?: string | null
   onThreadChange?: (threadId: string | null) => void
+  /**
+   * Chat only: "this pane is being used", which promotes a preview pane to one that
+   * stays. Absent on mobile, which has no panes to promote.
+   */
+  onCommit?: () => void
   /** Artifacts only: cross-link into the Video or Image pane. */
   onOpenPane?: (kind: "video" | "image") => void
 }
@@ -67,6 +72,7 @@ export function PaneContent({
   onDetail,
   threadId,
   onThreadChange,
+  onCommit,
   onOpenPane,
 }: PaneContentProps) {
   if (kind === "chat") {
@@ -76,6 +82,7 @@ export function PaneContent({
         threadId={threadId ?? null}
         onThreadChange={onThreadChange ?? (() => undefined)}
         onDetail={onDetail}
+        onCommit={onCommit}
       />
     )
   }
