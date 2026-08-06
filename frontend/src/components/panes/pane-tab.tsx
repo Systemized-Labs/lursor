@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { X } from "@phosphor-icons/react"
-import type { IDockviewPanelHeaderProps } from "dockview-react"
+import type { IDockviewPanel, IDockviewPanelHeaderProps } from "dockview-react"
 
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import {
   PANE_KINDS,
   paneKindOf,
@@ -149,7 +156,51 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
   const named = kind === "chat" && detail ? shorten(detail) : null
   const label = named ?? def?.title ?? props.api.title ?? "Pane"
 
+  // ── Context menu actions ──────────────────────────────────────────────────
+  // The group's panels are read fresh on each click rather than captured in a
+  // ref: dockview mutates the array as tabs close, so a stale snapshot would
+  // double-fire on "Close All" or miss a tab that was dragged in between.
+
+  const closeThis = useCallback(() => {
+    props.api.close()
+  }, [props.api])
+
+  const closeOthers = useCallback(() => {
+    const targets = props.containerApi.panels.filter(
+      (p: IDockviewPanel) => p.api.id !== props.api.id
+    )
+    for (const p of targets) p.api.close()
+  }, [props.api, props.containerApi])
+
+  const closeToRight = useCallback(() => {
+    const panels = props.containerApi.panels
+    const idx = panels.findIndex(
+      (p: IDockviewPanel) => p.api.id === props.api.id
+    )
+    if (idx < 0) return
+    const targets = panels.slice(idx + 1)
+    for (const p of targets) p.api.close()
+  }, [props.api, props.containerApi])
+
+  const closeAll = useCallback(() => {
+    const targets = [...props.containerApi.panels]
+    for (const p of targets) p.api.close()
+  }, [props.containerApi])
+
+  // Whether there are any siblings to the right, for disabling the item.
+  // Computed on every render rather than memoised: dockview mutates the
+  // panels array in place, so the reference never changes and a memo would
+  // go stale. The component already re-renders on layout change.
+  const panels = props.containerApi.panels
+  const myIndex = panels.findIndex(
+    (p: IDockviewPanel) => p.api.id === props.api.id
+  )
+  const hasRight = myIndex >= 0 && myIndex < panels.length - 1
+  const hasOthers = panels.length > 1
+
   return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
     <div
       // Double-clicking a preview tab keeps it, as it does in VS Code. Dockview binds
       // no `dblclick` of its own on a tab, so nothing is being overridden here.
@@ -212,6 +263,19 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
         )}
       />
     </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={closeThis}>Close</ContextMenuItem>
+        <ContextMenuItem onSelect={closeOthers} disabled={!hasOthers}>
+          Close Others
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={closeToRight} disabled={!hasRight}>
+          Close to the Right
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={closeAll}>Close All</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 

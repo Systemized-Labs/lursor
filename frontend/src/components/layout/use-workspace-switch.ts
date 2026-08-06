@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef } from "react"
 import { useNavigate } from "react-router-dom"
 
-import type { Thread } from "@/api/types"
+import type { Thread, Workspace } from "@/api/types"
 import type { WorkspaceVisits } from "@/hooks/use-workspace-visits"
+import { isElectron } from "@/lib/platform"
 import { resumeHref } from "@/lib/workspace-resume"
 
 /** How long a second ⌘ tap still counts as a double-tap. */
@@ -13,6 +14,8 @@ interface UseWorkspaceSwitchOptions {
   /** Conversations bucketed by workspace, each newest-first. */
   byWorkspace: Map<string, Thread[]>
   activeWorkspaceId: string | undefined
+  /** Workspaces in sidebar tree order, for ⌘⇧1–⌘⇧9 position switching. */
+  ordered: Workspace[]
   /**
    * A switch landed — from a tile or double-⌘. Used to point the
    * panel at the workspace's conversations and to close the mobile drawer.
@@ -35,16 +38,18 @@ export interface WorkspaceSwitch {
  * is. What's here is the navigation and the bindings.
  *
  * ⌘1–⌘9 are no longer workspace shortcuts — they switch pane tabs instead
- * (see `pane-host.tsx`). The only remaining workspace key is:
+ * (see `pane-host.tsx`). The remaining workspace keys are:
  *
  * - **Double-⌘** — the workspace you were in before this one, ⌘-tab style.
  *   Because switching rewrites the MRU chain, tapping it again comes straight
  *   back, so the gesture ping-pongs without any special-casing.
+ * - **⌘⇧1–⌘⇧9** — jump to the Nth workspace in the sidebar's tree order.
  */
 export function useWorkspaceSwitch({
   visits,
   byWorkspace,
   activeWorkspaceId,
+  ordered,
   onNavigate,
 }: UseWorkspaceSwitchOptions): WorkspaceSwitch {
   const navigate = useNavigate()
@@ -112,6 +117,32 @@ export function useWorkspaceSwitch({
       window.removeEventListener("keyup", onKeyUp)
       window.removeEventListener("blur", reset)
     }
+  }, [])
+
+  // ── ⌘⇧1…⌘⇧9 switch workspace by sidebar position ────────────────────────
+  // Each digit jumps to the Nth workspace in the sidebar's tree order (the same
+  // order the rail displays), so ⌘⇧1 is the top row and ⌘⇧9 the ninth.
+  // Desktop only: in a browser ⌘⇧+digit belongs to the browser.
+  const orderedRef = useRef(ordered)
+  orderedRef.current = ordered
+
+  useEffect(() => {
+    if (!isElectron) return
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || !e.shiftKey) return
+      const digit = Number(e.key)
+      if (!Number.isInteger(digit) || digit < 1 || digit > 9) return
+
+      const target = orderedRef.current[digit - 1]
+      if (!target) return
+
+      e.preventDefault()
+      mruTarget.current.switchTo(target.id)
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
   }, [])
 
   return useMemo(() => ({ switchTo, hrefFor }), [switchTo, hrefFor])

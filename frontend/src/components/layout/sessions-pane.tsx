@@ -87,7 +87,7 @@ export function SessionsPane({
 }: SessionsPaneProps) {
   const { isMobile, setOpenMobile } = useSidebar()
 
-  // ⌘N → a new session. Electron only, for the same reason `use-workspace-switch`
+  // ⌘N → a new chat. Electron only, for the same reason `use-workspace-switch`
   // refuses ⌘1–⌘9 in a browser: ⌘N is the browser's "new window" and is not ours
   // to take. The chord is only *shown* where it is bound, so the label never
   // advertises a shortcut that does nothing.
@@ -137,7 +137,7 @@ export function SessionsPane({
 
         <NavRow
           icon={NotePencil}
-          label="New session"
+          label="New chat"
           shortcut={isElectron ? "⌘N" : undefined}
           onClick={onNewChat}
         />

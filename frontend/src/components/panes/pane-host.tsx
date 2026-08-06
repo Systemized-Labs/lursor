@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { CaretDown, CaretUp, Plus } from "@phosphor-icons/react"
+import { CaretDown, CaretUp, SquaresFour } from "@phosphor-icons/react"
 import {
   DockviewReact,
   type DockviewApi,
@@ -200,6 +200,41 @@ export function PaneHost({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [api])
 
+  // ── ⌘← / ⌘→ cycle pane tabs ─────────────────────────────────────────────
+  // Moves focus one panel left or right across the flat list of all open tabs
+  // (groups in DOM order, panels within each group in tab order), wrapping at
+  // both ends. Same ordering and reveal behaviour as ⌘1–⌘9. Desktop only:
+  // browsers claim Ctrl+Arrow for word-level cursor movement in text fields.
+  useEffect(() => {
+    if (!api) return
+    if (!isElectron) return
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return
+
+      const panels: IDockviewPanel[] = []
+      for (const group of api.groups) {
+        for (const panel of group.panels) {
+          panels.push(panel)
+        }
+      }
+      if (panels.length < 2) return
+
+      const current = api.activePanel
+      const index = current ? panels.indexOf(current) : -1
+      const step = e.key === "ArrowRight" ? 1 : -1
+      const next = panels[(index + step + panels.length) % panels.length]
+      if (!next) return
+
+      e.preventDefault()
+      revealPanel(api, next)
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [api])
+
   return (
     <div className="relative min-h-0 min-w-0 flex-1">
       <DockviewReact
@@ -365,7 +400,7 @@ function ZoneActions({
   const label = collapsed ? "Expand the bottom panel" : "Collapse the bottom panel"
 
   return (
-    <div className="mr-1 flex items-center">
+    <div className="mr-1 flex h-full items-center">
       <AddPaneMenu
         layout={layout}
         groupId={group.api.id}
@@ -438,7 +473,7 @@ function AddPaneMenu({
           aria-label="Add pane"
           className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
-          <Plus className="size-4" />
+          <SquaresFour className="size-4" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
