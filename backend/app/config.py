@@ -12,8 +12,24 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo-root/backend directory, used to resolve default relative paths.
+# Repo-root/backend directory. No longer where any *writable* state goes — see
+# ``DEFAULT_DATA_ROOT`` — but still useful for resolving paths relative to the code.
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+# Where all writable state lives unless told otherwise.
+#
+# One location, for every way the backend can be started. It used to be two: the
+# packaged app and the service set ``LURSOR_DATA_DIR``, while a source run left it
+# unset and the database defaulted to ``BACKEND_DIR/lursor.db`` — inside the git
+# checkout. That split cost real data and real confusion. The checkout is disposable
+# by design (``install-server.sh`` runs ``git reset --hard`` on it, and a dev may
+# ``git clean`` or re-clone), so anything written there is one command from gone. It
+# also meant the installed app and ``bun run electron:dev`` read different databases,
+# so workspaces created in one were simply absent in the other and looked lost.
+#
+# ``workspaces_dir``, ``skills_dir`` and ``media_dir`` already defaulted here; the
+# database was the lone holdout.
+DEFAULT_DATA_ROOT = Path("~/.lursor")
 
 
 def _env_files() -> tuple[Path | str, ...]:
@@ -29,11 +45,13 @@ def _env_files() -> tuple[Path | str, ...]:
 
     Read from ``os.environ`` rather than from the ``data_dir`` field below because the
     file list has to exist before any field is parsed; this is the same variable the
-    packaged app and the service unit already set.
+    packaged app and the service unit already set. The fallback matches
+    ``DEFAULT_DATA_ROOT`` — deliberately the same constant, so the env file and the
+    database it sits beside can never resolve to different directories.
     """
     import os
 
-    root = Path(os.environ.get("LURSOR_DATA_DIR", "~/.lursor")).expanduser()
+    root = Path(os.environ.get("LURSOR_DATA_DIR", str(DEFAULT_DATA_ROOT))).expanduser()
     return (root / ".env", ".env")
 
 
@@ -69,19 +87,24 @@ class Settings(BaseSettings):
     )
 
     # --- Data root ---
-    # When set (env ``LURSOR_DATA_DIR``), every on-disk path that isn't explicitly
-    # overridden is rebased under this directory. The packaged desktop app sets
-    # this to a writable location (``~/.lursor``) because the app bundle itself is
-    # read-only — the DB in particular must not live inside the bundle. Left unset
-    # for source/dev runs, so existing behaviour (DB next to the backend, data
-    # under ``~/.lursor``) is preserved.
+    # Every on-disk path that isn't explicitly overridden is rebased under this
+    # directory. Defaults to ``~/.lursor`` for *every* launch mode rather than only
+    # when the environment names one: the packaged app needs it because its bundle is
+    # read-only, and a source run needs it because the checkout is disposable. One
+    # answer to "where is my data" is the whole point — see ``DEFAULT_DATA_ROOT``.
+    #
+    # Override with ``LURSOR_DATA_DIR`` to run a second, isolated backend (the recipe
+    # in ``docs/REMOTE.md`` for testing remote mode without a VPS does exactly this).
     data_dir: Path | None = Field(
-        default=None,
+        default=DEFAULT_DATA_ROOT,
         validation_alias=AliasChoices("LURSOR_DATA_DIR", "data_dir"),
     )
 
     # --- Database ---
-    database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'lursor.db'}"
+    # Rebased under ``data_dir`` below unless ``DATABASE_URL`` is set explicitly, which
+    # is what the test suite does (see ``tests/conftest.py``). The literal here is only
+    # reached when someone passes ``data_dir=None`` on purpose.
+    database_url: str = f"sqlite+aiosqlite:///{DEFAULT_DATA_ROOT.expanduser() / 'lursor.db'}"
 
     # --- Workspaces ---
     # Root directory under which each workspace gets its own folder (named by its

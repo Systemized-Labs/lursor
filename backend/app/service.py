@@ -196,10 +196,12 @@ WorkingDirectory={workdir}
 ExecStart={uvicorn} app.main:app --host {host} --port {port}
 EnvironmentFile={env}
 Environment=PYTHONUNBUFFERED=1
-# Keep every byte of state out of the checkout. Without this the database defaults to
-# sitting next to the code (``config.py``: ``BACKEND_DIR / 'lursor.db'``), and the
-# checkout is disposable by design — the installer runs `git reset --hard` on it, and a
-# re-clone or a moved directory would take your threads, agents and schedules with it.
+# Keep every byte of state out of the checkout, which is disposable by design — the
+# installer runs `git reset --hard` on it, and a re-clone or a moved directory would
+# take your threads, agents and schedules with it. Written into the unit explicitly
+# rather than left to ``config.DEFAULT_DATA_ROOT``, even though the two now agree: a
+# unit should state where its state is, so reading `systemctl cat` answers the question
+# and a future change to the default cannot silently move a running deployment's data.
 Environment=LURSOR_DATA_DIR={data_dir}
 
 Restart=always
