@@ -4,6 +4,7 @@ import { Link } from "react-router-dom"
 
 import { isImageActive, useImageRunSync, useImageRuns } from "@/api/images"
 import { useLaiosConnections } from "@/api/laios"
+import { useMediaSettings } from "@/api/settings"
 import type { LaiosImageRun } from "@/api/types"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
@@ -20,13 +21,14 @@ import { ImageRunCard } from "./image-run-card"
 import { useImageComposer } from "./use-image-composer"
 
 const DESCRIPTION =
-  "Generate images on a LAIOS box. One synchronous call per image — seconds on Z-Image-Turbo, minutes on Qwen — kept here with the settings and timings it ran with."
+  "Generate images on whichever source is configured in Settings → Image & video. One call per image — seconds on a local Z-Image, longer and priced on a hosted model — kept here with the settings and timings it ran with."
 
 // Shared with the LAIOS and Video pages so switching connection anywhere carries
 // over here.
 const ACTIVE_KEY = "laios.activeConnectionId"
 
 export function ImagePage({ embedded = false }: { embedded?: boolean } = {}) {
+  const { data: media, isLoading: mediaLoading } = useMediaSettings()
   const { data: connections, isLoading: connectionsLoading } =
     useLaiosConnections()
 
@@ -42,13 +44,27 @@ export function ImagePage({ embedded = false }: { embedded?: boolean } = {}) {
     }
   }, [connections, connectionId])
 
-  const { data: runs } = useImageRuns(connectionId)
-  useImageRunSync(connectionId, runs)
+  // The page follows the configured source rather than offering its own picker —
+  // Settings → Image & video is the one place that choice is made, and a second
+  // one here would mean an agent and the page could be generating on different
+  // models with nothing saying so.
+  const onLaios = (media?.image.source ?? "laios") === "laios"
+  const source = onLaios
+    ? connectionId
+      ? `laios:${connectionId}`
+      : undefined
+    : "openrouter"
+
+  // Unfiltered: history made under the previous source stays visible, because the
+  // images are still on disk and a gallery that emptied itself on a settings
+  // change would read as data loss.
+  const { data: runs } = useImageRuns()
+  useImageRunSync(undefined, runs)
 
   // Held at the page so a run card can load a past run back into the form.
   const composer = useImageComposer()
 
-  const hasConnections = Boolean(connections && connections.length > 0)
+  const ready = onLaios ? Boolean(connections && connections.length > 0) : true
 
   return (
     <div className="space-y-6">
@@ -57,7 +73,7 @@ export function ImagePage({ embedded = false }: { embedded?: boolean } = {}) {
         embedded={embedded}
         description={DESCRIPTION}
         actions={
-          connections && connections.length > 1 ? (
+          onLaios && connections && connections.length > 1 ? (
             <Select
               value={connectionId ?? ""}
               onValueChange={(value) => {
@@ -80,21 +96,17 @@ export function ImagePage({ embedded = false }: { embedded?: boolean } = {}) {
         }
       />
 
-      {connectionsLoading ? (
+      {mediaLoading || (onLaios && connectionsLoading) ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <DotGridLoader size="xs" />
-          Loading connections…
+          Loading…
         </div>
-      ) : !hasConnections ? (
+      ) : !ready ? (
         <NoConnection />
-      ) : connectionId ? (
+      ) : source ? (
         <>
-          <ImageComposer connectionId={connectionId} composer={composer} />
-          <Runs
-            connectionId={connectionId}
-            runs={runs}
-            onReuse={composer.loadRun}
-          />
+          <ImageComposer source={source} composer={composer} />
+          <Runs runs={runs} onReuse={composer.loadRun} />
         </>
       ) : null}
     </div>
@@ -112,13 +124,18 @@ function NoConnection() {
         Connect a LAIOS box first
       </h2>
       <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-        Images are generated on your own GPUs, through a LAIOS daemon's inference
-        gateway. Add a connection and serve an image-capable model, then come
-        back.
+        LAIOS is the configured image source, so images are generated on your own
+        GPUs through a daemon\'s inference gateway. Add a connection and serve an
+        image-capable model — or switch the source to OpenRouter.
       </p>
-      <Button asChild className="mt-4">
-        <Link to="/laios">Go to LAIOS</Link>
-      </Button>
+      <div className="mt-4 flex items-center justify-center gap-2">
+        <Button asChild>
+          <Link to="/?settings=laios">Go to LAIOS</Link>
+        </Button>
+        <Button asChild variant="ghost">
+          <Link to="/?settings=media">Change the source</Link>
+        </Button>
+      </div>
     </div>
   )
 }
@@ -132,11 +149,9 @@ function NoConnection() {
  * one screen.
  */
 function Runs({
-  connectionId,
   runs,
   onReuse,
 }: {
-  connectionId: string
   runs: LaiosImageRun[] | undefined
   onReuse: (run: LaiosImageRun) => void
 }) {
@@ -189,12 +204,7 @@ function Runs({
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
         {runs.map((run) => (
-          <ImageRunCard
-            key={run.id}
-            connectionId={connectionId}
-            run={run}
-            onReuse={onReuse}
-          />
+          <ImageRunCard key={run.id} run={run} onReuse={onReuse} />
         ))}
       </div>
     </section>

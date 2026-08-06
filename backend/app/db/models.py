@@ -369,6 +369,12 @@ class Agent(TimestampMixin, table=True):
     # rather than arriving with an upgrade. Also gated at run time on a connection
     # actually serving a video-capable model.
     include_video: bool = False
+    # Let this agent generate images on a connected laios box (see
+    # ``agents/image_tools.py``). Off by default like its video sibling, though for
+    # a weaker reason: an image is seconds of GPU rather than minutes, so the
+    # argument here is consistency and explicit consent rather than cost. Also gated
+    # at run time on a connection actually serving an image-capable model.
+    include_image: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     # Force or forbid tool calls (see ToolChoice); "auto" leaves it to the model.
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
@@ -430,6 +436,10 @@ class Subagent(TimestampMixin, table=True):
     # so this flag decides whether a specialist may spend the parent's GPU budget,
     # not whether one can be found.
     include_video: bool = False
+    # Image generation, same flag as on :class:`Agent` and inherited the same way:
+    # the parent resolves the box and passes the runtime down, and this decides
+    # whether the specialist may use it.
+    include_image: bool = False
     thinking: ThinkingLevel = Field(default=ThinkingLevel.off)
     tool_choice: ToolChoice = Field(default=ToolChoice.auto)
 
@@ -519,13 +529,14 @@ class LaiosConnection(TimestampMixin, table=True):
 
 
 class VideoJob(TimestampMixin, table=True):
-    """One audio-video generation submitted to a laios gateway's ``/v1/videos``.
+    """One audio-video generation, on a laios gateway or on OpenRouter.
 
-    A clip takes minutes (~44 s per denoise step), so the surface is a job API
-    rather than a completion: submit, poll, download. The gateway remembers which
-    upstream owns a job id only *in memory* and only for the last 1024 jobs, so
-    this table — not the gateway — is the record of what we asked for. Without it
-    a gateway restart mid-generation orphans the clip and there is no history to
+    A clip takes minutes (~44 s per denoise step on a box), so the surface is a job
+    API rather than a completion: submit, poll, download. Both sources agree on
+    that shape, which is why one table holds both. The laios gateway remembers
+    which upstream owns a job id only *in memory* and only for the last 1024 jobs,
+    so this table — not the gateway — is the record of what we asked for. Without
+    it a gateway restart mid-generation orphans the clip and there is no history to
     compare test runs against.
 
     ``request`` keeps the exact submitted body so a run is reproducible, and
@@ -534,7 +545,13 @@ class VideoJob(TimestampMixin, table=True):
 
     __tablename__ = "video_jobs"
 
-    connection_id: str = Field(index=True)  # LaiosConnection this was sent to
+    # Which media source ran this. "laios" (the default, and every row written
+    # before the source setting existed) or "openrouter". See ``app/media/refs.py``.
+    provider: str = Field(default="laios", index=True)
+    # The LaiosConnection this was sent to, and "" when ``provider`` is not laios.
+    # Empty rather than nullable: this was never a real foreign key, and SQLite
+    # cannot relax NOT NULL without rebuilding the table.
+    connection_id: str = Field(default="", index=True)
     job_id: str = Field(index=True)  # the gateway's id, e.g. "vid_…"
     model: str = ""  # served name the submission named
     prompt: str = ""
@@ -549,6 +566,13 @@ class VideoJob(TimestampMixin, table=True):
     # Content-addressed mp4 in the media store, once downloaded. Null while the
     # job is still running or if it failed.
     media_id: str | None = None
+    # What the provider says this cost, in USD. Null for laios, which bills in
+    # electricity rather than dollars and reports no number.
+    cost_usd: float | None = None
+    # Where the finished clip can be fetched from, on the OpenRouter path only
+    # (``unsigned_urls[0]``). Those URLs expire, so the bytes are pulled eagerly on
+    # the completing poll and this is only the retry handle — see ``api/videos.py``.
+    content_url: str | None = None
 
 
 class ImageGeneration(TimestampMixin, table=True):
@@ -574,8 +598,11 @@ class ImageGeneration(TimestampMixin, table=True):
 
     __tablename__ = "image_generations"
 
-    connection_id: str = Field(index=True)  # LaiosConnection this was sent to
-    model: str = ""  # served name the submission named
+    # As on :class:`VideoJob`: "laios" | "openrouter", and "" for the connection
+    # when the source is not a box.
+    provider: str = Field(default="laios", index=True)
+    connection_id: str = Field(default="", index=True)
+    model: str = ""  # served name (laios) or model slug (OpenRouter)
     prompt: str = ""
     # The gateway's id for the generated image. Only load-bearing on the
     # ``response_format: "url"`` path (which we do not ask for) — kept because it
@@ -590,9 +617,12 @@ class ImageGeneration(TimestampMixin, table=True):
     # Content-addressed image in the media store, once stored. Null while running
     # or if it failed.
     media_id: str | None = None
-    # The engine's own numbers, straight off the response.
+    # The engine's own numbers, straight off the response. laios only — OpenRouter
+    # reports a price instead of a time and a peak.
     inference_time_s: float | None = None
     peak_memory_mb: float | None = None
+    # What the provider says this cost, in USD. Null for laios.
+    cost_usd: float | None = None
 
 
 class AppConfig(TimestampMixin, table=True):
@@ -686,6 +716,27 @@ class AppConfig(TimestampMixin, table=True):
     # ``agents/deep_defaults.py``). Kept as a free-form JSON blob so new knobs can
     # be exposed without a schema migration.
     deep_defaults: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+    # Where images and clips are generated, chosen in Settings → Image & video.
+    # "laios" (or null, the default) resolves across the connected boxes exactly
+    # as before; "openrouter" routes to OpenRouter's media APIs instead. Read per
+    # run straight off this row — like ``web_search_provider``, and unlike the
+    # compaction knobs, nothing is pushed into the live settings object.
+    #
+    # The source never falls back: if it cannot serve, the capability probe and
+    # the agent tool say why rather than quietly using the other one. That is what
+    # makes the choice trustworthy when one side costs money.
+    image_source: str | None = None
+    video_source: str | None = None
+
+    # The pinned model ref within that source (``openrouter:{slug}`` or
+    # ``laios:{connection_id}:{served_name}`` — see ``app/media/refs.py``). Null
+    # means "auto": the cheapest model the source is offering. Kept separate from
+    # the source column even though a ref encodes its own source, because
+    # "OpenRouter selected, nothing pinned yet" has to be expressible and the
+    # source is the gate that must survive an unreadable catalogue.
+    image_model: str | None = None
+    video_model: str | None = None
 
 
 class GitHubConfig(TimestampMixin, table=True):

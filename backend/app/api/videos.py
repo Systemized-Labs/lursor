@@ -18,10 +18,27 @@ deliberately does not do:
   content-addressed in the media store, so replaying a result does not re-pull
   it through the tunnel.
 
-Everything is scoped to a :class:`~app.db.models.LaiosConnection` and reaches the
-gateway through :func:`~app.api.laios.gateway_base`, which resolves both direct
-(``:4000``) and lastway-tunnelled (apex root) topologies. Nothing here knows
-which of the two it is talking to.
+The laios path reaches the gateway through :func:`~app.api.laios.gateway_base`,
+which resolves both direct (``:4000``) and lastway-tunnelled (apex root)
+topologies. Nothing here knows which of the two it is talking to.
+
+**OpenRouter is the second source**, selected app-wide in Settings (see
+``AppConfig.video_source``). Its job API has the same four verbs, so the shape of
+this module carries over and the provider branch lives in the four functions that
+actually touch the network. Two things genuinely differ, and both are visible to
+the user rather than papered over:
+
+* **The clip is downloaded eagerly**, on the poll that first sees ``completed``,
+  instead of on first view. ``unsigned_urls`` expire. Deferring is right for a box
+  — the mp4 stays on the box, and pulling it through a tunnel is the expensive
+  part — but here it would mean a clip somebody paid for becoming unreachable
+  because they closed the tab. ``content_url`` stays on the row as the retry
+  handle, and :func:`stored_clip`'s lazy path still covers an eager fetch that
+  failed.
+* **There is no cancel.** OpenRouter's job API has none, so
+  :func:`cancel_video` marks the row locally and says plainly that the render
+  continues and will still be billed. Reporting a cancel that did not happen
+  would be the worse failure.
 """
 
 from __future__ import annotations
@@ -31,50 +48,162 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app import media_store
 from app.api.laios import gateway_base, load_connection
-from app.db.models import LaiosConnection, VideoJob
+from app.db.models import AppConfig, LaiosConnection, VideoJob
 from app.db.session import get_session
+from app.media import openrouter as openrouter_media
+from app.media import refs
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/laios/connections", tags=["videos"])
+router = APIRouter(prefix="/media/videos", tags=["videos"])
 
-# The capability probe is not connection-scoped — "can any box do this" is the
-# question — so it gets its own router rather than a path under a connection id.
+# The capability probe answers "can this app generate video at all", which is a
+# question about the configured source rather than about one connection, so it
+# keeps its own router and its own stable path.
 capability_router = APIRouter(prefix="/video", tags=["videos"])
 
 
 @capability_router.get("/capability")
 async def video_capability(session: AsyncSession = Depends(get_session)):
-    """Whether anything connected can generate video, and what would be used.
+    """Whether the configured source can generate video, and what would be used.
 
-    Exists for the agent editor. The ``include_video`` toggle is gated on a box
-    actually serving a model this build can drive (``agents/video_runtime.py``), and
-    a checkbox that silently does nothing is indistinguishable from a broken one —
-    so the editor states which model it would reach, or why it would reach none.
+    Exists for the agent editor. The ``include_video`` toggle is gated on the
+    source actually being able to serve a model this build can drive
+    (``agents/video_runtime.py``), and a checkbox that silently does nothing is
+    indistinguishable from a broken one — so the editor states which model it
+    would reach, or why it would reach none.
 
-    Shares the resolver's 5-minute cache, so opening the dialog costs no round trip
-    once a run has already resolved.
+    Shares the resolver's caches, so opening the dialog costs no round trip once a
+    run has already resolved.
     """
     from app.agents.video_runtime import resolve_video_target
 
     runtime, reason = await resolve_video_target(session)
     return {
         "available": runtime is not None,
+        "source": runtime.provider if runtime else None,
         "model": runtime.model if runtime else None,
         "connection_name": runtime.connection_name if runtime else None,
         # True when the request shape was inferred from the model's identity rather
         # than declared by its recipe — worth surfacing, since it is the one case
-        # where Lursor is trusting a measurement instead of a declaration.
+        # where Lursor is trusting a measurement instead of a declaration. Never
+        # true on OpenRouter, whose catalogue is the declaration.
         "assumed": bool(runtime.assumed) if runtime else False,
+        "price": _price(runtime.price) if runtime else None,
+        "pinned": runtime.pinned if runtime else False,
         "reason": reason,
     }
+
+
+def _price(quote) -> dict[str, Any] | None:
+    """A :class:`PriceQuote` as JSON, or null when no rate is published."""
+    if quote is None:
+        return None
+    return {
+        "amount": quote.amount,
+        "unit": quote.unit,
+        "approximate": quote.approximate,
+    }
+
+
+# Declared before ``/{job_id}`` — a literal route in the same path space as a
+# parameterized one must come first (AGENTS.md invariant 7).
+@router.get("/models")
+async def list_video_models(
+    source: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Every video model the given source offers, with its constraints and rate.
+
+    Unlike images, video resolves to a single target rather than a set — the
+    request shape is per-model on laios, so "which one can we drive" has one right
+    answer. The list is therefore built from the catalogue on OpenRouter and from
+    the drivable served models on laios, and both are rendered the same way.
+    """
+    from app.agents.video_runtime import resolve_video_target
+
+    if source is None:
+        cfg = (await session.execute(select(AppConfig))).scalars().first()
+        source = (cfg.video_source if cfg else None) or refs.LAIOS
+    try:
+        wanted = refs.parse_source(source)
+    except refs.RefError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    runtime, reason = await resolve_video_target(session)
+    if runtime is None or runtime.provider != wanted.provider:
+        return {
+            "source": wanted.provider,
+            "available": False,
+            "reason": reason,
+            "models": [],
+        }
+
+    if runtime.is_openrouter:
+        observed = await _observed_video_costs(session)
+        catalogue = await openrouter_media.video_models()
+        models = [
+            {
+                "ref": refs.format_model_ref(refs.OPENROUTER, entry.slug),
+                "id": entry.slug,
+                "label": entry.label,
+                "provider": refs.OPENROUTER,
+                "note": entry.note,
+                "price": _price(entry.price),
+                "observed_cost": observed.get(entry.slug),
+                "connection_name": "OpenRouter",
+                "resolutions": list(entry.resolutions),
+                "aspect_ratios": list(entry.aspect_ratios),
+                "sizes": list(entry.sizes),
+                "durations": list(entry.durations),
+                "keyframes": entry.keyframes,
+                "audio": entry.audio,
+                "seed": entry.seed,
+            }
+            for entry in catalogue
+        ]
+    else:
+        # laios resolves to one drivable target, so the list is that target.
+        constraints = runtime.constraints
+        models = [
+            {
+                "ref": runtime.ref,
+                "id": runtime.model,
+                "label": runtime.label,
+                "provider": refs.LAIOS,
+                "note": f"driven as {runtime.request_schema}",
+                "price": None,
+                "observed_cost": None,
+                "connection_name": runtime.connection_name,
+                "resolutions": [],
+                "aspect_ratios": list(constraints.aspect_ratios),
+                "sizes": list(constraints.sizes.values()),
+                "durations": [],
+                "keyframes": constraints.keyframes,
+                "audio": constraints.emits_audio,
+                "seed": True,
+            }
+        ]
+
+    return {
+        "source": runtime.provider,
+        "available": True,
+        "reason": reason,
+        "models": models,
+    }
+
+
+async def _observed_video_costs(session: AsyncSession) -> dict[str, float]:
+    from app.media.history import observed_video_costs
+
+    return await observed_video_costs(session, refs.OPENROUTER)
 
 # Submitting and polling are fast — the generation itself happens on the box and
 # is observed by polling, so no request here waits on a clip.
@@ -180,7 +309,9 @@ gateway_error_detail = _gateway_error_detail
 def _to_read(job: VideoJob) -> dict[str, Any]:
     return {
         "id": job.id,
+        "provider": job.provider,
         "connection_id": job.connection_id,
+        "cost_usd": job.cost_usd,
         "job_id": job.job_id,
         "model": job.model,
         "prompt": job.prompt,
@@ -232,21 +363,20 @@ def _storable_request(body: dict[str, Any]) -> dict[str, Any]:
     return {**body, "conditions": stored}
 
 
-async def _row(cid: str, job_id: str, session: AsyncSession) -> VideoJob:
-    result = await session.execute(
-        select(VideoJob).where(
-            VideoJob.connection_id == cid, VideoJob.job_id == job_id
-        )
-    )
+async def _row(job_id: str, session: AsyncSession) -> VideoJob:
+    result = await session.execute(select(VideoJob).where(VideoJob.job_id == job_id))
     job = result.scalars().first()
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "video job not found")
     return job
 
 
-@router.get("/{cid}/videos")
-async def list_videos(cid: str, session: AsyncSession = Depends(get_session)):
-    """Every job we've submitted to this connection, newest first.
+@router.get("")
+async def list_videos(
+    source: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Every job we've submitted, newest first.
 
     Served from our own table rather than the gateway: the engine's own
     ``GET /v1/videos`` is deliberately not proxied by laios (across several
@@ -256,87 +386,206 @@ async def list_videos(cid: str, session: AsyncSession = Depends(get_session)):
     Non-terminal rows are refreshed first (see :func:`_refresh_active`). Nothing
     advances a job server-side, so without this a run whose submitter went away —
     an agent that was stopped, a browser tab that was closed — sits at ``queued``
-    forever while the box happily finishes the render. Opening this list is what
-    reconciles it.
+    forever while the box (or OpenRouter) happily finishes the render. Opening
+    this list is what reconciles it.
+
+    ``source`` filters; omitting it returns everything. As with images, switching
+    the source in Settings does not hide the history made under the previous one.
     """
-    result = await session.execute(
-        select(VideoJob)
-        .where(VideoJob.connection_id == cid)
-        .order_by(VideoJob.created_at.desc())
-    )
-    jobs = list(result.scalars().all())
-    await _refresh_active(cid, jobs, session)
+    query = select(VideoJob).order_by(VideoJob.created_at.desc())
+    if source:
+        try:
+            wanted = refs.parse_source(source)
+        except refs.RefError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        query = query.where(VideoJob.provider == wanted.provider)
+        if wanted.connection_id:
+            query = query.where(VideoJob.connection_id == wanted.connection_id)
+
+    jobs = list((await session.execute(query)).scalars().all())
+    await _refresh_active(jobs, session)
     return [_to_read(job) for job in jobs]
 
 
-async def _refresh_active(
-    cid: str, jobs: list[VideoJob], session: AsyncSession
-) -> None:
-    """Poll every non-terminal row on this connection and fold in what came back.
+async def _refresh_active(jobs: list[VideoJob], session: AsyncSession) -> None:
+    """Poll every non-terminal row and fold in what came back.
 
     Bounded by the rows themselves rather than by a cap: a job runs for minutes, so
     "active" is a handful at most, and a silent cap here would read as "these are
     up to date" when some of them weren't. Every failure leaves the row alone —
-    an unreachable box means we don't know yet, not that the job died.
+    an unreachable upstream means we don't know yet, not that the job died.
+
+    Grouped by connection so one gateway client serves all of that box's rows, and
+    so a box that is down short-circuits its own group without stalling the others.
     """
     active = [job for job in jobs if job.status not in TERMINAL]
     if not active:
         return
 
-    try:
-        conn = await load_connection(cid, session)
-        client = await _gateway(conn)
-    except HTTPException:
-        # No such connection, or no usable gateway base. Listing the history must
-        # still work — that is the surface where the operator would notice.
-        return
-
     changed = False
-    async with client:
-        for job in active:
-            try:
-                resp = await client.get(f"/videos/{job.job_id}")
-            except (httpx.TimeoutException, httpx.RequestError) as exc:
-                logger.debug("refreshing %s: gateway unreachable: %s", job.job_id, exc)
-                break  # the box is down; the rest would fail the same way
-            if resp.status_code == status.HTTP_404_NOT_FOUND:
-                job.status = "failed"
-                job.error = "the gateway no longer knows this job id"
-            elif resp.status_code >= 400:
-                continue
-            else:
-                _apply(job, resp.json())
-            session.add(job)
-            changed = True
+    for job in [j for j in active if j.provider == refs.OPENROUTER]:
+        changed |= await _refresh_openrouter(job, session)
+
+    by_connection: dict[str, list[VideoJob]] = {}
+    for job in active:
+        if job.provider != refs.OPENROUTER:
+            by_connection.setdefault(job.connection_id, []).append(job)
+
+    for cid, group in by_connection.items():
+        try:
+            conn = await load_connection(cid, session)
+            client = await _gateway(conn)
+        except HTTPException:
+            # No such connection, or no usable gateway base. Listing the history
+            # must still work — that is the surface where the operator would
+            # notice.
+            continue
+        async with client:
+            for job in group:
+                try:
+                    resp = await client.get(f"/videos/{job.job_id}")
+                except (httpx.TimeoutException, httpx.RequestError) as exc:
+                    logger.debug(
+                        "refreshing %s: gateway unreachable: %s", job.job_id, exc
+                    )
+                    break  # the box is down; the rest would fail the same way
+                if resp.status_code == status.HTTP_404_NOT_FOUND:
+                    job.status = "failed"
+                    job.error = "the gateway no longer knows this job id"
+                elif resp.status_code >= 400:
+                    continue
+                else:
+                    _apply(job, resp.json())
+                session.add(job)
+                changed = True
+
     if changed:
         await session.commit()
 
 
-@router.post("/{cid}/videos", status_code=status.HTTP_201_CREATED)
-async def create_video(
-    cid: str, body: dict, session: AsyncSession = Depends(get_session)
-):
-    """Submit a generation and record the job the gateway hands back.
+async def _refresh_openrouter(job: VideoJob, session: AsyncSession) -> bool:
+    """Poll one hosted job, pulling the clip down if it just finished.
 
-    ``body`` is the engine's schema and is relayed as given — ``model``,
-    ``prompt``, ``task``, ``target{short_edge,aspect_ratio,duration_seconds}``,
-    ``num_inference_steps``, ``seed``. We read ``model``/``prompt``/``task`` only
-    to label the row.
+    Returns whether the row changed. Failures are swallowed for the same reason
+    the laios path swallows them — a list that 500s because one upstream blinked
+    is worse than a list with one stale row.
+    """
+    try:
+        payload = await openrouter_media.poll_video(job.job_id)
+    except (openrouter_media.OpenRouterMediaError, httpx.HTTPError) as exc:
+        logger.debug("refreshing %s: openrouter unreachable: %s", job.job_id, exc)
+        return False
+    _apply(job, payload)
+    await _fetch_finished_clip(job, session)
+    session.add(job)
+    return True
 
-    First/last-frame conditioning (``task: "fl2va"``) rides the same JSON path: the
-    keyframes are ``conditions`` entries whose ``uri`` may be a ``data:`` URI, so
-    nothing here needs a multipart branch and an off-box Lursor can still supply
-    frames the engine never had on disk. Only the *stored* body differs — see
-    :func:`_storable_request`.
+
+async def _fetch_finished_clip(job: VideoJob, session: AsyncSession) -> None:
+    """Pull an OpenRouter clip the moment it completes. See the module docstring.
+
+    A failure here is not fatal: ``content_url`` stays on the row, and
+    :func:`stored_clip` will retry on first view. It is only the *timing* that is
+    eager — the URL may still be alive then, and if it is not, at least the row
+    says what was attempted.
+    """
+    if job.media_id or job.status != "completed" or not job.content_url:
+        return
+    try:
+        data, content_type = await openrouter_media.download(job.content_url)
+        job.media_id = media_store.save_video(data, content_type or "video/mp4")
+    except (openrouter_media.OpenRouterMediaError, httpx.HTTPError, ValueError) as exc:
+        logger.warning("could not download clip for %s: %s", job.job_id, exc)
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_video(body: dict, session: AsyncSession = Depends(get_session)):
+    """Submit a generation and record the job the upstream hands back.
+
+    ``body`` is the provider's schema and is relayed as given. On laios that is
+    ``model``, ``prompt``, ``task``, ``target{short_edge,aspect_ratio,duration_seconds}``,
+    ``num_inference_steps``, ``seed``; on OpenRouter it is ``model``, ``prompt``,
+    ``duration``, ``resolution``/``size``, ``aspect_ratio``, ``frame_images``,
+    ``generate_audio``, ``seed``. We read ``model``/``prompt``/``task`` only to
+    label the row. ``source`` is ours and is stripped before submitting.
+
+    First/last-frame conditioning rides the same JSON path on both: the keyframes
+    are ``data:`` URIs in the body, so nothing here needs a multipart branch and an
+    off-box Lursor can still supply frames the engine never had on disk. Only the
+    *stored* body differs — see :func:`_storable_request`.
     """
     model = str(body.get("model") or "").strip()
     if not model:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "model is required")
 
+    try:
+        ref = refs.parse_model_ref(model) if ":" in model else None
+        if ref is not None:
+            source = ref.source
+            model = ref.model
+        else:
+            raw_source = body.get("source")
+            if raw_source is None:
+                cfg = (await session.execute(select(AppConfig))).scalars().first()
+                raw_source = (cfg.video_source if cfg else None) or refs.LAIOS
+            source = refs.parse_source(str(raw_source))
+    except refs.RefError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    request = {k: v for k, v in body.items() if k != "source"}
+    request["model"] = model
+
+    if source.is_openrouter:
+        created = await _submit_openrouter(request)
+        connection_id = ""
+    else:
+        connection_id = source.connection_id or await _only_connection(session)
+        created = await _submit_laios(connection_id, request, session)
+
+    job = VideoJob(
+        provider=source.provider,
+        connection_id=connection_id,
+        job_id=str(created.get("id")),
+        model=model,
+        prompt=str(body.get("prompt") or ""),
+        task=str(body.get("task") or ""),
+        request=_storable_request(request),
+        status=str(created.get("status") or "queued"),
+        progress=_as_float(created.get("progress")),
+    )
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+    return _to_read(job)
+
+
+async def _submit_openrouter(request: dict[str, Any]) -> dict[str, Any]:
+    if not openrouter_media.configured():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "no OpenRouter API key is set — add one in Settings → Providers",
+        )
+    try:
+        return await openrouter_media.submit_video(request)
+    except openrouter_media.OpenRouterMediaError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT, "submitting the video job timed out"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "could not reach OpenRouter"
+        ) from exc
+
+
+async def _submit_laios(
+    cid: str, request: dict[str, Any], session: AsyncSession
+) -> dict[str, Any]:
     conn = await load_connection(cid, session)
     try:
         async with await _gateway(conn) as client:
-            resp = await client.post("/videos", json=body)
+            resp = await client.post("/videos", json=request)
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT, "submitting the video job timed out"
@@ -354,43 +603,75 @@ async def create_video(
             status.HTTP_502_BAD_GATEWAY, "gateway returned a non-JSON job"
         ) from exc
 
-    job_id = str(created.get("id") or "").strip()
-    if not job_id:
+    if not str(created.get("id") or "").strip():
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, "gateway accepted the job but returned no id"
         )
+    return created
 
-    job = VideoJob(
-        connection_id=cid,
-        job_id=job_id,
-        model=model,
-        prompt=str(body.get("prompt") or ""),
-        task=str(body.get("task") or ""),
-        request=_storable_request(body),
-        status=str(created.get("status") or "queued"),
-        progress=_as_float(created.get("progress")),
+
+async def _only_connection(session: AsyncSession) -> str:
+    """The connection a bare ``laios`` source means, when there is just one.
+
+    Same argument as ``images._only_connection``: unambiguous for resolution,
+    ambiguous for submission, and picking a box to spend minutes of its GPU is not
+    a guess worth making silently.
+    """
+    connections = list(
+        (
+            await session.execute(
+                select(LaiosConnection).order_by(LaiosConnection.created_at)
+            )
+        )
+        .scalars()
+        .all()
     )
-    session.add(job)
-    await session.commit()
-    await session.refresh(job)
-    return _to_read(job)
+    if not connections:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "no laios connection is configured"
+        )
+    if len(connections) > 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "several laios connections are configured — name one, as "
+            f"'laios:{connections[0].id}'",
+        )
+    return connections[0].id
 
 
-@router.get("/{cid}/videos/{job_id}")
-async def video_status(
-    cid: str, job_id: str, session: AsyncSession = Depends(get_session)
-):
-    """Poll the gateway and fold the result into our row.
+@router.get("/{job_id}")
+async def video_status(job_id: str, session: AsyncSession = Depends(get_session)):
+    """Poll the upstream and fold the result into our row.
 
     A job already in a terminal state is answered from the row without touching
     the network — polling a finished clip forever is how a page left open becomes
-    load on the box.
+    load on the box (or a stream of requests at OpenRouter).
     """
-    job = await _row(cid, job_id, session)
+    job = await _row(job_id, session)
     if job.status in TERMINAL:
         return _to_read(job)
 
-    conn = await load_connection(cid, session)
+    if job.provider == refs.OPENROUTER:
+        try:
+            payload = await openrouter_media.poll_video(job.job_id)
+        except openrouter_media.OpenRouterMediaError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status.HTTP_504_GATEWAY_TIMEOUT, "polling the video job timed out"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "could not reach OpenRouter"
+            ) from exc
+        _apply(job, payload)
+        await _fetch_finished_clip(job, session)
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        return _to_read(job)
+
+    conn = await load_connection(job.connection_id, session)
     try:
         async with await _gateway(conn) as client:
             resp = await client.get(f"/videos/{job_id}")
@@ -422,13 +703,29 @@ async def video_status(
     return _to_read(job)
 
 
-@router.delete("/{cid}/videos/{job_id}")
-async def cancel_video(
-    cid: str, job_id: str, session: AsyncSession = Depends(get_session)
-):
-    """Cancel a running job. Keeps the row so the attempt stays in the history."""
-    job = await _row(cid, job_id, session)
-    conn = await load_connection(cid, session)
+@router.delete("/{job_id}")
+async def cancel_video(job_id: str, session: AsyncSession = Depends(get_session)):
+    """Cancel a running job. Keeps the row so the attempt stays in the history.
+
+    On OpenRouter there is nothing to cancel — the job API has no such verb — so
+    the row is marked locally and the response says plainly that the render
+    continues and will still be billed. Reporting a cancel that did not happen
+    would be the more expensive lie.
+    """
+    job = await _row(job_id, session)
+
+    if job.provider == refs.OPENROUTER:
+        job.status = "cancelled"
+        job.error = (
+            "stopped tracking this job — OpenRouter has no cancel, so the render "
+            "continues and will still be billed."
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        return _to_read(job)
+
+    conn = await load_connection(job.connection_id, session)
     try:
         async with await _gateway(conn) as client:
             resp = await client.delete(f"/videos/{job_id}")
@@ -469,6 +766,9 @@ async def stored_clip(
         if path.is_file():
             return path
 
+    if job.provider == refs.OPENROUTER:
+        return await _openrouter_clip(job, session)
+
     conn = await load_connection(job.connection_id, session)
     try:
         async with await _gateway(conn, timeout=_CONTENT_TIMEOUT) as client:
@@ -501,19 +801,58 @@ async def stored_clip(
     return media_store.video_path(media_id)
 
 
-@router.get("/{cid}/videos/{job_id}/content")
+async def _openrouter_clip(job: VideoJob, session: AsyncSession) -> Path:
+    """The retry path for a hosted clip whose eager download did not happen.
+
+    Normally unreachable: :func:`_fetch_finished_clip` pulls the bytes on the poll
+    that first sees ``completed``, because ``unsigned_urls`` expire. This covers
+    the case where that fetch failed (or the process died between the poll and the
+    save), and it is also where the expiry surfaces as a message someone can act
+    on rather than as a broken video element.
+    """
+    if not job.content_url:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "OpenRouter reported no download URL for this clip"
+            + (f" — it {job.status}" if job.status in TERMINAL else " yet"),
+        )
+    try:
+        data, content_type = await openrouter_media.download(job.content_url)
+    except openrouter_media.OpenRouterMediaError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"could not download the clip from OpenRouter ({exc}). Its download "
+            "URL expires, and this one may already have.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "could not reach OpenRouter"
+        ) from exc
+
+    try:
+        media_id = media_store.save_video(data, content_type or "video/mp4")
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    if job.media_id != media_id:
+        job.media_id = media_id
+        session.add(job)
+        await session.commit()
+    return media_store.video_path(media_id)
+
+
+@router.get("/{job_id}/content")
 async def video_content(
-    cid: str,
     job_id: str,
     variant: int = 0,
     session: AsyncSession = Depends(get_session),
 ):
-    """Serve the finished mp4, fetching it from the gateway the first time.
+    """Serve the finished mp4, fetching it from the upstream the first time.
 
     Returned as a file response so the browser can range-request it and the
     ``<video>`` element can seek.
     """
-    job = await _row(cid, job_id, session)
+    job = await _row(job_id, session)
     path = await stored_clip(job, session, variant)
     return FileResponse(
         path,
@@ -526,7 +865,12 @@ async def video_content(
 
 
 def _apply(job: VideoJob, payload: Any) -> None:
-    """Fold a gateway status body into the row, leaving unknown fields alone."""
+    """Fold an upstream status body into the row, leaving unknown fields alone.
+
+    One function for both sources. ``status``/``progress``/``error`` are spelled
+    the same way by each; the last two blocks are OpenRouter-only and are simply
+    absent from a laios body, so there is no branch to write.
+    """
     if not isinstance(payload, dict):
         return
     if (state := payload.get("status")) is not None:
@@ -539,6 +883,17 @@ def _apply(job: VideoJob, payload: Any) -> None:
         error = error.get("message")
     if error:
         job.error = str(error)
+
+    # OpenRouter: where the clip can be fetched from, and what it cost. The URL
+    # expires, which is why the caller downloads on the poll that first sees it
+    # rather than on first view (see the module docstring).
+    urls = payload.get("unsigned_urls")
+    if isinstance(urls, list) and urls and isinstance(urls[0], str):
+        job.content_url = urls[0]
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        if (cost := _as_float(usage.get("cost"))) is not None:
+            job.cost_usd = cost
 
 
 def _as_float(value: Any) -> float | None:

@@ -45,6 +45,7 @@ import { openPreviewChannel } from "@/lib/open-preview"
 import {
   consumePendingThread,
   openThreadChannel,
+  peekPendingThread,
   type OpenThreadRequest,
 } from "@/lib/open-thread"
 
@@ -226,7 +227,7 @@ export function AppShell() {
         setMobileView("chat")
         return
       }
-      layout.openThread(request.threadId)
+      layout.openThread(request.threadId, { mode: request.mode })
     },
     [workspaceId, isMobile, layout]
   )
@@ -238,8 +239,19 @@ export function AppShell() {
    *
    * This is the *only* place the URL is read to position a pane, and it is
    * consistent with §4: the URL is the address. Once per load, because after that
-   * the panes own their own addressing and re-reading `?c=` would drag a second
-   * chat pane back onto the first one's thread.
+   * the panes own their own addressing and re-reading `?c=` would keep dragging the
+   * focus back to the conversation the address bar happens to still name.
+   *
+   * No mode, so it neither previews nor promotes: a bookmark or a reload is someone
+   * arriving at a conversation, and a restored layout usually already has a pane on
+   * that thread — one that may be the preview pane, which this has no business
+   * pinning. `openThread` focuses it as it is, or opens a tab that stays.
+   *
+   * A parked request outranks it. Clicking a conversation in *another* workspace
+   * navigates here with `?c=` set and parks its own request, and that request knows
+   * something the URL does not: whether the click was a preview or a keep. Seeding
+   * first would answer it with a permanent tab before it was ever read, which is
+   * exactly what a single click must not produce.
    */
   const seededThreadFor = useRef<string | null>(null)
   useEffect(() => {
@@ -247,6 +259,7 @@ export function AppShell() {
     if (seededThreadFor.current === workspaceId) return
     const wanted = searchParams.get("c")
     seededThreadFor.current = workspaceId
+    if (peekPendingThread()?.workspaceId === workspaceId) return
     if (wanted) layout.openThread(wanted)
   }, [workspaceId, layout, isMobile, searchParams])
 

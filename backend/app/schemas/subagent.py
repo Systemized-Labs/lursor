@@ -21,6 +21,7 @@ class SubagentCreate(BaseModel):
     include_plan: bool = False
     web_search: bool = False
     include_video: bool = False
+    include_image: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     tool_choice: ToolChoice = ToolChoice.auto
     compaction_threshold: CompactionFraction = None
@@ -42,6 +43,7 @@ class SubagentUpdate(BaseModel):
     include_plan: bool | None = None
     web_search: bool | None = None
     include_video: bool | None = None
+    include_image: bool | None = None
     thinking: ThinkingLevel | None = None
     tool_choice: ToolChoice | None = None
     # Null clears the override (see ``AgentUpdate``), not "leave alone".
@@ -65,6 +67,7 @@ class SubagentRead(BaseModel):
     include_plan: bool
     web_search: bool
     include_video: bool
+    include_image: bool
     thinking: ThinkingLevel
     tool_choice: ToolChoice
     compaction_threshold: float | None
@@ -90,6 +93,7 @@ class SubagentRead(BaseModel):
             include_plan=sa.include_plan,
             web_search=sa.web_search,
             include_video=sa.include_video,
+            include_image=sa.include_image,
             thinking=sa.thinking,
             tool_choice=sa.tool_choice,
             compaction_threshold=sa.compaction_threshold,

@@ -7,11 +7,12 @@ import {
 import { useMemo } from "react"
 
 import { API_BASE, api } from "./client"
-import { useLaiosModels } from "./laios"
 import type {
   LaiosVideoInput,
   LaiosVideoJob,
   LaiosVideoStatus,
+  MediaModelList,
+  MediaVideoModelOption,
   VideoCapability,
 } from "./types"
 
@@ -26,18 +27,36 @@ export function isVideoActive(job: LaiosVideoJob): boolean {
   return !TERMINAL.has(job.status)
 }
 
+/**
+ * Keyed by a **source ref** rather than a laios connection id — see
+ * `api/images.ts` for the argument. Job ids stay the routing key here, because
+ * both upstreams mint a unique one and the agent tools speak in them.
+ */
 export const videosApi = {
-  list: (cid: string, signal?: AbortSignal) =>
-    api.get<LaiosVideoJob[]>(`/laios/connections/${cid}/videos`, signal),
-  create: (cid: string, input: LaiosVideoInput) =>
-    api.post<LaiosVideoJob>(`/laios/connections/${cid}/videos`, input),
-  // Reaches the gateway and folds the result into our row, so this is what
-  // actually advances a job's status — the list is read from our own table.
-  status: (cid: string, jobId: string, signal?: AbortSignal) =>
-    api.get<LaiosVideoJob>(`/laios/connections/${cid}/videos/${jobId}`, signal),
-  cancel: (cid: string, jobId: string) =>
-    api.delete<LaiosVideoJob>(`/laios/connections/${cid}/videos/${jobId}`),
-  // Not connection-scoped: "can anything connected generate video".
+  list: (source?: string, signal?: AbortSignal) =>
+    api.get<LaiosVideoJob[]>(
+      source ? `/media/videos?source=${encodeURIComponent(source)}` : "/media/videos",
+      signal
+    ),
+  create: (input: LaiosVideoInput) =>
+    api.post<LaiosVideoJob>("/media/videos", input),
+  // Reaches the upstream and folds the result into our row, so this is what
+  // actually advances a job's status — the list is read from our own table. On
+  // the OpenRouter path it is also what pulls the finished clip down, because the
+  // download URL expires.
+  status: (jobId: string, signal?: AbortSignal) =>
+    api.get<LaiosVideoJob>(`/media/videos/${jobId}`, signal),
+  // A real cancel on a box; on OpenRouter it only stops us tracking the job — the
+  // render continues and is billed either way, and the row says so.
+  cancel: (jobId: string) => api.delete<LaiosVideoJob>(`/media/videos/${jobId}`),
+  models: (source?: string, signal?: AbortSignal) =>
+    api.get<MediaModelList<MediaVideoModelOption>>(
+      source
+        ? `/media/videos/models?source=${encodeURIComponent(source)}`
+        : "/media/videos/models",
+      signal
+    ),
+  // Not source-scoped: "can this app generate video at all, and with what".
   capability: (signal?: AbortSignal) =>
     api.get<VideoCapability>("/video/capability", signal),
 }
@@ -49,21 +68,22 @@ export const videosApi = {
  * range-request and seek. The backend serves it from the media store once the
  * clip has been pulled down.
  */
-export function videoContentUrl(cid: string, jobId: string): string {
-  return `${API_BASE}/laios/connections/${cid}/videos/${jobId}/content`
+export function videoContentUrl(jobId: string): string {
+  return `${API_BASE}/media/videos/${jobId}/content`
 }
 
 export const videoKeys = {
   all: ["videos"] as const,
   capability: ["videos", "capability"] as const,
-  jobs: (cid: string) => ["videos", cid, "jobs"] as const,
-  job: (cid: string, jobId: string) => ["videos", cid, "job", jobId] as const,
+  models: (source?: string) => ["videos", "models", source ?? ""] as const,
+  jobs: (source?: string) => ["videos", "jobs", source ?? ""] as const,
+  job: (jobId: string) => ["videos", "job", jobId] as const,
 }
 
 /**
- * Whether any connected box can generate video, and which model would be used.
+ * Whether the configured source can generate video, and which model would run.
  *
- * Behind the same 5-minute resolver cache the agent build uses, so this is cheap;
+ * Behind the same resolver cache the agent build uses, so this is cheap;
  * `enabled` lets a caller skip it entirely until a dialog is open.
  */
 export function useVideoCapability(enabled = true) {
@@ -77,16 +97,15 @@ export function useVideoCapability(enabled = true) {
 }
 
 /**
- * Every job submitted to this connection.
+ * Jobs, optionally narrowed to one source.
  *
- * Cheap and side-effect free — it reads our table, not the gateway. Status is
- * advanced by :func:`useVideoJobSync`, which polls the active ones by id.
+ * Cheap and side-effect free — it reads our table, not an upstream. Status is
+ * advanced by {@link useVideoJobSync}, which polls the active ones by id.
  */
-export function useVideoJobs(cid: string | undefined) {
+export function useVideoJobs(source?: string) {
   return useQuery({
-    queryKey: cid ? videoKeys.jobs(cid) : videoKeys.all,
-    queryFn: ({ signal }) => videosApi.list(cid as string, signal),
-    enabled: Boolean(cid),
+    queryKey: videoKeys.jobs(source),
+    queryFn: ({ signal }) => videosApi.list(source, signal),
     refetchOnWindowFocus: false,
     retry: false,
   })
@@ -95,14 +114,14 @@ export function useVideoJobs(cid: string | undefined) {
 /**
  * Polls each still-running job so the list advances.
  *
- * Per job rather than in bulk because that is the shape the gateway offers —
+ * Per job rather than in bulk because that is the shape both upstreams offer —
  * a job is polled by id, and laios deliberately does not proxy the engine's own
  * job list (across several backends it would have to be merged rather than
- * routed). A clip takes minutes at ~44 s per denoise step, so 5s is already far
- * finer-grained than the thing being measured.
+ * routed). A clip takes minutes, so 5s is already far finer-grained than the
+ * thing being measured.
  */
 export function useVideoJobSync(
-  cid: string | undefined,
+  source: string | undefined,
   jobs: LaiosVideoJob[] | undefined
 ) {
   const qc = useQueryClient()
@@ -113,17 +132,16 @@ export function useVideoJobSync(
 
   useQueries({
     queries: active.map((jobId) => ({
-      queryKey: videoKeys.job(cid as string, jobId),
+      queryKey: videoKeys.job(jobId),
       queryFn: async ({ signal }: { signal: AbortSignal }) => {
-        const fresh = await videosApi.status(cid as string, jobId, signal)
+        const fresh = await videosApi.status(jobId, signal)
         // Fold straight into the list so the table re-renders without a second
         // round trip, and stop polling as soon as it lands.
-        qc.setQueryData<LaiosVideoJob[]>(videoKeys.jobs(cid as string), (prev) =>
+        qc.setQueryData<LaiosVideoJob[]>(videoKeys.jobs(source), (prev) =>
           prev?.map((j) => (j.job_id === jobId ? fresh : j))
         )
         return fresh
       },
-      enabled: Boolean(cid),
       refetchInterval: 5_000,
       refetchOnWindowFocus: false,
       retry: false,
@@ -131,69 +149,47 @@ export function useVideoJobSync(
   })
 }
 
-export function useSubmitVideo(cid: string | undefined) {
+export function useSubmitVideo(source?: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input: LaiosVideoInput) =>
-      videosApi.create(cid as string, input),
+      videosApi.create(source ? { source, ...input } : input),
     onSuccess: () => {
-      if (cid) qc.invalidateQueries({ queryKey: videoKeys.jobs(cid) })
+      qc.invalidateQueries({ queryKey: videoKeys.all })
     },
   })
 }
 
-export function useCancelVideo(cid: string | undefined) {
+export function useCancelVideo() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (jobId: string) => videosApi.cancel(cid as string, jobId),
+    mutationFn: (jobId: string) => videosApi.cancel(jobId),
     onSuccess: () => {
-      if (cid) qc.invalidateQueries({ queryKey: videoKeys.jobs(cid) })
+      qc.invalidateQueries({ queryKey: videoKeys.all })
     },
   })
-}
-
-/** A served model that generates video rather than tokens. */
-export interface VideoModelOption {
-  /** The name to put in the request's `model` field. */
-  servedName: string
-  /** Human label from the model inventory. */
-  label: string
 }
 
 /**
- * Video-capable models currently serving on this connection.
+ * The video models one source offers, with the clip shapes each will produce.
  *
- * Derived from the control plane's model inventory, which already carries
- * `capabilities` per recipe and the live instance serving it. The gateway's own
- * `/v1/models` is a flat OpenAI list with no capability field, so it cannot tell
- * a generator from an LLM — this join is what keeps a video model out of a chat
- * picker and a chat model out of this page.
- *
- * `controlReachable` is false when the inventory could not be read at all — a
- * tunnelled box without `expose_control` set. The page falls back to a free-text
- * model field in that case rather than showing an empty picker.
+ * The capability join that used to happen here — filtering the laios inventory on
+ * `capabilities: [video]` and a running instance — now happens server-side,
+ * alongside the "can this build drive its request shape" check that has always
+ * been server-side. `reason` says why the list is empty when it is.
  */
-export function useVideoModels(cid: string | undefined) {
-  const { data, isLoading, isError } = useLaiosModels(cid)
-
-  const options = useMemo<VideoModelOption[]>(() => {
-    if (!data) return []
-    return data
-      .filter(
-        (m) =>
-          m.capabilities.includes("video") &&
-          m.running_instance?.status === "running"
-      )
-      .map((m) => ({
-        servedName: m.running_instance?.served_name ?? m.served_model_name,
-        label: m.name || m.id,
-      }))
-      .filter((o) => Boolean(o.servedName))
-  }, [data])
+export function useVideoModels(source?: string) {
+  const query = useQuery({
+    queryKey: videoKeys.models(source),
+    queryFn: ({ signal }) => videosApi.models(source, signal),
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
 
   return {
-    options,
-    isLoading,
-    controlReachable: !isError,
+    options: query.data?.models ?? [],
+    available: query.data?.available ?? false,
+    reason: query.data?.reason ?? "",
+    isLoading: query.isLoading,
   }
 }

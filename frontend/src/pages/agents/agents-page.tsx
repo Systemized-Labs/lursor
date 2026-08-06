@@ -2,6 +2,7 @@ import {
   Browser,
   FilmSlate,
   Globe,
+  ImageSquare,
   Pencil,
   Plus,
   Trash,
@@ -166,6 +167,12 @@ export function AgentsPage({ embedded = false }: { embedded?: boolean } = {}) {
                   <Badge variant="outline" className="gap-1 font-normal">
                     <FilmSlate className="h-3 w-3" />
                     video
+                  </Badge>
+                ) : null}
+                {agent.include_image ? (
+                  <Badge variant="outline" className="gap-1 font-normal">
+                    <ImageSquare className="h-3 w-3" />
+                    image
                   </Badge>
                 ) : null}
                 {agent.include_skills ? (

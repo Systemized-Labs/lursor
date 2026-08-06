@@ -35,6 +35,7 @@ class AgentPromptContext(BaseModel):
     web_search: bool = False
     browser_qa: bool = False
     include_video: bool = False
+    include_image: bool = False
     thinking: ThinkingLevel = ThinkingLevel.off
     skill_names: list[str] = []
     tool_names: list[str] = []
@@ -95,11 +96,21 @@ def _capability_lines(ctx: AgentPromptContext) -> str:
             "browser QA (open the app in a headless browser to view and test it, "
             "read console/network errors, and verify the UI you build)"
         )
+    # Deliberately not naming the source. Which one runs is an app-wide setting
+    # (``AppConfig.video_source``) that can change after a prompt is authored, and
+    # the tool's own docstring states the model, its constraints and its price at
+    # the moment of the run — see ``video_tools._video_menu``. Claiming a box here
+    # would go stale the first time someone switches to OpenRouter.
     if ctx.include_video:
         caps.append(
-            "video generation (generate clips with synchronised audio on a "
-            "connected laios box, then assemble them with ffmpeg; each render "
-            "takes minutes of GPU time, so draft cheap before committing)"
+            "video generation (generate clips with synchronised audio, then "
+            "assemble them with ffmpeg; every render costs minutes or money, so "
+            "draft cheap before committing)"
+        )
+    if ctx.include_image:
+        caps.append(
+            "image generation (generate images and look at them; a generated image "
+            "is also a starting frame for video)"
         )
     if ctx.tool_names:
         caps.append("tools: " + ", ".join(ctx.tool_names))

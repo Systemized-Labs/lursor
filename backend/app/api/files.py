@@ -79,9 +79,23 @@ _IGNORED_DIRS = frozenset(
     }
 )
 
-# Within the otherwise-hidden ``.agents`` folder, plans are meant to be read and
-# revisited, so we expose ``.agents/plan/`` (and its contents) in the file tree.
-_PLAN_SUBDIR = ".agents/plan"
+# Within the otherwise-hidden ``.agents`` folder, some subtrees hold output the user
+# is meant to read, not machinery. Plans are read and revisited; generated images and
+# clips are deliverables someone asked for, and a file they can see in Artifacts but
+# not in the tree reads as a bug.
+#
+# The ``gen/`` folders only, deliberately. ``.agents/video/frames/`` is contact-sheet
+# stills the agent makes to look at its own work and regenerates freely, and each
+# ``gen`` folder's ``.gitignore`` is plumbing — both stay hidden, because the point of
+# this list is deliverables rather than "everything the media tools happen to write".
+_VISIBLE_AGENT_SUBDIRS = (
+    ".agents/plan",
+    ".agents/image/gen",
+    ".agents/video/gen",
+)
+
+# Kept as its own name: several call sites below mean "the plan folder" specifically.
+_PLAN_SUBDIR = _VISIBLE_AGENT_SUBDIRS[0]
 
 
 # What a skill that really lives in the catalog is called, next to the ``~/.claude``
@@ -111,14 +125,29 @@ def _source_of(child: Path) -> tuple[str, str]:
 def _tree_hidden(rel: str, name: str) -> bool:
     """Whether a child should be omitted from the file tree.
 
-    ``.agents`` is normally hidden (workspace-scoped agent config), but we let the
-    ``.agents`` container and its ``plan/`` subtree through so users can browse and
-    reopen past plans. Everything else under ``.agents`` (e.g. ``skills``) stays
-    hidden and is managed from its own page. All other noise dirs are hidden by
-    name as before.
+    ``.agents`` is normally hidden (workspace-scoped agent config), but the
+    container and the subtrees in :data:`_VISIBLE_AGENT_SUBDIRS` come through, so
+    users can browse past plans and the images and clips their agents produced.
+    Everything else under ``.agents`` (``skills``, ``video/frames``, the marker
+    ``.gitignore`` files) stays hidden and is managed from its own page. All other
+    noise dirs are hidden by name as before.
+
+    Ancestors of a visible subtree have to be visible too, or the subtree is
+    unreachable: the tree is walked a level at a time, so a hidden
+    ``.agents/image`` means nothing ever asks about ``.agents/image/gen``. That is
+    the bug this function had — ``.agents`` rendered as an expandable folder with
+    nothing inside it.
     """
-    if rel == ".agents" or rel == _PLAN_SUBDIR or rel.startswith(f"{_PLAN_SUBDIR}/"):
+    if rel == ".agents":
         return False
+    for visible in _VISIBLE_AGENT_SUBDIRS:
+        # The subtree itself, anything inside it, or a container on the way down.
+        if (
+            rel == visible
+            or rel.startswith(f"{visible}/")
+            or visible.startswith(f"{rel}/")
+        ):
+            return False
     if rel.startswith(".agents/"):
         return True
     return name in _IGNORED_DIRS

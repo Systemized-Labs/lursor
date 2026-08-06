@@ -1,5 +1,5 @@
 import { Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -53,6 +53,12 @@ interface WorkspaceChatPageProps {
   onThreadChange: (threadId: string | null) => void
   /** Report the open conversation's name, for the pane's tab to label itself with. */
   onDetail?: (detail: string | null) => void
+  /**
+   * Report that this pane is being *used*, not just looked at — which is what
+   * promotes a preview tab to one that stays. Sending a turn is the only thing that
+   * counts; see `PaneParams.preview`. Absent on mobile, which has no panes.
+   */
+  onCommit?: () => void
 }
 
 /**
@@ -73,6 +79,7 @@ export function WorkspaceChatPage({
   threadId: cParam,
   onThreadChange,
   onDetail,
+  onCommit,
 }: WorkspaceChatPageProps) {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
@@ -126,7 +133,31 @@ export function WorkspaceChatPage({
       onThreadChange(thread.id)
     },
   })
-  const { store, loadConversation, reloadMessages, startNewConversation } = chat
+  const {
+    store,
+    send: engineSend,
+    loadConversation,
+    reloadMessages,
+    startNewConversation,
+  } = chat
+
+  /**
+   * The engine's `send`, with the pane told it is being used.
+   *
+   * Wrapped once here rather than at each call site because there are four of them —
+   * a plain message, a slash command, the hand-off from the New Agent surface and
+   * "Execute plan" — and every one of them means the same thing to a preview tab.
+   * `chat.interject` says it too, and calls {@link onCommit} itself below.
+   */
+  const send: typeof engineSend = useCallback(
+    (...args) => {
+      onCommit?.()
+      return engineSend(...args)
+    },
+    // Off the destructured member, not `chat`: the engine returns a fresh object each
+    // render, and only its members are memoised.
+    [engineSend, onCommit]
+  )
 
   // Reactive slices of chat state. Each is low-frequency (start/end/settle), so
   // subscribing here never re-renders the page per streamed token.
@@ -220,8 +251,8 @@ export function WorkspaceChatPage({
     const text = launch.draft
     const atts = launch.attachments ?? []
     window.history.replaceState({}, "")
-    void chat.send(text, atts)
-  }, [location.state, cParam, agents, selectedAgentId, chat])
+    void send(text, atts)
+  }, [location.state, cParam, agents, selectedAgentId, send])
 
   // A prompt seeded through the URL (`?draft=`) — e.g. "Author with agent" from
   // the Skills manager. Unlike the hand-off above this never sends: the point is
@@ -389,7 +420,7 @@ export function WorkspaceChatPage({
       }
       switch (command.kind) {
         case "turn-intent":
-          await chat.send(args, atts, command.turnIntent ?? "chat", undefined, turnAgent)
+          await send(args, atts, command.turnIntent ?? "chat", undefined, turnAgent)
           return
         case "action":
           if (command.action) await runCommandAction(command.action)
@@ -399,7 +430,7 @@ export function WorkspaceChatPage({
     // A plain message sends a normal `chat` turn. When a plan is parked the
     // backend treats that turn as a refinement of the plan doc (not an
     // implementation); the user presses "Execute plan" to carry it out.
-    await chat.send(text, atts, "chat", undefined, {
+    await send(text, atts, "chat", undefined, {
       id: selectedAgentId,
       name: agentNameById.get(selectedAgentId),
     })
@@ -418,6 +449,8 @@ export function WorkspaceChatPage({
     if (!text) return
     setDraft("")
     void stick.scrollToBottom()
+    // Steering a running turn is using the pane as much as starting one is.
+    onCommit?.()
     await chat.interject(text)
   }
 
@@ -491,7 +524,7 @@ export function WorkspaceChatPage({
     // the plan doc alone (not the planning transcript), so the refinement chatter
     // never reaches the model. The client just sends the turn — no transcript
     // surgery. The planning conversation stays visible in scrollback.
-    await chat.send("Execute plan", [], "execute_plan", undefined, resolved)
+    await send("Execute plan", [], "execute_plan", undefined, resolved)
   }
 
   // Open the thread's plan doc in the file panel when a `/plan` turn parks it in

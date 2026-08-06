@@ -373,3 +373,95 @@ async def test_a_subagent_only_gets_video_when_it_opts_in(tmp_path):
 
     assert not _VIDEO_TOOLS & await offered(include_video=False)
     assert _VIDEO_TOOLS <= await offered(include_video=True)
+
+
+# --- image generation --------------------------------------------------------------
+
+_IMAGE_TOOLS = {"generate_image"}
+
+
+def _image_runtime():
+    from app.agents.image_runtime import ImageModel, ImageRuntime, profile_for
+
+    model = ImageModel("c1", "spark-head", "z-image-turbo", profile_for("z-image-turbo"))
+    return ImageRuntime(models=(model,), default=model)
+
+
+async def test_no_image_runtime_means_no_image_tool(tmp_path):
+    """The flag being off (or no box serving one) is absence, not a failing tool."""
+    steps = await _rosters(_row(**_ALL_ON), tmp_path, search="image generate picture")
+    for offered in steps:
+        assert not _IMAGE_TOOLS & set(offered)
+
+
+async def test_image_tool_is_deferred_and_discoverable(tmp_path):
+    """Built, hidden on the opening step, and revealed by one obvious search."""
+    steps = await _rosters(
+        _row(**_ALL_ON),
+        tmp_path,
+        image_runtime=_image_runtime(),
+        search="image",
+    )
+    assert not _IMAGE_TOOLS & set(steps[0]), "it must not sit in every prompt"
+    assert _IMAGE_TOOLS <= set(steps[1]), "searching 'image' has to find it"
+
+
+async def test_image_tool_is_dropped_in_ask_mode(tmp_path, monkeypatch):
+    """Generating spends GPU on a box and writes a file; /ask does neither."""
+    monkeypatch.setattr(tool_loading, "_MIN_DEFERRABLE", 1)
+    steps = await _rosters(
+        _row(**_ALL_ON),
+        tmp_path,
+        read_only=True,
+        image_runtime=_image_runtime(),
+        search="image",
+    )
+    for offered in steps:
+        assert not _IMAGE_TOOLS & set(offered)
+
+
+async def test_a_subagent_only_gets_image_when_it_opts_in(tmp_path):
+    """Inherited from the parent's resolution, but opt-in twice — see the video
+    sibling above. The parent holds the only session, so a subagent can never
+    resolve its own box; its own flag decides whether it may use the parent's."""
+    from app.agents.builder import _subagent_config
+    from app.db.models import Subagent as SubagentRow
+
+    async def offered(*, include_image: bool) -> set[str]:
+        steps: list[list[str]] = []
+
+        def respond(_messages, info: AgentInfo):
+            steps.append([t.name for t in info.function_tools])
+            if len(steps) == 1:
+                return ModelResponse(
+                    parts=[ToolCallPart("search_tools", {"queries": ["image"]})]
+                )
+            return ModelResponse(parts=[TextPart("ok")])
+
+        sub = SubagentRow(
+            name="art", instructions="make art", include_image=include_image
+        )
+        config = _subagent_config(
+            sub,
+            workspace_path=str(tmp_path),
+            workspace_name=None,
+            workspace_description=None,
+            custom_providers={},
+            subagents=[sub],
+            deep_defaults=None,
+            parent_model="openrouter:test/model",
+            web_search_provider=None,
+            tavily_api_key=None,
+            exa_api_key=None,
+            child_depth=1,
+            skill_runtime=None,
+            image_runtime=_image_runtime(),
+        )
+        agent = config["agent_factory"]({})
+        _, deps = build_deep_agent(sub, str(tmp_path))
+        with agent.override(model=FunctionModel(respond, profile=_NO_NATIVE)):
+            await agent.run("hi", deps=deps)
+        return {name for step in steps for name in step}
+
+    assert not _IMAGE_TOOLS & await offered(include_image=False)
+    assert _IMAGE_TOOLS <= await offered(include_image=True)

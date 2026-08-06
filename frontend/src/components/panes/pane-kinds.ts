@@ -47,6 +47,20 @@ export interface PaneParams {
   kind: PaneKind
   /** Chat: the open conversation, or null for a new one. */
   threadId?: string | null
+  /**
+   * Chat: an *ephemeral* pane, VS Code's preview tab.
+   *
+   * A single click in the sidebar opens a conversation here and the next single
+   * click re-addresses the same pane, so browsing a project's sessions costs one
+   * tab rather than one per row. Anything that says "I mean to keep this" —
+   * double-clicking the row or the tab, dragging the tab, sending a turn — clears
+   * the flag, and clearing it is all promotion is.
+   *
+   * Absent rather than `false` on a pane that stays: `updateParameters` deletes a
+   * key set to `undefined`, which keeps a promoted pane's params identical to one
+   * that was never a preview.
+   */
+  preview?: boolean
   /** Files: a workspace-relative path. */
   path?: string
   /** Preview: the URL it was last on. */

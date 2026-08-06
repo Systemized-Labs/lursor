@@ -163,6 +163,19 @@ export function ProjectRow({
               ) : null}
             </Link>
 
+            {/* Same hover-only treatment as the caret beside it. Starting a
+                conversation in a project you can see is the one thing the row
+                was still sending you through the context menu for. */}
+            <button
+              type="button"
+              onClick={onNewConversation}
+              aria-label={`New conversation in ${workspace.name}`}
+              title="New conversation"
+              className="flex size-5 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 outline-none ring-sidebar-ring hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 group-hover/project:opacity-100"
+            >
+              <Plus className="size-3" />
+            </button>
+
             {/* On hover only, and it keeps its slot when hidden: a caret that
                 appeared out of nowhere would shift the name under the cursor.
                 Which way it points is not the state indicator — whether the

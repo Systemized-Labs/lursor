@@ -5,6 +5,7 @@ import type { IDockviewPanelHeaderProps } from "dockview-react"
 import {
   PANE_KINDS,
   paneKindOf,
+  paneParamsOf,
   type PaneParams,
 } from "@/components/panes/pane-kinds"
 import { cn } from "@/lib/utils"
@@ -25,6 +26,10 @@ import { cn } from "@/lib/utils"
  * the right dock's strip used, and the detail is still derived from live pane state
  * rather than persisted.
  *
+ * A preview tab — the ephemeral one a single click in the sidebar re-uses — is
+ * italic, VS Code's own signal, and double-clicking it is one of the ways to keep
+ * it. See `PaneParams.preview`.
+ *
  * Chat is the exception, and takes the detail as its *label*. A conversation has a
  * name of its own — the one the header renames and the sidebar lists — so a strip
  * of tabs all reading "CHAT" is the one case where the kind is the least useful
@@ -32,9 +37,34 @@ import { cn } from "@/lib/utils"
  * they are "duplicates", and the icon still says what the pane is.
  */
 export function PaneTab(props: IDockviewPanelHeaderProps) {
-  const params = props.params as PaneParams | undefined
-  const kind = params?.kind
+  const kind = (props.params as PaneParams | undefined)?.kind
   const def = kind ? PANE_KINDS[kind] : undefined
+
+  /**
+   * Whether this is a preview pane.
+   *
+   * Two sources, and both are needed. `props.params` is right at mount but goes
+   * stale: promotion re-addresses a pane that is already on screen, and dockview
+   * re-renders the tab with the params it was constructed with. The panel's own
+   * `params` is the live value — the one `use-pane-layout` matches on.
+   *
+   * `props.api.getParameters()` is neither, and must not be used: it holds a copy of
+   * the last object passed to `updateParameters`, so it reads `{}` before the first
+   * one and `{ preview: undefined }` after a promotion. See the note on `Pane` in
+   * `pane-host`, which lost a pane's whole address to it.
+   */
+  const [preview, setPreview] = useState(
+    () => Boolean((props.params as PaneParams | undefined)?.preview)
+  )
+  useEffect(() => {
+    const read = () => {
+      const panel = props.containerApi.getPanel(props.api.id)
+      setPreview(Boolean(panel && paneParamsOf(panel)?.preview))
+    }
+    read()
+    const sub = props.api.onDidParametersChange(read)
+    return () => sub.dispose()
+  }, [props.api, props.containerApi])
 
   const [active, setActive] = useState(() => props.api.isActive)
   useEffect(() => {
@@ -83,6 +113,9 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
 
   return (
     <div
+      // Double-clicking a preview tab keeps it, as it does in VS Code. Dockview binds
+      // no `dblclick` of its own on a tab, so nothing is being overridden here.
+      onDoubleClick={() => props.api.updateParameters({ preview: undefined })}
       className={cn(
         "group/tab relative flex h-full min-w-0 items-center gap-1.5 px-2.5",
         active
@@ -97,7 +130,9 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
           "min-w-0 truncate text-[11px] font-medium uppercase tracking-[0.08em]",
           // A kind's name is two syllables and can size to content; a conversation's
           // is a sentence, and is held to a share of the strip.
-          named && "max-w-[10rem]"
+          named && "max-w-[10rem]",
+          // Italic says the tab is on loan — the one the next click will re-use.
+          preview && "italic"
         )}
       >
         {label}

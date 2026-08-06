@@ -189,6 +189,38 @@ function gridGroupId(api: DockviewApi, mru: string[]): string | undefined {
   return inGrid ? inGrid.api.group.api.id : api.addGroup().api.id
 }
 
+/**
+ * Where a *new conversation* goes: the zone already holding chats.
+ *
+ * Opening a conversation adds a tab now rather than re-addressing whichever chat
+ * pane happened to be in focus, and a tab that lands in the zone the user last
+ * touched — a terminal's strip, a diff's — would scatter a project's sessions
+ * across the layout. Conversations belong beside conversations, so the strip stays
+ * readable as a list of what is open.
+ *
+ * The active chat first, then the most recently used, then the leftmost: the rule
+ * every other targeting decision in this file follows. Undefined when there is no
+ * chat pane to join, or when the only one is parked in the bottom row — a
+ * conversation is not a thing to tab in behind a shell and collapse out of sight —
+ * and {@link gridGroupId} answers instead.
+ */
+function chatGroupId(api: DockviewApi, mru: string[]): string | undefined {
+  const active = api.activePanel
+  const byId = new Map(api.panels.map((panel) => [panel.api.id, panel]))
+  const chat =
+    (active && paneKindOf(active) === "chat" ? active : undefined) ??
+    mru
+      .map((id) => byId.get(id))
+      .find(
+        (panel): panel is IDockviewPanel =>
+          panel !== undefined && paneKindOf(panel) === "chat"
+      ) ??
+    api.panels.find((panel) => paneKindOf(panel) === "chat")
+  if (!chat) return undefined
+  const groupId = chat.api.group.api.id
+  return groupId === bottomPanelId(api) ? undefined : groupId
+}
+
 export interface PaneLayout {
   /** Set once dockview is ready. */
   api: DockviewApi | null
@@ -226,13 +258,32 @@ export interface PaneLayout {
    */
   ensurePane: (kind: PaneKind) => void
   /**
-   * Point a chat pane at `threadId` and focus it. `null` means a new conversation.
+   * Open `threadId` as a tab and focus it. `null` means a new conversation.
    *
-   * The targeting rule is `ensurePane`'s, for the same reason: opening a
-   * conversation displaces whatever that pane held, so it has to be the chat you
-   * are looking at and not one you forgot was open.
+   * This used to *displace* a chat pane — the active one, else the most recently
+   * used — which meant browsing the sidebar destroyed whatever you were reading and
+   * two conversations could only be put side by side by adding a pane from the `+`
+   * menu first. Opening a conversation adds a tab instead, and VS Code's preview
+   * rule is what keeps that from becoming thirty of them:
+   *
+   * - `"preview"` re-uses a single ephemeral pane, so a walk down a project's
+   *   sessions costs one tab. See `PaneParams.preview`.
+   * - `"keep"` opens a tab that stays, and promotes the preview pane when it is
+   *   already showing this conversation. That is the sidebar's double-click: its
+   *   first click has already previewed the row.
+   * - No mode is an *arrival* — a `?c=` on load, an artifact's link. It focuses a
+   *   pane already on the conversation without touching what kind of tab it is, and
+   *   otherwise opens one that stays. Promotion has to be asked for, or a reload
+   *   would quietly pin whatever the preview pane came back holding.
+   *
+   * A pane already on the thread — preview or not — is always the answer, so no
+   * conversation is ever open twice. The match includes `null`, which is what stops
+   * repeated "new conversation" clicks from stacking empty chats.
    */
-  openThread: (threadId: string | null) => void
+  openThread: (
+    threadId: string | null,
+    opts?: { mode?: "preview" | "keep" }
+  ) => void
 }
 
 /**
@@ -380,6 +431,18 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
         }
         mru.current = mru.current.filter((x) => x !== panel.api.id)
       }),
+      // Dragging a preview tab somewhere keeps it. Arranging a pane is as clear a
+      // "I am using this" as typing in it, and a tab that vanished from the position
+      // the user just chose for it would be the worst of the promotion rules.
+      //
+      // Not during a `load`: swapping workspaces moves panels too, and those moves
+      // are `fromJSON` rebuilding the layout rather than anyone's drag.
+      api.onDidMovePanel(({ panel }) => {
+        if (loading.current) return
+        if (paneParamsOf(panel)?.preview) {
+          panel.api.updateParameters({ preview: undefined })
+        }
+      }),
     ]
     return () => subs.forEach((sub) => sub.dispose())
   }, [api, workspaceId, write])
@@ -475,39 +538,46 @@ export function usePaneLayout(workspaceId?: string): PaneLayout {
   )
 
   const openThread = useCallback(
-    (threadId: string | null) => {
+    (threadId: string | null, opts?: { mode?: "preview" | "keep" }) => {
       if (!api) return
+      const mode = opts?.mode
 
-      // A pane already on this thread is the answer — focus it rather than
-      // re-addressing another one and ending up with the conversation open twice.
-      const existing = threadId
-        ? api.panels.find((panel) => {
-            const params = paneParamsOf(panel)
-            return params?.kind === "chat" && params.threadId === threadId
-          })
-        : undefined
+      // A pane already on this thread is the answer — focus it rather than opening
+      // the conversation a second time. `?? null` so the empty new conversation
+      // matches too: clicking `+` twice should land you back in the chat you have
+      // not typed in yet, not stack a second one beside it.
+      const existing = api.panels.find((panel) => {
+        const params = paneParamsOf(panel)
+        return params?.kind === "chat" && (params.threadId ?? null) === threadId
+      })
       if (existing) {
+        // "Keep this" arriving for a pane that is already showing it — the sidebar's
+        // double click, whose first click previewed the row a moment ago.
+        if (mode === "keep") existing.api.updateParameters({ preview: undefined })
         revealPanel(api, existing)
         return
       }
 
-      const active = api.activePanel
-      const byId = new Map(api.panels.map((p) => [p.api.id, p]))
-      const target =
-        (active && paneKindOf(active) === "chat" ? active : undefined) ??
-        mru.current
-          .map((id) => byId.get(id))
-          .find(
-            (p): p is IDockviewPanel => p !== undefined && paneKindOf(p) === "chat"
-          ) ??
-        api.panels.find((p) => paneKindOf(p) === "chat")
-
-      if (target) {
-        target.api.updateParameters({ kind: "chat", threadId })
-        revealPanel(api, target)
-        return
+      if (mode === "preview") {
+        // At most one preview pane, so browsing costs one tab however far you go.
+        // Kept wherever the user left it: re-addressing in place is the whole point,
+        // and moving the pane would make a walk down the list jump around the layout.
+        const ephemeral = api.panels.find(
+          (panel) => paneParamsOf(panel)?.preview && paneKindOf(panel) === "chat"
+        )
+        if (ephemeral) {
+          ephemeral.api.updateParameters({ kind: "chat", threadId, preview: true })
+          revealPanel(api, ephemeral)
+          return
+        }
       }
-      openPane("chat", { params: { threadId } })
+
+      openPane("chat", {
+        // `preview: undefined` rather than `false`, so a pane that stays carries no
+        // trace of the flag — see `PaneParams.preview`.
+        params: { threadId, preview: mode === "preview" || undefined },
+        groupId: chatGroupId(api, mru.current),
+      })
     },
     [api, openPane]
   )

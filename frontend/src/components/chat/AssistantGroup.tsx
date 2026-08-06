@@ -140,7 +140,7 @@ export const AssistantGroup = memo(function AssistantGroup({
   if (isStreaming && !bodyShown) return null
 
   return (
-    <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+    <div className="group">
       <div className="min-w-0 text-sm text-foreground">
         {ids.map((id, i) => (
           <AssistantSegment key={id} id={id} first={i === 0} />

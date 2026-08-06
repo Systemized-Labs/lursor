@@ -333,13 +333,14 @@ async def non_chat_served_names(conn: LaiosConnection) -> set[str]:
     return excluded
 
 
-class VideoServedModel(NamedTuple):
-    """One video-capable model a box is actually serving.
+class ServedModel(NamedTuple):
+    """One model with a given capability that a box is actually serving.
 
     ``served_name`` is what the gateway routes on. ``profile`` is the recipe's
-    ``video_profile`` block when the operator declared one (see
-    ``docs/upstream/laios-video-profile.patch``) — the only thing that says *how* to
-    ask this model for a clip. ``model_id``/``recipe_id`` are identity, used to
+    declaration block for that capability when the operator wrote one — for video
+    that is ``video_profile`` (see ``docs/upstream/laios-video-profile.patch``), the
+    only thing that says *how* to ask this model for a clip. Images have no such
+    block and always get ``None``. ``model_id``/``recipe_id`` are identity, used to
     recognise a model whose profile is missing.
     """
 
@@ -349,19 +350,29 @@ class VideoServedModel(NamedTuple):
     profile: dict[str, Any] | None
 
 
-async def video_served_models(conn: LaiosConnection) -> list[VideoServedModel]:
-    """Video-capable models this box is serving, with their request profiles.
+# The name this was born as, kept so ``agents/video_runtime.py`` reads in its own
+# terms. Images made the type generic; video is still its only profiled user.
+VideoServedModel = ServedModel
+
+
+async def _served_with_capability(
+    conn: LaiosConnection, capability: str, *, profile_key: str | None = None
+) -> list[ServedModel]:
+    """Models this box is serving that declare ``capability``.
 
     The sibling of :func:`non_chat_served_names`, over the same control-plane
     inventory join, and deliberately not the same question: that one asks "what must
     the chat picker hide" and answers by the *absence* of ``chat``; this asks "is
-    there something here we can drive" and answers by the *presence* of ``video``
+    there something here we can drive" and answers by the *presence* of a capability
     plus a running instance.
 
     **Fails closed**, which is the opposite of its sibling and is the point. The
-    picker hides on a guess and so must guess generously; a video tool built for a
-    box we cannot classify would 400 on every call, and an absent tool is strictly
-    better than one that always fails.
+    picker hides on a guess and so must guess generously; a generation tool built
+    for a box we cannot even reach would fail on every call, and an absent tool is
+    strictly better than one that always fails. What each caller then *does* with an
+    unprofiled model is its own policy — video refuses to drive one and images fall
+    back to conservative defaults — and that divergence lives in the runtimes, not
+    here.
 
     Sorted by served name so the caller's choice among several is stable.
     """
@@ -377,12 +388,12 @@ async def video_served_models(conn: LaiosConnection) -> list[VideoServedModel]:
     if not isinstance(inventory, list):
         return []
 
-    served: list[VideoServedModel] = []
+    served: list[ServedModel] = []
     for model in inventory:
         if not isinstance(model, dict):
             continue
         capabilities = model.get("capabilities")
-        if not isinstance(capabilities, list) or "video" not in capabilities:
+        if not isinstance(capabilities, list) or capability not in capabilities:
             continue
         # Only a *serving* model can take a job. ``running_instance`` is present
         # for any active instance (the daemon counts pending/pulling/starting as
@@ -395,9 +406,9 @@ async def video_served_models(conn: LaiosConnection) -> list[VideoServedModel]:
         name = instance.get("served_name") or model.get("served_model_name")
         if not isinstance(name, str) or not name:
             continue
-        profile = model.get("video_profile")
+        profile = model.get(profile_key) if profile_key else None
         served.append(
-            VideoServedModel(
+            ServedModel(
                 served_name=name,
                 model_id=str(model.get("model_id") or ""),
                 recipe_id=str(model.get("recipe_id") or model.get("id") or ""),
@@ -405,6 +416,28 @@ async def video_served_models(conn: LaiosConnection) -> list[VideoServedModel]:
             )
         )
     return sorted(served, key=lambda m: m.served_name)
+
+
+async def video_served_models(conn: LaiosConnection) -> list[ServedModel]:
+    """Video-capable models this box is serving, with their request profiles.
+
+    The profile is what ``agents/video_runtime.py`` needs to know *how* to ask: the
+    request surface is per-model, so an undeclared model is one it will refuse to
+    drive.
+    """
+    return await _served_with_capability(conn, "video", profile_key="video_profile")
+
+
+async def image_served_models(conn: LaiosConnection) -> list[ServedModel]:
+    """Image-capable models this box is serving.
+
+    No profile key, because there is no ``image_profile`` to read: every image
+    recipe speaks the same ``/v1/images/generations`` surface and takes the same
+    fields, so the per-model knowledge is only about sensible *values*. That table
+    lives in ``agents/image_runtime.py`` (and its frontend twin), keyed on the
+    served name this returns.
+    """
+    return await _served_with_capability(conn, "image")
 
 
 # --- Connection CRUD ------------------------------------------------------------

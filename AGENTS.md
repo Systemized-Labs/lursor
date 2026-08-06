@@ -563,10 +563,69 @@ purpose: the chat picker **fails open** (a box we cannot classify shows all its
 models rather than none), the video tools **fail closed** (no classification means
 no tools, because a tool that 400s on every call is worse than an absent one).
 
+### Two media sources, chosen in Settings
+
+Images and clips are generated on **one of two sources**, picked app-wide in
+Settings → Image & video and stored on `AppConfig.{image,video}_{source,model}`:
+
+* **`laios`** — a connected box, through its inference gateway. Free at the point
+  of use, seconds for an image and minutes for a clip, and the source that every
+  install used before this setting existed (NULL means `laios`, so an upgrade
+  changes nothing).
+* **`openrouter`** — `POST /api/v1/images` (synchronous, base64 + an exact cost)
+  and `POST /api/v1/videos` (202 + polling). `GET /images/models` and
+  `/videos/models` are capability catalogues, which is what a hosted model has
+  instead of a laios recipe's `video_profile` block. All of it lives in
+  `app/media/openrouter.py`; `app/media/refs.py` owns the string grammar
+  (`openrouter:{slug}`, `laios:{cid}:{served}`), which deliberately mirrors chat's
+  `openrouter:` / `custom:` convention.
+
+**The source never falls back**, and this is the invariant the feature rests on.
+If the configured one cannot serve, `resolve_image_target` / `resolve_video_target`
+return `None` plus a sentence naming the source — they never quietly use the other.
+Crossing would be silent in both directions and wrong in both: onto OpenRouter it
+spends money nobody authorised, onto a box it swaps a chosen model for a different
+one. A **pinned model that has gone missing fails the same way**; "Auto" is the
+setting for anyone who wants the resolver to choose. Every "no" therefore ships
+with a reason, and the same string is shown by the Settings card, the Image/Video
+pages and the agent editor's capability hint — one state, one sentence.
+
+Consequences worth knowing before touching any of this:
+
+* **Routes are keyed on a source ref, not a connection id** (`/media/images`,
+  `/media/videos`). An OpenRouter generation has no connection, run ids were
+  already uuids, and content URLs now carry no source at all. `?source=` filters
+  the history; omitting it returns everything, on purpose — switching sources must
+  not empty the gallery.
+* **`connection_id` is `""`, not NULL, for a non-laios row.** It was never a real
+  foreign key, and SQLite cannot relax NOT NULL without rebuilding the table.
+* **A hosted clip is downloaded eagerly**, on the poll that first sees
+  `completed`, because `unsigned_urls` expire. That is the opposite of the laios
+  path's deliberate laziness, and the reason is that a clip somebody paid for must
+  not become unreachable because they closed the tab. `content_url` stays on the
+  row as the retry handle.
+* **OpenRouter has no video cancel.** `cancel_video` marks the row locally and
+  says plainly that the render continues and will still be billed.
+* **A catalogue fetch that fails reuses the last good one** (the `pricing.py`
+  shape). With no fallback by policy, a transient blip that emptied the catalogue
+  would read as "OpenRouter cannot generate" and stop generation entirely.
+* **`_GATEWAY_BODY_LIMIT` is a fact about one axum server**, not about video, so
+  the keyframe budget is chosen per source (`video_tools._body_limit`).
+* **The `image_tools` lock is GPU contention, not rate limiting** — one box cannot
+  run three renders at Qwen's 58.5 GB peak. It is skipped for OpenRouter, where
+  serialising would triple the latency of "give me three variations".
+* **Pricing is uneven, and that is the API's shape.** Video models publish
+  `pricing_skus`, so a per-second floor is derivable and shown up front. Image
+  models publish **no** catalogue price — it sits behind a per-model `/endpoints`
+  call and is quoted per output *token* — so the only honest number is the mean of
+  what past runs actually cost (`app/media/history.py`), and where there is none,
+  nothing is shown rather than `$0.00`.
+
 ### Video generation
 
-`api/videos.py` proxies a laios gateway's `/v1/videos` job API: submit, poll,
-cancel, download-once into the content-addressed media store. It **does not invent a
+`api/videos.py` drives the job API of whichever source is configured: submit,
+poll, cancel, download-once into the content-addressed media store. The rest of
+this section is the **laios** half; the hosted half is above. It **does not invent a
 request shape** — the body is relayed as sent, so a new engine knob works here the
 day it works there. MiniMax-H3 is the only `capabilities: [video]` recipe today:
 ~44 s per denoise step (8 steps ≈ 6 min, 50 ≈ 35), `short_edge` fixed at 768,
@@ -595,8 +654,11 @@ Two measured numbers that are not in any doc and are invisible until they bite:
    17n+5 at 24 fps, so `duration_seconds=4` returns a 4.5 s clip. Every fade/concat
    calculation must come from `ffprobe`, never from what was submitted.
 
-**Which model, and how to ask it.** `capabilities: [video]` says a model generates
-video; it says nothing about the request shape, and the shape is per-model rather
+**Which model, and how to ask it** — on a box. (None of this applies to
+OpenRouter, and the difference is not that the strictness was relaxed: its
+catalogue *is* the declaration, so there is nothing left to classify and one
+builder drives every model behind it.) `capabilities: [video]` says a model
+generates video; it says nothing about the request shape, and the shape is per-model rather
 than per-engine — H3 takes `task`/`target`/`conditions`, the generic SGLang video API
 takes `seconds`/`size`/`input_reference`. Guessing wrong does **not** error: SGLang's
 base `lower_video_request_kwargs` is `del request; return kwargs`, so a non-H3 model
@@ -632,6 +694,11 @@ a resolved `VideoRuntime`. A subagent inherits the parent's runtime — it has n
 session to resolve one with — but only when its own `include_video` is on, so a
 video-enabled agent does not silently hand every specialist a GPU.
 
+An agent with both capabilities can also draw an opening still with `generate_image`
+and hand it to `generate_video` as a `first_frame` — the image tool's docstring says
+so, but only when video is actually available, and it asks for JPEG because a
+photographic 1024px PNG exceeds the gateway's inlined-keyframe budget.
+
 Everything ffmpeg — trim, concat, xfade, captions — is the `video-production` skill
 instead, because a tool is only justified when the work needs a credential, a DB row
 or app state, and ffmpeg needs none of the three. **ffmpeg is a real dependency**
@@ -646,7 +713,8 @@ at `queued` forever while the box finishes the render — a silent stall.
 
 ### Image generation
 
-`api/images.py` + `pages/image/` drive the gateway's `/v1/images` surface. It reads
+`api/images.py` + `pages/image/` drive the image surface of whichever source is
+configured (see above); the rest of this section is the **laios** half. It reads
 like the video page and is architecturally the opposite, because **the image API is
 synchronous**: one POST returns the pixels, so there is no job id to bind, nothing to
 poll and nothing to cancel. Two `capabilities: [image]` recipes today, and they are
@@ -665,7 +733,8 @@ minutes of someone's GPU to any reload. The cost of that choice is orphans: a
 read. That map — not a timeout heuristic — is what makes the repair exact, and it is
 why the backend being single-process is load-bearing here.
 
-Two fields are **not** relayed, against the video module's strict pass-through stance:
+Two fields are **not** relayed on the laios path, against the video module's strict
+pass-through stance (and are absent from the OpenRouter body, which rejects them):
 `response_format` is forced to `b64_json` (the engine's `url` default returns a
 relative `/v1/images/{id}/content` whose bytes live in the container and die with it,
 so a durable history is impossible on that path), and `n` is pinned to 1 (one row,
@@ -689,10 +758,77 @@ time estimate rather than a confident wrong one. Switching model deliberately re
 steps and guidance: 9 steps is right for a distilled turbo checkpoint and undercooked
 on Qwen, so a number that is right for one is wrong for the other.
 
-No agent tools and no capability probe — this is an operator surface, so there is no
-`include_image` toggle to gate. The page is in the ⋯ menu rather than pinned to the
-rail beside Video, by Video's own argument for being pinned: you leave a clip and come
-back to it, while an image finishes while you watch.
+That table is also why the backend can have a profile table of its own
+(`agents/image_runtime.py`) without a recipe declaration to read: the two halves
+answer different questions — the frontend's drives sliders, the backend's drives
+validation ranges and a tool docstring — and the only field where drift produces a
+wrong *request* rather than a worse estimate is `guidance`, which is pinned by test
+on both sides.
+
+The page stays in the ⋯ menu rather than pinned to the rail beside Video, by Video's
+own argument for being pinned: you leave a clip and come back to it, while an image
+finishes while you watch.
+
+Agents reach it through one deferred tool (`agents/image_tools.py`): `generate_image`,
+which submits, **waits**, copies the file into `<workspace>/.agents/image/gen/` and
+returns the path. That is the deliberate opposite of `generate_video`, and the reason
+is latency, not taste — 6.5s (or worst case ~116s) is inside the range where waiting
+is simply the better interface, so there is no job id for the model to carry, no poll
+tool and no half-finished state to explain. Gated on `Agent.include_image` (default
+off) plus a resolved `ImageRuntime`, with the same subagent double opt-in as video.
+There is no `cancel_image`: neither source offers one on its image API, so a
+submitted generation always runs to completion. There is no `view_image` either — every agent
+already has one.
+
+**The tool is not enough on its own, and this cost a round trip to learn.** An agent
+with `include_image` on, `generate_image` sitting in its roster next to `execute`, and
+a box serving z-image was asked for an image — and ran `curl` against
+`image.pollinations.ai` instead. The prompt left the machine for a third party, the
+user's own GPU stayed idle, and nothing landed in the media store, the Image pane or
+Artifacts. A tool description does not beat a model's prior about how a job is
+normally done, especially under a software-engineering persona where `execute` is the
+reflex. So `IMAGE_GENERATION_DIRECTIVE` (`agents/builder.py`) states the preference
+and **names the wrong path explicitly** — "use X" is much weaker than "use X, never
+Y" — closing both the external-API route and the draw-it-in-code route, while leaving
+charts-from-data alone. It is gated on the resolved runtime, not on the flag: telling
+an agent to use a tool it does not have is the same class of bug. This is the third
+directive of its kind, after `DEV_SERVER_DIRECTIVE` and `BROWSER_QA_DIRECTIVE`; any
+future capability a model won't reach for unaided needs one too.
+
+Generated media is also **browsable in the file tree**, which needed a change to
+`api/files.py`: `.agents/` is hidden wholesale, and the old plan-shaped exception
+only understood one subtree. `_VISIBLE_AGENT_SUBDIRS` now lists
+`.agents/{plan,image/gen,video/gen}`, and `_tree_hidden` un-hides *ancestors* of a
+visible subtree as well as its contents — without that the tree, which is walked one
+level at a time, never asks about `.agents/image/gen` because `.agents/image` was
+hidden, and `.agents` renders as an expandable folder containing nothing. Only the
+`gen/` folders: `.agents/video/frames/` is contact-sheet stills the agent
+regenerates at will, and each folder's `.gitignore` is plumbing.
+
+Three consequences of waiting, each handled rather than hoped away. The wait is capped
+at 240s and the render **is not cancelled** when it expires, so the message says so; a
+timed-out run is remembered and delivered by the next call, because with no run id
+there would otherwise be no way back to an image the agent paid for. And calls to one
+box are serialised behind a per-connection lock: pydantic-ai runs the tool calls in one
+model response concurrently, "three variations" is the obvious prompt, and two renders
+on one GPU is slower for both and at Qwen's 58.5 GB peak can be fatal for both. Queue
+time is deliberately not charged against the wait budget.
+
+`agents/image_runtime.py` **fails open** where `video_runtime.py` fails closed, and the
+asymmetry is the most load-bearing decision here. Video refuses to drive an undeclared
+model because the request shape is per-model and guessing returns HTTP 200 with a
+silently wrong clip; images share one request surface, so an unrecognised model still
+gets the tool with conservative defaults and no time estimate. Video's worst case was a
+wrong render, this one's is a mediocre default. Both still fail closed on
+*reachability* — an unreachable control plane means no tool either way. The runtime
+also resolves *every* serving model rather than one, with the fastest as the default
+and `model=` to override, because z-image and qwen differ ~20x in wall clock and the
+choice between them is a real tradeoff the agent is better placed to make.
+
+`api/laios.py`'s inventory join is shared: `_served_with_capability(conn, capability,
+profile_key=...)` with `video_served_models` / `image_served_models` as wrappers. Of
+the ~50 lines, three differ — the `running_instance.status == "running"` check in
+particular is a subtlety worth getting right only once.
 
 ### The pane layer
 
@@ -996,28 +1132,31 @@ Each of these has already cost a debugging session.
 7. **Declare literal routes before parameterized ones** (`/active-runs` before
    `/{thread_id}`).
 8. **`GET /threads/{id}` must stay unfiltered.**
-9. **A pane's DOM node must never be reparented.** `renderer: 'always'` is what
+9. **The media source never falls back.** `resolve_image_target` /
+   `resolve_video_target` resolve within the configured source or return `None`
+   plus a reason — never the other source. See Two media sources.
+10. **A pane's DOM node must never be reparented.** `renderer: 'always'` is what
    guarantees it; a template applied without `reuseExistingPanels`, or built as a
    constant that forgets to name an open pane, destroys the panel instead — and
    with it a live PTY, a scrolled iframe and an unsaved buffer. See The pane layer.
-10. **Nothing outside the pane layer may address a pane through the URL.** `?c=` is
+11. **Nothing outside the pane layer may address a pane through the URL.** `?c=` is
    written *from* the focused chat pane; a sidebar row parks a request on
    `lib/open-thread.ts` instead. Reading the URL to position a pane happens in
    exactly one place — once per workspace load, to honour a bookmark.
-11. **Unhandled exceptions need hand-set CORS headers.** Starlette's
+12. **Unhandled exceptions need hand-set CORS headers.** Starlette's
    `ServerErrorMiddleware` sits *outside* `CORSMiddleware`, so a bare 500 carries
    no `access-control-allow-origin` and the browser reports `TypeError: Failed to
    fetch` — every server bug reads as the backend being down. `main.py` has an
    explicit handler; don't remove it.
-12. **Never patch a vendored dependency.** Compose, subclass, or wrap with a
+13. **Never patch a vendored dependency.** Compose, subclass, or wrap with a
    `PrepareTools` / `AbstractCapability`. When a fix belongs upstream, prepare it
    locally as a patch and hand it over — this repo does not open PRs against
    third-party projects.
-13. **Local models are a first-class constraint.** GLM/DeepSeek via vLLM ignore
+14. **Local models are a first-class constraint.** GLM/DeepSeek via vLLM ignore
     tool enums, need the todo board to scaffold, and break on native
     `WebSearchTool` under `OpenAIChatModel`. Anything that narrows the toolset
     should be tested against them, not just against a frontier cloud model.
-14. **Tools are filtered by their real names, and `web_search` is not one.** The
+15. **Tools are filtered by their real names, and `web_search` is not one.** The
     local search tools are `duckduckgo_search` / `tavily_search` / `exa_search`;
     `web_search` only ever names the provider-*native* tool, which is not a
     function tool and never reaches a `PrepareTools` filter. Dropping a local
@@ -1026,14 +1165,14 @@ Each of these has already cost a debugging session.
     turn with web search on a local model. A filter that allowlists by name needs
     a test that every entry is a name some build really registers; a subset
     assertion passes a dead entry silently (`tests/test_tool_loading.py`).
-15. **Auth middleware is registered *before* CORS, which makes it inner.**
+16. **Auth middleware is registered *before* CORS, which makes it inner.**
     `add_middleware` inserts at the front of the list and the stack is built in
     reverse, so the middleware added **last** is outermost. Registering auth second
     would put it outside `CORSMiddleware`, strip `access-control-allow-origin` from
     every 401, and turn each one into `TypeError: Failed to fetch` — invariant 11
     again, one layer up. `tests/test_auth.py` asserts the header on a 401 precisely
     so a reorder fails loudly.
-16. **A new WebSocket route is authenticated for free; a new *client* is not.**
+17. **A new WebSocket route is authenticated for free; a new *client* is not.**
     Browsers can't set headers on a WebSocket, so the token rides as a
     `lursor.bearer.<token>` subprotocol and `TokenAuthMiddleware` wraps `send` to
     echo it back on accept — which is why the four route handlers call a bare
@@ -1041,13 +1180,13 @@ Each of these has already cost a debugging session.
     selects its own subprotocol will fight the wrapper. Any new client must go
     through `connectWs()` in `api/client.ts`, which is also the only place the ws/wss
     scheme is derived — four call sites used to carry their own copy.
-17. **Never persist a *reachable* preview URL, only a canonical one.** A forwarded
+18. **Never persist a *reachable* preview URL, only a canonical one.** A forwarded
     port is chosen per session, so a remembered `127.0.0.1:58608` points at nothing
     next launch — and a URL saved on a phone used to carry that phone's view of the
     network back to the desktop. `lib/preview-reach.ts` keeps the two apart:
     canonical for storage, comparison and display; reachable only for the iframe and
     `openExternal`.
-18. **A backend cannot self-update from inside its own systemd cgroup.**
+19. **A backend cannot self-update from inside its own systemd cgroup.**
     `render_systemd_unit` sets `KillMode=control-group` so a restart can't orphan the
     dev servers an agent run spawned — which also means every descendant of the
     backend dies with it. `start_new_session=True` does *not* save you: it leaves the
@@ -1057,13 +1196,13 @@ Each of these has already cost a debugging session.
     `app/updater.py` hands the job to `systemd-run --user` for its own cgroup, and
     falls back to a detached spawn that *says so in the log* — because a truncated log
     and a crashed update look identical otherwise. launchd has no equivalent trap.
-19. **Update state is polled, never pushed.** The obvious move for "tell the UI an
+20. **Update state is polled, never pushed.** The obvious move for "tell the UI an
     update exists" is a new AG-UI event, and it is the wrong one: the stream is
     thread-scoped, so an update would only be announced to someone mid-conversation,
     and it would owe the dual-transport wiring in invariant 1 for nothing. `/api/update/*`
     plus Electron IPC is the whole mechanism. This is invariant 1's own advice —
     "the cheapest correct move is to add no new event type at all".
-20. **All writable state lives under one root, `config.DEFAULT_DATA_ROOT`.** There is
+21. **All writable state lives under one root, `config.DEFAULT_DATA_ROOT`.** There is
     no "dev location" any more. Until 0.1.10 the database alone defaulted to
     `BACKEND_DIR/lursor.db` while `workspaces_dir`, `skills_dir` and `media_dir`
     already used `~/.lursor` — so the installed app and `bun run electron:dev` read

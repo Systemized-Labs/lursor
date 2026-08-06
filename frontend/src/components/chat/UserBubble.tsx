@@ -57,7 +57,7 @@ function AgentBadge({ name }: { name?: string }) {
 export function UserBubble({ message }: { message: ChatMessage }) {
   const hasAttachments = message.attachments && message.attachments.length > 0
   return (
-    <div className="group animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+    <div className="group">
       <div className="rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-[0.9375rem] leading-relaxed text-foreground">
         {(message.kind && message.kind !== "chat") || message.agentName ? (
           <div className="mb-1.5 flex flex-wrap items-center gap-1.5">

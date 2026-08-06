@@ -33,8 +33,8 @@ LEGACY_AGENTS = [
 _INSERT = (
     "INSERT INTO agents (id, created_at, updated_at, name, description,"
     " instructions, include_todo, include_subagents, include_skills,"
-    " include_memory, include_plan, web_search, browser_qa, thinking,"
-    " tool_choice, extra_config"
+    " include_memory, include_plan, web_search, browser_qa, include_image,"
+    " thinking, tool_choice, extra_config"
 )
 
 
@@ -52,7 +52,7 @@ async def _pre_video_db(path: Path) -> None:
     con.executemany(
         f"{_INSERT})"
         " VALUES (?, datetime('now'), datetime('now'), ?, '', '', ?, ?, ?, ?, ?, ?,"
-        " ?, 'off', 'auto', '{}')",
+        " ?, 0, 'off', 'auto', '{}')",
         LEGACY_AGENTS,
     )
     con.commit()
@@ -118,7 +118,7 @@ async def test_migration_is_a_no_op_on_a_fresh_schema(tmp_path):
     con.execute(
         f"{_INSERT}, include_video)"
         " VALUES ('a1', datetime('now'), datetime('now'), 'New', '', '', 1, 0, 1, 0,"
-        " 0, 0, 1, 'off', 'auto', '{}', 1)"
+        " 0, 0, 1, 0, 'off', 'auto', '{}', 1)"
     )
     con.commit()
     con.close()

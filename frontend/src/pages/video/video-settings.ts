@@ -1,4 +1,8 @@
-import type { LaiosVideoInput, LaiosVideoJob } from "@/api/types"
+import type {
+  LaiosVideoInput,
+  LaiosVideoJob,
+  MediaVideoModelOption,
+} from "@/api/types"
 
 // Moved to a shared module when the image page arrived — both generation pages
 // stamp runs the same way. Re-exported so this module stays the one import for
@@ -219,7 +223,72 @@ export function toVideoInput(
   }
 }
 
-/** The settings a run was submitted with, for its meta line. */
+/**
+ * The settings a run was submitted with, for its meta line.
+ *
+ * Branches on the source. The two bodies share almost no fields, and reading a
+ * hosted one through the laios lens does not just look wrong — the defaults
+ * would fill in `1344 × 768`, `4s` and `8 steps` for a request that carried none
+ * of them, so the card would state three things that never happened in the same
+ * voice it states measured ones.
+ */
 export function jobSummary(job: LaiosVideoJob): string {
+  if (job.provider === "openrouter") return summarizeHosted(job.request)
   return summarize(settingsFromRequest(job.request))
+}
+
+/** `"16:9 · 8s · 720p"` from a hosted body — only the fields it really carried. */
+export function summarizeHosted(request: Record<string, unknown>): string {
+  const parts: string[] = []
+  if (typeof request.aspect_ratio === "string") parts.push(request.aspect_ratio)
+  if (typeof request.duration === "number")
+    parts.push(`${formatSeconds(request.duration)}s`)
+  if (typeof request.size === "string") parts.push(request.size)
+  if (typeof request.resolution === "string") parts.push(request.resolution)
+  if (request.generate_audio === false) parts.push("no audio")
+  if (typeof request.seed === "number") parts.push(`seed ${request.seed}`)
+  return parts.join(" · ") || "model defaults"
+}
+
+/**
+ * The request body a hosted model takes.
+ *
+ * Flat where laios nests: a `duration` and an `aspect_ratio`/`resolution`
+ * instead of a `target` block, and no `num_inference_steps` at all — there is no
+ * denoise loop to count. Every field is gated on the catalogue listing it, since
+ * a hosted rejection costs a round trip and, on some models, a minimum charge.
+ */
+export function toHostedVideoInput(
+  option: MediaVideoModelOption,
+  prompt: string,
+  settings: VideoSettings
+): LaiosVideoInput {
+  return {
+    model: option.id,
+    prompt,
+    task: "t2va",
+    ...(option.aspect_ratios.includes(settings.aspectRatio)
+      ? { aspect_ratio: settings.aspectRatio }
+      : {}),
+    ...(option.durations.length ? { duration: settings.durationSeconds } : {}),
+    ...(option.resolutions.length ? { resolution: option.resolutions[0] } : {}),
+    ...(option.seed && settings.seed !== null ? { seed: settings.seed } : {}),
+  } as LaiosVideoInput
+}
+
+/**
+ * The closest length this model actually offers.
+ *
+ * `supported_durations` is an enumeration, not a range — a model listing whole
+ * seconds rejects 4.5 outright — so a value carried over from another model (or
+ * from the H3-shaped default) has to be snapped rather than sent.
+ */
+export function nearestDuration(
+  wanted: number,
+  durations: readonly number[]
+): number {
+  if (!durations.length) return wanted
+  return durations.reduce((best, d) =>
+    Math.abs(d - wanted) < Math.abs(best - wanted) ? d : best
+  )
 }

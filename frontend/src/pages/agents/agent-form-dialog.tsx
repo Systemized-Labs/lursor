@@ -52,6 +52,7 @@ import {
   parsePercentText,
 } from "@/components/compaction-fields"
 import { useMemoryHint } from "@/pages/settings/memory-hint"
+import { useImageHint } from "@/pages/agents/image-hint"
 import { useVideoHint } from "@/pages/agents/video-hint"
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high"]
@@ -71,6 +72,7 @@ type BooleanFieldKey =
   | "web_search"
   | "browser_qa"
   | "include_video"
+  | "include_image"
 
 const BOOLEAN_FIELDS: CapabilityField<BooleanFieldKey>[] = [
   {
@@ -114,6 +116,12 @@ const BOOLEAN_FIELDS: CapabilityField<BooleanFieldKey>[] = [
     // while that resolves.
     hint: "Generates clips on a connected laios box.",
   },
+  {
+    key: "include_image",
+    label: "Image generation",
+    // Live hint names the model and how many are serving; this shows meanwhile.
+    hint: "Generates images on a connected laios box.",
+  },
 ]
 
 interface FormState {
@@ -129,6 +137,7 @@ interface FormState {
   web_search: boolean
   browser_qa: boolean
   include_video: boolean
+  include_image: boolean
   thinking: ThinkingLevel
   tool_choice: ToolChoice
   // Compaction overrides are edited as whole-percent text; "" means "no override,
@@ -157,6 +166,9 @@ function emptyState(): FormState {
     // Off by default: a clip is minutes of GPU time on someone's box, so it is an
     // explicit choice rather than something an agent quietly arrives with.
     include_video: false,
+    // Off for consistency with video rather than for its cost — an image is
+    // seconds of GPU — but a capability is still the operator's to grant.
+    include_image: false,
     thinking: "off",
     tool_choice: "auto",
     compactionThresholdText: "",
@@ -180,6 +192,7 @@ function fromAgent(agent: Agent): FormState {
     web_search: agent.web_search,
     browser_qa: agent.browser_qa,
     include_video: agent.include_video,
+    include_image: agent.include_image,
     thinking: agent.thinking,
     tool_choice: agent.tool_choice ?? "auto",
     compactionThresholdText: fractionToPercentText(agent.compaction_threshold),
@@ -217,6 +230,7 @@ export function AgentFormDialog({
   const memoryHint = useMemoryHint()
   // Only resolved while the dialog is open: it reaches the box behind a cache.
   const videoHint = useVideoHint(open)
+  const imageHint = useImageHint(open)
 
   // Prompt-authoring UI state: an inline brief box, and a pending destructive
   // replace guarded by a confirm dialog when the field already has content.
@@ -280,6 +294,7 @@ export function AgentFormDialog({
       web_search: form.web_search,
       browser_qa: form.browser_qa,
       include_video: form.include_video,
+      include_image: form.include_image,
       thinking: form.thinking,
       // Skills are scope-discovered; when enabled the agent sees every global
       // skill (plus its workspace's own at run time), so surface the global set.
@@ -392,6 +407,7 @@ export function AgentFormDialog({
       web_search: form.web_search,
       browser_qa: form.browser_qa,
       include_video: form.include_video,
+      include_image: form.include_image,
       thinking: form.thinking,
       tool_choice: form.tool_choice,
       compaction_threshold: threshold.value,
@@ -605,7 +621,11 @@ export function AgentFormDialog({
             fields={BOOLEAN_FIELDS}
             values={form}
             onChange={update}
-            liveHints={{ include_memory: memoryHint, include_video: videoHint }}
+            liveHints={{
+              include_memory: memoryHint,
+              include_video: videoHint,
+              include_image: imageHint,
+            }}
           />
 
           <CompactionFields

@@ -74,6 +74,7 @@ from app.agents.goal_loop import (
     write_plan_doc,
 )
 from app.agents.hindsight import resolve_hindsight_config
+from app.agents.image_runtime import load_image_runtime
 from app.agents.preview_service import preview_service
 from app.agents.skill_runtime import load_skill_runtime
 from app.agents.titler import generate_title
@@ -861,6 +862,10 @@ async def _build_agent_and_context(
     video_runtime = await load_video_runtime(
         session, include_video=agent_row.include_video and not read_only
     )
+    # Same arrangement for images, and skipped in read-only mode for the same reason.
+    image_runtime = await load_image_runtime(
+        session, include_image=agent_row.include_image and not read_only
+    )
     agent, deps = build_deep_agent(
         agent_row,
         workspace.path,
@@ -872,6 +877,7 @@ async def _build_agent_and_context(
         workspace_id=workspace.id,
         skill_runtime=skill_runtime,
         video_runtime=video_runtime,
+        image_runtime=image_runtime,
         read_only=read_only,
         plan_mode=plan_mode,
         web_search_provider=app_config.web_search_provider if app_config else None,

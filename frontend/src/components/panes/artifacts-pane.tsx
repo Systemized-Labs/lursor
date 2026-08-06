@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { FileText, FilmSlate, ImageSquare, Stack } from "@phosphor-icons/react"
 
-import { useLaiosConnections } from "@/api/laios"
 import { imageContentUrl, useImageRuns } from "@/api/images"
+import { useMediaSettings } from "@/api/settings"
 import { videoContentUrl, useVideoJobs } from "@/api/videos"
 import { useAllThreads } from "@/hooks/use-all-threads"
 import { requestOpenFile } from "@/lib/open-file"
@@ -10,13 +10,10 @@ import { requestOpenThread } from "@/lib/open-thread"
 import { timeAgo } from "@/lib/time-ago"
 import { cn } from "@/lib/utils"
 
-/** Shared with the LAIOS, Video and Image surfaces. */
-const ACTIVE_CONNECTION_KEY = "laios.activeConnectionId"
-
 type Tab = "plans" | "media"
 
 interface ArtifactsPaneProps {
-  /** Scopes the plan-doc list; media is LAIOS-scoped and ignores it. */
+  /** Scopes the plan-doc list; media spans every source and ignores it. */
   workspaceId?: string
   /** Ask the shell to open a pane of some kind — how "open in Video" works. */
   onOpenPane?: (kind: "video" | "image") => void
@@ -49,24 +46,14 @@ interface ArtifactsPaneProps {
 export function ArtifactsPane({ workspaceId, onOpenPane }: ArtifactsPaneProps) {
   const [tab, setTab] = useState<Tab>("plans")
   const threads = useAllThreads()
-  const { data: connections } = useLaiosConnections()
+  const { data: mediaSettings } = useMediaSettings()
 
-  const [connectionId, setConnectionId] = useState<string | undefined>(() =>
-    typeof window === "undefined"
-      ? undefined
-      : (localStorage.getItem(ACTIVE_CONNECTION_KEY) ?? undefined)
-  )
-  // Keep the selection valid as connections load or change — the same guard the
-  // Video and Image pages use, for the same reason.
-  useEffect(() => {
-    if (!connections) return
-    if (!connections.some((c) => c.id === connectionId)) {
-      setConnectionId(connections[0]?.id)
-    }
-  }, [connections, connectionId])
-
-  const { data: videoJobs } = useVideoJobs(connectionId)
-  const { data: imageRuns } = useImageRuns(connectionId)
+  // No connection tracking any more: content URLs carry no source, so this lists
+  // every generation from every source at once. That is also the right answer for
+  // a pane whose job is "what has this app made" — switching the source in
+  // Settings must not hide what was made before it.
+  const { data: videoJobs } = useVideoJobs()
+  const { data: imageRuns } = useImageRuns()
 
   /**
    * Plan docs, newest first.
@@ -96,7 +83,7 @@ export function ArtifactsPane({ workspaceId, onOpenPane }: ArtifactsPaneProps) {
         prompt: job.prompt,
         model: job.model,
         at: job.updated_at ?? job.created_at,
-        url: connectionId ? videoContentUrl(connectionId, job.job_id) : null,
+        url: videoContentUrl(job.job_id),
       }))
     const images = (imageRuns ?? [])
       .filter((run) => run.status === "completed")
@@ -106,12 +93,12 @@ export function ArtifactsPane({ workspaceId, onOpenPane }: ArtifactsPaneProps) {
         prompt: run.prompt,
         model: run.model,
         at: run.updated_at ?? run.created_at,
-        url: connectionId ? imageContentUrl(connectionId, run.id) : null,
+        url: imageContentUrl(run.id),
       }))
     return [...videos, ...images].sort((a, b) =>
       String(b.at).localeCompare(String(a.at))
     )
-  }, [videoJobs, imageRuns, connectionId])
+  }, [videoJobs, imageRuns])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -205,9 +192,9 @@ export function ArtifactsPane({ workspaceId, onOpenPane }: ArtifactsPaneProps) {
             icon={Stack}
             title="Nothing generated yet"
             body={
-              connections && connections.length > 0
+              mediaSettings?.image.available || mediaSettings?.video.available
                 ? "Finished clips and images from the Video and Image panes land here."
-                : "Connect a LAIOS box to generate video and images."
+                : "Pick an image and video source in Settings to start generating."
             }
           />
         ) : (

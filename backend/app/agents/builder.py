@@ -49,6 +49,8 @@ from app.agents.hindsight import (
     HindsightConfig,
     build_hindsight_capability,
 )
+from app.agents.image_runtime import ImageRuntime
+from app.agents.image_tools import make_image_tools
 from app.agents.skill_runtime import SkillRuntime
 from app.agents.tolerant_model import TolerantOpenAIChatModel
 from app.agents.tool_errors import ToolErrorsAsText
@@ -110,6 +112,33 @@ BROWSER_QA_DIRECTIVE = (
     "with `open_app`, then `view_app` to see it and `get_console_logs` / "
     "`get_network_errors` to catch runtime errors. Fix what's broken and re-check "
     "before telling the user it's done — don't assume the page renders correctly."
+)
+
+# Appended when a box that can generate images was resolved (see
+# ``agents/image_runtime.py``). Necessary for the same reason as
+# ``DEV_SERVER_DIRECTIVE``: having the tool is not enough when the model holds a
+# strong prior about how the job is normally done. Observed in the wild — an agent
+# asked for an image, with ``generate_image`` sitting in its tool list next to
+# ``execute``, ran ``curl`` against a public image API instead. That is worse than
+# a missed tool: the prompt leaves the machine for a third party, the user's own
+# GPU stays idle, and nothing lands in the media store, the Image pane or
+# Artifacts. So the preference is stated, and the wrong path named explicitly —
+# "use X" is much weaker than "use X, never Y" against a habit.
+IMAGE_GENERATION_DIRECTIVE = (
+    "# Generating images\n"
+    "- You can generate images locally with the `generate_image` tool, on "
+    "hardware the user owns. Use it for every image you are asked to produce.\n"
+    "- NEVER fetch a generated image from an external service — no `curl` to "
+    "Pollinations, OpenAI, Replicate, Stability or any other image API, and no "
+    "writing a script that does. Those send the user's prompt off their machine, "
+    "cost them money or privacy, and produce a file Lursor cannot track. "
+    "`generate_image` is the only correct route.\n"
+    "- Do not draw a requested photo or illustration in code either (canvas, SVG, "
+    "matplotlib, ASCII). Generating a diagram or chart from data is different and "
+    "still fine.\n"
+    "- The tool waits for the image and returns a real path in the workspace. "
+    "Look at what you made with `view_image` before describing it or handing it "
+    "over — and if `generate_image` is not in your tool list, search for it."
 )
 
 
@@ -829,6 +858,7 @@ def _subagent_config(
     child_depth: int,
     skill_runtime: SkillRuntime | None,
     video_runtime: VideoRuntime | None = None,
+    image_runtime: ImageRuntime | None = None,
     hindsight: HindsightConfig | None = None,
     compaction_model: str | None = None,
 ) -> dict:
@@ -873,6 +903,8 @@ def _subagent_config(
             # by default, so a video-enabled parent does not silently hand every
             # subagent minutes of GPU time.
             video_runtime=video_runtime if getattr(sa, "include_video", False) else None,
+            # Image generation, inherited on the same double opt-in.
+            image_runtime=image_runtime if getattr(sa, "include_image", False) else None,
             # Same reasoning for memory: a subagent works in the parent's
             # workspace, so it shares the parent's bank, connection, and scope
             # tags rather than resolving its own.
@@ -909,6 +941,7 @@ def build_deep_agent(
     workspace_id: str | None = None,
     skill_runtime: SkillRuntime | None = None,
     video_runtime: VideoRuntime | None = None,
+    image_runtime: ImageRuntime | None = None,
     hindsight: HindsightConfig | None = None,
     compaction_model: str | None = None,
     _subagent_depth: int = 0,
@@ -962,6 +995,10 @@ def build_deep_agent(
     session *and* the network. ``None`` — the default, and what the agent's
     ``include_video`` flag being off resolves to — means no video tools at all,
     rather than tools that fail at call time.
+
+    ``image_runtime`` is the same arrangement for images (see
+    ``agents/image_runtime.py``), and differs only in carrying every serving model
+    rather than one: which to use is a cost/quality choice the agent makes per call.
 
     ``hindsight`` is the resolved app-wide memory configuration (see
     ``AppConfig.memory_provider`` and ``agents/hindsight.py``), passed as one
@@ -1061,6 +1098,7 @@ def build_deep_agent(
                 child_depth=child_depth,
                 skill_runtime=skill_runtime,
                 video_runtime=video_runtime,
+                image_runtime=image_runtime,
                 hindsight=hindsight,
                 compaction_model=compaction_model,
             )
@@ -1113,12 +1151,24 @@ def build_deep_agent(
     # Video generation, when the caller resolved a box that can do it. Both gates
     # (the agent's ``include_video`` flag and a connection serving a video-capable
     # model) are already spent by the time this is not None — see
-    # ``load_video_runtime``. All three tools are deferred like every other non-core
+    # ``load_video_runtime``. All four tools are deferred like every other non-core
     # tool, so an agent that never generates a clip pays nothing for having them
     # (``agents/tool_loading.py``); the skill's opening line tells the model to
     # ``search_tools("video")`` if they are not in its list.
     if video_runtime is not None:
         tools.extend(make_video_tools(video_runtime, workspace_path))
+
+    # Image generation, on the same two gates. ``video_available`` only decides
+    # whether the tool's docstring may mention ``generate_video`` — advertising a
+    # tool the agent does not have is its own kind of wrong answer.
+    if image_runtime is not None:
+        tools.extend(
+            make_image_tools(
+                image_runtime,
+                workspace_path,
+                video_available=video_runtime is not None,
+            )
+        )
 
     # Read-only ("ask") mode filters the mutating tools via a PrepareTools
     # capability. Merge with any capabilities supplied through the escape hatch
@@ -1298,6 +1348,11 @@ def build_deep_agent(
         instructions = f"{instructions}\n\n{DEV_SERVER_DIRECTIVE}"
     if browser_qa_on:
         instructions = f"{instructions}\n\n{BROWSER_QA_DIRECTIVE}"
+    # Gated on the resolved runtime rather than on ``row.include_image``: with the
+    # flag on but nothing serving there is no tool, and telling an agent to use one
+    # it does not have is the failure this directive exists to prevent.
+    if image_runtime is not None:
+        instructions = f"{instructions}\n\n{IMAGE_GENERATION_DIRECTIVE}"
     if use_hindsight:
         instructions = f"{instructions}\n\n{HINDSIGHT_MEMORY_DIRECTIVE}"
 

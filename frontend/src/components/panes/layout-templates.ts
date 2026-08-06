@@ -39,11 +39,15 @@ export interface TemplateDef {
    *
    * One entry per zone the `preview` draws, chat first: chat is the primary role in
    * every shape, so a layout built from nothing should get one before anything
-   * else. Kinds already open are skipped rather than duplicated.
+   * else. Kinds already open are skipped rather than duplicated, so a roster may
+   * carry more entries than the shape has zones — the extras are what it falls back
+   * to when its first choice is already on screen.
    *
-   * Terminals are never in here. The bottom row is a zone the *user* counts and the
-   * template does not fill from this roster, because its pane is a shell and it goes at the
-   * bottom — a shape that wants one asks with {@link bottom} instead.
+   * The bottom row is never filled from this roster. It is a zone the *user* counts, but
+   * its pane is a shell and it goes at the bottom rather than in whichever zone the roster
+   * is up to — a shape that wants one asks with {@link bottom} instead. A roster may still
+   * name `terminal` for a *grid* zone, and does: a terminal in the column beside a chat is
+   * a different thing from the panel below, and it is the pane most people want there.
    */
   fills: PaneKind[]
   /**
@@ -80,7 +84,10 @@ export const TEMPLATES: TemplateDef[] = [
     label: "Two panes",
     description: "Chat with a narrow column beside it.",
     preview: [{ weight: 100, columns: [62, 38] }],
-    fills: ["chat", "changes"],
+    // A terminal in the side column, not a diff: the second zone is somewhere to *do*
+    // something while the chat works, and a Changes pane is only worth a permanent zone
+    // once there are changes to read. Preview is the fallback when a terminal is already up.
+    fills: ["chat", "terminal", "preview"],
   },
   {
     id: "bottom",
@@ -104,9 +111,14 @@ export const TEMPLATES: TemplateDef[] = [
       { weight: 36, columns: [100] },
     ],
     // "Two panes" with a panel below: the arrangement for actually working in a repo,
-    // where you are reading a diff beside the conversation and running things under
+    // where you are watching the app beside the conversation and running things under
     // both. Two zones to fill; the third band is the bottom row.
-    fills: ["chat", "changes"],
+    //
+    // Preview leads here where "Two panes" leads with a terminal, because this shape
+    // already puts shells at the bottom — the roster is counted over the *grid* panes
+    // (`fillsFor`), so a terminal first would open a second one in the column beside the
+    // chat and the two zones would say the same thing.
+    fills: ["chat", "preview", "terminal"],
     bottom: true,
   },
 ]
