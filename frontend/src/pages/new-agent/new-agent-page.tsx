@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { BranchSelector } from "@/pages/new-agent/branch-selector"
+import { RotatingHint } from "@/pages/new-agent/hints"
 import type { PendingAttachment } from "@/agui/types"
 
 /** State handed to the chat surface so it launches straight into a run. */
@@ -240,14 +241,8 @@ export function NewAgentPage() {
         </div>
       </div>
 
-      {/* Footer hint */}
-      <p className="shrink-0 px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 text-center text-sm text-muted-foreground">
-        Plugins help you customize your workflows — use{" "}
-        <code className="rounded bg-muted px-1 py-0.5 text-xs text-foreground">
-          /add-plugin
-        </code>{" "}
-        to get started
-      </p>
+      {/* Footer hint — one true thing about this build, rotating. */}
+      <RotatingHint className="shrink-0 px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 text-center text-sm text-muted-foreground" />
     </div>
   )
 }

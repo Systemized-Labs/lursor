@@ -8,19 +8,25 @@ import { useVideoCapability } from "@/api/videos"
  * checkbox on and nothing serving, an agent silently has no video tools. That is
  * indistinguishable from a broken checkbox, hence this.
  *
+ * One sentence, because it replaces the toggle's static hint on a row that shows
+ * exactly one line (see `capability-toggles.tsx`); anything longer is clipped.
+ *
  * Shared between the agent and subagent editors so the wording can't drift.
- * Returns `null` while it loads, so the caller renders nothing rather than a
- * wrong claim.
+ * Returns `null` while it loads, so the caller keeps showing the static hint
+ * rather than a wrong claim.
  */
 export function useVideoHint(enabled = true): string | null {
   const { data } = useVideoCapability(enabled)
   if (!data) return null
   if (!data.available) {
-    return `Unavailable: ${data.reason}. The toggle has no effect until then.`
+    return `No effect yet — ${data.reason}.`
   }
   const where = data.connection_name ? ` on ${data.connection_name}` : ""
-  const assumed = data.assumed
-    ? " Its recipe declares no video profile, so the request shape is assumed from the model's identity."
-    : ""
-  return `Will use ${data.model}${where}. Each render runs for minutes on that box's GPU.${assumed}`
+  // An assumed profile — the recipe declares none, so the request shape is
+  // inferred from the model's identity — is the more actionable caveat of the
+  // two, so it takes the line when it applies.
+  if (data.assumed) {
+    return `Renders ${data.model}${where} with an assumed profile.`
+  }
+  return `Renders ${data.model}${where} — minutes of GPU per clip.`
 }

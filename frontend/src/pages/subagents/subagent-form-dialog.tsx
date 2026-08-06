@@ -39,8 +39,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  CapabilityToggles,
+  type CapabilityField,
+} from "@/components/capability-toggles"
 import { useMemoryHint } from "@/pages/settings/memory-hint"
 import { useVideoHint } from "@/pages/agents/video-hint"
 
@@ -61,25 +64,40 @@ type BooleanFieldKey =
   | "web_search"
   | "include_video"
 
-const BOOLEAN_FIELDS: {
-  key: BooleanFieldKey
-  label: string
-  /** Shown under the label. For a toggle whose cost isn't obvious from its name. */
-  hint?: string
-}[] = [
-  { key: "include_todo", label: "Include todo" },
-  { key: "include_subagents", label: "Include subagents" },
-  { key: "include_skills", label: "Include skills" },
+const BOOLEAN_FIELDS: CapabilityField<BooleanFieldKey>[] = [
+  {
+    key: "include_todo",
+    label: "Todo list",
+    hint: "Tracks multi-step work as a checklist.",
+  },
+  {
+    key: "include_subagents",
+    label: "Subagents",
+    hint: "Can delegate further to other subagents.",
+  },
+  {
+    key: "include_skills",
+    label: "Skills",
+    hint: "Loads every global and workspace skill.",
+  },
   // "Memory", not "Include memory": the toggle decides whether this subagent
   // remembers across runs; where that memory lives is an app-wide provider
-  // choice named in the hint below it (see ``useMemoryHint``).
-  { key: "include_memory", label: "Memory" },
-  { key: "include_plan", label: "Include plan" },
-  { key: "web_search", label: "Web search" },
+  // choice named in the live hint that replaces this one (see ``useMemoryHint``).
+  { key: "include_memory", label: "Memory", hint: "Recalls facts across runs." },
+  {
+    key: "include_plan",
+    label: "Planning",
+    hint: "Writes and follows a plan on large tasks.",
+  },
+  {
+    key: "web_search",
+    label: "Web search",
+    hint: "Looks up current facts on the web.",
+  },
   {
     key: "include_video",
     label: "Video generation",
-    hint: "Only takes effect when the delegating agent has video on too — it spends that agent's box.",
+    hint: "Needs the delegating agent to have video on too.",
   },
 ]
 
@@ -420,37 +438,13 @@ export function SubagentFormDialog({
             </div>
           </div>
 
-          <div className="grid gap-3 rounded-md border p-4">
-            <span className="text-sm font-medium text-foreground">
-              Capabilities
-            </span>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {BOOLEAN_FIELDS.map((field) => (
-                <div
-                  key={field.key}
-                  className="flex items-start justify-between gap-2"
-                >
-                  <div className="grid gap-0.5">
-                    <Label htmlFor={`subagent-${field.key}`}>{field.label}</Label>
-                    {field.key === "include_memory" && memoryHint ? (
-                      <p className="text-xs text-muted-foreground">{memoryHint}</p>
-                    ) : null}
-                    {field.hint ? (
-                      <p className="text-xs text-muted-foreground">{field.hint}</p>
-                    ) : null}
-                    {field.key === "include_video" && videoHint ? (
-                      <p className="text-xs text-muted-foreground">{videoHint}</p>
-                    ) : null}
-                  </div>
-                  <Switch
-                    id={`subagent-${field.key}`}
-                    checked={form[field.key]}
-                    onCheckedChange={(checked) => update(field.key, checked)}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
+          <CapabilityToggles
+            idPrefix="subagent"
+            fields={BOOLEAN_FIELDS}
+            values={form}
+            onChange={update}
+            liveHints={{ include_memory: memoryHint, include_video: videoHint }}
+          />
 
           <CompactionFields
             idPrefix="subagent"

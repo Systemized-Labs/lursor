@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  ArrowSquareOut,
   Check,
   CaretLeft,
   CaretRight,
@@ -18,7 +19,13 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
-import { entryValue, formatModelLabel, isCustomGroup } from "@/lib/model-label"
+import { openExternal } from "@/lib/open-external"
+import {
+  MODEL_PREFIX,
+  entryValue,
+  formatModelLabel,
+  isCustomGroup,
+} from "@/lib/model-label"
 
 // Fallback static list used when the API is unavailable.
 const FALLBACK_MODEL_GROUPS: ModelGroup[] = [
@@ -69,6 +76,12 @@ function formatContext(tokens: number): string {
   return String(tokens)
 }
 
+/** True when a catalogue blurb was cut mid-sentence by the upstream catalogue. */
+function isBlurbCutOff(description: string): boolean {
+  const end = description.trimEnd()
+  return end.endsWith("...") || end.endsWith("…")
+}
+
 function ModelDetail({
   model,
   group,
@@ -82,10 +95,15 @@ function ModelDetail({
 }) {
   const inputPrice = formatPrice(model.pricing?.prompt)
   const outputPrice = formatPrice(model.pricing?.completion)
+  // Custom (locally-hosted) models have no page to link to; their descriptions
+  // come from the provider itself and arrive whole.
+  const openRouterUrl = entryValue(model).startsWith(MODEL_PREFIX)
+    ? `https://openrouter.ai/${model.id}`
+    : null
 
   return (
     <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
+      <div className="shrink-0 space-y-5 px-6 pt-5">
         <div>
           <p className="mb-0.5 text-xs font-medium text-muted-foreground">{group}</p>
           <h2 className="text-lg font-semibold leading-snug text-foreground">
@@ -130,14 +148,39 @@ function ModelDetail({
             </div>
           </div>
         ) : null}
-
-        {model.description ? (
-          <div>
-            <p className="mb-1.5 text-xs font-medium text-muted-foreground">About</p>
-            <p className="text-sm leading-relaxed text-foreground">{model.description}</p>
-          </div>
-        ) : null}
       </div>
+
+      {/* About fills whatever height is left and scrolls on its own, so long
+          descriptions are readable in full without pushing the metadata above
+          it out of view. */}
+      {model.description ? (
+        <div className="flex min-h-0 flex-1 flex-col px-6 pb-5 pt-5">
+          <p className="mb-1.5 shrink-0 text-xs font-medium text-muted-foreground">
+            About
+          </p>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <p className="whitespace-pre-line text-sm leading-relaxed text-foreground">
+              {model.description}
+            </p>
+            {/* OpenRouter's catalogue serves a ~200-character blurb, not the full
+                write-up — most entries arrive already cut off with an ellipsis and
+                no API returns more. Point at the model page for the rest rather
+                than letting the stub read like our own truncation. */}
+            {isBlurbCutOff(model.description) && openRouterUrl ? (
+              <button
+                type="button"
+                onClick={() => openExternal(openRouterUrl)}
+                className="mt-2 inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Read the full description on OpenRouter
+                <ArrowSquareOut className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1" />
+      )}
 
       <div className="shrink-0 border-t border-border/60 px-6 py-4">
         <Button className="w-full gap-2" onClick={onUse}>
