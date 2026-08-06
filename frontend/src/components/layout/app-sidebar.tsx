@@ -111,6 +111,7 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
     visits,
     byWorkspace: threads.byWorkspace,
     activeWorkspaceId,
+    ordered: tree.ordered,
     onNavigate: closeMobile,
   })
 
@@ -240,8 +241,12 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
         onOpenWorkspace={switchTo}
         onNewConversation={newConversation}
         onNewChat={() => {
-          navigate("/")
-          closeMobile()
+          if (activeWorkspaceId) {
+            newConversation(activeWorkspaceId)
+          } else {
+            navigate("/")
+            closeMobile()
+          }
         }}
         onSearch={() => {
           openCommandPalette()

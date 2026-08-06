@@ -113,3 +113,17 @@
 .dockview-theme-lursor .dv-watermark-container {
   display: none;
 }
+
+/**
+ * Dockview's tab-overflow dropdown, hidden.
+ *
+ * When a tab strip has more tabs than fit, dockview draws a button on the right
+ * with a down caret and a count badge — clicking it opens a list of the hidden
+ * tabs. We already let users scroll the strip horizontally (the scrollbar is
+ * themed above), so the dropdown is redundant and takes up the width of a tab.
+ * Hiding it rather than using `disableTabsOverflowList` because that prop is
+ * undocumented in the types we consume; the CSS is honest either way.
+ */
+.dockview-theme-lursor .dv-tabs-overflow-dropdown-root {
+  display: none;
+}

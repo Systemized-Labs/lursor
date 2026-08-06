@@ -3,11 +3,12 @@ import { isElectron, isMacElectron } from "@/lib/platform"
 /**
  * What the app's keyboard shortcuts are, for the Settings dialog to show.
  *
- * **This is documentation, not a binding layer.** Every chord below is still
- * owns ⌘K, `pane-host` owns ⌘1–⌘9 (pane tabs), ⌘W (close pane) and `use-workspace-switch` owns
- * the double-⌘ tap, `editor-pane` owns find/replace, dockview owns pane maximize.
- * owns ⌘K, `pane-host` owns ⌘1–⌘9 (pane tabs) and `use-workspace-switch` owns
- * the double-⌘ tap, `editor-pane` owns find/replace, dockview owns pane maximize.
+ * **This is documentation, not a binding layer.** Each chord is owned by the
+ * component that handles it: `command-palette` owns ⌘K, `pane-host` owns ⌘1–⌘9
+ * (pane tabs), ⌘←/⌘→ (cycle tabs) and ⌘W (close pane), `sessions-pane` owns ⌘N (new chat),
+ * `use-workspace-switch` owns the double-⌘ tap and ⌘⇧1–⌘⇧9 (workspace by position),
+ * `editor-pane` owns find/replace, dockview owns pane maximize.
+ *
  * The plan called this "a table over the keybind registry"; there is no registry,
  * and inventing one would mean rewriting nine unrelated key handlers to serve a
  * help table.
@@ -51,7 +52,7 @@ export const SHORTCUTS: Shortcut[] = [
   // ── Navigation ────────────────────────────────────────────────────────────
   {
     keys: chord(MOD, "N"),
-    description: "Start a new session",
+    description: "Open a new chat",
     group: "Navigation",
     desktopOnly: true,
   },
@@ -83,8 +84,20 @@ export const SHORTCUTS: Shortcut[] = [
     desktopOnly: true,
   },
   {
+    keys: `${chord(MOD, "←")} / ${chord(MOD, "→")}`,
+    description: "Cycle left or right through open tabs",
+    group: "Navigation",
+    desktopOnly: true,
+  },
+  {
     keys: `${MOD} ${MOD}`,
     description: "Double-tap: back to the previous workspace",
+    group: "Navigation",
+    desktopOnly: true,
+  },
+  {
+    keys: `${chord(MOD, SHIFT, "1")}–${chord(MOD, SHIFT, "9")}`,
+    description: "Switch to the workspace at that sidebar position",
     group: "Navigation",
     desktopOnly: true,
   },
