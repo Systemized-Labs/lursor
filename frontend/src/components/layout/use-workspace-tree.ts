@@ -73,7 +73,7 @@ export interface RailDragged {
 export interface WorkspaceTree {
   /** The rail's rows, top to bottom. */
   nodes: RailNode[]
-  /** Every workspace in tree order — what ⌘1…⌘9 address. */
+  /** Every workspace in tree order. */
   ordered: Workspace[]
   folders: WorkspaceFolder[]
   isCollapsed: (folderId: string) => boolean
@@ -187,10 +187,9 @@ export function useWorkspaceTree(workspaces: Workspace[]): WorkspaceTree {
     return { root, children }
   }, [workspaces, folders])
 
-  // `ordered` is the ⌘1–⌘9 sequence: counted over the whole tree rather than over
-  // what is on screen, so shutting a group doesn't renumber the projects below it
-  // — ⌘3 has to mean the same project whether or not the group above it is open.
-  // Rows used to carry their own `slot` number to print as a hover badge; the
+  // `ordered` is the tree-order sequence: counted over the whole tree rather than
+  // over what is on screen, so shutting a group doesn't reorder the projects below
+  // it. Rows used to carry their own `slot` number to print as a hover badge; the
   // badge is gone and the position was always just this walk's index.
   const { nodes, ordered } = useMemo(() => {
     const out: RailNode[] = []
