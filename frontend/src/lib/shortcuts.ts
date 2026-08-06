@@ -31,7 +31,9 @@ export interface Shortcut {
   desktopOnly?: boolean
 }
 
-const MOD = isMacElectron || isMac() ? "⌘" : "Ctrl"
+/** The platform's modifier, exported so anything else quoting a chord (the home
+ *  screen's hints, say) spells it the same way this table does. */
+export const MOD = isMacElectron || isMac() ? "⌘" : "Ctrl"
 const SHIFT = isMacElectron || isMac() ? "⇧" : "Shift+"
 const ALT = isMacElectron || isMac() ? "⌥" : "Alt+"
 
