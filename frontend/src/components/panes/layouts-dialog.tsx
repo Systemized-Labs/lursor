@@ -121,7 +121,7 @@ export function LayoutsDialog({
    * nothing. Picking "Workbench" is a request for its two zones and a panel below, so the
    * missing ones get the kinds the template rosters. Kinds already open are skipped,
    * nothing is closed, and the roster is trimmed to the shortfall: with a chat
-   * already up, Workbench opens a Changes pane and a shell rather than three panes.
+   * already up, Workbench opens a Preview and a shell rather than three panes.
    *
    * A *global* layout is the one case that can still come up short — it cannot hold
    * a terminal or a Changes pane at all (the rule the zone's `+` menu applies), so
