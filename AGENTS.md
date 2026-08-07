@@ -154,7 +154,7 @@ replays), `POST /{id}/stop`, `POST /{id}/goal/interject`, `POST /{id}/compact`.
 `GET /threads/active-runs` **must be declared before `/{thread_id}`** or FastAPI
 routes it as a thread id.
 
-Per-turn budget: `TURN_REQUEST_LIMIT = 150` model requests
+Per-turn budget: `TURN_REQUEST_LIMIT = 300` model requests
 (`builder.py`), and subagents get their own budget of the same size.
 
 `reconcile_interrupted_runs()` runs at startup — run state is in-memory only, so

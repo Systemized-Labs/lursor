@@ -293,7 +293,7 @@ def _environment_instructions(
 # which trips deep agents on tool-heavy turns before they can finish the work.
 # ``api/chat.py`` applies it to the top-level turn; ``_SUBAGENT_USAGE_LIMITS``
 # below applies the same figure to delegated runs.
-TURN_REQUEST_LIMIT = 150
+TURN_REQUEST_LIMIT = 300
 
 # Usage budget for a delegated subagent (``task``) run.
 #
