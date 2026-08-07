@@ -499,10 +499,14 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
           {
             onTextMessageStartEvent: ({ event }) =>
               handlers.onTextStart(event.messageId),
+            // The `*Buffer` a subscriber receives is the value *before* this
+            // event's delta is folded in — the client appends only after the
+            // subscriber returns. Add the delta ourselves, or the UI trails the
+            // stream by one chunk and never sees the final one at all.
             onTextMessageContentEvent: ({ event, textMessageBuffer }) =>
-              handlers.onTextContent(event.messageId, textMessageBuffer),
+              handlers.onTextContent(event.messageId, textMessageBuffer + event.delta),
             onReasoningMessageContentEvent: ({ event, reasoningMessageBuffer }) =>
-              handlers.onReasoning(event.messageId, reasoningMessageBuffer),
+              handlers.onReasoning(event.messageId, reasoningMessageBuffer + event.delta),
             onReasoningMessageEndEvent: ({ event }) =>
               handlers.onReasoningEnd(event.messageId),
             onToolCallStartEvent: ({ event }) =>
@@ -511,8 +515,12 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
                 event.toolCallId,
                 event.toolCallName
               ),
+            // Same one-delta lag as the text handlers above. It bites hardest
+            // here: a `task` call whose args arrive in a single delta would land
+            // as an empty string, so the subagent card never learns which
+            // subagent it delegated to and stays stuck on "Delegating…".
             onToolCallArgsEvent: ({ event, toolCallBuffer }) =>
-              handlers.onToolArgs(event.toolCallId, toolCallBuffer),
+              handlers.onToolArgs(event.toolCallId, toolCallBuffer + event.delta),
             onToolCallResultEvent: ({ event }) =>
               handlers.onToolResult(event.toolCallId, event.content),
             onCustomEvent: ({ event }) => {
