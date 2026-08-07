@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from app.assistant.identity import is_assistant_workspace
 from app.db.models import Workspace, WorkspaceFolder
 from app.schemas._types import UTCDatetime
 from app.workspace_paths import is_skills_catalog
@@ -29,6 +30,11 @@ class WorkspaceRead(BaseModel):
     # Computed, not stored: the app owns this workspace (currently only the
     # skills catalog). Systems workspaces can't be deleted or relocated.
     is_system: bool
+    # Also computed: this is the top-level Assistant's own scratch workspace
+    # (``app/assistant/``). It is not a project, so the sidebar files it away
+    # entirely rather than showing it as a system row the way it does the Skill
+    # Studio — the Assistant is reached from its overlay, not from the tree.
+    is_assistant: bool = False
     # Sidebar placement — the group this row is filed under (null = the root
     # level) and its slot among its siblings there.
     folder_id: str | None
@@ -44,6 +50,7 @@ class WorkspaceRead(BaseModel):
             description=ws.description,
             path=ws.path,
             is_system=is_skills_catalog(ws.path),
+            is_assistant=is_assistant_workspace(ws),
             folder_id=ws.folder_id,
             position=ws.position,
             created_at=ws.created_at,

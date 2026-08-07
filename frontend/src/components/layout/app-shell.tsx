@@ -11,6 +11,10 @@ import type { CSSProperties, ReactNode } from "react"
 import { Outlet, useLocation, useSearchParams } from "react-router-dom"
 
 import { useWorkspace } from "@/api/workspaces"
+import {
+  useAssistantHotkey,
+  useAssistantOverlay,
+} from "@/components/assistant/use-assistant-overlay"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { destinationFor } from "@/components/layout/destinations"
 import {
@@ -82,6 +86,13 @@ const LayoutsDialog = lazy(() =>
   }))
 )
 
+/** And again: the Assistant overlay drags in the whole chat stack behind it. */
+const AssistantOverlay = lazy(() =>
+  import("@/components/assistant/assistant-overlay").then((m) => ({
+    default: m.AssistantOverlay,
+  }))
+)
+
 /**
  * The persistent app shell: the WindowBar, the sessions sidebar, and — inside a
  * workspace — the pane layer.
@@ -102,6 +113,9 @@ export function AppShell() {
   const { openSettings } = useSettingsParam()
   const [sidebarSide, setSidebarSide] = useSidebarSide()
   const [layoutsOpen, setLayoutsOpen] = useState(false)
+  const { open: assistantOpen, setOpen: setAssistantOpen } = useAssistantOverlay()
+  // Bound once, here: a listener per consumer would toggle N times per press.
+  useAssistantHotkey()
   // The active workspace (from `/workspaces/:id/...`) keys the pane layout, so
   // each workspace remembers its own arrangement.
   const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]
@@ -411,6 +425,15 @@ export function AppShell() {
         {/* Mounted at the shell, not per route: settings opens *over* whatever you
             were doing rather than replacing it. */}
         <SettingsDialog />
+        {/* Same reasoning, one step further: the Assistant is not scoped to a
+            workspace at all, so it hangs off the shell and answers ⌘⇧A from
+            anywhere. Lazy because it pulls in the whole chat stack, which has no
+            business in the entry chunk for a panel most sessions never open. */}
+        {assistantOpen ? (
+          <Suspense fallback={null}>
+            <AssistantOverlay open={assistantOpen} onOpenChange={setAssistantOpen} />
+          </Suspense>
+        ) : null}
         {layoutsOpen ? (
           <Suspense fallback={null}>
             <LayoutsDialog

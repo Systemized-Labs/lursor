@@ -80,6 +80,8 @@ from app.agents.skill_runtime import load_skill_runtime
 from app.agents.titler import generate_title
 from app.agents.video_runtime import load_video_runtime
 from app.agents.vision import model_supports_vision
+from app.assistant.builder import build_assistant_context
+from app.assistant.identity import is_assistant_agent
 from app.config import get_settings
 from app.db.models import (
     Agent,
@@ -825,6 +827,8 @@ async def _build_agent_and_context(
     workspace: Workspace,
     read_only: bool = False,
     plan_mode: bool = False,
+    *,
+    thread_id: str,
 ):
     """Build the deep agent + deps for a thread and load the app-wide context.
 
@@ -839,7 +843,19 @@ async def _build_agent_and_context(
     thread's own agent (``agent_row``); "Execute plan" switches to the ``/goal``
     default agent by reassigning the thread before the run (frontend), so no
     per-turn model override is needed here.
+
+    The one branch: the top-level Assistant builds through ``app/assistant/``
+    instead, which is the only path that attaches the control-plane toolset. It
+    returns this same 5-tuple, so nothing below this function knows the
+    difference — persistence, SSE, stop, reconnect, compaction and usage are all
+    shared. ``thread_id`` exists for that branch: the Assistant's destructive
+    tools publish a confirmation card into this thread's own event stream.
     """
+    if is_assistant_agent(agent_row):
+        return await build_assistant_context(
+            session, agent_row, workspace, thread_id=thread_id, read_only=read_only
+        )
+
     providers = (await session.execute(select(CustomProvider))).scalars().all()
     custom_providers = {p.id: p for p in providers}
     subagents = list((await session.execute(select(Subagent))).scalars().all())
@@ -1159,6 +1175,7 @@ async def start_scheduled_run(
     thread: Thread,
     prompt: str,
     run_type: ScheduleRunType,
+    kind: str = "cron",
 ) -> None:
     """Start a run with no HTTP request behind it (see ``agents/scheduler.py``).
 
@@ -1178,6 +1195,11 @@ async def start_scheduled_run(
     Raises on a schedule that can no longer run (deleted agent or workspace, a
     thread that already has a live run, a build failure); the scheduler catches
     that and records it as an ``error`` fire rather than letting it stop the loop.
+
+    ``kind`` labels the synthetic user turn. It defaults to the scheduler's own
+    ``"cron"``; the Assistant's ``lursor_delegate`` passes ``"delegated"`` so a
+    conversation it opened on your behalf does not read as a schedule fire in the
+    transcript.
     """
     agent_row = await session.get(Agent, thread.agent_id)
     workspace = await session.get(Workspace, thread.workspace_id)
@@ -1194,7 +1216,7 @@ async def start_scheduled_run(
             thread_id=thread.id,
             role="user",
             content=prompt,
-            kind="cron",
+            kind=kind,
             agent_id=agent_row.id,
             agent_name=agent_row.name,
         )
@@ -1202,7 +1224,7 @@ async def start_scheduled_run(
     await session.commit()
 
     agent, deps, custom_providers, app_config, _skills = await _build_agent_and_context(
-        session, agent_row, workspace
+        session, agent_row, workspace, thread_id=thread.id
     )
 
     todos_state: dict = {"json": None}
@@ -1237,7 +1259,7 @@ async def start_scheduled_run(
                 initial_history=[],
                 workspace_id=workspace_id,
                 kickoff=kickoff,
-                kind="cron",
+                kind=kind,
             )
     else:
         adapter = build_continuation_adapter(agent, prompt, thread_id, _HEADLESS_ACCEPT)
@@ -1249,7 +1271,7 @@ async def start_scheduled_run(
                 deps,
                 instructions=None,
                 todos_state=todos_state,
-                kind="cron",
+                kind=kind,
             )
 
     if not launch_run(thread_id, workspace_id, deps.backend, driver):
@@ -1423,7 +1445,12 @@ async def chat(
     try:
         agent, deps, custom_providers, app_config, skill_runtime = (
             await _build_agent_and_context(
-                session, agent_row, workspace, read_only=read_only, plan_mode=plan_mode
+                session,
+                agent_row,
+                workspace,
+                read_only=read_only,
+                plan_mode=plan_mode,
+                thread_id=thread_id,
             )
         )
     except Exception as exc:

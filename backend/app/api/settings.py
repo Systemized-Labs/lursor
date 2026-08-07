@@ -23,12 +23,15 @@ from app.agents import hindsight
 from app.agents.image_runtime import reset_image_model_cache
 from app.agents.video_runtime import reset_video_model_cache
 from app.agents.web_search import DEFAULT_WEB_SEARCH_PROVIDER
+from app.assistant.identity import DEFAULT_ASSISTANT_MODEL
 from app.config import get_settings
 from app.db.models import AppConfig, LaiosConnection
 from app.db.session import async_session_factory, get_session
 from app.media import openrouter as openrouter_media
 from app.media import refs
 from app.schemas.settings import (
+    AssistantSettingsRead,
+    AssistantSettingsUpdate,
     CompactionDefaultsRead,
     CompactionDefaultsUpdate,
     MediaModalityRead,
@@ -654,3 +657,38 @@ async def set_default_agents(
     session.add(cfg)
     await session.commit()
     return await get_default_agents(session)
+
+
+# --- Assistant -------------------------------------------------------------
+# The one knob the top-level Assistant exposes (see ``app/assistant/``). Its
+# agent row is app-owned and hidden from the agent editor, so this is where the
+# model gets chosen. Null means the shipped default; nothing is pushed into the
+# running process because the assistant build reads this row per run.
+
+
+@router.get("/assistant", response_model=AssistantSettingsRead)
+async def get_assistant_settings(
+    session: AsyncSession = Depends(get_session),
+) -> AssistantSettingsRead:
+    """Which model the Assistant runs on, and what clearing it reverts to."""
+    cfg = await _get_config(session)
+    saved = (cfg.assistant_model if cfg else None) or ""
+    return AssistantSettingsRead(
+        model=saved or DEFAULT_ASSISTANT_MODEL,
+        default_model=DEFAULT_ASSISTANT_MODEL,
+        source="database" if saved else "default",
+    )
+
+
+@router.put("/assistant", response_model=AssistantSettingsRead)
+async def set_assistant_settings(
+    payload: AssistantSettingsUpdate, session: AsyncSession = Depends(get_session)
+) -> AssistantSettingsRead:
+    """Save the Assistant's model. Blank clears it back to the shipped default."""
+    cfg = await _get_config(session)
+    if cfg is None:
+        cfg = AppConfig()
+    cfg.assistant_model = (payload.model or "").strip() or None
+    session.add(cfg)
+    await session.commit()
+    return await get_assistant_settings(session)

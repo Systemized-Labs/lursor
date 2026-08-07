@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.agents.prompt_author import generate_prompt, improve_prompt
+from app.assistant.identity import is_assistant_agent
 from app.db.models import Agent, CustomProvider, Tool
 from app.db.session import get_session
 from app.schemas.agent import (
@@ -100,6 +101,16 @@ async def update_agent(
     agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+    # The Assistant's row is app-owned: its flags are re-asserted on every boot
+    # and its prompt is a code constant, so an edit here would either be silently
+    # undone or would quietly weaken the rules around its destructive tools. Its
+    # one user-settable field is the model, at ``PUT /api/settings/assistant``.
+    if is_assistant_agent(agent):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "The Assistant is configured by the app. Its model is set in "
+            "Settings → Model.",
+        )
 
     data = payload.model_dump(exclude_unset=True, exclude={"tool_ids"})
     for key, value in data.items():
@@ -117,5 +128,10 @@ async def delete_agent(agent_id: str, session: AsyncSession = Depends(get_sessio
     agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+    if is_assistant_agent(agent):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "The Assistant can't be deleted — the app owns it.",
+        )
     await session.delete(agent)
     await session.commit()

@@ -162,13 +162,15 @@ _SEARCH_PARAMETER_DESCRIPTION = (
 )
 
 
-def _deferrable(tool_def: ToolDefinition) -> bool:
+def _deferrable(tool_def: ToolDefinition, core: frozenset[str] = _CORE_TOOLS) -> bool:
     """Whether ``tool_def`` may be hidden until discovered."""
-    return tool_def.name not in _CORE_TOOLS and tool_def.kind not in _UNDEFERRABLE_KINDS
+    return tool_def.name not in core and tool_def.kind not in _UNDEFERRABLE_KINDS
 
 
 def defer_non_core_tools(
-    _ctx: RunContext[Any], tool_defs: list[ToolDefinition]
+    _ctx: RunContext[Any],
+    tool_defs: list[ToolDefinition],
+    core: frozenset[str] = _CORE_TOOLS,
 ) -> list[ToolDefinition]:
     """A ``ToolsPrepareFunc`` that marks every non-core tool ``defer_loading``.
 
@@ -178,9 +180,11 @@ def defer_non_core_tools(
     tools are deferrable, which leaves the tool-search wrapper with nothing to do
     and no ``search_tools`` tool to register.
     """
-    if sum(1 for td in tool_defs if _deferrable(td)) < _MIN_DEFERRABLE:
+    if sum(1 for td in tool_defs if _deferrable(td, core)) < _MIN_DEFERRABLE:
         return tool_defs
-    return [replace(td, defer_loading=True) if _deferrable(td) else td for td in tool_defs]
+    return [
+        replace(td, defer_loading=True) if _deferrable(td, core) else td for td in tool_defs
+    ]
 
 
 @dataclass
@@ -192,24 +196,35 @@ class DeferNonCoreTools(AbstractCapability[Any]):
     are identified structurally by tests (``builder.py``'s read-only and task-roster
     filters are both plain ``PrepareTools``), which an anonymous third one would
     make ambiguous.
+
+    ``core`` is the always-loaded set for this build. It is a field rather than a
+    module constant because one agent — the Assistant — has its own tools to keep
+    hot (``app/assistant/registry.py``), and widening the shared ``_CORE_TOOLS``
+    for its sake would un-defer them for every other agent too.
     """
+
+    core: frozenset[str] = _CORE_TOOLS
 
     async def prepare_tools(
         self, ctx: RunContext[Any], tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
-        return defer_non_core_tools(ctx, tool_defs)
+        return defer_non_core_tools(ctx, tool_defs, self.core)
 
 
-def build_tool_loading_capabilities() -> list[AbstractCapability[Any]]:
+def build_tool_loading_capabilities(
+    *, extra_core: frozenset[str] = frozenset()
+) -> list[AbstractCapability[Any]]:
     """Capabilities that put non-core tools behind ``search_tools``.
 
     Order matters: the deferral marker must be visible *inside* the tool-search
     wrapper, which reads ``defer_loading`` off the toolset it wraps.
     :class:`ToolSearch` declares itself outermost, so appending both in this order
     is enough.
+
+    ``extra_core`` widens the always-loaded set for this build only.
     """
     return [
-        DeferNonCoreTools(),
+        DeferNonCoreTools(core=_CORE_TOOLS | extra_core),
         ToolSearch(
             tool_description=_SEARCH_TOOL_DESCRIPTION,
             parameter_description=_SEARCH_PARAMETER_DESCRIPTION,

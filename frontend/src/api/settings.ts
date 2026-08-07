@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "./client"
 import { modelKeys } from "./models"
 import type {
+  AssistantSettings,
+  AssistantSettingsInput,
   CompactionDefaults,
   CompactionDefaultsInput,
   DefaultAgentsInput,
@@ -49,6 +51,10 @@ export const settingsApi = {
     api.get<CompactionDefaults>("/settings/compaction", signal),
   setCompaction: (input: CompactionDefaultsInput) =>
     api.put<CompactionDefaults>("/settings/compaction", input),
+  getAssistant: (signal?: AbortSignal) =>
+    api.get<AssistantSettings>("/settings/assistant", signal),
+  setAssistant: (input: AssistantSettingsInput) =>
+    api.put<AssistantSettings>("/settings/assistant", input),
 }
 
 export const settingsKeys = {
@@ -58,6 +64,7 @@ export const settingsKeys = {
   media: ["settings", "media"] as const,
   defaultAgents: ["settings", "default-agents"] as const,
   compaction: ["settings", "compaction"] as const,
+  assistant: ["settings", "assistant"] as const,
 }
 
 /**
@@ -202,6 +209,27 @@ export function useSaveDefaultAgents() {
     mutationFn: (input: DefaultAgentsInput) => settingsApi.setDefaultAgents(input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: settingsKeys.defaultAgents })
+    },
+  })
+}
+
+/**
+ * The model the top-level Assistant runs on. Its agent row is app-owned and
+ * hidden from the agent editor, so this is the one knob the UI offers for it.
+ */
+export function useAssistantSettings() {
+  return useQuery({
+    queryKey: settingsKeys.assistant,
+    queryFn: ({ signal }) => settingsApi.getAssistant(signal),
+  })
+}
+
+export function useSaveAssistantSettings() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: AssistantSettingsInput) => settingsApi.setAssistant(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: settingsKeys.assistant })
     },
   })
 }

@@ -32,10 +32,20 @@ export const agentKeys = {
   detail: (id: string) => ["agents", id] as const,
 }
 
+/**
+ * The user's agents — every agent picker, list and settings row reads this.
+ *
+ * The top-level Assistant is filtered out here rather than at each call site.
+ * It is not one of your agents: it can't be edited, deleted, assigned to a
+ * schedule, or picked in a composer, so every consumer would otherwise need the
+ * same guard and one of them would eventually be missed. `is_assistant` is
+ * computed server-side (`schemas/agent.py`).
+ */
 export function useAgents() {
   return useQuery({
     queryKey: agentKeys.all,
     queryFn: ({ signal }) => agentsApi.list(signal),
+    select: (agents) => agents.filter((a) => !a.is_assistant),
   })
 }
 

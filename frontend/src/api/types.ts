@@ -4,6 +4,9 @@ export type ToolChoice = "auto" | "required" | "none"
 
 export interface Agent {
   id: string
+  /** The top-level Assistant. App-owned: not editable, not deletable, and
+   *  filtered out of every agent picker. Its model lives in Settings → Model. */
+  is_assistant?: boolean
   name: string
   description: string
   model: string | null
@@ -382,6 +385,10 @@ export interface Workspace {
   // App-owned workspace (the skills catalog). Computed from the path server
   // side; can be renamed but not deleted or relocated.
   is_system: boolean
+  // The Assistant's own scratch workspace. Unlike the skills catalog this is
+  // not a project at all — it is filtered out of the sidebar entirely, because
+  // the Assistant is reached from its overlay rather than from the tree.
+  is_assistant?: boolean
   // Sidebar placement: the {@link WorkspaceFolder} this row is filed under (null
   // at the root level), and its slot among its siblings there.
   folder_id: string | null
@@ -1585,4 +1592,18 @@ export interface HermesIntegration {
   install_command: string
   enable_command: string
   detail: string
+}
+
+/** The model the top-level Assistant runs on (`GET /settings/assistant`). */
+export interface AssistantSettings {
+  /** What a run will actually use — the saved value, or the shipped default. */
+  model: string
+  /** What clearing the setting reverts to, so the picker can name it. */
+  default_model: string
+  source: "database" | "default"
+}
+
+export interface AssistantSettingsInput {
+  /** Blank clears the override and reverts to `default_model`. */
+  model: string | null
 }

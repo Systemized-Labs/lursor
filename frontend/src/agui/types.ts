@@ -81,3 +81,21 @@ export interface AgentGoalStatus {
   /** Plan mode: workspace-relative path of the doc this run wrote (else ""). */
   planPath: string
 }
+
+/** How a destructive-action confirmation ended up (see `stream-reader`). */
+export type AssistantConfirmStatus = "pending" | "approved" | "denied" | "timeout"
+
+/**
+ * One confirmation card from the Assistant. The backend publishes it as a
+ * sticky CUSTOM event and republishes it under the same token when it settles,
+ * so the store keys these by `token` and lets the last write win.
+ */
+export interface AssistantConfirm {
+  token: string
+  /** The tool waiting on this, e.g. "lursor_delete_workspace". */
+  action: string
+  summary: string
+  /** What else goes with it, in the user's terms. */
+  impact: string
+  status: AssistantConfirmStatus
+}

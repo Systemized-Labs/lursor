@@ -688,6 +688,16 @@ class AppConfig(TimestampMixin, table=True):
     # than the (possibly heavy or offline) thread agent's model.
     compaction_model: str | None = None
 
+    # Which model the top-level Assistant runs on (see ``app/assistant/``). Null
+    # means the shipped default, ``assistant.identity.DEFAULT_ASSISTANT_MODEL``.
+    #
+    # It lives here rather than on the Assistant's own agent row because that row
+    # is app-owned and hidden from the agent editor: the model is the single knob
+    # the UI offers, and Settings → Model is where the user looks for it. Keeping
+    # the row's ``model`` column null keeps one source of truth instead of two
+    # that can disagree.
+    assistant_model: str | None = None
+
     # App-wide compaction defaults, editable from the Settings page: how full the
     # context window gets before compaction fires, and how much of the history it
     # folds into the summary (see ``agents/context_budget.py``). These are the

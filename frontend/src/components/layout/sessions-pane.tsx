@@ -1,5 +1,6 @@
-import { useEffect, useMemo } from "react"
+import { useCallback, useEffect, useMemo } from "react"
 import {
+  Lightning,
   MagnifyingGlass,
   NotePencil,
   SlidersHorizontal,
@@ -9,6 +10,7 @@ import {
 import type { Icon } from "@phosphor-icons/react"
 
 import type { Workspace } from "@/api/types"
+import { useAssistantOverlay } from "@/components/assistant/use-assistant-overlay"
 import { Button } from "@/components/ui/button"
 import { useSidebar } from "@/components/ui/sidebar"
 import { ConversationRow } from "@/components/layout/sessions/conversation-row"
@@ -86,6 +88,8 @@ export function SessionsPane({
   handlers,
 }: SessionsPaneProps) {
   const { isMobile, setOpenMobile } = useSidebar()
+  const { setOpen: setAssistantOpen } = useAssistantOverlay()
+  const openAssistant = useCallback(() => setAssistantOpen(true), [setAssistantOpen])
 
   // ⌘N → a new chat. Electron only, for the same reason `use-workspace-switch`
   // refuses ⌘1–⌘9 in a browser: ⌘N is the browser's "new window" and is not ours
@@ -156,6 +160,15 @@ export function SessionsPane({
           label="Search"
           shortcut="⌘K"
           onClick={onSearch}
+        />
+        {/* Reads its own open state rather than taking a callback: the overlay
+            is global, so nothing between here and the shell needs to carry it
+            (see `use-assistant-overlay`). */}
+        <NavRow
+          icon={Lightning}
+          label="Assistant"
+          shortcut="⌘⇧A"
+          onClick={openAssistant}
         />
       </div>
 

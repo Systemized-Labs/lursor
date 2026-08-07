@@ -47,11 +47,29 @@ export function useAllThreads(): AllThreads {
   const threadsQuery = useAllThreadsQuery()
   const workspacesQuery = useWorkspaces()
 
+  // The Assistant's scratch workspace is dropped before anything downstream
+  // sees it. Unlike the Skill Studio — which is a system workspace the sidebar
+  // still pins as a row — the Assistant is not a place you navigate to at all;
+  // it lives in its overlay. Filtering here rather than per surface keeps a
+  // stray row out of `allWorkspaces`, `workspaceIds` and the command palette in
+  // one move.
   const allWorkspaces = useMemo(
-    () => workspacesQuery.data ?? [],
+    () => (workspacesQuery.data ?? []).filter((ws) => !ws.is_assistant),
     [workspacesQuery.data]
   )
-  const threads = useMemo(() => threadsQuery.data ?? [], [threadsQuery.data])
+  const assistantWorkspaceId = useMemo(
+    () => workspacesQuery.data?.find((ws) => ws.is_assistant)?.id,
+    [workspacesQuery.data]
+  )
+  // Its conversations go with it: they are reached from the overlay's own
+  // history, not from the sidebar.
+  const threads = useMemo(
+    () =>
+      (threadsQuery.data ?? []).filter(
+        (t) => t.workspace_id !== assistantWorkspaceId
+      ),
+    [threadsQuery.data, assistantWorkspaceId]
+  )
 
   const byWorkspace = useMemo(() => {
     const buckets = new Map<string, Thread[]>()

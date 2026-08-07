@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, Field
 
 from app.agents.prompt_author import AgentPromptContext
+from app.assistant.identity import is_assistant_agent
 from app.db.models import Agent, ThinkingLevel, ToolChoice
 from app.schemas._types import UTCDatetime
 
@@ -87,6 +88,10 @@ class PromptResult(BaseModel):
 
 class AgentRead(BaseModel):
     id: str
+    # Computed, not stored: this row is the top-level Assistant
+    # (``app/assistant/``). The app owns it — it can't be deleted or edited, its
+    # model is set in Settings → Model, and every picker filters it out.
+    is_assistant: bool = False
     name: str
     description: str
     model: str | None
@@ -113,6 +118,7 @@ class AgentRead(BaseModel):
     def from_agent(cls, agent: Agent) -> AgentRead:
         return cls(
             id=agent.id,
+            is_assistant=is_assistant_agent(agent),
             name=agent.name,
             description=agent.description,
             model=agent.model,

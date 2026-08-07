@@ -7,7 +7,8 @@ import { isElectron, isMacElectron } from "@/lib/platform"
  * component that handles it: `command-palette` owns ⌘K, `pane-host` owns ⌘1–⌘9
  * (pane tabs), ⌘←/⌘→ (cycle tabs) and ⌘W (close pane), `sessions-pane` owns ⌘N (new chat),
  * `use-workspace-switch` owns the double-⌘ tap and ⌘⇧1–⌘⇧9 (workspace by position),
- * `editor-pane` owns find/replace, dockview owns pane maximize.
+ * `use-assistant-overlay` owns ⌘⇧A, `editor-pane` owns find/replace, dockview
+ * owns pane maximize.
  *
  * The plan called this "a table over the keybind registry"; there is no registry,
  * and inventing one would mean rewriting nine unrelated key handlers to serve a
@@ -64,6 +65,11 @@ export const SHORTCUTS: Shortcut[] = [
   {
     keys: `${chord(MOD, "]")} / ${chord(MOD, "[")}`,
     description: "Cycle the command palette's filter",
+    group: "Navigation",
+  },
+  {
+    keys: chord(MOD, SHIFT, "A"),
+    description: "Open the Assistant from anywhere",
     group: "Navigation",
   },
   {

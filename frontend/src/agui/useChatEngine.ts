@@ -264,6 +264,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
       onToolResult: (toolCallId, result) => s().setToolResult(toolCallId, result),
       onTodos: (next) => s().setTodos(next),
       onGoalStatus: (next) => s().setGoalStatus(next),
+      onAssistantConfirm: (next) => s().setConfirm(next),
       onError: (message) => s().setError(message),
     }
   }, [store, resolveAssistantId])

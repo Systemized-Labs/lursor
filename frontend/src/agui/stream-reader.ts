@@ -1,7 +1,14 @@
 import { authHeaders } from "@/api/client"
 
 import { streamUrl } from "./agent"
-import type { AgentGoalStatus, AgentTodo, GoalRunStatus, TodoStatus } from "./types"
+import type {
+  AgentGoalStatus,
+  AgentTodo,
+  AssistantConfirm,
+  AssistantConfirmStatus,
+  GoalRunStatus,
+  TodoStatus,
+} from "./types"
 
 const TODO_STATUSES: TodoStatus[] = [
   "pending",
@@ -20,11 +27,45 @@ const GOAL_STATUSES: GoalRunStatus[] = [
   "stopped",
 ]
 
+const ASSISTANT_CONFIRM_STATUSES: AssistantConfirmStatus[] = [
+  "pending",
+  "approved",
+  "denied",
+  "timeout",
+]
+
 /** The name of the AG-UI CUSTOM event carrying the agent's live todo list. */
 export const TODOS_EVENT_NAME = "todos"
 
 /** The name of the AG-UI CUSTOM event carrying goal lifecycle updates. */
 export const GOAL_STATUS_EVENT_NAME = "goal_status"
+
+/**
+ * The name of the AG-UI CUSTOM event carrying the Assistant's confirmation card
+ * for a destructive action (see `backend/app/assistant/confirm.py`).
+ */
+export const ASSISTANT_CONFIRM_EVENT_NAME = "assistant_confirm"
+
+/**
+ * Normalizes the `value` of an `assistant_confirm` CUSTOM event. Tolerant of
+ * missing fields like its siblings — a card we can't read must not take the
+ * stream down, and a token is the only part we truly can't do without.
+ */
+export function parseAssistantConfirm(value: unknown): AssistantConfirm | null {
+  if (!value || typeof value !== "object") return null
+  const v = value as Record<string, unknown>
+  if (typeof v.token !== "string" || !v.token) return null
+  const status = ASSISTANT_CONFIRM_STATUSES.includes(v.status as AssistantConfirmStatus)
+    ? (v.status as AssistantConfirmStatus)
+    : "pending"
+  return {
+    token: v.token,
+    action: typeof v.action === "string" ? v.action : "",
+    summary: typeof v.summary === "string" ? v.summary : "Confirm this action",
+    impact: typeof v.impact === "string" ? v.impact : "",
+    status,
+  }
+}
 
 /**
  * Normalizes the `value` of a `goal_status` CUSTOM event. Tolerant of missing
@@ -97,6 +138,11 @@ export interface ChatEventHandlers {
   onToolResult: (toolCallId: string, result: string) => void
   onTodos: (todos: AgentTodo[]) => void
   onGoalStatus: (status: AgentGoalStatus) => void
+  /**
+   * A confirmation card from the Assistant, or its outcome. Keyed by token and
+   * republished under the same sticky key when it settles, so the last one wins.
+   */
+  onAssistantConfirm: (confirm: AssistantConfirm) => void
   onError: (message: string) => void
 }
 
@@ -266,6 +312,9 @@ function dispatch(
       } else if (event.name === GOAL_STATUS_EVENT_NAME) {
         const goal = parseGoalStatus(event.value)
         if (goal) handlers.onGoalStatus(goal)
+      } else if (event.name === ASSISTANT_CONFIRM_EVENT_NAME) {
+        const confirm = parseAssistantConfirm(event.value)
+        if (confirm) handlers.onAssistantConfirm(confirm)
       }
       break
     }
