@@ -30,6 +30,10 @@ import type { AgentScope, CommandAction } from "@/components/chat/commands/types
 import { useWorkspaceChatMentionSources } from "@/components/chat/mentions/sources"
 import { useSettingsParam } from "@/components/settings/use-settings-param"
 import { requestOpenFile } from "@/lib/open-file"
+import {
+  consumePendingSendToChat,
+  subscribeSendToChat,
+} from "@/lib/send-to-chat"
 import type { NewAgentLaunch } from "@/pages/new-agent/new-agent-page"
 import type { PendingAttachment } from "@/agui/types"
 import type { DefaultAgentsSettings } from "@/api/types"
@@ -60,6 +64,16 @@ interface WorkspaceChatPageProps {
    * counts; see `PaneParams.preview`. Absent on mobile, which has no panes.
    */
   onCommit?: () => void
+  /**
+   * Whether this is the visible chat surface. Hidden chat panes stay mounted
+   * (`renderer: "always"` in `pane-kinds.ts`), so a cross-pane request parked for
+   * "the chat the user is looking at" (a commit summary) must only be answered by
+   * the active one — same visibility guard the Files editor uses (`file-viewer`).
+   *
+   * Required: PaneContent supplies it on both desktop (the pane's visibility) and
+   * mobile (hardcoded — a phone has exactly one chat surface).
+   */
+  active: boolean
 }
 
 /**
@@ -81,6 +95,7 @@ export function WorkspaceChatPage({
   onThreadChange,
   onDetail,
   onCommit,
+  active,
 }: WorkspaceChatPageProps) {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
@@ -160,6 +175,23 @@ export function WorkspaceChatPage({
     // render, and only its members are memoised.
     [engineSend, onCommit]
   )
+
+  // Commit summaries parked by the Changes panel. Only the visible chat pane
+  // consumes — hidden panes stay mounted (renderer: "always"), so an unguarded
+  // page could swallow the request and send it to a conversation nobody's
+  // looking at. The shell focuses a chat pane first; this one — now active —
+  // picks the request up.
+  useEffect(() => {
+    if (!active) return
+    const trySend = () => {
+      const request = consumePendingSendToChat(workspaceId)
+      if (!request) return
+      void send(request.text, [])
+    }
+    trySend()
+    return subscribeSendToChat(trySend)
+  }, [active, workspaceId, send])
+
 
   // Reactive slices of chat state. Each is low-frequency (start/end/settle), so
   // subscribing here never re-renders the page per streamed token.
@@ -328,6 +360,16 @@ export function WorkspaceChatPage({
     return { id: runId, name: agentNameById.get(runId) }
   }
 
+  // The agent a turn with no command of its own runs under. Normally the thread's
+  // selected agent, but a manual override wins: while a plan is parked the picker
+  // only ever sets an override (the parked thread counts as an implicit `/goal`),
+  // so without this a plain refinement turn would silently run as the plan agent
+  // while the composer showed the one the user had just picked.
+  function agentForPlainTurn(): { id: string; name?: string } {
+    const id = agentOverride ?? selectedAgentId
+    return { id, name: agentNameById.get(id) }
+  }
+
   // The composer's agent picker. While a slash command is queued — or a plan is
   // parked for review (an implicit `/goal`) — picking an agent other than that
   // command's default overrides it for this one turn (never persisted); picking
@@ -406,12 +448,7 @@ export function WorkspaceChatPage({
         setDraft(text)
         return
       }
-      // Annotated to match agentForCommand's return type, which leaves `name`
-      // optional — inference from this initializer alone would make it required.
-      let turnAgent: { id: string; name?: string } = {
-        id: selectedAgentId,
-        name: agentNameById.get(selectedAgentId),
-      }
+      let turnAgent = agentForPlainTurn()
       if (command.agentKey) {
         // A sticky command (`/plan`) persists its agent to the thread here; a
         // one-off command (`/ask`, `/goal`) just picks the agent to run this turn
@@ -439,10 +476,7 @@ export function WorkspaceChatPage({
     // A plain message sends a normal `chat` turn. When a plan is parked the
     // backend treats that turn as a refinement of the plan doc (not an
     // implementation); the user presses "Execute plan" to carry it out.
-    await send(text, atts, "chat", undefined, {
-      id: selectedAgentId,
-      name: agentNameById.get(selectedAgentId),
-    })
+    await send(text, atts, "chat", undefined, agentForPlainTurn())
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

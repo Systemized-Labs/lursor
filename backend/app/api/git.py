@@ -26,19 +26,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 from watchfiles import awatch
 
+from app.agents.committer import generate_commit_message
 from app.api.github import _run_git
-from app.db.models import Workspace
+from app.config import get_settings
+from app.db.models import CustomProvider, Workspace
 from app.db.session import async_session_factory, get_session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/git", tags=["git"])
 
@@ -140,6 +147,65 @@ class GitBranches(BaseModel):
 
 class CheckoutInput(BaseModel):
     branch: str
+
+
+class CommitPushInput(BaseModel):
+    """What the Changes panel's "Commit & Push" button wants done.
+
+    ``message`` is optional and normally absent: the whole point of the button
+    is that the user does *not* compose — the backend asks a model to write the
+    message from the staged diff (with a stats-based fallback). The field stays
+    as an explicit override, which is also what keeps the test-suite offline.
+
+    ``repo`` restricts the commit to one repository, addressed by its
+    workspace-relative path (``""`` addresses a repo at the workspace root
+    itself). Absent: every repo with changes gets its own commit — a workspace
+    often holds several sibling repos in subdirectories.
+    """
+
+    message: str | None = None
+    push: bool = True
+    repo: str | None = None
+
+
+class RepoCommitResult(BaseModel):
+    """One repo's outcome of a commit-push. A workspace can hold several repos
+    in subdirectories, so the endpoint's result is a list of these — one per
+    repo that had something to commit."""
+
+    repo: str  # workspace-relative repo root ("" when the repo is the root)
+    commit_hash: str  # short
+    branch: str | None
+    message: str  # the message actually committed (override or generated)
+    files_changed: int
+    additions: int
+    deletions: int
+    pushed: bool
+    push_error: str | None = None
+
+
+class CommitPushResult(BaseModel):
+    """One commit per dirty repo. Clean repos are skipped silently; a failed
+    push after a successful commit reports on its repo's entry — the commit
+    stands either way, so both facts report separately."""
+
+    commits: list[RepoCommitResult]
+
+
+@dataclass
+class _StagedRepo:
+    """A repo swept by ``git add -A`` during a commit-push, holding what its
+    index now says will be committed — the stats the response reports, and the
+    diff the message writer reads."""
+
+    path: Path
+    rel: str  # workspace-relative repo root ("" when the repo is the root)
+    files_changed: int
+    additions: int
+    deletions: int
+    staged_paths: list[str]
+    stat: str = ""
+    patch: str = ""
 
 
 async def _workspace_root(workspace_id: str, session: AsyncSession) -> Path:
@@ -519,6 +585,206 @@ async def checkout_branch(
             err.strip() or f"Failed to switch to '{branch}'",
         )
     return await _list_branches(repo)
+
+@router.post("/commit-push", response_model=CommitPushResult)
+async def commit_and_push(
+    workspace_id: str,
+    payload: CommitPushInput,
+    session: AsyncSession = Depends(get_session),
+) -> CommitPushResult:
+    """Stage everything, commit, and (usually) push — in *every* repo under the
+    workspace that has changes (or only ``payload.repo`` when one is named).
+
+    Exists because the Changes panel's commit button must not drop the user to
+    a terminal: one click is ``git add -A && git commit && git push`` with the
+    numbers a chat summary wants reported back. A workspace often isn't one
+    repo at its root but several sibling repos in subdirectories, and a commit
+    can never span repositories — so each dirty repo gets its own commit, with
+    a message composed from *that* repo's staged diff. Clean repos are skipped;
+    "No changes to commit" means no targeted repo had anything.
+
+    Staging and the staged stats come *before* any commit, so "nothing staged"
+    is answered by our own count rather than by parsing git's stderr.
+
+    A failed push is deliberately *not* an error response: the commit is real
+    work that already landed in the repo, and failing the request here would
+    only tempt the client into retrying — and so committing twice. The repo's
+    result carries ``pushed: false`` with git's error instead (and one repo's
+    failed push never blocks the next repo), and the UI turns that into a
+    warning, not an exception.
+
+    The commit message is normally *generated*: the panel offers no input, so
+    when the caller sends no message the backend composes one per repo via
+    :func:`app.agents.committer.generate_commit_message`, falling back to a
+    stats-based subject when the model is unreachable. An explicit ``message``
+    in the payload always wins (and keeps tests offline).
+
+    Push attempts are safe against hanging: ``_run_git`` runs with
+    ``GIT_TERMINAL_PROMPT=0``, so missing credentials fail instead of blocking
+    on a prompt.
+    """
+    root = await _workspace_root(workspace_id, session)
+    repos = _find_repos(root)
+    if not repos:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Workspace has no git repository"
+        )
+
+    # Restrict to one repo when the caller names it: workspace-relative path,
+    # "" addressing a repo at the workspace root itself.
+    if payload.repo is not None:
+        wanted = payload.repo.strip("/")
+        repos = [
+            repo
+            for repo in repos
+            if ("" if repo == root else repo.relative_to(root).as_posix()) == wanted
+        ]
+        if not repos:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"No git repository at '{payload.repo or '.'}' in this workspace",
+            )
+
+    override = (payload.message or "").strip()
+
+    # Stage and measure, per repo. Everything the panel promises is `add -A` +
+    # the index's diff — reading the staged numstat *before* committing means
+    # "nothing to commit" is answered by our own count, not git's stderr.
+    staged: list[_StagedRepo] = []
+    for repo in repos:
+        cwd = str(repo)
+        rc, _, err = await _run_git("add", "-A", cwd=cwd)
+        if rc != 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, err.strip() or "git add failed"
+            )
+        # -z keeps paths unquoted and NUL-separated; --no-renames (as in the
+        # diff endpoints) means no two-path records; a binary row reports
+        # "-\t-", which counts 0/0.
+        _, numstat, _ = await _run_git(
+            "diff", "--cached", "--numstat", "-z", "--no-renames", cwd=cwd
+        )
+        files_changed = additions = deletions = 0
+        staged_paths: list[str] = []
+        for record in numstat.split("\0"):
+            if not record:
+                continue
+            parts = record.split("\t", 2)
+            if len(parts) != 3:
+                continue
+            add, delete, path = parts
+            files_changed += 1
+            staged_paths.append(path)
+            additions += int(add) if add.isdigit() else 0
+            deletions += int(delete) if delete.isdigit() else 0
+        if files_changed == 0:
+            continue
+        entry = _StagedRepo(
+            path=repo,
+            rel="" if repo == root else repo.relative_to(root).as_posix(),
+            files_changed=files_changed,
+            additions=additions,
+            deletions=deletions,
+            staged_paths=staged_paths,
+        )
+        if not override:
+            # The model writes from the staged change itself — a per-repo
+            # stat/patch, so a multi-repo workspace's commits each describe
+            # their own repo rather than the whole workspace blur.
+            _, entry.stat, _ = await _run_git("diff", "--cached", "--stat", cwd=cwd)
+            _, entry.patch, _ = await _run_git(
+                "diff", "--cached", "--unified=1", "--no-color", cwd=cwd
+            )
+        staged.append(entry)
+
+    if not staged:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No changes to commit")
+
+    # Messages: an explicit override covers every repo (the test path);
+    # otherwise compose one per repo, concurrently — the same one-shot model
+    # that titles conversations, pointed at each repo's staged change.
+    if override:
+        messages = [override] * len(staged)
+    else:
+        providers = (await session.execute(select(CustomProvider))).scalars().all()
+        custom_providers = {p.id: p for p in providers}
+        model_str = get_settings().default_title_model
+
+        async def compose(entry: _StagedRepo) -> str:
+            # Best-effort, like titling: a model outage must not make the
+            # button unusable, hence the stats fallback.
+            try:
+                message = await generate_commit_message(
+                    entry.stat, entry.patch, model_str, custom_providers
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "commit message generation failed, falling back: %s", exc
+                )
+                message = ""
+            return message or _fallback_commit_message(entry.staged_paths)
+
+        messages = list(await asyncio.gather(*(compose(s) for s in staged)))
+
+    # Commit, then push, per repo.
+    commits: list[RepoCommitResult] = []
+    for entry, message in zip(staged, messages):
+        cwd = str(entry.path)
+        # -m carries the message as a single subprocess arg — no shell, so no
+        # quoting or escaping ever comes into it.
+        rc, _, err = await _run_git("commit", "-m", message, cwd=cwd)
+        if rc != 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, err.strip() or "Commit failed"
+            )
+
+        _, hash_out, _ = await _run_git("rev-parse", "--short", "HEAD", cwd=cwd)
+        _, branch_out, _ = await _run_git(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd=cwd
+        )
+
+        pushed = False
+        push_error: str | None = None
+        if payload.push:
+            rc, _, err = await _run_git("push", cwd=cwd)
+            if rc == 0:
+                pushed = True
+            else:
+                push_error = err.strip() or "git push failed"
+
+        commits.append(
+            RepoCommitResult(
+                repo=entry.rel,
+                commit_hash=hash_out.strip(),
+                branch=branch_out.strip() or None,
+                message=message,
+                files_changed=entry.files_changed,
+                additions=entry.additions,
+                deletions=entry.deletions,
+                pushed=pushed,
+                push_error=push_error,
+            )
+        )
+
+    return CommitPushResult(commits=commits)
+
+
+def _fallback_commit_message(paths: list[str]) -> str:
+    """Stats-based subject for when the model can't write one.
+
+    The single path, or the first path and a count, so the log still says
+    *what* changed without inventing prose. Deterministic — and therefore also
+    what the tests see when generation is stubbed out.
+    """
+    if not paths:
+        return "Update files"
+    first = paths[0]
+    rest = len(paths) - 1
+    if rest == 0:
+        return f"Update {first}"
+    return f"Update {first} and {rest} other{'s' if rest != 1 else ''}"
+
+
 
 
 def _is_git_state_change(path: str) -> bool:

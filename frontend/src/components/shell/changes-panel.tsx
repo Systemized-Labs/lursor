@@ -16,14 +16,27 @@ import {
   GitBranch,
   Devices,
   ArrowsClockwise,
+  ArrowUp,
+  Check,
+  CircleNotch,
 } from "@phosphor-icons/react"
+import { toast } from "sonner"
 
 import { fileKind } from "@/components/files/file-icon"
-import { useGitDiff, gitKeys, type ChangedFile } from "@/api/git"
+import {
+  useBranches,
+  useCheckoutBranch,
+  useCommitAndPush,
+  useGitDiff,
+  gitKeys,
+  type ChangedFile,
+  type RepoCommitResult,
+} from "@/api/git"
 import { useFileWatch } from "@/hooks/use-file-watch"
 import { useGitWatch } from "@/hooks/use-git-watch"
 import { parseDiff, type DiffLine, type DiffHunk } from "@/lib/parse-diff"
 import { highlightLine, langFromPath, type Token } from "@/lib/syntax-highlight"
+import { requestSendToChat } from "@/lib/send-to-chat"
 import { cn } from "@/lib/utils"
 
 // Coalesce bursts of edits (an agent can touch dozens of files in a second) into
@@ -59,6 +72,10 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
       qc.invalidateQueries({ queryKey: gitKeys.diff(workspaceId) })
+      // The header branch label and its picker read the branches query, which a
+      // branch switch (e.g. one made in a terminal outside the app) changes just
+      // as much as the diff — keep it in the same refresh so the label can't lag.
+      qc.invalidateQueries({ queryKey: gitKeys.branches(workspaceId) })
     }, REFRESH_DEBOUNCE_MS)
   }, [qc, workspaceId])
   useFileWatch(workspaceId, scheduleRefresh)
@@ -88,9 +105,49 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
   )
   const collapseAll = useCallback(() => setExpanded(new Set()), [])
 
+  // Per-group collapse state for the directory headers, keyed by the top-level
+  // segment. Mirror of the per-file set, inverted: groups start *expanded*, so we
+  // track the ones the user collapsed. It too survives the auto-refetches, which
+  // keep the panel's grouping stable while new files arrive.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set()
+  )
+  const toggleGroup = useCallback((dir: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(dir)) next.delete(dir)
+      else next.add(dir)
+      return next
+    })
+  }, [])
+
+  // Scan grouping: files at the repo root list first, ungrouped; everything
+  // else folds under its top-level directory, groups sorted by name.
+  const { rootFiles, groups } = useMemo(() => {
+    const rootFiles: ChangedFile[] = []
+    const byDir = new Map<string, ChangedFile[]>()
+    for (const file of files ?? []) {
+      const slash = file.path.indexOf("/")
+      if (slash === -1) {
+        rootFiles.push(file)
+      } else {
+        const dir = file.path.slice(0, slash)
+        const existing = byDir.get(dir)
+        if (existing) existing.push(file)
+        else byDir.set(dir, [file])
+      }
+    }
+    const groups = [...byDir.entries()]
+      .sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase()))
+      .map(([dir, dirFiles]) => ({ dir, files: dirFiles }))
+    return { rootFiles, groups }
+  }, [files])
+
   // A workspace can hold several repos (e.g. a nested `swarmcore-ui/`); show the
-  // lone repo's branch, or a repo count when there's more than one.
+  // lone repo's branch as a picker, or a repo count when there's more than one
+  // (a picker can't check out "the primary of several" without lying about it).
   const repoCount = data?.repos.length ?? 0
+  const singleRepo = data?.is_repo === true && repoCount === 1
   const branch = repoCount > 1 ? `${repoCount} repos` : (data?.branch ?? "—")
   const fileCount = files?.length ?? 0
 
@@ -102,10 +159,15 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
           <Devices className="h-3.5 w-3.5" />
           Local
         </span>
-        <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
-          <GitBranch className="h-3 w-3 shrink-0" />
-          {branch}
-        </span>
+        {singleRepo && workspaceId ? (
+          <BranchPicker workspaceId={workspaceId} />
+        ) : (
+          // Inert label when a picker can't apply (multi-repo or not a repo).
+          <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
+            <GitBranch className="h-3 w-3 shrink-0" />
+            {branch}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => refetch()}
@@ -180,7 +242,7 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
         />
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto">
-          {data.files.map((file) => (
+          {rootFiles.map((file) => (
             <FileDiff
               key={file.path}
               file={file}
@@ -188,7 +250,23 @@ export function ChangesPanel({ workspaceId }: ChangesPanelProps) {
               onToggle={toggleFile}
             />
           ))}
+          {groups.map((group) => (
+            <DirectoryGroup
+              key={group.dir}
+              dir={group.dir}
+              files={group.files}
+              collapsed={collapsedGroups.has(group.dir)}
+              onToggle={toggleGroup}
+              expanded={expanded}
+              onToggleFile={toggleFile}
+            />
+          ))}
         </div>
+      )}
+
+      {/* Commit & push box — only when there's something to commit. */}
+      {data?.is_repo && fileCount > 0 && workspaceId && (
+        <CommitBox workspaceId={workspaceId} />
       )}
     </div>
   )
@@ -250,6 +328,22 @@ function FileDiff({
           <span className="text-foreground">{name}</span>
         </span>
         <span className="ml-auto flex items-center gap-2 pl-2 font-mono text-xs">
+          {/* Thin add/delete ratio bar, proportional to this file's numbers —
+              a flat muted bar for binary files (nothing counted). */}
+          <span
+            className="flex h-1 w-10 shrink-0 overflow-hidden rounded-full bg-muted"
+            title={`+${file.additions} / -${file.deletions}`}
+          >
+            {file.additions + file.deletions > 0 && (
+              <>
+                <span className="bg-success" style={{ flexGrow: file.additions }} />
+                <span
+                  className="bg-destructive"
+                  style={{ flexGrow: file.deletions }}
+                />
+              </>
+            )}
+          </span>
           {file.additions > 0 && (
             <span className="text-success">+{file.additions}</span>
           )}
@@ -284,6 +378,244 @@ function FileDiff({
     </div>
   )
 }
+
+
+/**
+ * The header's branch label as a working picker: click for the primary repo's
+ * branches (local first, then remote-only), pick one to check it out. A compact
+ * inline dropdown — the h-9 panel header can't host the New Agent page's
+ * searchable `BranchSelector` and its styling.
+ */
+function BranchPicker({ workspaceId }: { workspaceId: string }) {
+  const branchesQuery = useBranches(workspaceId)
+  const checkout = useCheckoutBranch(workspaceId)
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  const branches = branchesQuery.data?.branches ?? []
+  const current = branchesQuery.data?.current ?? null
+
+  // Close on outside click / Escape — the BranchSelector pattern.
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("mousedown", onDown)
+    document.addEventListener("keydown", onKey)
+    return () => {
+      document.removeEventListener("mousedown", onDown)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [open])
+
+  async function selectBranch(name: string) {
+    setOpen(false)
+    if (name === current) return
+    try {
+      // The hook invalidates branches + diff on success, so the rest of the
+      // panel (label, file list) refreshes itself.
+      await checkout.mutateAsync(name)
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : `Failed to switch to ${name}`
+      )
+    }
+  }
+
+  return (
+    <div ref={rootRef} className="relative min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={checkout.isPending}
+        title="Switch branch"
+        className="flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+      >
+        <GitBranch className="h-3 w-3 shrink-0" />
+        <span className="max-w-[10rem] truncate">{current ?? "—"}</span>
+        <CaretDown
+          className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-180")}
+        />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 max-h-64 w-56 overflow-y-auto rounded-md border border-border/60 bg-popover py-1 shadow-lg">
+          {branchesQuery.isLoading ? (
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading…</p>
+          ) : branches.length === 0 ? (
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">
+              No branches.
+            </p>
+          ) : (
+            branches.map((b) => {
+              const isCurrent = !b.remote && b.name === current
+              return (
+                <button
+                  key={b.remote ? `${b.remote}/${b.name}` : b.name}
+                  type="button"
+                  onClick={() => void selectBranch(b.name)}
+                  className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent"
+                >
+                  <span className="flex-1 truncate">
+                    {b.remote ? (
+                      <>
+                        <span className="text-muted-foreground">{b.remote}/</span>
+                        {b.name}
+                      </>
+                    ) : (
+                      b.name
+                    )}
+                  </span>
+                  {isCurrent && (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />
+                  )}
+                </button>
+              )
+            })
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A collapsible top-level-directory group of changed files. */
+function DirectoryGroup({
+  dir,
+  files,
+  collapsed,
+  onToggle,
+  expanded,
+  onToggleFile,
+}: {
+  dir: string
+  files: ChangedFile[]
+  collapsed: boolean
+  onToggle: (dir: string) => void
+  expanded: Set<string>
+  onToggleFile: (path: string) => void
+}) {
+  return (
+    <div>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        onClick={() => onToggle(dir)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            onToggle(dir)
+          }
+        }}
+        className="flex items-center gap-1.5 border-b border-border/40 bg-muted/30 px-2 py-1.5 cursor-pointer hover:bg-accent/40"
+      >
+        {collapsed ? (
+          <CaretRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <CaretDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="truncate text-xs font-medium text-foreground">{dir}/</span>
+        <span className="ml-auto shrink-0 rounded-full bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+          {files.length}
+        </span>
+      </div>
+      {!collapsed &&
+        files.map((file) => (
+          <FileDiff
+            key={file.path}
+            file={file}
+            open={expanded.has(file.path)}
+            onToggle={onToggleFile}
+          />
+        ))}
+    </div>
+  )
+}
+
+/**
+ * The panel footer's commit box: one click — the backend stages everything in
+ * every repo with changes (a workspace can hold several repos in
+ * subdirectories, and a commit can't span repositories, so each dirty repo
+ * gets its own commit), the agent composes each message from that repo's
+ * staged diff, the commits are made and pushed, and the result lands as a
+ * summary in the open chat pane (which the shell focuses on the parked
+ * request). A failed push keeps the commit — the summary says so, and the
+ * toast is a success, not an error.
+ *
+ * Deliberately *no message input*: composing the message is the agent's job —
+ * that is the point of the button.
+ */
+function CommitBox({ workspaceId }: { workspaceId: string }) {
+  const commitPush = useCommitAndPush(workspaceId)
+  const busy = commitPush.isPending
+
+  async function submit() {
+    if (busy) return
+    try {
+      const result = await commitPush.mutateAsync({})
+      requestSendToChat({ workspaceId, text: commitSummary(result.commits) })
+      toast.success("Committed — summary sent to chat")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Commit failed")
+    }
+  }
+
+  return (
+    <div className="shrink-0 border-t border-border/40 px-2 py-2">
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={busy}
+        title="Stage everything, have the agent write the commit message, commit and push"
+        className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+      >
+        {busy ? (
+          <CircleNotch className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <ArrowUp className="h-3.5 w-3.5" />
+        )}
+        {busy ? "Composing & committing…" : "Commit & Push"}
+      </button>
+    </div>
+  )
+}
+
+/** The chat-ready summary of a commit-push: what landed, where, and whether
+ *  the push made it. One commit repos reads as a single sentence; a workspace
+ *  with several dirty repos reads as a bullet list — one line per repo, so a
+ *  failed push on one is unmistakable. */
+function commitSummary(commits: RepoCommitResult[]): string {
+  const stats = (c: RepoCommitResult) =>
+    `${c.files_changed} file${c.files_changed === 1 ? "" : "s"}, +${c.additions}/-${c.deletions}`
+
+  // git's push-failure stderr rambles into usage hints — the first line
+  // ("fatal: No configured push destination…") is the part worth putting in chat.
+  const firstLine = (text: string | null) => (text ?? "").split("\n", 1)[0]
+  if (commits.length === 1) {
+    const c = commits[0]
+    const where = c.repo === "" ? `\`${c.branch}\`` : `\`${c.repo}\` @ \`${c.branch}\``
+    return c.pushed
+      ? `📦 Committed and pushed ${c.commit_hash} to ${where}: ${c.message} (${stats(c)})`
+      : `⚠️ Committed ${c.commit_hash} on ${where}: ${c.message} — push failed: ${firstLine(c.push_error)} (${stats(c)})`
+  }
+
+  const failed = commits.filter((c) => !c.pushed).length
+  const header =
+    failed === 0
+      ? `📦 Committed and pushed ${commits.length} repos:`
+      : `⚠️ Committed ${commits.length} repos (${failed} push${failed === 1 ? "" : "es"} failed):`
+  const lines = commits.map((c) => {
+    const where = c.repo === "" ? "root repo" : `\`${c.repo}\``
+    const pushNote = c.pushed ? "" : ` — push failed: ${firstLine(c.push_error)}`
+    return `• ${where} @ \`${c.branch}\` ${c.commit_hash}: ${c.message} (${stats(c)})${pushNote}`
+  })
+  return [header, ...lines].join("\n")
+}
+
 
 /** A single diff hunk: an optional collapsed-gap row, then its lines. */
 function Hunk({ hunk, lang }: { hunk: DiffHunk; lang: string | null }) {

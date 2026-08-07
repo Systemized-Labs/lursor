@@ -43,6 +43,7 @@ import {
 } from "@/lib/open-file"
 import { isPlanFile } from "@/lib/plan-doc"
 import { openPreviewChannel } from "@/lib/open-preview"
+import { sendToChatChannel } from "@/lib/send-to-chat"
 import {
   consumePendingThread,
   openThreadChannel,
@@ -321,6 +322,17 @@ export function AppShell() {
     layout.ensurePane("preview")
   }, [isMobile, layout, showMobilePaneKind])
   usePendingRequest(openPreviewChannel, workspaceId, canOpen, handleOpenPreview)
+
+  // Commit summaries from the Changes panel: reveal the open chat pane so the
+  // right conversation consumes the request (left parked — the chat page takes it).
+  const handleSendToChat = useCallback(() => {
+    if (isMobile) {
+      setMobileView("chat")
+      return
+    }
+    layout.ensurePane("chat")
+  }, [isMobile, layout, setMobileView])
+  usePendingRequest(sendToChatChannel, workspaceId, canOpen, handleSendToChat)
 
   // Full-bleed surfaces (e.g. the New Agent launcher) manage their own scroll and
   // fill the panel edge to edge; everything else keeps the padded column.

@@ -103,7 +103,10 @@ export function MobileShell({
         kind="chat"
         workspaceId={workspaceId}
         paneId={`mobile-${workspaceId}-chat`}
-        active
+        // Gated on the view, not hardcoded: a parked send-to-chat request (a
+        // commit summary) must be consumed only *after* the shell switches here,
+        // and the hidden chat consuming it first would swallow that switch.
+        active={view === "chat"}
         threadId={threadId}
         onThreadChange={onThreadChange}
       />

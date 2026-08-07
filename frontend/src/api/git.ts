@@ -74,10 +74,36 @@ export interface BranchRef {
 }
 
 /** Branches of the workspace's primary repo (local first, then remote-only). */
+/** Branches of the workspace's primary repo (local first, then remote-only). */
 export interface GitBranches {
   is_repo: boolean
   current: string | null
   branches: BranchRef[]
+}
+
+/** One repo's outcome of a commit-push. A failed push after a successful
+ *  commit reports `pushed: false` with `push_error` — the commit stands
+ *  either way. */
+export interface RepoCommitResult {
+  /** Workspace-relative repo root ("" = the workspace root itself is the repo). */
+  repo: string
+  /** Short hash of the commit that landed. */
+  commit_hash: string
+  branch: string | null
+  /** The message actually committed — composed by the backend's model when the
+   *  caller supplies no override (which the panel never does). */
+  message: string
+  files_changed: number
+  additions: number
+  deletions: number
+  pushed: boolean
+  push_error: string | null
+}
+
+/** What a commit-push did: one entry per repo that had changes — a workspace
+ *  can hold several repos in subdirectories, and clean repos are skipped. */
+export interface CommitPushResult {
+  commits: RepoCommitResult[]
 }
 
 export const gitApi = {
@@ -89,6 +115,11 @@ export const gitApi = {
     api.get<GitBranches>(`/workspaces/${workspaceId}/git/branches`, signal),
   checkout: (workspaceId: string, branch: string) =>
     api.post<GitBranches>(`/workspaces/${workspaceId}/git/checkout`, { branch }),
+  commitPush: (workspaceId: string, message?: string, push = true) =>
+    api.post<CommitPushResult>(`/workspaces/${workspaceId}/git/commit-push`, {
+      message,
+      push,
+    }),
 }
 
 export const gitKeys = {
@@ -140,6 +171,25 @@ export function useCheckoutBranch(workspaceId: string | undefined) {
       if (!workspaceId) return
       qc.invalidateQueries({ queryKey: gitKeys.branches(workspaceId) })
       qc.invalidateQueries({ queryKey: gitKeys.diff(workspaceId) })
+    },
+  })
+}
+
+/** Stage everything, commit, and (by default) push. A failed push after a
+ *  successful commit is *not* a mutation error — the result reports it, so the
+ *  panel can warn instead of lose the commit (see the endpoint's own note). */
+export function useCommitAndPush(workspaceId: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    // No message by default: the backend's model composes it from the diff.
+    mutationFn: ({ message, push }: { message?: string; push?: boolean } = {}) =>
+      gitApi.commitPush(workspaceId as string, message, push),
+    onSuccess: () => {
+      // The git-watch socket also refreshes, but invalidation is immediate.
+      if (!workspaceId) return
+      qc.invalidateQueries({ queryKey: gitKeys.diff(workspaceId) })
+      qc.invalidateQueries({ queryKey: gitKeys.status(workspaceId) })
+      qc.invalidateQueries({ queryKey: gitKeys.branches(workspaceId) })
     },
   })
 }

@@ -1153,7 +1153,12 @@ async def run_chat_turn(
 
 
 def launch_run(
-    thread_id: str, workspace_id: str, backend, driver: Callable[[], Awaitable[None]]
+    thread_id: str,
+    workspace_id: str,
+    backend,
+    driver: Callable[[], Awaitable[None]],
+    *,
+    agent_id: str | None = None,
 ) -> bool:
     """Register the run's backend for preview, then spawn ``driver`` detached.
 
@@ -1167,11 +1172,16 @@ def launch_run(
     matters just as much for a scheduled run, whose workspace nobody is looking at
     while it works; this is also why the one-backend-per-workspace invariant holds.
 
+    ``agent_id`` is the agent the run executes under — the per-turn override for a
+    one-off command, not necessarily the thread's own agent. Recorded on the manager
+    so a mid-run join (``interject_goal``) can attribute itself to the agent that is
+    actually working.
+
     Returns ``False`` when a run is already active for the thread (the HTTP caller
     answers 409, the scheduler records a ``skipped`` fire).
     """
     preview_service.register(workspace_id, backend)
-    return chat_run_manager.start_run(thread_id, driver)
+    return chat_run_manager.start_run(thread_id, driver, agent_id=agent_id)
 
 
 async def start_scheduled_run(
@@ -1279,7 +1289,7 @@ async def start_scheduled_run(
                 kind=kind,
             )
 
-    if not launch_run(thread_id, workspace_id, deps.backend, driver):
+    if not launch_run(thread_id, workspace_id, deps.backend, driver, agent_id=agent_row.id):
         raise RuntimeError("A run is already active for this conversation")
 
 
@@ -1768,7 +1778,9 @@ async def chat(
     # Register the run's backend for preview and spawn the driver detached. Shared
     # with the scheduler so both paths do these two things in the same order (see
     # ``launch_run``).
-    if not launch_run(thread_id, workspace.id, deps.backend, driver):
+    # ``agent_row`` is the per-turn override when one was forwarded, so a steer into
+    # this run attributes itself to the agent that is really executing it.
+    if not launch_run(thread_id, workspace.id, deps.backend, driver, agent_id=agent_row.id):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "A chat run is already active for this conversation"
         )
@@ -1829,14 +1841,20 @@ async def interject_goal(
     # (the optimistic bubble the sender rendered is reconciled on reload). It's a
     # steer into a live goal run, so tag it "goal" for the history badge, and stamp
     # the running agent so the bubble shows it like every other turn.
-    agent = await session.get(Agent, thread.agent_id)
+    #
+    # The *running* agent, not the thread's. A goal is a one-off: "Execute plan" and
+    # `/goal` run under a per-turn override that is never persisted, so the thread
+    # still names the agent that planned. Stamping that one badged the steer with an
+    # agent taking no part in the run the user was steering.
+    agent_id = chat_run_manager.running_agent_id(thread_id) or thread.agent_id
+    agent = await session.get(Agent, agent_id)
     session.add(
         Message(
             thread_id=thread_id,
             role="user",
             content=text,
             kind="goal",
-            agent_id=thread.agent_id,
+            agent_id=agent_id,
             agent_name=agent.name if agent is not None else "",
         )
     )

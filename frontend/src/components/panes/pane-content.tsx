@@ -83,6 +83,7 @@ export function PaneContent({
         onThreadChange={onThreadChange ?? (() => undefined)}
         onDetail={onDetail}
         onCommit={onCommit}
+        active={active}
       />
     )
   }
