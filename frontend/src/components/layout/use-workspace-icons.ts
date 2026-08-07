@@ -71,7 +71,12 @@ export function useWorkspaceIcons(knownIds: string[]): WorkspaceIcons {
   const iconFor = useCallback(
     (workspace: Workspace) =>
       iconDef(
-        overrides[workspace.id] ?? defaultIconKey(workspace.name, workspace.id)
+        overrides[workspace.id] ??
+          // The Assistant gets a fixed icon rather than one hashed from its
+          // name, so it reads as the same thing in every install. Still
+          // overridable — this is the default, not a lock.
+          (workspace.is_assistant ? "lightning" : null) ??
+          defaultIconKey(workspace.name, workspace.id)
       ),
     [overrides]
   )

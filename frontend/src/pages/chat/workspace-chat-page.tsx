@@ -1,4 +1,4 @@
-import { Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
+import { Lightning, Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { useStore } from "zustand"
 import { useStickToBottom } from "use-stick-to-bottom"
 
-import { useAgents } from "@/api/agents"
+import { useAgents, useAssistantAgent } from "@/api/agents"
 import {
   invalidateThreadLists,
   threadsApi,
@@ -20,6 +20,7 @@ import { useWorkspace } from "@/api/workspaces"
 import { useChatEngine } from "@/agui/useChatEngine"
 import { ChatStoreProvider } from "@/agui/chatStore"
 import { Button } from "@/components/ui/button"
+import { AssistantConfirmCard } from "@/components/chat/AssistantConfirmCard"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatTimeline } from "@/components/chat/ChatTimeline"
 import { ChatRunDeck } from "@/components/chat/ChatRunDeck"
@@ -100,9 +101,19 @@ export function WorkspaceChatPage({
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
+  // The Assistant is filtered out of `useAgents` (it is not one of your agents),
+  // so its own workspace has to fetch it by name to pin conversations to it.
+  const { data: assistantAgent } = useAssistantAgent()
+  const isAssistantWorkspace = Boolean(workspace?.is_assistant)
   const agentNameById = useMemo(
-    () => new Map(agents.map((a) => [a.id, a.name])),
-    [agents]
+    () =>
+      new Map(
+        [...agents, ...(assistantAgent ? [assistantAgent] : [])].map((a) => [
+          a.id,
+          a.name,
+        ])
+      ),
+    [agents, assistantAgent]
   )
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
@@ -168,6 +179,11 @@ export function WorkspaceChatPage({
   const error = useStore(store, (s) => s.error)
   const queue = useStore(store, (s) => s.queue)
   const queuePaused = useStore(store, (s) => s.queuePaused)
+  // Only ever populated by the Assistant's destructive tools, but read
+  // unconditionally: a store subscription is cheap, and gating it on the
+  // workspace would mean a card published a beat before `workspace` resolves has
+  // nowhere to land.
+  const confirms = useStore(store, (s) => s.confirms)
 
   // The open conversation. Normally it is in this workspace's list, but the list is
   // filterable (``list_threads`` can exclude scheduled runs), so fall back to
@@ -227,7 +243,17 @@ export function WorkspaceChatPage({
   }, [location.state])
 
   // Keep the agent picker in sync with the open thread (or defaults for a new one).
+  //
+  // The Assistant's workspace is the exception and is pinned to its own agent:
+  // it is the only agent that holds the control plane, so a conversation there
+  // under anything else would be a chat that silently cannot do the one thing
+  // the workspace exists for. `useAgents` filters the Assistant out of every
+  // picker, so `assistantAgent` is fetched separately (`useAssistantAgent`).
   useEffect(() => {
+    if (isAssistantWorkspace) {
+      if (assistantAgent) setSelectedAgentId(assistantAgent.id)
+      return
+    }
     if (selectedThreadId) {
       if (currentThread) setSelectedAgentId(currentThread.agent_id)
     } else {
@@ -238,7 +264,14 @@ export function WorkspaceChatPage({
           : agents[0]?.id
       setSelectedAgentId((prev) => prev || seedable || "")
     }
-  }, [selectedThreadId, currentThread, agents, defaultAgents])
+  }, [
+    isAssistantWorkspace,
+    assistantAgent,
+    selectedThreadId,
+    currentThread,
+    agents,
+    defaultAgents,
+  ])
 
   // Auto-launch the first turn when we arrive from the New Agent home surface.
   const launchedRef = useRef(false)
@@ -461,7 +494,12 @@ export function WorkspaceChatPage({
     }
   }
 
-  const noAgents = agents.length === 0
+  // "You have no agents" gates the composer everywhere — except the Assistant's
+  // own workspace, which always has exactly one and it is not in this list. Left
+  // unguarded, an install with no user agents would find its Assistant disabled
+  // and be told to go create an agent that has nothing to do with it.
+  const noAgents = agents.length === 0 && !isAssistantWorkspace
+  const confirmCards = useMemo(() => Object.values(confirms), [confirms])
 
   const runView = goalStatus
   const goalExecuting = runView?.status === "running"
@@ -615,7 +653,9 @@ export function WorkspaceChatPage({
             <div className="flex h-full items-center justify-center">
               <div className="space-y-3 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/15">
-                  {workspace?.is_system && !noAgents ? (
+                  {isAssistantWorkspace ? (
+                    <Lightning weight="fill" className="h-7 w-7 text-primary" />
+                  ) : workspace?.is_system && !noAgents ? (
                     <Sparkle className="h-7 w-7 text-primary" />
                   ) : (
                     <Robot className="h-7 w-7 text-primary" />
@@ -626,18 +666,22 @@ export function WorkspaceChatPage({
                     result of doing it shows up. */}
                 <div className="space-y-1">
                   <p className="text-sm font-semibold text-foreground">
-                    {noAgents
-                      ? "No agents yet"
-                      : workspace?.is_system
-                        ? "Skill Studio"
-                        : "Start the conversation"}
+                    {isAssistantWorkspace
+                      ? "Assistant"
+                      : noAgents
+                        ? "No agents yet"
+                        : workspace?.is_system
+                          ? "Skill Studio"
+                          : "Start the conversation"}
                   </p>
                   <p className="mx-auto max-w-[18rem] text-xs text-muted-foreground">
-                    {noAgents
-                      ? "Create an agent in Settings → Capabilities to start chatting."
-                      : workspace?.is_system
-                        ? "Ask for a skill and it gets written into your catalog — SKILL.md, references and scripts. Every existing skill is in the file tree to crib from, and the terminal runs their scripts."
-                        : "Pick an agent above and send the first message."}
+                    {isAssistantWorkspace
+                      ? "Ask it to run Lursor. It can create workspaces, retarget another agent's model, set up schedules, start work in any project, and tell you what everything is costing. Deletes always stop and ask first."
+                      : noAgents
+                        ? "Create an agent in Settings → Capabilities to start chatting."
+                        : workspace?.is_system
+                          ? "Ask for a skill and it gets written into your catalog — SKILL.md, references and scripts. Every existing skill is in the file tree to crib from, and the terminal runs their scripts."
+                          : "Pick an agent above and send the first message."}
                   </p>
                   {workspace?.is_system && !noAgents ? (
                     <p className="mx-auto max-w-[18rem] pt-1 text-xs text-muted-foreground">
@@ -657,6 +701,18 @@ export function WorkspaceChatPage({
             </div>
           }
         />
+
+        {/* The Assistant's stop-and-ask cards. Directly above the composer
+            rather than inline in the timeline: the run is genuinely blocked on
+            one, so it belongs where the user's attention already is, not
+            wherever the transcript happened to scroll to. */}
+        {confirmCards.length ? (
+          <div className="space-y-2 px-4 pb-2">
+            {confirmCards.map((confirm) => (
+              <AssistantConfirmCard key={confirm.token} confirm={confirm} />
+            ))}
+          </div>
+        ) : null}
 
         {error ? (
           <p className="px-4 pb-1 text-sm text-destructive">{error}</p>
@@ -728,9 +784,11 @@ export function WorkspaceChatPage({
               isSending={isStreaming}
               disabled={noAgents}
               placeholder={
-                isParked
-                  ? "Refine the plan, or press Execute plan to run it…"
-                  : "Type a message, or / for commands…"
+                isAssistantWorkspace
+                  ? "Ask the Assistant to do something…"
+                  : isParked
+                    ? "Refine the plan, or press Execute plan to run it…"
+                    : "Type a message, or / for commands…"
               }
               attachments={attachments}
               onAttachmentsChange={setAttachments}
@@ -740,7 +798,10 @@ export function WorkspaceChatPage({
               onRemoveQueued={chat.removeQueued}
               onEditQueued={chat.editQueued}
               onResumeQueue={chat.resumeQueue}
-              agents={noAgents ? undefined : agents}
+              // No picker in the Assistant's workspace: there is exactly one
+              // agent it could be, and offering the others would offer a
+              // conversation that silently lacks the control plane.
+              agents={noAgents || isAssistantWorkspace ? undefined : agents}
               selectedAgentId={selectedAgentId}
               onAgentChange={handlePickerAgentChange}
               pendingAgentName={pendingAgentName}

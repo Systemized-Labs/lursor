@@ -21,7 +21,7 @@ Four decisions were taken up front:
 
 | Decision | Choice |
 | --- | --- |
-| UI surface | A global overlay panel, not a workspace tab |
+| UI surface | A pinned sidebar row beside the Skill Studio, backed by a real workspace |
 | Default model | GLM 5.2 via OpenRouter, overridable in Settings |
 | Isolation | Separate registry **plus** a runtime assertion in the normal build path |
 | Destructive ops | Read and create run freely; delete/rotate blocks on an in-chat confirmation |
@@ -277,46 +277,50 @@ alongside `is_system` (`schemas/workspace.py:46`); `AgentRead` gains the same.
 `DELETE`/`PATCH` on either returns 400 for path/name changes, matching the Skill
 Studio guards (`api/workspaces.py:256,274`).
 
-### Phase 6 — The overlay
+### Phase 6 — The pinned sidebar row
 
-Reuses the whole chat stack; the overlay is a container, not a new chat surface.
+The Assistant is surfaced exactly the way the Skill Studio is: an app-owned row
+pinned below the projects tree, behind the same divider, backed by a real
+workspace. That shape is what makes its **past conversations free** — they list
+inline under its row and reopen in the chat pane like any other workspace's,
+with no bespoke history API, no second thread list, and no state to keep in sync.
+
+A modal was the first attempt and was wrong for exactly that reason: it needed
+its own `/assistant/thread` endpoints to find the conversation to show, and a
+"New" button to start another, and it still had nowhere to *list* the old ones.
 
 **New**
 
-- `frontend/src/components/assistant/assistant-overlay.tsx` — a centred dialog
-  wrapping `ChatStoreProvider` → `useChatEngine` → `ChatTimeline` +
-  `ChatComposer`. `ChatComposer`'s existing `embedded` prop already hides the
-  agent picker, which is exactly right — the Assistant has no agent to pick.
-- `frontend/src/components/assistant/use-assistant-overlay.ts` — open state +
-  hotkey registration.
+- `frontend/src/components/assistant/use-assistant-hotkey.ts` — ⌘⇧A, which
+  navigates to the Assistant's workspace. No open/closed state: opening it is a
+  route change, which is the whole point.
 - `frontend/src/components/chat/AssistantConfirmCard.tsx` — approve/deny card
-  with the impact line, rendered inline in the timeline.
-- `frontend/src/api/assistant.ts` — `useAssistantThread`, `useConfirm`,
-  react-query hooks matching `api/schedules.ts`.
+  with the impact line, rendered directly above the composer where the blocked
+  run's attention already is.
+- `frontend/src/api/assistant.ts` — just `useConfirmAction`. Everything else the
+  Assistant needs is already served by `useThreads` / `useWorkspaces`.
 - `frontend/src/pages/settings/assistant-section.tsx` — `<ModelPicker>` bound to
-  `assistant_model`, placed in the existing **model** settings category
-  (`components/settings/settings-categories.tsx:72`).
+  `assistant_model`, in the existing **model** settings category.
 
 **Modified**
 
-- `components/layout/app-shell.tsx` — mount the overlay once, above `PaneHost`.
-  It must be `lazy()`-loaded: the entry chunk is watched here, and the overlay
-  drags the chat stack in.
-- `agui/stream-reader.ts` + `agui/chatStore.ts` — handle the `assistant_confirm`
-  CUSTOM event in the shared handler sink, so live-send and reconnect both get
-  it from one implementation.
-- `components/layout/sessions/sessions-pane.tsx` — a nav row beside New chat /
-  Capabilities / Search, showing the hotkey.
-- `hooks/use-all-threads.ts:71-79` — exclude the assistant workspace from
-  `workspaces`, exposing it separately, exactly as Skill Studio is handled.
-- Filter the assistant agent and workspace out of the pickers:
-  `pages/agents/`, `pages/settings/default-agents-section.tsx`,
-  `pages/schedules/schedules-page.tsx:95-101`,
-  `components/layout/sessions/projects-section.tsx`.
-
-Hotkey: **⌘⇧A**. Verify it is free against the shortcuts registry before
-wiring — ⌘K is search, ⌘N is new chat, ⌘1–9 and ⌘⇧1–9 are taken by panes and
-workspaces.
+- `hooks/use-all-threads.ts` — expose `assistant` alongside `studio`, and drop
+  both out of `workspaces` (the projects you made).
+- `components/layout/sessions/projects-section.tsx` — the pinned block becomes
+  two rows behind one divider. Drilling resolves either.
+- `components/layout/sessions/project-row.tsx` — no Delete item for an app-owned
+  row; the server refuses it with a 400, so the item could only ever toast.
+- `components/layout/use-workspace-icons.ts` — a fixed `lightning` default so
+  the Assistant reads the same in every install (still overridable).
+- `pages/chat/workspace-chat-page.tsx` — pin the Assistant agent, hide the agent
+  picker, its own empty state, and render the confirmation cards.
+- `api/agents.ts` — `useAgents` filters the Assistant out of every picker;
+  `useAssistantAgent` is the one deliberate way back to it.
+- `agui/stream-reader.ts` + `agui/chatStore.ts` — handle `assistant_confirm` in
+  the shared handler sink, so live-send and reconnect both get it from one
+  implementation.
+- `components/layout/app-shell.tsx` — bind the hotkey once.
+- `lib/shortcuts.ts` — document ⌘⇧A.
 
 ---
 
@@ -387,8 +391,10 @@ Migration test against a **copy** of a populated DB, per the house rule.
    and that re-booting adds no second pair.
 2. Neither appears in the sidebar project tree, the agent picker, the
    default-agents settings, or the schedule target list.
-3. ⌘⇧A from three places — a workspace chat, the analytics pane, the settings
-   dialog — opens the overlay with the conversation intact.
+3. The Assistant is a pinned sidebar row below the projects, above the Skill
+   Studio, behind one shared divider. Its past conversations list inline under
+   it and reopen in the chat pane. ⌘⇧A jumps to it from a workspace chat, the
+   analytics pane and the settings dialog.
 4. "Create a workspace called Scratch in ~/tmp" → row appears in the sidebar
    without a reload.
 5. "Set the Builder agent's model to Claude Sonnet 4" → verify via
@@ -404,15 +410,14 @@ Migration test against a **copy** of a populated DB, per the house rule.
 10. Settings → Model → Assistant: switch off GLM and back; confirm the next turn
     uses the new model (check `GET /api/analytics/usage-by-model`).
 11. Viewport pass at 390px and 1700px; dark and light.
-12. `bun run build` and confirm the entry chunk did not grow — the overlay must
-    be behind a lazy boundary.
+12. `bun run build` and compare the entry chunk against a stashed baseline.
 
 ---
 
 ## Open questions
 
-- OpenRouter's exact GLM 5.2 slug. Resolve against `GET /api/models` on first
-  run; the `custom:` z.ai provider is the documented fallback.
+- ~~OpenRouter's exact GLM 5.2 slug.~~ Resolved: `z-ai/glm-5.2` is real,
+  verified against OpenRouter's live catalogue. No fallback provider needed.
 - Whether the Assistant should be a schedule target (a nightly "summarise
   yesterday's runs and email me" job). Cheap to add later; excluded from v1 so
   that unattended runs cannot hit the confirmation path with nobody watching.

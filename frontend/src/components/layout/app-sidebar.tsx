@@ -233,6 +233,7 @@ export function AppSidebar({ side = "left" }: { side?: "left" | "right" }) {
         threads={threads}
         tree={tree}
         studio={threads.studio}
+        assistant={threads.assistant}
         icons={icons}
         status={status}
         pins={pins}

@@ -137,32 +137,32 @@ async def test_the_setting_is_what_the_build_resolves(client):
 # --- routes ---------------------------------------------------------------------
 
 
-async def test_the_overlay_gets_one_thread_and_reuses_it(client):
-    first = (await client.get("/assistant/thread")).json()
-    second = (await client.get("/assistant/thread")).json()
-    assert first["id"] == second["id"]
-    assert first["workspace_id"] == ASSISTANT_WORKSPACE_ID
-    assert first["agent_id"] == ASSISTANT_AGENT_ID
+async def test_assistant_conversations_are_ordinary_threads(client):
+    """The whole point of the pinned-row shape: history needs no special API.
 
-    fresh = (await client.post("/assistant/threads")).json()
-    assert fresh["id"] != first["id"]
-    assert {t["id"] for t in (await client.get("/assistant/threads")).json()} >= {
-        first["id"],
-        fresh["id"],
-    }
+    The Assistant is a workspace, so its past conversations come back from the
+    same ``GET /threads`` the sidebar already calls for every other row. If this
+    ever stops being true, the sidebar silently loses its history.
+    """
+    await _seed()
+    created = (
+        await client.post(
+            "/threads",
+            json={
+                "workspace_id": ASSISTANT_WORKSPACE_ID,
+                "agent_id": ASSISTANT_AGENT_ID,
+            },
+        )
+    ).json()
 
+    listed = (
+        await client.get("/threads", params={"workspace_id": ASSISTANT_WORKSPACE_ID})
+    ).json()
+    assert created["id"] in {t["id"] for t in listed}
 
-async def test_assistant_conversations_stay_out_of_the_sidebar(client):
-    """They are reached from the overlay; the project tree must not list them."""
-    thread = (await client.get("/assistant/thread")).json()
-    listed = (await client.get("/threads", params={"workspace_id": ASSISTANT_WORKSPACE_ID})).json()
-    # The API still answers for the workspace when asked directly — what matters
-    # is that the workspace itself is flagged so the sidebar never asks.
-    assert thread["id"] in {t["id"] for t in listed}
-    workspace = next(
-        w for w in (await client.get("/workspaces")).json() if w["id"] == ASSISTANT_WORKSPACE_ID
-    )
-    assert workspace["is_assistant"] is True
+    # And it shows up in the unscoped list the sidebar actually uses.
+    everything = (await client.get("/threads")).json()
+    assert created["id"] in {t["id"] for t in everything}
 
 
 async def test_resolving_an_unknown_confirmation_is_404(client):

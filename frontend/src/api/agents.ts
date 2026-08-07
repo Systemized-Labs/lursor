@@ -49,6 +49,22 @@ export function useAgents() {
   })
 }
 
+/**
+ * The top-level Assistant's own row — the one {@link useAgents} filters out.
+ *
+ * Same query, different `select`, so this costs no extra request: the Assistant
+ * workspace's chat pane needs the id to pin its conversations to, and the agent
+ * name to stamp on a user bubble. Nowhere else should want this; if you are
+ * reaching for it to put the Assistant in a picker, don't.
+ */
+export function useAssistantAgent() {
+  return useQuery({
+    queryKey: agentKeys.all,
+    queryFn: ({ signal }) => agentsApi.list(signal),
+    select: (agents) => agents.find((a) => a.is_assistant),
+  })
+}
+
 export function useAgent(id: string | undefined) {
   return useQuery({
     queryKey: agentKeys.detail(id ?? ""),
