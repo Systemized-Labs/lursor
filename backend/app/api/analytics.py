@@ -182,4 +182,6 @@ async def file_editing_stats() -> FileEditingStats:
         recovered_anchors=stats.recovered_anchors,
         missing_end_hash=stats.missing_end_hash,
         blocked_writes=stats.blocked_writes,
+        blocked_duplicates=stats.blocked_duplicates,
+        flagged_duplicates=stats.flagged_duplicates,
     )
