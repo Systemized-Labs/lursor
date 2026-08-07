@@ -84,7 +84,6 @@ export function ProjectRow({
   hasIconOverride,
   isActive,
   running,
-  collapsed,
   folders,
   onOpen,
   onToggleCollapsed,
