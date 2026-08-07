@@ -15,9 +15,17 @@ running" duplicates appeared, all with the identical command string.
 taken instead of failing, so the duplicates all stay alive and indistinguishable.
 
 This subclass enforces the reuse in code: if a background process with the same
-(whitespace-normalized) command is still running, ``execute_background`` returns a
-handle to *that* process instead of spawning a second one. Different commands
-still spawn normally, so restarting with new flags works as before.
+:func:`~app.agents.service_key.spawn_key` is still running, ``execute_background``
+returns a handle to *that* process instead of spawning a second one. The key is
+inferred from the command — the directory it navigates to, plus the program — so
+``cd frontend && npm run dev`` and ``npm run dev --prefix frontend`` are recognised
+as one server rather than two, which a plain string comparison could not do.
+
+Flags are part of the key, so a caller that genuinely asks for something different
+(``--port 3001``, a different mode) still gets its own process rather than a
+silently-reused one. Catching the *unintentional* duplicate that lands on another
+port is a job for observed state, not for the command text, and happens in
+``preview_service`` once both are seen serving.
 
 **No turn-killing globs.** ``LocalBackend.glob_info`` lets a handful of pathlib
 exceptions escape its error guard, so one malformed ``glob`` argument from the
@@ -48,7 +56,6 @@ import asyncio
 import contextlib
 import contextvars
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -66,18 +73,8 @@ from pydantic_ai_backends import (
 )
 from pydantic_ai_backends.backends.local import shell_argv
 
+from app.agents.service_key import spawn_key
 from app.envvars.resolve import redact
-
-# Pure file-descriptor redirections with no filename target (``2>&1``, ``1>&2``,
-# ``>&1`` …). Stripping these before comparison means the model launching
-# ``npm run dev`` and ``npm run dev 2>&1`` dedupes to one server rather than two.
-_FD_REDIRECT = re.compile(r"\s*\d*>&\d+")
-
-
-def _normalize(command: str) -> str:
-    """Collapse whitespace and drop bare fd redirections so trivially-different
-    spellings of the same command compare equal."""
-    return re.sub(r"\s+", " ", _FD_REDIRECT.sub("", command)).strip()
 
 
 def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
@@ -283,10 +280,10 @@ class DedupingLocalBackend(LocalBackend):
         behind a ``BackgroundProcesses`` helper, and ``BackgroundProcessInfo``
         already carries everything the dedup needs (command, pid, liveness).
         """
-        target = _normalize(command)
+        target = spawn_key(command)
         with self._dedup_lock:
             for proc in self.list_background():
-                if proc.running and _normalize(proc.command) == target:
+                if proc.running and spawn_key(proc.command) == target:
                     return BackgroundHandle(
                         shell_id=proc.shell_id,
                         pid=proc.pid,

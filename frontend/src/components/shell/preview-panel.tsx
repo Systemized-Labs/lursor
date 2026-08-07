@@ -313,14 +313,17 @@ export function PreviewPanel({
     for (const server of detected) void ensureForward(server.port)
   }, [detected])
 
-  // When the server currently in the iframe transitions starting -> ready,
-  // reload it so a first-load "connection refused" gives way to the live app.
+  // When the server currently in the iframe becomes ready, reload it so a
+  // "connection refused" gives way to the live app. Any transition *into* ready
+  // counts, not just the first one: a server that went down and came back leaves
+  // the same stale error page behind as one that was never up.
   const prevStatuses = useRef<Record<string, DetectedServer["status"]>>({})
   useEffect(() => {
     for (const server of detected) {
       const prev = prevStatuses.current[server.url]
       if (
-        prev === "starting" &&
+        prev !== undefined &&
+        prev !== "ready" &&
         server.status === "ready" &&
         canonical &&
         sameUrl(canonical, server.url)
@@ -333,6 +336,39 @@ export function PreviewPanel({
       detected.map((s) => [s.url, s.status])
     )
   }, [detected, canonical])
+
+  // Follow a service across a restart.
+  //
+  // A dev server that is restarted comes back as a *different process*, often on a
+  // different port — the old one auto-incremented, or the backend retired a
+  // duplicate. Keyed on the process, this pane would sit on a dead address while
+  // the working server showed up beside it as a chip, and "restart the preview"
+  // would look like it had broken the preview.
+  //
+  // The service key is stable across that, so the pane follows it. Guarded on the
+  // address bar still holding the URL we were tracking: once the user navigates
+  // somewhere else deliberately, a server coming back must not yank them away.
+  const trackedRef = useRef<{ url: string; key: string } | null>(null)
+  useEffect(() => {
+    const shown = canonical
+      ? detected.find((s) => sameUrl(canonical, s.url))
+      : undefined
+    if (shown) {
+      trackedRef.current = { url: shown.url, key: shown.serviceKey }
+      return
+    }
+    const tracked = trackedRef.current
+    if (!tracked || !canonical || !sameUrl(canonical, tracked.url)) {
+      trackedRef.current = null
+      return
+    }
+    // The server we were showing is gone. If its service is serving elsewhere now,
+    // that's where it moved to.
+    const moved = detected.find(
+      (s) => s.serviceKey && s.serviceKey === tracked.key && s.status === "ready"
+    )
+    if (moved) navigate(moved.url)
+  }, [detected, canonical, navigate])
 
   const hasUrl = canonical !== ""
   // Detected servers not already loaded — offered as one-tap chips.
@@ -692,7 +728,17 @@ function DeviceIsland({
   )
 }
 
-/** A one-tap chip for a detected dev server, showing its live starting/ready state. */
+/** Dot colour and label per detected-server state. */
+const SERVER_STATE: Record<
+  DetectedServer["status"],
+  { dot: string; label: string }
+> = {
+  ready: { dot: "bg-emerald-500", label: "ready" },
+  starting: { dot: "bg-amber-500 animate-pulse", label: "starting" },
+  unhealthy: { dot: "bg-destructive", label: "not responding" },
+}
+
+/** A one-tap chip for a detected dev server, showing its live state. */
 function DetectedServerChip({
   server,
   onPick,
@@ -700,7 +746,7 @@ function DetectedServerChip({
   server: DetectedServer
   onPick: () => void
 }) {
-  const ready = server.status === "ready"
+  const state = SERVER_STATE[server.status]
   return (
     <button
       type="button"
@@ -709,16 +755,11 @@ function DetectedServerChip({
       className="flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-0.5 text-xs text-foreground transition-colors hover:bg-muted shrink-0"
     >
       <span
-        className={cn(
-          "h-1.5 w-1.5 rounded-full shrink-0",
-          ready ? "bg-emerald-500" : "bg-amber-500 animate-pulse"
-        )}
+        className={cn("h-1.5 w-1.5 rounded-full shrink-0", state.dot)}
         aria-hidden
       />
       <span>:{server.port}</span>
-      <span className="text-muted-foreground">
-        {ready ? "ready" : "starting"}
-      </span>
+      <span className="text-muted-foreground">{state.label}</span>
     </button>
   )
 }

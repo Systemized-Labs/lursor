@@ -2,14 +2,26 @@ import { useMemo } from "react"
 import { create } from "zustand"
 
 /**
+ * How a background process is currently doing.
+ *
+ * - `running` — live, but never advertised an address (a watcher, an ffmpeg job).
+ * - `starting` — printed a URL that hasn't answered yet.
+ * - `ready` — answering right now.
+ * - `unhealthy` — was answering and has stopped. The process is still alive, so
+ *   it stays in the list; it is the *service* that is down.
+ */
+export type ProcessStatus = "running" | "starting" | "ready" | "unhealthy"
+
+/**
  * A background process the agent started with `run_in_background` (a dev server,
  * a watcher, …), mirrored from the workspace's live process feed (see backend
  * `preview_service.py`). Only *running* processes appear; one that exits drops
  * out of the next snapshot.
  *
- * `url`/`port` are set once a served address is parsed from stdout; `ready`
- * flips true once that URL answers HTTP. `id` is a stable composite key used to
- * kill or read the process.
+ * `url`/`port` are set once a served address is parsed from stdout, and are
+ * followed if the server later moves. `id` is a stable composite key used to kill
+ * or read the process — but it identifies the *process*, so it changes across a
+ * restart; `serviceKey` is what stays the same.
  */
 export interface BackgroundProcess {
   id: string
@@ -17,8 +29,16 @@ export interface BackgroundProcess {
   command: string
   /** Epoch seconds the process was first seen — used for elapsed running time. */
   startedAt: number
+  /**
+   * Which service this process provides, inferred from its command (see backend
+   * `service_key.py`). Stable across a restart, so the preview can follow a
+   * server that came back on a different port.
+   */
+  serviceKey: string
   url: string | null
   port: number | null
+  status: ProcessStatus
+  /** `status === "ready"`. Retained because it reads better at call sites. */
   ready: boolean
 }
 
@@ -28,7 +48,8 @@ export interface DetectedServer {
   url: string
   port: number
   command: string
-  status: "starting" | "ready"
+  serviceKey: string
+  status: Exclude<ProcessStatus, "running">
 }
 
 interface ProcessesState {
@@ -90,7 +111,15 @@ export function usePreviewServersFor(
           url: p.url,
           port: p.port,
           command: p.command,
-          status: p.ready ? ("ready" as const) : ("starting" as const),
+          serviceKey: p.serviceKey,
+          // A process that advertised a URL is never plain `running`; the guard
+          // covers a backend older than the status field.
+          status:
+            p.status && p.status !== "running"
+              ? p.status
+              : p.ready
+                ? ("ready" as const)
+                : ("starting" as const),
         })),
     [processes]
   )
