@@ -182,29 +182,34 @@ export function ChatTimeline({
       {({ isAtBottom, scrollToBottom }: StickToBottomContext) => (
         <>
           <StickToBottom.Content
-            className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end space-y-10 px-4 py-5 sm:px-6"
+            className="flex min-h-full w-full flex-col px-4 py-5 sm:px-6"
             scrollClassName="[overflow-anchor:none]"
           >
-            {hasOlder && (
-              <div className="flex justify-center">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={showOlder}
-                  className="gap-1.5 text-muted-foreground"
-                >
-                  <CaretUp className="h-3.5 w-3.5" />
-                  Show older messages
-                </Button>
-              </div>
-            )}
-            {turns.map((turn) => (
-              <div key={turn.id} className="space-y-4">
-                {turn.userId && <MessageRow id={turn.userId} />}
-                {turn.assistantIds && <AssistantGroup ids={turn.assistantIds} />}
-              </div>
-            ))}
+            {/* Gutter padding sits on the scroll content, the width cap on this
+                inner column — the same nesting the run deck and composer use, so
+                messages line up with them rather than being inset by the gutter. */}
+            <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-end space-y-10">
+              {hasOlder && (
+                <div className="flex justify-center">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={showOlder}
+                    className="gap-1.5 text-muted-foreground"
+                  >
+                    <CaretUp className="h-3.5 w-3.5" />
+                    Show older messages
+                  </Button>
+                </div>
+              )}
+              {turns.map((turn) => (
+                <div key={turn.id} className="space-y-4">
+                  {turn.userId && <MessageRow id={turn.userId} />}
+                  {turn.assistantIds && <AssistantGroup ids={turn.assistantIds} />}
+                </div>
+              ))}
+            </div>
           </StickToBottom.Content>
 
           {!isAtBottom && (

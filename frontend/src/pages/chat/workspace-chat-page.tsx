@@ -681,15 +681,19 @@ export function WorkspaceChatPage({
             one, so it belongs where the user's attention already is, not
             wherever the transcript happened to scroll to. */}
         {confirmCards.length ? (
-          <div className="space-y-2 px-4 pb-2">
-            {confirmCards.map((confirm) => (
-              <AssistantConfirmCard key={confirm.token} confirm={confirm} />
-            ))}
+          <div className="px-4 pb-2 sm:px-6">
+            <div className="mx-auto w-full max-w-3xl space-y-2">
+              {confirmCards.map((confirm) => (
+                <AssistantConfirmCard key={confirm.token} confirm={confirm} />
+              ))}
+            </div>
           </div>
         ) : null}
 
         {error ? (
-          <p className="px-4 pb-1 text-sm text-destructive">{error}</p>
+          <div className="px-4 pb-1 sm:px-6">
+            <p className="mx-auto w-full max-w-3xl text-sm text-destructive">{error}</p>
+          </div>
         ) : null}
 
         {/* Unified run deck: task list, live tool activity, and running

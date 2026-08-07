@@ -77,7 +77,7 @@ export function ChatRunDeck({
   if (!showTasks && !hasTools && !hasProcesses) {
     return (
       <div className="px-4 pb-2 sm:px-6">
-        <div className="mx-auto w-full max-w-3xl px-1.5">
+        <div className="mx-auto w-full max-w-3xl">
           <StreamingDots />
         </div>
       </div>
