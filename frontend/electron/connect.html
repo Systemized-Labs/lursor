@@ -207,13 +207,13 @@
         font-size: 12px;
         line-height: 1.5;
       }
-      /* Amber, not red: an unencrypted LAN address is allowed, and styling it as an
-         error would say otherwise. Hidden until the address is actually one. */
-      .warn {
-        color: #e0c08a;
+      /* Styled as an ordinary hint, not as a warning. http to a private address is a
+         supported setup, and colouring it like a problem would tell the user they had
+         done something wrong when they had not. Hidden until it applies. */
+      .note {
         display: none;
       }
-      .warn.show {
+      .note.show {
         display: block;
       }
     </style>
@@ -237,7 +237,7 @@
         <div>
           <label for="url">Address</label>
           <input id="url" placeholder="https://lursor.example.com" spellcheck="false" />
-          <p class="hint warn" id="url-warning"></p>
+          <p class="hint note" id="url-note"></p>
         </div>
         <div>
           <label for="token">Token</label>
@@ -271,7 +271,7 @@
 
       const testEl = document.getElementById("test")
       const saveEl = document.getElementById("save")
-      const warnEl = document.getElementById("url-warning")
+      const noteEl = document.getElementById("url-note")
 
       const fields = {
         name: document.getElementById("name"),
@@ -306,9 +306,9 @@
         formEl.classList.add("open")
         addEl.style.display = "none"
         fields.name.focus()
-        // Editing an existing http:// remote should show the warning immediately,
-        // not only once a key is pressed.
-        refreshUrlWarning()
+        // Editing an existing http:// remote should show the note immediately, not
+        // only once a key is pressed.
+        refreshUrlNote()
       }
 
       function closeForm() {
@@ -317,7 +317,7 @@
         formEl.classList.remove("open")
         addEl.style.display = ""
         setMessage("")
-        warnEl.classList.remove("show")
+        noteEl.classList.remove("show")
       }
 
       // A verdict is about the values it was run against. Once they change it is
@@ -330,27 +330,27 @@
       }
 
       /**
-       * Say so, before saving, when the address means the token travels in the clear.
+       * State the scheme's consequence for an http address, plainly.
        *
-       * http:// to a private address is allowed (see `normalizeRemoteUrl`), and the
-       * whole cost of allowing it is that nothing would otherwise tell you. Asked of
-       * the main process rather than re-derived here: one copy of the rule.
+       * http:// to a private address is a supported setup (see `normalizeRemoteUrl`),
+       * so this is a fact about what you picked, not a complaint about it — same grey
+       * as the hint under the token field. Asked of the main process rather than
+       * re-derived here: one copy of the rule.
        */
-      async function refreshUrlWarning() {
+      async function refreshUrlNote() {
         const typed = fields.url.value
         const verdict = await window.lursorConnect.inspect(typed)
         // Raced by later keystrokes — only paint if this is still what's on screen.
         if (typed !== fields.url.value) return
         const insecure = !verdict.error && verdict.insecure
-        warnEl.textContent = insecure
-          ? `Unencrypted: the token will cross your network in the clear on every ` +
-            `request to ${verdict.url}. Fine on a LAN you trust; anyone else on it ` +
-            `can read the token and gets a shell on that host.`
+        noteEl.textContent = insecure
+          ? "Over http the token is sent unencrypted, so this is for a network you " +
+            "trust. Use https:// if the backend has TLS in front of it."
           : ""
-        warnEl.classList.toggle("show", insecure)
+        noteEl.classList.toggle("show", insecure)
       }
 
-      fields.url.addEventListener("input", refreshUrlWarning)
+      fields.url.addEventListener("input", refreshUrlNote)
 
       async function render() {
         const connections = await window.lursorConnect.list()

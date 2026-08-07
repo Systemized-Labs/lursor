@@ -295,12 +295,13 @@ uv run lursor-service status     # prints a `bind:` line
 
 Re-running `install` keeps the existing token; add `--rotate-token` to replace it.
 
-Understand what you are accepting: the token goes out in cleartext on **every**
-request, it does not expire, and it grants a shell on that host. Anyone who can
-ARP-spoof your subnet — a guest device, something on the IoT VLAN, a compromised
-laptop — reads it once and owns the server. The app says so rather than hiding it: a
-warning under the address field in the picker, and an amber cloud-with-warning badge
-in the window bar for as long as the connection is in use.
+What you are accepting: the token goes out in cleartext on every request, does not
+expire, and grants a shell on that host — so anyone who can ARP-spoof your subnet can
+read it. That is the trade a trusted LAN is, and the app treats it as the ordinary
+configuration it is rather than as a fault. It is stated, not flagged: a grey note
+under the address field in the picker, and the scheme in the window-bar badge's hover
+text. No amber, no alarm glyph — a badge that cries wolf about a supported setup is
+one you stop reading.
 
 Public addresses are still refused outright. There is no version of shipping that
 token across the internet in the clear that is a good idea.

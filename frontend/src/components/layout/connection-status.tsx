@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CloudSlash, Cloud, CloudWarning, Desktop, Warning } from "@phosphor-icons/react"
+import { CloudSlash, Cloud, Desktop, Warning } from "@phosphor-icons/react"
 
 import { api, subscribeUnauthorized } from "@/api/client"
 import { isElectron } from "@/lib/platform"
@@ -26,8 +26,8 @@ const connectionName =
   (isElectron && window.electron?.connectionName) || (isRemote ? "the backend" : "This machine")
 
 /**
- * True when the token crosses a network in the clear — an `http://` remote, which
- * the picker allows for private addresses (see `normalizeRemoteUrl`).
+ * True for an `http://` remote, which the picker allows for private addresses (see
+ * `normalizeRemoteUrl`). Only affects the hover text — see the badge below.
  *
  * Derived from the API base rather than plumbed through as its own flag: the scheme
  * in use *is* the fact, and a second field could disagree with it. Never true for a
@@ -129,25 +129,22 @@ export function ConnectionStatus() {
     <button
       type="button"
       onClick={switchConnection}
+      // An http connection is a supported configuration, not a fault, so it gets the
+      // same glyph and the same colour as any other — a badge that looks like an alarm
+      // for a setup the app deliberately allows is just noise you learn to ignore.
+      // The scheme is still stated on hover, where it answers a question rather than
+      // asking for attention.
       title={
         isInsecure
-          ? `Connected to ${connectionName} over plain http — the token crosses your network in the clear on every request. Click to switch connection.`
+          ? `Connected to ${connectionName} over http (not encrypted). Click to switch connection.`
           : `Connected to ${connectionName}. Click to switch connection.`
       }
       className={cn(
         badgeClass,
-        isInsecure
-          ? "text-warning hover:bg-sidebar-accent"
-          : "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+        "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
       )}
     >
-      {/* The unencrypted case gets its own glyph rather than only a colour: this badge
-          is small, and colour alone is the half of the signal some people don't get. */}
-      {isInsecure ? (
-        <CloudWarning className="size-3.5" />
-      ) : (
-        <Cloud className={cn("size-3.5", isSuccess && "opacity-70")} />
-      )}
+      <Cloud className={cn("size-3.5", isSuccess && "opacity-70")} />
       <span className="truncate">{connectionName}</span>
     </button>
   )

@@ -188,8 +188,8 @@ function isPrivateHost(hostname) {
  * base with `/api` already on it — and returns just the origin, because that is
  * what {@link apiBaseFor} builds from.
  *
- * `insecure` is set when the result will carry the token in cleartext, so callers
- * can say so. It is advice, not a refusal; see the scheme rule below.
+ * `insecure` is set when the result will carry the token in cleartext, so callers can
+ * state it. Informational, not a refusal and not a warning — see the scheme rule below.
  *
  * @returns {{ url: string, insecure: boolean } | { error: string }}
  */
@@ -216,12 +216,12 @@ function normalizeRemoteUrl(input) {
   // so plain HTTP across the public internet is refused outright — there is no
   // version of that which is a good idea.
   //
-  // A private address is allowed, with a warning wherever it is shown. It is the
-  // ordinary home-lab setup (a box on the LAN, no domain, so no certificate a CA
-  // will issue), and refusing it pushed people toward an SSH tunnel they had to
-  // babysit or a self-signed cert they had to trust machine-wide. The exposure is
-  // real but bounded: anyone who can already ARP-spoof your subnet can read the
-  // token. Loopback is the same rule's easy case — nothing leaves the machine.
+  // A private address is allowed, and treated as the ordinary setup it is: a box on
+  // the LAN with no domain, so no certificate a CA will issue. Refusing it pushed
+  // people toward an SSH tunnel they had to babysit or a self-signed cert they had to
+  // trust machine-wide. The exposure is real but bounded — anyone who can already
+  // ARP-spoof your subnet can read the token — so callers state it plainly rather
+  // than dressing it as a fault. Loopback is the same rule's easy case.
   if (url.protocol === "http:" && !isPrivateHost(url.hostname)) {
     return {
       error:

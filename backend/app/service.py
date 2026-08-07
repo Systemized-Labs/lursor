@@ -638,10 +638,10 @@ def print_summary(host: str, port: int, token: str, *, created: bool) -> None:
     print()
     print("    uv run lursor-service token")
     print()
-    print("  The token grants a shell on this host, it does not expire, and it")
-    print("  travels in the clear over plain http. On a private network the app")
-    print("  accepts that and says so; across the internet it refuses, and you")
-    print("  want a TLS proxy or an SSH tunnel — see docs/REMOTE.md.")
+    print("  The token grants a shell on this host and does not expire. Over plain")
+    print("  http it is sent unencrypted, which is fine on a network you trust and")
+    print("  is what the app expects for a private address. To reach this box from")
+    print("  outside, put a TLS proxy or an SSH tunnel in front — docs/REMOTE.md.")
     print(rule)
 
 
