@@ -137,7 +137,8 @@ your shell, which is the whole reason the installer exists.
 ## 2. Put TLS in front of it
 
 A bearer token over plain HTTP is readable by anything on the path and replayable
-forever, so the app refuses to save a `http://` connection to any non-loopback host.
+forever, so the app refuses to save a `http://` connection to a **public** address.
+(Private addresses are a documented exception — see "On a LAN, without TLS" below.)
 With Caddy, that is the whole configuration:
 
 ```
@@ -263,6 +264,32 @@ has no display for. The backend reports this in `GET /api/server-info`
 (`can_pick_folder: false`) and the app switches to browsing the remote filesystem
 instead: navigate it, type a path directly, and directories holding a `.git` are
 marked as repositories.
+
+## On a LAN, without TLS
+
+A box on your own network is the case TLS fits worst: no domain, so no certificate a
+public CA will issue, and the alternatives are a self-signed cert you trust
+machine-wide or an SSH tunnel you have to keep alive. So `http://` is allowed to a
+private address — the RFC 1918 ranges, link-local, IPv6 unique-local, and `.local` /
+`.home.arpa` names:
+
+```bash
+# on the server: bind the LAN interface rather than loopback
+cd ~/lursor/backend && uv run lursor-service install --host 0.0.0.0 --port 8791
+```
+
+Then add `http://192.168.x.x:8791` in the app with the token. Re-running `install`
+keeps the existing token; add `--rotate-token` to replace it.
+
+Understand what you are accepting: the token goes out in cleartext on **every**
+request, it does not expire, and it grants a shell on that host. Anyone who can
+ARP-spoof your subnet — a guest device, something on the IoT VLAN, a compromised
+laptop — reads it once and owns the server. The app says so rather than hiding it: a
+warning under the address field in the picker, and an amber cloud-with-warning badge
+in the window bar for as long as the connection is in use.
+
+Public addresses are still refused outright. There is no version of shipping that
+token across the internet in the clear that is a good idea.
 
 ## Testing it without a VPS
 

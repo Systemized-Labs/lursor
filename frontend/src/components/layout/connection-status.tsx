@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CloudSlash, Cloud, Desktop, Warning } from "@phosphor-icons/react"
+import { CloudSlash, Cloud, CloudWarning, Desktop, Warning } from "@phosphor-icons/react"
 
 import { api, subscribeUnauthorized } from "@/api/client"
 import { isElectron } from "@/lib/platform"
@@ -24,6 +24,16 @@ const UNHEALTHY_INTERVAL_MS = 4_000
 const isRemote = isElectron && window.electron?.isRemote === true
 const connectionName =
   (isElectron && window.electron?.connectionName) || (isRemote ? "the backend" : "This machine")
+
+/**
+ * True when the token crosses a network in the clear — an `http://` remote, which
+ * the picker allows for private addresses (see `normalizeRemoteUrl`).
+ *
+ * Derived from the API base rather than plumbed through as its own flag: the scheme
+ * in use *is* the fact, and a second field could disagree with it. Never true for a
+ * local backend — that one is loopback, and its own process.
+ */
+const isInsecure = isRemote && (window.electron?.apiBase ?? "").startsWith("http://")
 
 /**
  * Connection health for a remote backend.
@@ -119,13 +129,25 @@ export function ConnectionStatus() {
     <button
       type="button"
       onClick={switchConnection}
-      title={`Connected to ${connectionName}. Click to switch connection.`}
+      title={
+        isInsecure
+          ? `Connected to ${connectionName} over plain http — the token crosses your network in the clear on every request. Click to switch connection.`
+          : `Connected to ${connectionName}. Click to switch connection.`
+      }
       className={cn(
         badgeClass,
-        "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+        isInsecure
+          ? "text-warning hover:bg-sidebar-accent"
+          : "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
       )}
     >
-      <Cloud className={cn("size-3.5", isSuccess && "opacity-70")} />
+      {/* The unencrypted case gets its own glyph rather than only a colour: this badge
+          is small, and colour alone is the half of the signal some people don't get. */}
+      {isInsecure ? (
+        <CloudWarning className="size-3.5" />
+      ) : (
+        <Cloud className={cn("size-3.5", isSuccess && "opacity-70")} />
+      )}
       <span className="truncate">{connectionName}</span>
     </button>
   )

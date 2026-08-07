@@ -145,8 +145,17 @@
       .row {
         display: flex;
         gap: 8px;
-        justify-content: flex-end;
+        align-items: center;
         margin-top: 4px;
+      }
+      /* Test sits on the left, away from the two buttons that end the form —
+         it is the one control here you can press repeatedly. */
+      .row .spacer {
+        flex: 1;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
       }
       button.primary,
       button.ghost {
@@ -185,10 +194,27 @@
         line-height: 1.5;
         min-height: 1.2em;
       }
+      /* Same line, three moods: a failed test reads as an error, a passing one as
+         confirmation, and an in-flight one as neither. */
+      .error.ok {
+        color: #9fe0ac;
+      }
+      .error.busy {
+        color: #8a8a8a;
+      }
       .hint {
         color: #6a6a6a;
         font-size: 12px;
         line-height: 1.5;
+      }
+      /* Amber, not red: an unencrypted LAN address is allowed, and styling it as an
+         error would say otherwise. Hidden until the address is actually one. */
+      .warn {
+        color: #e0c08a;
+        display: none;
+      }
+      .warn.show {
+        display: block;
       }
     </style>
   </head>
@@ -211,6 +237,7 @@
         <div>
           <label for="url">Address</label>
           <input id="url" placeholder="https://lursor.example.com" spellcheck="false" />
+          <p class="hint warn" id="url-warning"></p>
         </div>
         <div>
           <label for="token">Token</label>
@@ -227,6 +254,8 @@
         </div>
         <p class="error" id="error"></p>
         <div class="row">
+          <button class="ghost" id="test" type="button">Test connection</button>
+          <span class="spacer"></span>
           <button class="ghost" id="cancel" type="button">Cancel</button>
           <button class="primary" id="save" type="submit">Save and connect</button>
         </div>
@@ -240,6 +269,10 @@
       const addEl = document.getElementById("add")
       const subEl = document.getElementById("sub")
 
+      const testEl = document.getElementById("test")
+      const saveEl = document.getElementById("save")
+      const warnEl = document.getElementById("url-warning")
+
       const fields = {
         name: document.getElementById("name"),
         url: document.getElementById("url"),
@@ -249,23 +282,75 @@
       /** Set when the form is editing an existing remote rather than adding one. */
       let editingId = null
 
+      /**
+       * Bumped whenever the form's values change or it closes, so a test that was
+       * already in flight cannot paint a verdict about values that are no longer on
+       * screen — "Reachable" under an address you have since corrected is worse than
+       * no answer at all.
+       */
+      let attempt = 0
+
+      /** The one message line under the fields. `tone` is "", "ok" or "busy". */
+      function setMessage(text, tone = "") {
+        errorEl.textContent = text
+        errorEl.className = tone ? `error ${tone}` : "error"
+      }
+
       function openForm(connection) {
         editingId = connection?.id ?? null
         fields.name.value = connection?.name ?? ""
         fields.url.value = connection?.url ?? ""
         fields.token.value = connection?.token ?? ""
-        errorEl.textContent = ""
+        attempt += 1
+        setMessage("")
         formEl.classList.add("open")
         addEl.style.display = "none"
         fields.name.focus()
+        // Editing an existing http:// remote should show the warning immediately,
+        // not only once a key is pressed.
+        refreshUrlWarning()
       }
 
       function closeForm() {
         editingId = null
+        attempt += 1
         formEl.classList.remove("open")
         addEl.style.display = ""
-        errorEl.textContent = ""
+        setMessage("")
+        warnEl.classList.remove("show")
       }
+
+      // A verdict is about the values it was run against. Once they change it is
+      // stale, and leaving it up invites trusting it.
+      for (const field of [fields.url, fields.token]) {
+        field.addEventListener("input", () => {
+          attempt += 1
+          if (errorEl.textContent) setMessage("")
+        })
+      }
+
+      /**
+       * Say so, before saving, when the address means the token travels in the clear.
+       *
+       * http:// to a private address is allowed (see `normalizeRemoteUrl`), and the
+       * whole cost of allowing it is that nothing would otherwise tell you. Asked of
+       * the main process rather than re-derived here: one copy of the rule.
+       */
+      async function refreshUrlWarning() {
+        const typed = fields.url.value
+        const verdict = await window.lursorConnect.inspect(typed)
+        // Raced by later keystrokes — only paint if this is still what's on screen.
+        if (typed !== fields.url.value) return
+        const insecure = !verdict.error && verdict.insecure
+        warnEl.textContent = insecure
+          ? `Unencrypted: the token will cross your network in the clear on every ` +
+            `request to ${verdict.url}. Fine on a LAN you trust; anyone else on it ` +
+            `can read the token and gets a shell on that host.`
+          : ""
+        warnEl.classList.toggle("show", insecure)
+      }
+
+      fields.url.addEventListener("input", refreshUrlWarning)
 
       async function render() {
         const connections = await window.lursorConnect.list()
@@ -318,9 +403,43 @@
         )
       }
 
+      testEl.addEventListener("click", async () => {
+        const mine = ++attempt
+        setMessage("Testing…", "busy")
+        testEl.disabled = true
+        saveEl.disabled = true
+
+        let result
+        try {
+          result = await window.lursorConnect.test({
+            url: fields.url.value,
+            token: fields.token.value,
+          })
+        } finally {
+          testEl.disabled = false
+          saveEl.disabled = false
+        }
+
+        // Superseded by an edit, another test, or a closed form while we waited.
+        if (mine !== attempt) return
+
+        if (result.error) {
+          setMessage(result.error)
+          return
+        }
+        const what = result.version
+          ? `Lursor ${result.version} at ${result.url}`
+          : `a Lursor backend at ${result.url}`
+        setMessage(
+          result.insecure ? `Reachable — ${what}, unencrypted.` : `Reachable — ${what}.`,
+          "ok"
+        )
+      })
+
       formEl.addEventListener("submit", async (event) => {
         event.preventDefault()
-        errorEl.textContent = ""
+        attempt += 1
+        setMessage("")
         const result = await window.lursorConnect.save({
           id: editingId,
           name: fields.name.value,
@@ -328,7 +447,7 @@
           token: fields.token.value,
         })
         if (result.error) {
-          errorEl.textContent = result.error
+          setMessage(result.error)
           return
         }
         closeForm()

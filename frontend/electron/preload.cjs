@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld("electron", {
 contextBridge.exposeInMainWorld("lursorConnect", {
   list: () => ipcRenderer.invoke("connection:list"),
   save: (input) => ipcRenderer.invoke("connection:save", input),
+  // Reachability + token check for form values that haven't been saved yet.
+  test: (input) => ipcRenderer.invoke("connection:test", input),
+  // Scheme/address verdict for a half-typed URL. No network.
+  inspect: (url) => ipcRenderer.invoke("connection:inspect", url),
   remove: (id) => ipcRenderer.invoke("connection:remove", id),
   select: (id) => ipcRenderer.invoke("connection:select", id),
   // Why the last attempt failed, if it did — shown on the picker itself.

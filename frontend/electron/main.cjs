@@ -180,37 +180,66 @@ function killBackend() {
 }
 
 /**
- * Ping a backend's health endpoint once.
+ * GET one route on a backend, as the app would.
  *
- * Resolves to the HTTP status, or 0 when the request never got an answer. The
- * distinction is the whole point: 200 is healthy, 401 means the token is wrong and
+ * Resolves to the HTTP status — 0 when the request never got an answer at all —
+ * and the parsed JSON body when there was one. The status distinction is the whole
+ * point of the health path: 200 is healthy, 401 means the token is wrong and
  * waiting will never help, and 0 means try again.
  *
- * @returns {Promise<number>}
+ * `body` is capped because this runs against an address the user typed: a
+ * misdirected connection can land on something that streams forever, and a probe
+ * must not be the thing that eats the main process's memory.
+ *
+ * @returns {Promise<{ status: number, body: unknown }>}
  */
-function pingHealth(apiBase, token, timeoutMs = 5000) {
+function probe(apiBase, token, route, timeoutMs = 5000) {
   return new Promise((resolve) => {
     let url
     try {
-      url = new URL(`${apiBase.replace(/\/$/, "")}/health`)
+      url = new URL(`${apiBase.replace(/\/$/, "")}${route}`)
     } catch {
-      return resolve(0)
+      return resolve({ status: 0, body: null })
     }
     const transport = url.protocol === "https:" ? https : http
     const req = transport.get(
       url,
       { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       (res) => {
-        res.resume()
-        resolve(res.statusCode ?? 0)
+        const status = res.statusCode ?? 0
+        let text = ""
+        res.setEncoding("utf8")
+        res.on("data", (chunk) => {
+          if (text.length > 64_000) return
+          text += chunk
+        })
+        res.on("end", () => {
+          let body = null
+          try {
+            body = JSON.parse(text)
+          } catch {
+            /* Not JSON: the status alone is the answer. */
+          }
+          resolve({ status, body })
+        })
+        res.on("error", () => resolve({ status, body: null }))
       }
     )
-    req.on("error", () => resolve(0))
+    req.on("error", () => resolve({ status: 0, body: null }))
     req.setTimeout(timeoutMs, () => {
       req.destroy()
-      resolve(0)
+      resolve({ status: 0, body: null })
     })
   })
+}
+
+/**
+ * Ping a backend's health endpoint once, for callers that only need the status.
+ *
+ * @returns {Promise<number>}
+ */
+async function pingHealth(apiBase, token, timeoutMs = 5000) {
+  return (await probe(apiBase, token, "/health", timeoutMs)).status
 }
 
 /**
@@ -510,6 +539,93 @@ ipcMain.on("connection:last-error", (event) => {
 ipcMain.handle("connection:list", () => connections.list())
 ipcMain.handle("connection:save", (_event, input) => connections.save(input ?? {}))
 ipcMain.handle("connection:remove", (_event, id) => connections.remove(id))
+
+/**
+ * What the scheme rule makes of an address, without touching the network.
+ *
+ * Cheap enough to call on every keystroke, and it keeps the picker from carrying a
+ * second copy of the private-address logic that would drift from the real one.
+ *
+ * @returns {{ url: string, insecure: boolean } | { error: string }}
+ */
+ipcMain.handle("connection:inspect", (_event, url) => connections.normalizeRemoteUrl(url))
+
+/**
+ * Try an address and token *without* committing to them.
+ *
+ * The picker's alternative was save-and-connect: a typo cost a failed connection,
+ * a bounce back to the picker, and a saved entry that doesn't work. This answers the
+ * same question in place, and reports the backend's version while it's there —
+ * remote is the one configuration where the two halves can drift, and finding that
+ * out before connecting beats finding out from a broken screen.
+ *
+ * One shot, no polling: unlike a connect, nothing here is waiting for a backend to
+ * finish booting, and a test that hangs for 20s is a worse answer than "no".
+ *
+ * @returns {Promise<{ ok: true, url: string, version?: string } | { error: string }>}
+ */
+ipcMain.handle("connection:test", async (_event, input) => {
+  const normalized = connections.normalizeRemoteUrl(input?.url)
+  if ("error" in normalized) return normalized
+
+  const token = String(input?.token ?? "").trim()
+  if (!token) {
+    return {
+      error:
+        "A remote backend needs its token (the LURSOR_AUTH_TOKEN it was started with).",
+    }
+  }
+
+  const apiBase = connections.apiBaseFor(normalized.url)
+  const { status, body } = await probe(apiBase, token, "/health", 8000)
+
+  if (status === 0) {
+    // An address typed without a scheme is promoted to https, which is the right
+    // guess right up until the box is a LAN machine with no certificate — and then
+    // the failure looks like "unreachable" rather than "wrong scheme". Since http is
+    // allowed here, say so instead of leaving them to guess.
+    const suggestHttp =
+      normalized.url.startsWith("https://") &&
+      connections.isPrivateHost(new URL(normalized.url).hostname)
+    return {
+      error:
+        `No answer from ${normalized.url}. Check the backend is running and the address is right.` +
+        (suggestHttp
+          ? ` If it has no TLS in front of it, try ${normalized.url.replace("https://", "http://")} — plain http is allowed to a private address.`
+          : ""),
+    }
+  }
+  if (status === 401 || status === 403) {
+    return {
+      error:
+        "Reached the backend, but it rejected the token. Check it matches the " +
+        "LURSOR_AUTH_TOKEN it was started with.",
+    }
+  }
+  if (status !== 200) {
+    return {
+      error: `${normalized.url} answered with HTTP ${status}. That is something other than a Lursor backend — check the address and any reverse proxy in front of it.`,
+    }
+  }
+  // Something is there and it let us in, but a login page or a different service
+  // can do that too. The shape of the body is what makes it *ours*.
+  if (!body || typeof body !== "object" || body.status !== "ok") {
+    return {
+      error: `${normalized.url} answered, but not like a Lursor backend. Check the address points at the backend rather than something in front of it.`,
+    }
+  }
+
+  // Best-effort: a backend too old to have /api/server-info is still a backend you
+  // can connect to, so a miss here reports success without a version rather than
+  // failing the test.
+  const info = await probe(apiBase, token, "/server-info", 5000)
+  const version =
+    info.status === 200 && info.body && typeof info.body.version === "string"
+      ? info.body.version
+      : undefined
+
+  return { ok: true, url: normalized.url, insecure: normalized.insecure, version }
+})
 
 ipcMain.handle("connection:select", async (_event, id) => {
   const connection = connections.get(id)
