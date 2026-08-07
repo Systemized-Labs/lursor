@@ -7,14 +7,17 @@ import type {
   CompactionDefaultsInput,
   DefaultAgentsInput,
   DefaultAgentsSettings,
+  KeyedSearchProvider,
   MemorySettings,
   MemorySettingsInput,
   MediaSettings,
   MediaSettingsInput,
   MemoryTestResult,
+  OpenRouterKeyReveal,
   OpenRouterSettings,
   OpenRouterSettingsInput,
   OpenRouterTestResult,
+  WebSearchKeyReveal,
   WebSearchSettings,
   WebSearchSettingsInput,
 } from "./types"
@@ -25,12 +28,18 @@ export const settingsApi = {
   setOpenRouter: (input: OpenRouterSettingsInput) =>
     api.put<OpenRouterSettings>("/settings/openrouter", input),
   clearOpenRouter: () => api.delete<void>("/settings/openrouter"),
+  // Fetched on demand (never cached) so the raw key only crosses the wire when
+  // the user explicitly asks to copy it.
+  revealOpenRouter: () =>
+    api.get<OpenRouterKeyReveal>("/settings/openrouter/reveal"),
   testOpenRouter: (input: OpenRouterSettingsInput) =>
     api.post<OpenRouterTestResult>("/settings/openrouter/test", input),
   getWebSearch: (signal?: AbortSignal) =>
     api.get<WebSearchSettings>("/settings/web-search", signal),
   setWebSearch: (input: WebSearchSettingsInput) =>
     api.put<WebSearchSettings>("/settings/web-search", input),
+  revealWebSearchKey: (provider: KeyedSearchProvider) =>
+    api.get<WebSearchKeyReveal>(`/settings/web-search/${provider}/reveal`),
   getMemory: (signal?: AbortSignal) =>
     api.get<MemorySettings>("/settings/memory", signal),
   setMemory: (input: MemorySettingsInput) =>

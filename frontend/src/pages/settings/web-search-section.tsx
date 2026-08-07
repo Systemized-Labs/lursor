@@ -2,8 +2,13 @@ import { Globe, Key } from "@phosphor-icons/react"
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
-import { useSaveWebSearchSettings, useWebSearchSettings } from "@/api/settings"
-import type { WebSearchProvider } from "@/api/types"
+import {
+  settingsApi,
+  useSaveWebSearchSettings,
+  useWebSearchSettings,
+} from "@/api/settings"
+import type { KeyedSearchProvider, WebSearchProvider } from "@/api/types"
+import { SecretReveal } from "@/components/secret-reveal"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -190,6 +195,21 @@ export function WebSearchSection() {
                 A key is currently provided by the environment (
                 <code className="font-mono">.env</code>). Saving one here overrides it.
               </p>
+            ) : null}
+            {configured ? (
+              <SecretReveal
+                // Remount on a provider switch so a revealed Tavily key is
+                // dropped rather than left on screen under the Exa label.
+                key={provider}
+                label="key"
+                fetchSecret={async () =>
+                  (
+                    await settingsApi.revealWebSearchKey(
+                      provider as KeyedSearchProvider
+                    )
+                  ).api_key
+                }
+              />
             ) : null}
             <Input
               id="web-search-key"

@@ -14,11 +14,15 @@ import type {
   GitHubConfig,
   GitHubConfigInput,
   GitHubRepo,
+  GitHubTokenReveal,
   Workspace,
 } from "./types"
 
 export const githubApi = {
   config: (signal?: AbortSignal) => api.get<GitHubConfig>("/github/config", signal),
+  // Fetched on demand (never cached) so the raw token only crosses the wire
+  // when the user explicitly asks to copy it.
+  revealToken: () => api.get<GitHubTokenReveal>("/github/config/token"),
   save: (input: GitHubConfigInput) => api.put<GitHubConfig>("/github/config", input),
   disconnect: () => api.delete<void>("/github/config"),
   repos: (page: number, perPage: number, signal?: AbortSignal) =>

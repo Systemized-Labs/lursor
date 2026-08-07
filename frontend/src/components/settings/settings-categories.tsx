@@ -58,12 +58,6 @@ export interface SettingsCategory {
   /** Rail section heading. Categories are grouped in declaration order. */
   group: string
   icon: Icon
-  /**
-   * Needs more than the standard column. Skills and Environment are two-pane
-   * browsers whose detail side goes unreadable at dialog width — the plan's §6
-   * concern, and this is mitigation 1.
-   */
-  wide?: boolean
   render: () => React.ReactNode
 }
 
@@ -92,7 +86,6 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     label: "Capabilities",
     group: "Agents",
     icon: SlidersHorizontal,
-    wide: true,
     render: () => <CapabilitiesCategory />,
   },
   {
@@ -100,7 +93,6 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     label: "Environment",
     group: "Agents",
     icon: Terminal,
-    wide: true,
     render: () => <EnvCategory />,
   },
   {
@@ -159,7 +151,6 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     label: "Schedules",
     group: "Automation",
     icon: Clock,
-    wide: true,
     render: () => <SchedulesPage embedded />,
   },
 

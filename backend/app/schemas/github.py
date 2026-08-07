@@ -45,6 +45,16 @@ class GitHubConfigRead(BaseModel):
         )
 
 
+class GitHubTokenReveal(BaseModel):
+    """The stored token in full — returned only from the explicit reveal route.
+
+    Kept off :class:`GitHubConfigRead` (which exposes a hint) so the secret is
+    handed over exactly when the user asks to copy it back out.
+    """
+
+    token: str
+
+
 class GitHubRepo(BaseModel):
     """A repository the connected account can access."""
 

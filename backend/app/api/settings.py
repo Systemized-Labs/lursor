@@ -31,15 +31,18 @@ from app.media import refs
 from app.schemas.settings import (
     CompactionDefaultsRead,
     CompactionDefaultsUpdate,
+    KeyedSearchProvider,
     MediaModalityRead,
     MediaSettingsRead,
     MediaSettingsUpdate,
     MemorySettingsRead,
     MemorySettingsUpdate,
     MemoryTestResult,
+    OpenRouterKeyReveal,
     OpenRouterSettingsRead,
     OpenRouterSettingsUpdate,
     OpenRouterTestResult,
+    WebSearchKeyReveal,
     WebSearchSettingsRead,
     WebSearchSettingsUpdate,
 )
@@ -137,6 +140,25 @@ async def get_openrouter(session: AsyncSession = Depends(get_session)):
     )
 
 
+@router.get("/openrouter/reveal", response_model=OpenRouterKeyReveal)
+async def reveal_openrouter(session: AsyncSession = Depends(get_session)):
+    """Return the effective key in full so the UI can copy it back out.
+
+    A key pasted here is otherwise write-only, which makes it impossible to move
+    to another machine without digging it out of the provider's dashboard. This
+    is a local single-user app behind the same auth as every other route, so
+    handing the secret back on an explicit request is safe.
+    """
+    _capture_env_baseline()
+    key = get_settings().openrouter_api_key
+    if not key:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No OpenRouter key is set.")
+    cfg = await _get_config(session)
+    return OpenRouterKeyReveal(
+        api_key=key, source="database" if (cfg and cfg.openrouter_api_key) else "env"
+    )
+
+
 @router.put("/openrouter", response_model=OpenRouterSettingsRead)
 async def set_openrouter(
     payload: OpenRouterSettingsUpdate, session: AsyncSession = Depends(get_session)
@@ -227,6 +249,27 @@ async def get_web_search(session: AsyncSession = Depends(get_session)):
         exa_configured=bool(exa_eff),
         exa_key_hint=_hint(exa_eff),
         exa_source="database" if exa_db else ("env" if exa_env else "none"),
+    )
+
+
+@router.get("/web-search/{provider}/reveal", response_model=WebSearchKeyReveal)
+async def reveal_web_search_key(
+    provider: KeyedSearchProvider, session: AsyncSession = Depends(get_session)
+):
+    """Return one provider's effective key in full so the UI can copy it out.
+
+    Only the keyed providers have anything to reveal; ``native`` and
+    ``duckduckgo`` are rejected by the path type before reaching here.
+    """
+    cfg = await _get_config(session)
+    db_key = getattr(cfg, f"{provider}_api_key", None) if cfg else None
+    key = db_key or getattr(get_settings(), f"{provider}_api_key")
+    if not key:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"No {provider.title()} key is set."
+        )
+    return WebSearchKeyReveal(
+        provider=provider, api_key=key, source="database" if db_key else "env"
     )
 
 
