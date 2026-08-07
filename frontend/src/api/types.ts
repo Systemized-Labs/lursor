@@ -1334,13 +1334,14 @@ export type MediaSource = "laios" | "openrouter"
 /** A rate, and what it is charged per. Null everywhere nothing is known. */
 export interface MediaPrice {
   amount: number
-  /** `"image"` or `"second"` (of output video). */
+  /** `"image"`, `"megapixel"`, or `"second"` (of output video). */
   unit: string
   /**
    * A floor rather than a quote.
    *
-   * Video rates vary by resolution and by whether audio is on, and an image price
-   * is the mean of what past runs actually cost — so both are rendered with a
+   * Video rates vary by resolution and by whether audio is on, an image rate can
+   * vary by resolution or by provider, and an image price with no published rate
+   * is the mean of what past runs actually cost — so each is rendered with a
    * qualifier ("from", "about") rather than as an exact number.
    */
   approximate: boolean

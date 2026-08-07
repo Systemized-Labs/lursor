@@ -72,6 +72,13 @@ OR_IMAGES = {
         },
     ]
 }
+# What each of the two above costs, as its ``/endpoints`` call reports it. Kept
+# apart from the catalogue because that is how OpenRouter serves it: the list
+# publishes no price, and one request per model fetches the rate.
+OR_IMAGE_RATES = {
+    "openai/gpt-image-2": 0.19,
+    "google/gemini-2.5-flash-image": 0.04,
+}
 OR_VIDEOS = {
     "data": [
         {
@@ -129,6 +136,27 @@ def _upstreams(monkeypatch, *, laios_models=(), images=None, videos=None) -> Non
         path = request.url.path
         if path.endswith("/images/models"):
             return httpx.Response(200, json=images or {"data": []})
+        if "/images/models/" in path and path.endswith("/endpoints"):
+            slug = path.split("/images/models/", 1)[1].rsplit("/endpoints", 1)[0]
+            rate = OR_IMAGE_RATES.get(slug)
+            if rate is None:
+                return httpx.Response(404, json={})
+            return httpx.Response(
+                200,
+                json={
+                    "endpoints": [
+                        {
+                            "pricing": [
+                                {
+                                    "billable": "output_image",
+                                    "unit": "image",
+                                    "cost_usd": rate,
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
         if path.endswith("/videos/models"):
             return httpx.Response(200, json=videos or {"data": []})
         if path == "/v1/models":
@@ -258,6 +286,24 @@ async def test_an_unreadable_catalogue_says_the_box_will_not_be_used(monkeypatch
 
 
 # --- Choosing within a source ---------------------------------------------------
+
+
+async def test_image_auto_picks_the_cheapest_published_rate(monkeypatch, key):
+    """On a fresh install, with nothing generated yet and so nothing observed."""
+    await _configure(image_source="openrouter")
+    _upstreams(monkeypatch, images=OR_IMAGES)
+
+    runtime, _ = await _image()
+    assert runtime is not None
+    chosen = runtime.default
+    assert chosen.model == "google/gemini-2.5-flash-image"  # $0.04 beats $0.19
+    assert chosen.price is not None
+    assert chosen.price.amount == pytest.approx(0.04)
+    assert chosen.price.unit == "image"
+    assert chosen.price_source == "catalogue"
+    # Every row in the picker is priced, which is the point: forty blank rows is
+    # what this looked like before the rate was fetched.
+    assert all(m.price is not None for m in runtime.models)
 
 
 async def test_video_auto_picks_the_cheapest_published_rate(monkeypatch, key):

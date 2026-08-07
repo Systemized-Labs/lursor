@@ -196,9 +196,10 @@ class ImageModel:
     provider: str = refs.LAIOS
     catalogue: ORImageModel | None = None
     # Mean USD this install has actually paid per image on this model, over its
-    # completed runs. The only honest price for an OpenRouter image before the
-    # first one (see ``app/media/history.py``); always None on laios, which bills
-    # in electricity and reports no number.
+    # completed runs. The fallback price for an OpenRouter model that OpenRouter
+    # bills per output token, which publishes no rate a picker can state (see
+    # ``app/media/history.py``); always None on laios, which bills in electricity
+    # and reports no number.
     observed_cost: float | None = None
 
     @property
@@ -229,10 +230,30 @@ class ImageModel:
 
     @property
     def price(self) -> PriceQuote | None:
-        """A per-image price, when one is known. See ``app/media/history.py``."""
+        """What one image costs, when there is an honest number for it.
+
+        The catalogue's published rate first. It is a quote rather than a
+        retrospective average, it is true before this install has ever run the
+        model, and it is the same number for everyone — so a fresh install gets a
+        priced picker instead of forty blank rows.
+
+        What this install has paid is the fallback, for the models OpenRouter
+        bills per output token and therefore quotes no per-image rate for (see
+        ``app/media/openrouter``). :attr:`price_source` says which of the two a
+        caller is holding, because they do not mean the same thing.
+        """
+        if self.catalogue is not None and self.catalogue.price is not None:
+            return self.catalogue.price
         if self.observed_cost is None:
             return None
         return PriceQuote(amount=self.observed_cost, unit="image", approximate=True)
+
+    @property
+    def price_source(self) -> str:
+        """``"catalogue"``, ``"observed"``, or ``""`` — where :attr:`price` came from."""
+        if self.catalogue is not None and self.catalogue.price is not None:
+            return "catalogue"
+        return "observed" if self.observed_cost is not None else ""
 
     @property
     def recognised(self) -> bool:
@@ -315,7 +336,12 @@ def _cost_key(model: ImageModel) -> tuple[Any, ...]:
     they share is the shape: a known cost, then an unknown one, then the name.
     """
     if model.provider == refs.OPENROUTER:
-        return (model.observed_cost is None, model.observed_cost or 0.0, model.model)
+        # A published rate and a measured average are both dollars for one image,
+        # and a per-megapixel rate is dollars for about one image at 1K — close
+        # enough to order by, and the row states its own unit either way. What
+        # would not be honest is calling an unpriced model the cheapest.
+        quote = model.price
+        return (quote is None, quote.amount if quote else 0.0, model.model)
     profile = model.profile or GENERIC_PROFILE
     per_step = profile.seconds_per_step
     return (
@@ -419,7 +445,13 @@ async def _laios_models(
 async def _openrouter_models(
     session: AsyncSession,
 ) -> tuple[list[ImageModel], str | None]:
-    """Every image model OpenRouter offers, priced by what we have paid for it."""
+    """Every image model OpenRouter offers, at its rate or at what we have paid.
+
+    Both numbers are gathered here even though only one is shown per model: the
+    catalogue's rate rides on the entry, and the observed average is one indexed
+    aggregate for the whole source, so fetching it for models that will not use it
+    costs nothing extra.
+    """
     if not openrouter_media.configured():
         return [], (
             "OpenRouter is the configured image source, but no OpenRouter API key "

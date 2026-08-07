@@ -834,16 +834,25 @@ def _timed_out(submission: _Submission, waited: float) -> str:
 
 
 def _price_note(candidate: ImageModel) -> str:
-    """What one image on this model has cost, when we have ever paid for one.
+    """What one image on this model costs, when there is an honest number.
 
-    Nothing at all when we have not. OpenRouter's catalogue publishes no image
-    price (see ``app/media/history.py``), and putting a guess in front of the model
+    Two different numbers, and the wording distinguishes them because they are not
+    equally binding. OpenRouter quotes a rate for the models it does not bill per
+    output token, and that one is true before the first generation. For the rest
+    the only figure is what this install has actually paid, which is an average
+    over past runs and says so.
+
+    Nothing at all when neither exists — putting a guess in front of the model
     would be worse than leaving it to ask.
     """
     quote = candidate.price
     if quote is None:
         return ""
-    return f"about ${quote.amount:.3f} an image, measured here"
+    unit = "a megapixel" if quote.unit == "megapixel" else "an image"
+    if candidate.price_source == "catalogue":
+        about = "from " if quote.approximate else ""
+        return f"{about}${quote.amount:.3f} {unit}"
+    return f"about ${quote.amount:.3f} {unit}, measured here"
 
 
 def _model_menu(runtime: ImageRuntime, video_available: bool) -> str:

@@ -1,4 +1,5 @@
 import { useImageCapability } from "@/api/images"
+import { priceLabel } from "@/lib/media-price"
 
 /**
  * One line saying what the image toggle will actually reach.
@@ -30,11 +31,14 @@ export function useImageHint(enabled = true): string | null {
   const extra = others > 0 ? `, +${others} more` : ""
   // A hosted image costs money and a local one costs seconds, and which of the
   // two applies is the thing an operator most needs to know before flipping a
-  // toggle that lets an agent use it unprompted.
+  // toggle that lets an agent use it unprompted. Through `priceLabel` rather than
+  // formatted here, so the unit comes from the quote — a model billed per
+  // megapixel must not be described as costing that much per image.
+  const rate = priceLabel(data.price)
   const cost =
     data.source === "openrouter"
-      ? data.price
-        ? ` — about $${data.price.amount.toFixed(3)} an image`
+      ? rate
+        ? ` — ${rate}`
         : " — billed per image"
       : " — seconds per image"
   return `Generates with ${data.model}${where}${extra}${cost}.`
