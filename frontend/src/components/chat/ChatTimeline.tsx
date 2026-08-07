@@ -3,6 +3,7 @@ import { ArrowDown, CaretUp } from "@phosphor-icons/react"
 import { useStore } from "zustand"
 import {
   StickToBottom,
+  useStickToBottomContext,
   type StickToBottomContext,
   type StickToBottomInstance,
 } from "use-stick-to-bottom"
@@ -76,6 +77,46 @@ function ChatSkeleton() {
       ))}
     </div>
   )
+}
+
+/**
+ * Re-pins the transcript when the scroll *viewport* shrinks.
+ *
+ * Everything that stacks below the timeline — the run deck expanding to show
+ * tools, a todo list appearing, the goal panel mounting, a confirm card — steals
+ * height from the timeline's `flex-1`. use-stick-to-bottom only watches the
+ * content element for resizes, so a viewport that shrinks under an already-pinned
+ * transcript leaves `scrollTop` exactly where it was: the bottom of the content
+ * slides below the fold and the last lines of the reply read as hidden behind the
+ * deck. Nothing scrolls it back, because no scroll or content-resize event fired.
+ *
+ * So watch the viewport too, and re-pin on shrink — but only while the user is
+ * still at the bottom, so it never yanks someone reading scrollback.
+ */
+function PinOnViewportShrink() {
+  const { scrollRef, scrollToBottom, isAtBottom } = useStickToBottomContext()
+  // Read through a ref: the observer is installed once, but must see the latest
+  // pin state on every callback.
+  const atBottomRef = useRef(isAtBottom)
+  atBottomRef.current = isAtBottom
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || typeof ResizeObserver === "undefined") return
+    // Seed from the current height so the observer's initial synchronous fire
+    // reads as "no change".
+    let previous = el.clientHeight
+    const observer = new ResizeObserver(() => {
+      const height = el.clientHeight
+      const shrank = height < previous
+      previous = height
+      if (shrank && atBottomRef.current) void scrollToBottom("instant")
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [scrollRef, scrollToBottom])
+
+  return null
 }
 
 /** How many trailing messages of a freshly-loaded history render initially, and
@@ -181,6 +222,7 @@ export function ChatTimeline({
     >
       {({ isAtBottom, scrollToBottom }: StickToBottomContext) => (
         <>
+          <PinOnViewportShrink />
           <StickToBottom.Content
             className="flex min-h-full w-full flex-col px-4 py-5 sm:px-6"
             scrollClassName="[overflow-anchor:none]"
