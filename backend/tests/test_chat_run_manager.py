@@ -75,3 +75,50 @@ def test_start_run_clears_prior_sticky():
 
     asyncio.run(_run())
     assert mgr._sticky.get(tid, {}) == {}
+
+
+def test_running_agent_id_tracks_the_runs_own_agent():
+    """A run's agent is the per-turn one, and only readable while it's live.
+
+    "Execute plan" and ``/goal`` run under an override the thread never persists, so
+    steering an executing goal has to read the agent from the run — reading it off
+    the thread badged the steer with the agent that merely did the planning.
+    """
+    import asyncio
+
+    mgr = ChatRunManager()
+    tid = "t5"
+
+    async def _noop() -> None:
+        return None
+
+    assert mgr.running_agent_id(tid) is None  # nothing running
+
+    async def _run() -> None:
+        mgr.start_run(tid, _noop, agent_id="agent-kimi")
+
+    asyncio.run(_run())
+    assert mgr.running_agent_id(tid) == "agent-kimi"
+
+    # Settled: the thread is answered by its own agent again, so a stale override
+    # must not leak into the next turn.
+    mgr.finish(tid, "finished")
+    assert mgr.running_agent_id(tid) is None
+
+
+def test_start_run_without_agent_clears_the_previous_ones():
+    import asyncio
+
+    mgr = ChatRunManager()
+    tid = "t6"
+
+    async def _noop() -> None:
+        return None
+
+    async def _run(agent_id: str | None) -> None:
+        mgr.start_run(tid, _noop, agent_id=agent_id)
+
+    asyncio.run(_run("agent-kimi"))
+    mgr.finish(tid, "finished")
+    asyncio.run(_run(None))
+    assert mgr.running_agent_id(tid) is None

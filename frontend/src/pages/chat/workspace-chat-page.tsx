@@ -328,6 +328,16 @@ export function WorkspaceChatPage({
     return { id: runId, name: agentNameById.get(runId) }
   }
 
+  // The agent a turn with no command of its own runs under. Normally the thread's
+  // selected agent, but a manual override wins: while a plan is parked the picker
+  // only ever sets an override (the parked thread counts as an implicit `/goal`),
+  // so without this a plain refinement turn would silently run as the plan agent
+  // while the composer showed the one the user had just picked.
+  function agentForPlainTurn(): { id: string; name?: string } {
+    const id = agentOverride ?? selectedAgentId
+    return { id, name: agentNameById.get(id) }
+  }
+
   // The composer's agent picker. While a slash command is queued — or a plan is
   // parked for review (an implicit `/goal`) — picking an agent other than that
   // command's default overrides it for this one turn (never persisted); picking
@@ -406,12 +416,7 @@ export function WorkspaceChatPage({
         setDraft(text)
         return
       }
-      // Annotated to match agentForCommand's return type, which leaves `name`
-      // optional — inference from this initializer alone would make it required.
-      let turnAgent: { id: string; name?: string } = {
-        id: selectedAgentId,
-        name: agentNameById.get(selectedAgentId),
-      }
+      let turnAgent = agentForPlainTurn()
       if (command.agentKey) {
         // A sticky command (`/plan`) persists its agent to the thread here; a
         // one-off command (`/ask`, `/goal`) just picks the agent to run this turn
@@ -439,10 +444,7 @@ export function WorkspaceChatPage({
     // A plain message sends a normal `chat` turn. When a plan is parked the
     // backend treats that turn as a refinement of the plan doc (not an
     // implementation); the user presses "Execute plan" to carry it out.
-    await send(text, atts, "chat", undefined, {
-      id: selectedAgentId,
-      name: agentNameById.get(selectedAgentId),
-    })
+    await send(text, atts, "chat", undefined, agentForPlainTurn())
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

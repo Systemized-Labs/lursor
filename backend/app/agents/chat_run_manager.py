@@ -47,12 +47,27 @@ class ChatRunManager:
         # last (latest wins) on every subscribe regardless of trimming.
         self._sticky: dict[str, dict[str, str]] = {}
         self._status: dict[str, RunStatus] = {}
+        # The agent each run is actually executing under. Not the same thing as the
+        # thread's own agent: a one-off turn (/ask, /goal, "Execute plan") runs under
+        # a per-turn override that is deliberately never persisted to the thread. Only
+        # the live run knows which agent is really working, so anything that joins a
+        # run in progress — steering an executing goal — has to ask here.
+        self._agents: dict[str, str] = {}
         self._finished_order: deque[str] = deque()
 
     # --- lifecycle ---------------------------------------------------------------
 
-    def start_run(self, thread_id: str, driver: Callable[[], Awaitable[None]]) -> bool:
+    def start_run(
+        self,
+        thread_id: str,
+        driver: Callable[[], Awaitable[None]],
+        *,
+        agent_id: str | None = None,
+    ) -> bool:
         """Spawn ``driver`` as a detached task for ``thread_id``.
+
+        ``agent_id`` is the agent this run executes under, recorded for the
+        lifetime of the run (see :meth:`running_agent_id`).
 
         Returns ``False`` if a run is already active for this thread (the caller
         should answer 409) — the existing run keeps streaming untouched.
@@ -63,6 +78,12 @@ class ChatRunManager:
         self._buffers[thread_id] = []
         self._sticky[thread_id] = {}
         self._status[thread_id] = "running"
+        # Set or cleared either way, so a run launched without an agent can't
+        # inherit the previous run's.
+        if agent_id:
+            self._agents[thread_id] = agent_id
+        else:
+            self._agents.pop(thread_id, None)
 
         async def _wrapped() -> None:
             try:
@@ -81,6 +102,17 @@ class ChatRunManager:
 
     def is_running(self, thread_id: str) -> bool:
         return self._status.get(thread_id) == "running"
+
+    def running_agent_id(self, thread_id: str) -> str | None:
+        """The agent the live run is executing under, or ``None`` if none is live.
+
+        Gated on the run still being active: once it settles the thread is back to
+        being answered by its own agent, and a stale override would misattribute
+        the next turn.
+        """
+        if not self.is_running(thread_id):
+            return None
+        return self._agents.get(thread_id)
 
     def active_threads(self) -> list[str]:
         """Thread ids with a live background run (drives the UI's running badges)."""
@@ -134,6 +166,7 @@ class ChatRunManager:
             self._buffers.pop(old, None)
             self._sticky.pop(old, None)
             self._status.pop(old, None)
+            self._agents.pop(old, None)
 
     # --- consumer ----------------------------------------------------------------
 
