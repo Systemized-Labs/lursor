@@ -1183,7 +1183,7 @@ wheels = [
 
 [[package]]
 name = "lursor-backend"
-version = "0.1.14"
+version = "0.1.15"
 source = { editable = "." }
 dependencies = [
     { name = "ag-ui-protocol" },

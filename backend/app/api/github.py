@@ -35,6 +35,7 @@ from app.schemas.github import (
     GitHubConfigInput,
     GitHubConfigRead,
     GitHubRepo,
+    GitHubTokenReveal,
 )
 from app.schemas.workspace import WorkspaceRead
 from app.workspace_paths import unique_workspace_dir
@@ -186,6 +187,17 @@ async def _require_config(session: AsyncSession) -> GitHubConfig:
 async def get_config(session: AsyncSession = Depends(get_session)):
     cfg = await _get_config(session)
     return GitHubConfigRead.from_config(cfg) if cfg else GitHubConfigRead.disconnected()
+
+
+@router.get("/config/token", response_model=GitHubTokenReveal)
+async def reveal_token(session: AsyncSession = Depends(get_session)):
+    """Return the stored token in full so the UI can copy it back out.
+
+    ``GET /config`` only ever exposes a hint; the secret is handed over on this
+    separate, explicit request so it never rides along with a status poll.
+    """
+    cfg = await _require_config(session)
+    return GitHubTokenReveal(token=cfg.token)
 
 
 @router.put("/config", response_model=GitHubConfigRead)

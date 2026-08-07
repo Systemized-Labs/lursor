@@ -16,6 +16,17 @@ class OpenRouterSettingsRead(BaseModel):
     source: Literal["database", "env", "none"] = "none"
 
 
+class OpenRouterKeyReveal(BaseModel):
+    """The effective key in full — returned only from the explicit reveal route.
+
+    Kept separate from :class:`OpenRouterSettingsRead` so the secret is handed
+    over exactly when the user asks to copy it, never on a routine status poll.
+    """
+
+    api_key: str
+    source: Literal["database", "env"]
+
+
 class OpenRouterSettingsUpdate(BaseModel):
     # A blank/omitted key clears the stored key and reverts to the environment
     # value (if any).
@@ -46,6 +57,22 @@ class WebSearchSettingsRead(BaseModel):
     exa_configured: bool = False
     exa_key_hint: str | None = None
     exa_source: Literal["database", "env", "none"] = "none"
+
+
+#: The web-search providers that hold an API key worth revealing.
+KeyedSearchProvider = Literal["tavily", "exa"]
+
+
+class WebSearchKeyReveal(BaseModel):
+    """One provider's effective key in full — only from the reveal route.
+
+    Same shape and reasoning as :class:`OpenRouterKeyReveal`: the status route
+    hands back a hint, this one hands back the secret on explicit request.
+    """
+
+    provider: KeyedSearchProvider
+    api_key: str
+    source: Literal["database", "env"]
 
 
 class WebSearchSettingsUpdate(BaseModel):

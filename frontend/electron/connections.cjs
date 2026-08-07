@@ -131,6 +131,56 @@ function writeFile(state) {
 // URL handling
 // ---------------------------------------------------------------------------
 
+/** An IPv4 literal's four octets, or null when the host isn't one. */
+function ipv4Octets(hostname) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname)
+  if (!match) return null
+  const octets = match.slice(1).map(Number)
+  return octets.every((n) => n <= 255) ? octets : null
+}
+
+/** `url.hostname` without the brackets Node keeps around IPv6 literals. */
+function bareHost(hostname) {
+  return String(hostname).replace(/^\[|\]$/g, "").toLowerCase()
+}
+
+/** This machine — nothing addressed here reaches a wire. */
+function isLoopbackHost(hostname) {
+  const host = bareHost(hostname)
+  if (host === "localhost" || host === "::1") return true
+  const octets = ipv4Octets(host)
+  return octets ? octets[0] === 127 : false
+}
+
+/**
+ * Hosts that cannot be routed off the local network.
+ *
+ * The RFC 1918 ranges, link-local (169.254/16, fe80::/10), IPv6 unique-local
+ * (fc00::/7), and the two name suffixes that are link-scoped by definition — mDNS
+ * `.local` and the RFC 8375 home zone. Deliberately literal: a name that merely
+ * *resolves* to a private address is not included, because that resolution is not
+ * something this check can pin down and DNS rebinding is exactly the trick it would
+ * be inviting.
+ */
+function isPrivateHost(hostname) {
+  const host = bareHost(hostname)
+  if (isLoopbackHost(host)) return true
+  if (host.endsWith(".local") || host.endsWith(".home.arpa")) return true
+
+  const octets = ipv4Octets(host)
+  if (octets) {
+    const [a, b] = octets
+    if (a === 10) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+    if (a === 169 && b === 254) return true
+    return false
+  }
+
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10), by first hextet.
+  return /^f[cd][0-9a-f]{0,2}:/.test(host) || /^fe[89ab][0-9a-f]?:/.test(host)
+}
+
 /**
  * Validate and normalize a remote backend address to its origin.
  *
@@ -138,7 +188,10 @@ function writeFile(state) {
  * base with `/api` already on it — and returns just the origin, because that is
  * what {@link apiBaseFor} builds from.
  *
- * @returns {{ url: string } | { error: string }}
+ * `insecure` is set when the result will carry the token in cleartext, so callers can
+ * state it. Informational, not a refusal and not a warning — see the scheme rule below.
+ *
+ * @returns {{ url: string, insecure: boolean } | { error: string }}
  */
 function normalizeRemoteUrl(input) {
   const trimmed = String(input ?? "").trim()
@@ -159,26 +212,29 @@ function normalizeRemoteUrl(input) {
     return { error: "The address must start with https:// or http://." }
   }
 
-  const isLoopback =
-    url.hostname === "localhost" ||
-    url.hostname === "127.0.0.1" ||
-    url.hostname === "::1" ||
-    url.hostname === "[::1]"
-
-  // The token authenticates every request, so sending it over plain HTTP to
-  // anything but this machine hands a shell to whoever is on the path. Refused
-  // here rather than warned about, because there is no version of this that is a
-  // good idea. Loopback stays allowed — it is how remote mode is tested without a
-  // VPS, and nothing leaves the machine.
-  if (url.protocol === "http:" && !isLoopback) {
+  // The token authenticates every request and grants a shell on the backend's host,
+  // so plain HTTP across the public internet is refused outright — there is no
+  // version of that which is a good idea.
+  //
+  // A private address is allowed, and treated as the ordinary setup it is: a box on
+  // the LAN with no domain, so no certificate a CA will issue. Refusing it pushed
+  // people toward an SSH tunnel they had to babysit or a self-signed cert they had to
+  // trust machine-wide. The exposure is real but bounded — anyone who can already
+  // ARP-spoof your subnet can read the token — so callers state it plainly rather
+  // than dressing it as a fault. Loopback is the same rule's easy case.
+  if (url.protocol === "http:" && !isPrivateHost(url.hostname)) {
     return {
       error:
-        "Plain http:// would send the token in the clear. Use https:// (put the " +
-        "backend behind a TLS reverse proxy — see docs/REMOTE.md).",
+        "Plain http:// would send the token across the public internet in the " +
+        "clear. Use https:// (put the backend behind a TLS reverse proxy — see " +
+        "docs/REMOTE.md).",
     }
   }
 
-  return { url: url.origin }
+  return {
+    url: url.origin,
+    insecure: url.protocol === "http:" && !isLoopbackHost(url.hostname),
+  }
 }
 
 /** The API base a connection's origin implies. */
@@ -290,6 +346,7 @@ module.exports = {
   apiBaseFor,
   get,
   hasRemotes,
+  isPrivateHost,
   list,
   lastUsed,
   localConnection,

@@ -24,13 +24,12 @@ import { cn } from "@/lib/utils"
  * destinations. One category rail, one scrolling pane, and state in `?settings=`
  * so it still deep-links and survives a reload (see `use-settings-param.ts`).
  *
- * Two widths. Most categories are forms and prose, which read worse the wider they
- * get, so they take a measured ~1100px column. Capabilities, Environment and
- * Schedules are two-pane browsers that spend every pixel they are given — the
- * standalone pages widened to `max-w-[100rem]` for exactly this reason — so they
- * get 95vw up to 1400px. That is mitigation 1 from the plan's §6; if it proves
- * insufficient in use, the named fallback is making Capabilities a pane instead of
- * a category.
+ * One width, the widest one: 95vw up to 1400px. The two-pane browsers
+ * (Capabilities, Environment, Schedules) need every pixel — the standalone pages
+ * widened to `max-w-[100rem]` for exactly this reason — and sizing the rest
+ * narrower meant the dialog jumped between two widths as you moved down the rail.
+ * A modal that resizes under the cursor reads as a glitch, so the form and prose
+ * categories take the wide frame too; capping their measure is their own job.
  *
  * `data-browser-bounds` is the other half of that: the two-pane pages size
  * themselves against the fold, which inside a modal is far below the modal's own
@@ -84,10 +83,7 @@ export function SettingsDialog() {
           activeRailRef.current.focus()
         }}
         className={cn(
-          "flex h-[86vh] max-h-[860px] gap-0 overflow-hidden p-0",
-          category.wide
-            ? "w-[95vw] max-w-[1400px]"
-            : "w-[92vw] max-w-[1100px]",
+          "flex h-[86vh] max-h-[860px] w-[95vw] max-w-[1400px] gap-0 overflow-hidden p-0",
           // The rail stacks above the pane on a phone; below `md` there is not
           // enough width for a column of category names beside content.
           isMobile &&

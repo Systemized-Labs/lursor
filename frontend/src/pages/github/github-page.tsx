@@ -3,6 +3,7 @@ import { useState } from "react"
 import { toast } from "sonner"
 
 import {
+  githubApi,
   useDisconnectGitHub,
   useGitHubConfig,
   useSaveGitHubConfig,
@@ -18,6 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/confirm-dialog"
+import { SecretReveal } from "@/components/secret-reveal"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
@@ -199,6 +201,10 @@ function ConnectedCard({
             Token {config.token_hint ?? "set"} · stored in Lursor&apos;s isolated
             git config (<code className="font-mono">~/.lursor/git</code>).
           </p>
+          <SecretReveal
+            label="token"
+            fetchSecret={async () => (await githubApi.revealToken()).token}
+          />
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowForm((v) => !v)}>
               <ArrowsClockwise className="h-4 w-4" />

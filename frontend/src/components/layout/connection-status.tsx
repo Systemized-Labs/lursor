@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CloudSlash, Cloud, Warning } from "@phosphor-icons/react"
+import { CloudSlash, Cloud, Desktop, Warning } from "@phosphor-icons/react"
 
 import { api, subscribeUnauthorized } from "@/api/client"
 import { isElectron } from "@/lib/platform"
@@ -22,7 +22,18 @@ const UNHEALTHY_INTERVAL_MS = 4_000
  * reloads the window.
  */
 const isRemote = isElectron && window.electron?.isRemote === true
-const connectionName = (isElectron && window.electron?.connectionName) || "the backend"
+const connectionName =
+  (isElectron && window.electron?.connectionName) || (isRemote ? "the backend" : "This machine")
+
+/**
+ * True for an `http://` remote, which the picker allows for private addresses (see
+ * `normalizeRemoteUrl`). Only affects the hover text — see the badge below.
+ *
+ * Derived from the API base rather than plumbed through as its own flag: the scheme
+ * in use *is* the fact, and a second field could disagree with it. Never true for a
+ * local backend — that one is loopback, and its own process.
+ */
+const isInsecure = isRemote && (window.electron?.apiBase ?? "").startsWith("http://")
 
 /**
  * Connection health for a remote backend.
@@ -49,11 +60,14 @@ function useRemoteHealth() {
 /**
  * What machine you are driving, and whether it is still answering.
  *
- * Deliberately invisible in local mode. The app has always run against its own
- * bundled backend and putting a permanent badge in the chrome for the case that
- * hasn't changed would be noise — this is here to answer "why is nothing
- * happening?" and "wait, which machine is this?", and neither question exists when
- * the backend is a child process.
+ * Always present in the desktop app, local backend included: the badge is the only
+ * way into the connection picker, so hiding it in local mode made switching *to* a
+ * remote backend a one-way door you could only walk through from the other side.
+ * Health states below are still remote-only — a local backend is a child process on
+ * loopback, and "reconnecting" is not a state it has.
+ *
+ * Still null outside Electron: a browser tab is served by the backend it is talking
+ * to, and there is no picker to open.
  */
 export function ConnectionStatus() {
   const { isError, isSuccess } = useRemoteHealth()
@@ -64,9 +78,26 @@ export function ConnectionStatus() {
   // signal comes from the API client rather than from the health poll.
   useEffect(() => subscribeUnauthorized(() => setRejected(true)), [])
 
-  if (!isRemote) return null
+  if (!isElectron) return null
 
   const switchConnection = () => void window.electron?.switchConnection?.()
+
+  if (!isRemote) {
+    return (
+      <button
+        type="button"
+        onClick={switchConnection}
+        title={`Running on ${connectionName}. Click to switch connection.`}
+        className={cn(
+          badgeClass,
+          "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+        )}
+      >
+        <Desktop className="size-3.5" />
+        <span className="truncate">{connectionName}</span>
+      </button>
+    )
+  }
 
   if (rejected) {
     return (
@@ -98,7 +129,16 @@ export function ConnectionStatus() {
     <button
       type="button"
       onClick={switchConnection}
-      title={`Connected to ${connectionName}. Click to switch connection.`}
+      // An http connection is a supported configuration, not a fault, so it gets the
+      // same glyph and the same colour as any other — a badge that looks like an alarm
+      // for a setup the app deliberately allows is just noise you learn to ignore.
+      // The scheme is still stated on hover, where it answers a question rather than
+      // asking for attention.
+      title={
+        isInsecure
+          ? `Connected to ${connectionName} over http (not encrypted). Click to switch connection.`
+          : `Connected to ${connectionName}. Click to switch connection.`
+      }
       className={cn(
         badgeClass,
         "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"

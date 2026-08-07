@@ -19,9 +19,9 @@ import { cn } from "@/lib/utils"
  * destroyed on dismissal, and an update nobody accepted then sat invisible until the
  * next six-hourly poll.
  *
- * It lives in `window-bar` rather than in `ConnectionStatus`, which renders `null`
- * outright against a local backend — and a local packaged app is the primary case for
- * a client update.
+ * It lives in `window-bar` rather than in `ConnectionStatus`: an update is about this
+ * client and the backend it drives, not about which connection is selected, and the two
+ * badges appear and disappear on entirely different schedules.
  *
  * Skew is reported, never enforced. A 0.1.7 client against a 0.1.6 backend keeps
  * working; the point is to explain a confusing symptom, not to gate the app.

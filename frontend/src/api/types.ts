@@ -697,6 +697,11 @@ export interface GitHubConfigInput {
   email?: string | null
 }
 
+/** The stored GitHub token in full — only from the explicit reveal route. */
+export interface GitHubTokenReveal {
+  token: string
+}
+
 /** A repository the connected account can clone. */
 export interface GitHubRepo {
   full_name: string
@@ -737,6 +742,12 @@ export interface OpenRouterSettings {
   source: "database" | "env" | "none"
 }
 
+/** The effective OpenRouter key in full — only from the explicit reveal route. */
+export interface OpenRouterKeyReveal {
+  api_key: string
+  source: "database" | "env"
+}
+
 export interface OpenRouterSettingsInput {
   api_key?: string | null
 }
@@ -749,6 +760,16 @@ export interface OpenRouterTestResult {
 
 /** App-wide web-search backend used by agents that have web search enabled. */
 export type WebSearchProvider = "native" | "duckduckgo" | "tavily" | "exa"
+
+/** The web-search providers that hold an API key. */
+export type KeyedSearchProvider = "tavily" | "exa"
+
+/** One provider's effective key in full — only from the reveal route. */
+export interface WebSearchKeyReveal {
+  provider: KeyedSearchProvider
+  api_key: string
+  source: "database" | "env"
+}
 
 /** Web-search configuration status (raw API keys are never returned). */
 export interface WebSearchSettings {

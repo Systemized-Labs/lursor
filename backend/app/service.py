@@ -43,6 +43,7 @@ import os
 import plistlib
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -257,6 +258,77 @@ def render_launchd_plist(
     return plistlib.dumps(job)
 
 
+def installed_bind() -> tuple[str, int] | None:
+    """The host and port the installed service is actually bound to, if there is one.
+
+    Read back out of the unit or plist rather than assumed, because both commands that
+    take ``--host``/``--port`` were previously wrong without it:
+
+    * ``install`` re-defaulted to loopback, so re-running it by hand — which is what
+      the docs tell you to do to upgrade — silently un-exposed a service that had been
+      installed with ``--host 0.0.0.0``.
+    * ``status`` probed the default host regardless of the real one, so it reported
+      ``health: 200 at http://127.0.0.1:8791`` on a box whose LAN interface was not
+      listening at all. That is a confident answer to a question nobody asked.
+
+    Returns None when nothing is installed, or when the file is there but not shaped
+    the way this module writes it — a hand-edited unit is the owner's business, and
+    guessing at it is worse than falling back to the documented default.
+    """
+    if _is_linux():
+        path = systemd_unit_path()
+        if not path.exists():
+            return None
+        for line in path.read_text().splitlines():
+            if not line.startswith("ExecStart="):
+                continue
+            argv = line.partition("=")[2].split()
+            return _bind_from_argv(argv)
+        return None
+
+    path = launchd_plist_path()
+    if not path.exists():
+        return None
+    try:
+        job = plistlib.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    argv = job.get("ProgramArguments")
+    return _bind_from_argv(argv) if isinstance(argv, list) else None
+
+
+def resolve_bind(args: argparse.Namespace) -> tuple[str, int]:
+    """What ``--host``/``--port`` mean for this run.
+
+    An explicit flag always wins. Otherwise inherit the installed service's bind, so
+    re-running `install` to pick up new code cannot move a service that was installed
+    somewhere else, and `status` probes the address that is actually serving. Falls
+    back to the conservative defaults when nothing is installed yet.
+    """
+    installed = installed_bind()
+    host = args.host if args.host is not None else (installed[0] if installed else DEFAULT_HOST)
+    port = args.port if args.port is not None else (installed[1] if installed else DEFAULT_PORT)
+    return host, port
+
+
+def _bind_from_argv(argv: list[str]) -> tuple[str, int] | None:
+    """Pull ``--host x --port n`` out of a rendered command line."""
+    host = port = None
+    # Deliberately ragged — pairing each element with its successor is the point, so
+    # the last one having no partner is correct rather than a length mismatch.
+    for flag, value in zip(argv, argv[1:], strict=False):
+        if flag == "--host":
+            host = value
+        elif flag == "--port":
+            port = value
+    if host is None or port is None:
+        return None
+    try:
+        return host, int(port)
+    except ValueError:
+        return None
+
+
 def systemd_unit_path() -> Path:
     return Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT
 
@@ -322,6 +394,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         )
 
     uvicorn, workdir = resolve_paths()
+    host, port = resolve_bind(args)
     # Whether this machine is getting its first token matters to the person reading the
     # output: re-running the installer prints an existing token, and without being told
     # so it looks like it just changed and invalidated their saved connection.
@@ -338,9 +411,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         env = write_env_file(token)
         unit_path = systemd_unit_path()
         unit_path.parent.mkdir(parents=True, exist_ok=True)
-        unit_path.write_text(
-            render_systemd_unit(uvicorn, workdir, env, args.host, args.port, data_dir)
-        )
+        unit_path.write_text(render_systemd_unit(uvicorn, workdir, env, host, port, data_dir))
         print(f"wrote {unit_path}")
 
         _run(["systemctl", "--user", "daemon-reload"])
@@ -361,11 +432,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     else:
         plist_path = launchd_plist_path()
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_bytes(
-            render_launchd_plist(
-                uvicorn, workdir, token, args.host, args.port, data_dir
-            )
-        )
+        plist_path.write_bytes(render_launchd_plist(uvicorn, workdir, token, host, port, data_dir))
         plist_path.chmod(0o600)
         print(f"wrote {plist_path}")
 
@@ -379,7 +446,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             "— see docs/REMOTE.md."
         )
 
-    print_summary(args.host, args.port, token, created=created)
+    print_summary(host, port, token, created=created)
     return 0
 
 
@@ -395,9 +462,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             print(f"removed {unit_path}")
         _run(["systemctl", "--user", "daemon-reload"], check=False)
     else:
-        _run(
-            ["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"], check=False
-        )
+        _run(["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"], check=False)
         plist_path = launchd_plist_path()
         if plist_path.exists():
             plist_path.unlink()
@@ -462,8 +527,24 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"logs:   {Path.home() / 'Library' / 'Logs' / 'lursor-backend.log'}")
 
     # Whether it is *reachable* is the question the user actually has, and it is not
-    # the same question as whether the supervisor thinks it is running.
-    url = f"http://{args.host}:{args.port}/api/health"
+    # the same question as whether the supervisor thinks it is running. Probe the bind
+    # that is installed, not the default one — see `installed_bind`.
+    host, port = resolve_bind(args)
+
+    # State the bind explicitly. "Is this thing reachable from my laptop?" is the
+    # question people bring to this command, and a health line alone answered it with
+    # a confident 200 from loopback no matter how the service was bound.
+    if host in WILDCARD_HOSTS:
+        lan = lan_address()
+        reachable = f"http://{lan}:{port}" if lan else "this machine's address on your network"
+        print(f"bind:    {host}:{port} (every interface — clients use {reachable})")
+    else:
+        print(f"bind:    {host}:{port} (this interface only)")
+
+    # A wildcard bind is not connectable; loopback is the half of it we can check from
+    # here, and the bind line above says what the other half is.
+    probe_host = "127.0.0.1" if host in WILDCARD_HOSTS else host
+    url = f"http://{probe_host}:{port}/api/health"
     token = token_file().read_text().strip() if token_file().exists() else ""
     request = urllib.request.Request(url)
     if token:
@@ -482,11 +563,38 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_token(args: argparse.Namespace) -> int:
     path = token_file()
     if not path.exists():
-        raise ServiceError(
-            f"No token at {path}. Run `lursor-service install` to create one."
-        )
+        raise ServiceError(f"No token at {path}. Run `lursor-service install` to create one.")
     print(path.read_text().strip())
     return 0
+
+
+WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", "*"}
+
+
+def lan_address() -> str | None:
+    """This machine's address on the network it is attached to, or None.
+
+    A wildcard bind is not something you can paste into a client, so the summary has
+    to name a real interface. Asking the routing table which source address it would
+    use for an off-link destination is the way to get the *primary* one — enumerating
+    interfaces gets you docker0 and a pile of tunnels with no way to rank them.
+
+    The UDP "connect" sends nothing: for a datagram socket it only fixes a route and a
+    source address, so this works with no network traffic and no reachable peer. The
+    destination is TEST-NET-1, which is reserved and never routed, so nothing about
+    this depends on a particular public host being up.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))
+        address = probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+    # No default route: the kernel can hand back loopback, which is not an answer to
+    # the question being asked.
+    return None if address.startswith("127.") else address
 
 
 def print_summary(host: str, port: int, token: str, *, created: bool) -> None:
@@ -502,7 +610,11 @@ def print_summary(host: str, port: int, token: str, *, created: bool) -> None:
     update a connection that was working fine.
     """
     rule = "-" * 68
-    origin = f"http://{host}:{port}"
+    wildcard = host in WILDCARD_HOSTS
+    # `http://0.0.0.0:8791` is not an address anything can connect to, and printing it
+    # under a label that says "add this in the app" is how you get a support thread.
+    address = (lan_address() if wildcard else None) or host
+    origin = f"http://{address}:{port}"
     provenance = (
         "newly generated for this machine"
         if created
@@ -517,13 +629,19 @@ def print_summary(host: str, port: int, token: str, *, created: bool) -> None:
     print(f"    Token      {token}")
     print(f"               ({provenance})")
     print()
+    if wildcard and address == host:
+        print("  Bound to every interface, but this machine's address on your")
+        print("  network could not be determined — substitute it for the host above.")
+        print()
     print("  Add both in the desktop app: Switch Connection -> Add a remote")
     print("  backend. To print the token again later:")
     print()
     print("    uv run lursor-service token")
     print()
-    print("  The token grants a shell on this host. Put TLS or an SSH tunnel in")
-    print("  front of it; never send it over plain http across a network.")
+    print("  The token grants a shell on this host and does not expire. Over plain")
+    print("  http it is sent unencrypted, which is fine on a network you trust and")
+    print("  is what the app expects for a private address. To reach this box from")
+    print("  outside, put a TLS proxy or an SSH tunnel in front — docs/REMOTE.md.")
     print(rule)
 
 
@@ -534,14 +652,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # Defaults are None so `resolve_bind` can tell "not given" from "given the same
+    # value as the default", which is what lets an omitted flag mean "keep whatever is
+    # installed" rather than "reset to loopback".
     def add_common(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--host",
-            default=DEFAULT_HOST,
-            help="Interface to bind (default %(default)s — loopback only; anything "
-            "wider publishes an API that grants a shell on this host).",
+            default=None,
+            help=f"Interface to bind (default: whatever is already installed, else "
+            f"{DEFAULT_HOST} — loopback only; anything wider publishes an API that "
+            f"grants a shell on this host).",
         )
-        p.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port (default %(default)s).")
+        p.add_argument(
+            "--port",
+            type=int,
+            default=None,
+            help=f"Port (default: whatever is already installed, else {DEFAULT_PORT}).",
+        )
 
     install = sub.add_parser("install", help="write, enable and start the service")
     add_common(install)

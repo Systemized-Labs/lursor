@@ -37,9 +37,14 @@ changed. `--rotate-token` replaces it on purpose, which logs out every saved cli
 Re-run the same command to upgrade: it pulls, re-syncs and restarts the service,
 keeping your database, workspaces and token.
 
-Env overrides: `LURSOR_DIR` (default `~/lursor`), `LURSOR_PORT` (default `8791`),
-`LURSOR_REF`, `LURSOR_REPO`. Remove it again with `--uninstall`, which stops the
-service and leaves your code and data alone.
+Env overrides: `LURSOR_DIR` (default `~/lursor`), `LURSOR_HOST` (default `0.0.0.0`),
+`LURSOR_PORT` (default `8791`), `LURSOR_REF`, `LURSOR_REPO`. Remove it again with
+`--uninstall`, which stops the service and leaves your code and data alone.
+
+The default binds **every interface**, because this installer exists for a machine you
+reach from somewhere else and a loopback-only service cannot do the thing its own
+closing message tells you to go and do. The API is token-authenticated either way. Set
+`LURSOR_HOST=127.0.0.1` if you want it loopback-only behind the TLS proxy in step 2.
 
 The service itself is managed by `lursor-service`, a CLI in the backend:
 
@@ -137,7 +142,8 @@ your shell, which is the whole reason the installer exists.
 ## 2. Put TLS in front of it
 
 A bearer token over plain HTTP is readable by anything on the path and replayable
-forever, so the app refuses to save a `http://` connection to any non-loopback host.
+forever, so the app refuses to save a `http://` connection to a **public** address.
+(Private addresses are a documented exception — see "On a LAN, without TLS" below.)
 With Caddy, that is the whole configuration:
 
 ```
@@ -263,6 +269,42 @@ has no display for. The backend reports this in `GET /api/server-info`
 (`can_pick_folder: false`) and the app switches to browsing the remote filesystem
 instead: navigate it, type a path directly, and directories holding a `.git` are
 marked as repositories.
+
+## On a LAN, without TLS
+
+A box on your own network is the case TLS fits worst: no domain, so no certificate a
+public CA will issue, and the alternatives are a self-signed cert you trust
+machine-wide or an SSH tunnel you have to keep alive. So `http://` is allowed to a
+private address — the RFC 1918 ranges, link-local, IPv6 unique-local, and `.local` /
+`.home.arpa` names.
+
+**This is what `scripts/install-server.sh` does by default.** It binds `0.0.0.0` and
+prints the machine's LAN address and token at the end; paste both into the app and you
+are done. Set `LURSOR_HOST=127.0.0.1` before running it to bind loopback instead and
+put a proxy or tunnel in front, as in steps 1–2 above.
+
+Note the CLI underneath it defaults to loopback when nothing is installed —
+`lursor-service` on its own is the low-level tool and should not publish an API
+because someone forgot a flag. Once a service exists, an omitted `--host`/`--port`
+inherits what is already installed, so re-running `install` to pick up new code cannot
+move a service out from under its clients. Check what you have with:
+
+```bash
+uv run lursor-service status     # prints a `bind:` line
+```
+
+Re-running `install` keeps the existing token; add `--rotate-token` to replace it.
+
+What you are accepting: the token goes out in cleartext on every request, does not
+expire, and grants a shell on that host — so anyone who can ARP-spoof your subnet can
+read it. That is the trade a trusted LAN is, and the app treats it as the ordinary
+configuration it is rather than as a fault. It is stated, not flagged: a grey note
+under the address field in the picker, and the scheme in the window-bar badge's hover
+text. No amber, no alarm glyph — a badge that cries wolf about a supported setup is
+one you stop reading.
+
+Public addresses are still refused outright. There is no version of shipping that
+token across the internet in the clear that is a good idea.
 
 ## Testing it without a VPS
 

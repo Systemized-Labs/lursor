@@ -22,10 +22,23 @@
 # script is only the part that cannot be — fetching the code and building the
 # environment that CLI then runs from.
 #
+# Binds every interface by default, unlike `lursor-service install` on its own, which
+# defaults to loopback. That difference is the point of this script: it exists for a
+# machine you connect to *from somewhere else*, and a loopback-only install cannot do
+# the one thing its own closing message tells you to go and do. The conservative
+# default belongs on the CLI, where the caller has already decided what they are
+# building; here it just produced a service nobody could reach.
+#
+# The API is authenticated either way — install generates a token and the backend
+# refuses unauthenticated requests — so what this exposes is a token-gated endpoint,
+# not an open one. Set LURSOR_HOST=127.0.0.1 to go back to loopback and put a TLS
+# proxy or an SSH tunnel in front of it (docs/REMOTE.md).
+#
 # Env overrides:
 #   LURSOR_REPO      owner/repo to clone from     (default Systemized-Labs/lursor)
 #   LURSOR_DIR       where to install             (default ~/lursor)
 #   LURSOR_REF       branch/tag to check out      (default main)
+#   LURSOR_HOST      interface to bind            (default 0.0.0.0 — all of them)
 #   LURSOR_PORT      port to bind                 (default 8791)
 #
 # Flags:
@@ -35,6 +48,7 @@ set -eu
 REPO="${LURSOR_REPO:-Systemized-Labs/lursor}"
 DIR="${LURSOR_DIR:-$HOME/lursor}"
 REF="${LURSOR_REF:-main}"
+HOST="${LURSOR_HOST:-0.0.0.0}"
 PORT="${LURSOR_PORT:-8791}"
 
 info() { printf '\033[0;36m>>\033[0m %s\n' "$1"; }
@@ -116,4 +130,7 @@ info "Installed at $DIR — check on it later with:"
 printf '     cd %s/backend && uv run lursor-service status\n' "$DIR"
 
 info "Installing the service"
-uv run lursor-service install --port "$PORT"
+# Always explicit, never relying on the CLI's default: the host is written into the
+# unit file, so `systemctl cat` should show the decision this script made rather than
+# one inherited from a default that could change under it.
+uv run lursor-service install --host "$HOST" --port "$PORT"

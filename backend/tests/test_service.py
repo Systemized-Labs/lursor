@@ -177,11 +177,73 @@ def test_parser_requires_a_subcommand() -> None:
         service.build_parser().parse_args([])
 
 
-def test_parser_defaults_to_loopback() -> None:
+def test_parser_leaves_bind_unset_when_not_given() -> None:
+    """None, not the default value — `resolve_bind` needs to tell those apart.
+
+    An omitted ``--host`` means "keep whatever is installed", and it can only mean
+    that if argparse does not helpfully fill in a default first.
+    """
     args = service.build_parser().parse_args(["install"])
-    assert args.host == "127.0.0.1"
-    assert args.port == 8791
+    assert args.host is None
+    assert args.port is None
     assert args.rotate_token is False
+
+
+# --- which interface the service is bound to -------------------------------
+
+
+def test_resolve_bind_falls_back_to_the_conservative_defaults(home: Path, monkeypatch) -> None:
+    """Nothing installed: loopback, because the CLI alone should not publish an API."""
+    monkeypatch.setattr(service, "_is_linux", lambda: True)
+    args = service.build_parser().parse_args(["install"])
+    assert service.resolve_bind(args) == ("127.0.0.1", 8791)
+
+
+def test_resolve_bind_inherits_the_installed_systemd_bind(home: Path, monkeypatch) -> None:
+    """Re-running install to pick up new code must not silently un-expose a service.
+
+    This is the regression that mattered: ``install-server.sh`` binds 0.0.0.0, and a
+    hand-run ``lursor-service install`` afterwards used to rebind to loopback and
+    leave a server nobody could reach — while ``status`` still reported 200.
+    """
+    monkeypatch.setattr(service, "_is_linux", lambda: True)
+    unit = service.systemd_unit_path()
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(
+        service.render_systemd_unit(
+            Path("/v/bin/uvicorn"), Path("/w"), Path("/e.env"), "0.0.0.0", 9000, Path("/d")
+        )
+    )
+
+    args = service.build_parser().parse_args(["install"])
+    assert service.resolve_bind(args) == ("0.0.0.0", 9000)
+
+    # An explicit flag still wins — inheriting must not make the bind unchangeable.
+    args = service.build_parser().parse_args(["install", "--host", "127.0.0.1"])
+    assert service.resolve_bind(args) == ("127.0.0.1", 9000)
+
+
+def test_resolve_bind_inherits_the_installed_launchd_bind(home: Path, monkeypatch) -> None:
+    monkeypatch.setattr(service, "_is_linux", lambda: False)
+    plist = service.launchd_plist_path()
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_bytes(
+        service.render_launchd_plist(
+            Path("/v/bin/uvicorn"), Path("/w"), "tok", "0.0.0.0", 9100, Path("/d")
+        )
+    )
+
+    args = service.build_parser().parse_args(["status"])
+    assert service.resolve_bind(args) == ("0.0.0.0", 9100)
+
+
+def test_installed_bind_ignores_a_unit_it_did_not_write(home: Path, monkeypatch) -> None:
+    """A hand-edited unit is the owner's business; guessing at it is worse than not."""
+    monkeypatch.setattr(service, "_is_linux", lambda: True)
+    unit = service.systemd_unit_path()
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text("[Service]\nExecStart=/usr/bin/something-else\n")
+    assert service.installed_bind() is None
 
 
 def test_token_command_without_a_token_is_an_error(home: Path, capsys) -> None:
@@ -281,6 +343,38 @@ def test_summary_says_when_a_token_is_reused(capsys) -> None:
     service.print_summary("127.0.0.1", 8791, "tok", created=False)
     out = capsys.readouterr().out
     assert "existing" in out and "unchanged" in out
+
+
+def test_summary_never_prints_a_wildcard_as_the_address(capsys, monkeypatch) -> None:
+    """`http://0.0.0.0:8791` is not connectable, and the label says to paste it."""
+    monkeypatch.setattr(service, "lan_address", lambda: "192.168.1.40")
+    service.print_summary("0.0.0.0", 8791, "tok", created=True)
+    out = capsys.readouterr().out
+    assert "http://192.168.1.40:8791" in out
+    assert "0.0.0.0:8791" not in out
+
+
+def test_summary_says_so_when_the_lan_address_is_unknown(capsys, monkeypatch) -> None:
+    """Better to admit it than to print an address that cannot be reached."""
+    monkeypatch.setattr(service, "lan_address", lambda: None)
+    service.print_summary("0.0.0.0", 8791, "tok", created=True)
+    out = capsys.readouterr().out
+    assert "could not be determined" in out
+
+
+def test_lan_address_is_never_loopback(monkeypatch) -> None:
+    """No default route hands back 127.0.0.1, which is not an answer to the question."""
+    import socket
+
+    class FakeSocket:
+        def connect(self, _address) -> None: ...
+        def getsockname(self):
+            return ("127.0.0.1", 0)
+
+        def close(self) -> None: ...
+
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: FakeSocket())
+    assert service.lan_address() is None
 
 
 def test_token_is_on_its_own_line_for_copy_paste(capsys) -> None:

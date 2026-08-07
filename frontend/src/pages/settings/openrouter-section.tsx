@@ -20,6 +20,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/confirm-dialog"
+import { SecretReveal } from "@/components/secret-reveal"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
@@ -119,6 +120,15 @@ export function OpenRouterSection() {
             A key is currently provided by the environment (
             <code className="font-mono">.env</code>). Saving one here overrides it.
           </p>
+        ) : null}
+
+        {configured ? (
+          <SecretReveal
+            label="key"
+            fetchSecret={async () =>
+              (await settingsApi.revealOpenRouter()).api_key
+            }
+          />
         ) : null}
 
         <div className="grid gap-2">
