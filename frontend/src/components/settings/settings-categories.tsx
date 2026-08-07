@@ -30,7 +30,6 @@ import { PromptsPage } from "@/pages/prompts/prompts-page"
 import { ProvidersPage } from "@/pages/providers/providers-page"
 import { SchedulesPage } from "@/pages/schedules/schedules-page"
 import { AgentDefaultsSection } from "@/pages/settings/agent-defaults-section"
-import { AssistantSection } from "@/pages/settings/assistant-section"
 import { AppearanceSection } from "@/pages/settings/appearance-section"
 import { CompactionSection } from "@/pages/settings/compaction-section"
 import { DefaultAgentsSection } from "@/pages/settings/default-agents-section"
@@ -78,7 +77,6 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
       <>
         <DefaultAgentsSection />
         <AgentDefaultsSection />
-        <AssistantSection />
       </>
     ),
   },

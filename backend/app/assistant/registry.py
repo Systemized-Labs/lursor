@@ -1,10 +1,16 @@
-"""The isolation boundary: which tool names are control-plane, and the guard.
+"""The isolation boundary: which tool names are control-plane, the guard, the rules.
 
 This module is deliberately a **leaf**. It imports nothing from ``app.agents``,
 ``app.api`` or ``app.assistant.tools`` — only pydantic-ai. That is what lets
 ``agents/builder.py`` import the guard without a cycle, and it is why
 :data:`ASSISTANT_TOOL_NAMES` is a hand-written literal rather than something
 derived by importing :mod:`app.assistant.tools`.
+
+:data:`CONTROL_PLANE_PROMPT` lives here for a different reason: it is the *only*
+place the rules around destructive actions are written, and ``build_deep_agent``
+appends it to whichever agent receives ``extra_tools``. Keeping it beside the
+name set means an agent cannot end up holding the tools without also holding the
+rules — there is no build path that grants one and not the other.
 
 A hand-written set can drift from the tools that actually exist, which is trap
 15 (``_READONLY_TOOL_ALLOWLIST`` once allowlisted ``"web_search"``, a name no
@@ -115,6 +121,57 @@ assert ASSISTANT_DESTRUCTIVE_TOOLS <= ASSISTANT_TOOL_NAMES, (
     "ASSISTANT_DESTRUCTIVE_TOOLS names a tool that does not exist: "
     f"{sorted(ASSISTANT_DESTRUCTIVE_TOOLS - ASSISTANT_TOOL_NAMES)}"
 )
+
+# Appended to the instructions of whichever agent receives ``extra_tools``
+# (``agents/builder.build_deep_agent``). Written as an *addition* to a prompt
+# rather than as a whole persona: the agent holding these tools is an ordinary,
+# user-editable row, and its own instructions are still its own. This is the part
+# the user does not get to edit away, which is why it is a code constant and why
+# it says only what is true regardless of who is running.
+CONTROL_PLANE_PROMPT = """\
+# Lursor's control plane
+
+This conversation is in the Assistant workspace, so you also hold a control-plane
+toolset that agents in ordinary projects do not have. With it you can list and
+create workspaces, read and retarget other agents (including changing which model
+they run on), manage schedules, start and stop runs in any workspace, read usage
+and cost, and read and change app settings.
+
+- Look before you act. The list tools are cheap; read the current state before
+  changing it, and name what you found in your answer.
+- Prefer one decisive action over a plan for approval. If the user asked you to
+  create a workspace, create it — don't ask which directory unless the answer
+  actually changes what you do.
+- Report what changed with the ids and names, so it can be verified.
+- Most of these tools are behind `search_tools` rather than in your tool list.
+  Search for what you need ("workspace", "schedule", "model") before concluding
+  you cannot do something.
+
+## Destructive actions
+
+Deleting a workspace, an agent, a schedule or a conversation asks the user for
+confirmation before it runs. That is a feature, not an obstacle:
+
+- Don't pre-ask for permission in prose. Call the tool; the card is the ask.
+- If the user denies, or the request times out, nothing changed. Say so plainly
+  and stop — do not retry the same delete or look for another route to it.
+- Never batch deletes to get them past one confirmation. One action, one card.
+
+## Limits
+
+- You cannot delete or relocate this workspace, delete the agent you are running
+  as, or touch the Skill Studio. Say so if asked; it is a guard, not a failure.
+- API keys are write-only. You can set one; you can only ever read a hint like
+  "…ab12". Do not claim otherwise, and never echo a key a user pastes at you.
+- Deleting a workspace removes it from Lursor but leaves the directory on disk.
+  Say that when you delete one, so nobody thinks their files are gone.
+
+## Working elsewhere
+
+Your file and shell tools are rooted in this workspace, not in the user's
+projects. Use it for notes, one-off scripts and reports. To do work *inside* a
+project, delegate: start a run there with the agent that belongs to it.
+"""
 
 
 def assert_registry_matches(names: set[str]) -> None:

@@ -80,8 +80,7 @@ from app.agents.skill_runtime import load_skill_runtime
 from app.agents.titler import generate_title
 from app.agents.video_runtime import load_video_runtime
 from app.agents.vision import model_supports_vision
-from app.assistant.builder import build_assistant_context
-from app.assistant.identity import is_assistant_agent
+from app.assistant.identity import is_assistant_workspace
 from app.config import get_settings
 from app.db.models import (
     Agent,
@@ -844,18 +843,13 @@ async def _build_agent_and_context(
     default agent by reassigning the thread before the run (frontend), so no
     per-turn model override is needed here.
 
-    The one branch: the top-level Assistant builds through ``app/assistant/``
-    instead, which is the only path that attaches the control-plane toolset. It
-    returns this same 5-tuple, so nothing below this function knows the
-    difference — persistence, SSE, stop, reconnect, compaction and usage are all
-    shared. ``thread_id`` exists for that branch: the Assistant's destructive
-    tools publish a confirmation card into this thread's own event stream.
+    A run in the Assistant workspace additionally gets the control-plane toolset
+    (``app/assistant/``). That is the feature's entire divergence from an ordinary
+    run — one extra argument to the same build, so persistence, SSE, stop,
+    reconnect, compaction and usage are all literally the same code. ``thread_id``
+    exists for it: the destructive tools publish a confirmation card into this
+    thread's own event stream.
     """
-    if is_assistant_agent(agent_row):
-        return await build_assistant_context(
-            session, agent_row, workspace, thread_id=thread_id, read_only=read_only
-        )
-
     providers = (await session.execute(select(CustomProvider))).scalars().all()
     custom_providers = {p.id: p for p in providers}
     subagents = list((await session.execute(select(Subagent))).scalars().all())
@@ -882,6 +876,16 @@ async def _build_agent_and_context(
     image_runtime = await load_image_runtime(
         session, include_image=agent_row.include_image and not read_only
     )
+    # Whichever agent is selected, a run in the Assistant workspace holds the
+    # control plane and a run anywhere else does not. Imported here rather than at
+    # module scope because ``assistant.tools`` imports *this* module for
+    # ``start_scheduled_run`` — at the top it happens to work when ``api.chat`` is
+    # the import root and fails when anything else is.
+    extra_tools = None
+    if is_assistant_workspace(workspace):
+        from app.assistant.tools import build_assistant_tools
+
+        extra_tools = build_assistant_tools(thread_id, agent_row.id)
     agent, deps = build_deep_agent(
         agent_row,
         workspace.path,
@@ -909,6 +913,7 @@ async def _build_agent_and_context(
         # uses, so both paths compact on one model instead of the library's
         # Anthropic default (see ``agents/context_budget.py``).
         compaction_model=app_config.compaction_model if app_config else None,
+        extra_tools=extra_tools,
     )
     return agent, deps, custom_providers, app_config, skill_runtime
 

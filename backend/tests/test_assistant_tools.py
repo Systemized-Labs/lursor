@@ -22,10 +22,12 @@ from app.assistant.identity import (
     ensure_assistant_records,
 )
 from app.assistant.tools import build_assistant_tools
-from app.db.models import Agent, Workspace
+from app.db.models import Agent, AppConfig, Workspace
 from app.db.session import async_session_factory
 
 THREAD = "tool-tests"
+# The agent row this run is "using" — the one the tools refuse to delete.
+RUNNING_AGENT = "running-agent"
 
 
 @pytest.fixture
@@ -42,7 +44,7 @@ def toolbox(client, monkeypatch):
     monkeypatch.setattr("app.assistant.confirm.CONFIRM_TIMEOUT", 1.0)
     registry = Confirmations()
     monkeypatch.setattr(tools_mod, "confirmations", registry)
-    tools = {t.__name__: t for t in build_assistant_tools(THREAD)}
+    tools = {t.__name__: t for t in build_assistant_tools(THREAD, RUNNING_AGENT)}
     return tools, registry
 
 
@@ -80,7 +82,7 @@ async def test_list_workspaces_hides_the_assistants_own(toolbox, client):
     assert ASSISTANT_WORKSPACE_ID not in {r["id"] for r in rows}
 
 
-async def test_list_agents_hides_the_assistant(toolbox, client):
+async def test_list_agents_hides_nothing(toolbox, client):
     tools, _ = toolbox
     async with async_session_factory() as session:
         await ensure_assistant_records(session)
@@ -88,7 +90,10 @@ async def test_list_agents_hides_the_assistant(toolbox, client):
 
     rows = json.loads(await tools["lursor_list_agents"]())
     assert "Builder" in {r["name"] for r in rows}
-    assert ASSISTANT_AGENT_ID not in {r["id"] for r in rows}
+    # Including the seeded one. It is an ordinary agent, so hiding it would only
+    # mean the Assistant could not retarget the row the user is most likely to
+    # ask it about.
+    assert ASSISTANT_AGENT_ID in {r["id"] for r in rows}
 
 
 async def test_get_settings_only_ever_hints_at_a_key(toolbox, client):
@@ -136,16 +141,22 @@ async def test_update_agent_retargets_the_model_and_leaves_the_rest(toolbox, cli
     assert after["description"] == "keep me too"
 
 
-async def test_update_agent_refuses_to_retarget_the_assistant(toolbox, client):
+async def test_the_seeded_agent_can_be_retargeted_like_any_other(toolbox, client):
+    """It is an ordinary row, so "change the Assistant's model" is just a tool call.
+
+    This used to be refused, back when the seeded agent's model lived in Settings
+    and the row's own column was deliberately null. There is one model now, on
+    the row, and this is one of the ways to set it.
+    """
     tools, _ = toolbox
     async with async_session_factory() as session:
         await ensure_assistant_records(session)
 
     out = await tools["lursor_update_agent"](agent_id=ASSISTANT_AGENT_ID, model="openrouter:x/y")
-    assert "Settings" in out
+    assert "Error" not in out
     async with async_session_factory() as session:
         row = await session.get(Agent, ASSISTANT_AGENT_ID)
-    assert row.model is None
+    assert row.model == "openrouter:x/y"
 
 
 async def test_create_schedule_previews_before_it_saves(toolbox, client):
@@ -185,9 +196,16 @@ async def test_update_settings_refuses_anything_off_the_allowlist(toolbox):
 
 async def test_update_settings_writes_an_allowlisted_key(toolbox, client):
     tools, _ = toolbox
-    out = await tools["lursor_update_settings"](key="assistant_model", value="openrouter:a/b")
-    assert "Set assistant_model" in out
-    assert (await client.get("/settings/assistant")).json()["model"] == "openrouter:a/b"
+    out = await tools["lursor_update_settings"](key="goal_evaluator_model", value="openrouter:a/b")
+    assert "Set goal_evaluator_model" in out
+
+    async with async_session_factory() as session:
+        cfg = (await session.execute(select(AppConfig))).scalars().first()
+        assert cfg.goal_evaluator_model == "openrouter:a/b"
+
+    # Put it back: ``AppConfig`` is a single row and the test database outlives
+    # this file, so a stray value here fails somebody else's default-reading test.
+    await tools["lursor_update_settings"](key="goal_evaluator_model", value="")
 
 
 # --- errors ---------------------------------------------------------------------
@@ -268,8 +286,8 @@ async def test_a_protected_target_is_refused_before_the_card(toolbox, client):
     assert "my own workspace" in out
     assert registry.pending(THREAD) == []
 
-    out = await tools["lursor_delete_agent"](agent_id=ASSISTANT_AGENT_ID)
-    assert "can't delete myself" in out
+    out = await tools["lursor_delete_agent"](agent_id=RUNNING_AGENT)
+    assert "running as" in out
     assert registry.pending(THREAD) == []
 
     async with async_session_factory() as session:
@@ -352,16 +370,22 @@ async def test_a_timed_out_card_changes_nothing(toolbox, client, tmp_path, monke
 # --- delegation -----------------------------------------------------------------
 
 
-async def test_delegate_refuses_to_target_the_assistant(toolbox, client):
+async def test_delegate_refuses_to_target_the_assistant_workspace(toolbox, client):
+    """A run in there would hold the control plane, with nobody to answer its cards.
+
+    Note what is *not* refused: delegating to the seeded Assistant agent, in a
+    real project. That run gets no control plane, because the workspace is not
+    the Assistant's — which is the whole point of moving the trigger.
+    """
     tools, _ = toolbox
     async with async_session_factory() as session:
         await ensure_assistant_records(session)
-    ws = (await client.post("/workspaces", json={"name": "W"})).json()
+    agent = (await client.post("/agents", json={"name": "R", "instructions": "r"})).json()
 
     out = await tools["lursor_delegate"](
-        workspace_id=ws["id"], agent_id=ASSISTANT_AGENT_ID, prompt="hi"
+        workspace_id=ASSISTANT_WORKSPACE_ID, agent_id=agent["id"], prompt="hi"
     )
-    assert "delegate to myself" in out
+    assert "my own workspace" in out
 
 
 async def test_delegate_rejects_unknown_targets(toolbox, client):
@@ -394,12 +418,12 @@ async def test_the_toolset_matches_the_registry_on_every_build(client):
     """
     from app.assistant.registry import ASSISTANT_TOOL_NAMES
 
-    assert {t.__name__ for t in build_assistant_tools("x")} == ASSISTANT_TOOL_NAMES
+    assert {t.__name__ for t in build_assistant_tools("x", "a")} == ASSISTANT_TOOL_NAMES
 
 
 async def test_every_tool_has_a_docstring(client):
     """The docstring *is* the tool description the model sees."""
-    for tool in build_assistant_tools("x"):
+    for tool in build_assistant_tools("x", "a"):
         assert (tool.__doc__ or "").strip(), tool.__name__
 
 

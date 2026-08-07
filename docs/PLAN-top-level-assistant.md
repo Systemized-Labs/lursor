@@ -22,7 +22,8 @@ Four decisions were taken up front:
 | Decision | Choice |
 | --- | --- |
 | UI surface | A pinned sidebar row beside the Skill Studio, backed by a real workspace |
-| Default model | GLM 5.2 via OpenRouter, overridable in Settings |
+| Default model | GLM 5.2 via OpenRouter, written to the seeded agent row |
+| Entitlement | The **workspace**, not the agent — any agent selected there gets the tools |
 | Isolation | Separate registry **plus** a runtime assertion in the normal build path |
 | Destructive ops | Read and create run freely; delete/rotate blocks on an in-chat confirmation |
 
@@ -54,13 +55,11 @@ A new package. Nothing under `app/agents/` may import from it; it imports from
 **New files**
 
 ```
-backend/app/assistant/__init__.py     # re-exports the 4 public names, nothing else
-backend/app/assistant/identity.py     # constants, seeding, is_assistant_agent()
-backend/app/assistant/registry.py     # ASSISTANT_TOOL_NAMES, AssistantToolGuard
+backend/app/assistant/__init__.py     # package docs; no eager re-exports
+backend/app/assistant/identity.py     # seeding, is_assistant_workspace()
+backend/app/assistant/registry.py     # ASSISTANT_TOOL_NAMES, AssistantToolGuard, CONTROL_PLANE_PROMPT
 backend/app/assistant/tools.py        # the control-plane tools
 backend/app/assistant/confirm.py      # pending-confirmation registry
-backend/app/assistant/builder.py      # build_assistant_agent()
-backend/app/assistant/prompt.py       # the system prompt constant
 ```
 
 `identity.py`:
@@ -207,23 +206,30 @@ Critically, `_subagent_config` (`agents/builder.py:845`) recurses into
 Assistant delegates to gets zero control-plane tools and trips the guard if it
 somehow does. This is the single most important test in the suite.
 
-`assistant/builder.py`:
+`_build_agent_and_context` in `api/chat.py` gains no branch at all — one extra
+argument to the build it already does:
 
 ```python
-async def build_assistant_context(session, agent_row, workspace) -> tuple[...]:
-    """Same 5-tuple as _build_agent_and_context, with the control plane attached."""
+extra_tools = None
+if is_assistant_workspace(workspace):
+    from app.assistant.tools import build_assistant_tools
+    extra_tools = build_assistant_tools(thread_id, agent_row.id)
 ```
 
-It resolves the model as `app_config.assistant_model or DEFAULT_ASSISTANT_MODEL`,
-composes `ASSISTANT_PROMPT` (code constant, not `row.instructions`), and calls
-`build_deep_agent(..., extra_tools=build_assistant_tools(session))`.
+**Entitlement is the workspace's, not the agent's.** The first shape gave the
+Assistant a privileged agent row recognised by a literal id, and that row then
+needed protecting everywhere it could be reached: PATCH and DELETE guards, an
+`is_assistant` flag on `AgentRead`, a filter in `useAgents` so it stayed out of
+every picker, a separate `useAssistantAgent` to get it back for its own pane, an
+effect pinning the conversation to it, and a hidden picker. All of that existed
+to keep one row from being edited into something that no longer worked.
 
-`api/chat.py:822`, `_build_agent_and_context`, gets one branch at the top:
-
-```python
-if is_assistant_agent(agent_row):
-    return await build_assistant_context(session, agent_row, workspace)
-```
+Keying on the workspace deletes every line of it. The seeded agent becomes an
+ordinary row — rename it, retarget it, delete it and use your own — because
+nothing about it grants anything. `build_deep_agent` also appends
+`CONTROL_PLANE_PROMPT` to whichever agent receives `extra_tools`, so the rules
+around destructive actions travel with the tools rather than living in a prompt
+the user could edit away.
 
 Everything downstream — SSE, persistence, `/stop`, reconnect, compaction, usage,
 titling — is untouched. `POST /threads/{id}/chat` remains the only chat entry
@@ -248,15 +254,12 @@ which is what that machinery is for (`agents/tool_loading.py:203`).
 
 ### Phase 5 — Settings and routes
 
-**`AppConfig.assistant_model: str | None`** — `db/models.py`, beside
-`goal_evaluator_model:683` and `compaction_model:689`, with the additive
-`ALTER TABLE` block in `db/session.py:276` (no Alembic).
-
-`api/settings.py` gains `GET/PUT /api/settings/assistant`, following
-`get_compaction_defaults`/`set_compaction_defaults` (`api/settings.py:547,586`),
-plus `AssistantSettingsRead/Update` in `schemas/settings.py`. The read returns
-the effective model and the default so the UI can show what an empty value
-inherits.
+**No settings knob.** An earlier shape stored the Assistant's model on
+`AppConfig` and exposed `GET/PUT /api/settings/assistant`, because its agent row
+was app-owned and its `model` column was deliberately null. Once any agent can be
+selected, the row carries the model like every other agent's and the setting is a
+second source of truth for the same fact. `DEFAULT_ASSISTANT_MODEL` is written to
+the seeded row once, at creation; the agent editor owns it after that.
 
 **New `backend/app/api/assistant.py`**, prefix `/assistant`, added to the
 `include_router` loop in `main.py:248`:
@@ -299,8 +302,6 @@ its own `/assistant/thread` endpoints to find the conversation to show, and a
   run's attention already is.
 - `frontend/src/api/assistant.ts` — just `useConfirmAction`. Everything else the
   Assistant needs is already served by `useThreads` / `useWorkspaces`.
-- `frontend/src/pages/settings/assistant-section.tsx` — `<ModelPicker>` bound to
-  `assistant_model`, in the existing **model** settings category.
 
 **Modified**
 
@@ -339,13 +340,13 @@ with no delete tools, which is coherent and shippable.
 
 ## Files
 
-**New (backend)** — `app/assistant/{__init__,identity,registry,tools,confirm,builder,prompt}.py`, `app/api/assistant.py`
+**New (backend)** — `app/assistant/{__init__,identity,registry,tools,confirm}.py`, `app/api/assistant.py`
 
-**New (frontend)** — `components/assistant/{assistant-overlay.tsx,use-assistant-overlay.ts}`, `components/chat/AssistantConfirmCard.tsx`, `api/assistant.ts`, `pages/settings/assistant-section.tsx`
+**New (frontend)** — `components/assistant/use-assistant-hotkey.ts`, `components/chat/AssistantConfirmCard.tsx`, `api/assistant.ts`
 
-**New (tests)** — `tests/test_assistant_isolation.py`, `test_assistant_tools.py`, `test_assistant_confirm.py`, `test_assistant_settings.py`
+**New (tests)** — `tests/test_assistant_{isolation,tools,confirm,api}.py`
 
-**Modified (backend)** — `app/agents/builder.py` (`extra_tools` param, build assert, guard capability), `app/agents/tool_loading.py` (`extra_core` param), `app/api/chat.py:822` (one branch), `app/api/settings.py`, `app/api/workspaces.py` + `app/api/agents.py` (system-row guards), `app/db/models.py` (`assistant_model`), `app/db/session.py:276` (migration), `app/schemas/{agent,workspace,settings}.py`, `app/main.py:118,248`
+**Modified (backend)** — `app/agents/builder.py` (`extra_tools` param, build assert, guard capability, prompt append), `app/agents/tool_loading.py` (`extra_core` param), `app/api/chat.py` (`extra_tools` argument), `app/api/workspaces.py` (workspace guards), `app/schemas/workspace.py`, `app/main.py`
 
 **Modified (frontend)** — `components/layout/app-shell.tsx`, `components/layout/sessions/{sessions-pane,projects-section}.tsx`, `agui/{stream-reader,chatStore}.ts`, `hooks/use-all-threads.ts`, `components/settings/settings-categories.tsx`, `pages/settings/default-agents-section.tsx`, `pages/schedules/schedules-page.tsx`, `api/types.ts`
 
@@ -387,10 +388,11 @@ Migration test against a **copy** of a populated DB, per the house rule.
 
 **Manual, end to end**
 
-1. Boot; confirm exactly one Assistant workspace and one Assistant agent exist,
-   and that re-booting adds no second pair.
-2. Neither appears in the sidebar project tree, the agent picker, the
-   default-agents settings, or the schedule target list.
+1. Boot; confirm exactly one Assistant workspace and one seeded agent exist,
+   and that re-booting adds no second pair — nor undoes an edit to either.
+2. The workspace does not appear among your projects. The agent *does* appear in
+   every agent picker, the default-agents settings and the schedule target list,
+   because it is an ordinary agent.
 3. The Assistant is a pinned sidebar row below the projects, above the Skill
    Studio, behind one shared divider. Its past conversations list inline under
    it and reopen in the chat pane. ⌘⇧A jumps to it from a workspace chat, the
@@ -407,8 +409,9 @@ Migration test against a **copy** of a populated DB, per the house rule.
 8. Trigger a delete, hard-refresh mid-prompt, confirm the card re-renders from
    the replay buffer, then approve.
 9. Ask for the OpenRouter key; confirm only a `…ab12` hint comes back.
-10. Settings → Model → Assistant: switch off GLM and back; confirm the next turn
-    uses the new model (check `GET /api/analytics/usage-by-model`).
+10. Switch the agent picker in the Assistant workspace to one of your own agents;
+    confirm it still holds the control plane. Use that same agent in a project;
+    confirm it does not.
 11. Viewport pass at 390px and 1700px; dark and light.
 12. `bun run build` and compare the entry chunk against a stashed baseline.
 

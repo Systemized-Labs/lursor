@@ -1,4 +1,10 @@
-"""The Assistant over HTTP: seeding, the system-row guards, and the model setting."""
+"""The Assistant over HTTP: seeding, the workspace guards, and the ordinary agent.
+
+The theme of this file is what the Assistant *is not*. Privilege lives on the
+workspace, so the seeded agent must behave like any other row — editable,
+deletable, listed in every picker — and the tests below are mostly assertions
+that nothing special is happening to it.
+"""
 
 from __future__ import annotations
 
@@ -32,48 +38,73 @@ async def test_seeding_is_idempotent(client):
     assert [w["id"] for w in workspaces].count(ASSISTANT_WORKSPACE_ID) == 1
 
 
-async def test_the_rows_are_flagged_for_the_ui(client):
-    """The frontend filters on these, so they have to be on the wire."""
+async def test_the_workspace_is_flagged_for_the_ui(client):
+    """The sidebar pins on this, so it has to be on the wire."""
     await _seed()
 
-    agent = next(a for a in (await client.get("/agents")).json() if a["id"] == ASSISTANT_AGENT_ID)
     workspace = next(
         w for w in (await client.get("/workspaces")).json() if w["id"] == ASSISTANT_WORKSPACE_ID
     )
-
-    assert agent["is_assistant"] is True
     assert workspace["is_assistant"] is True
-    # An ordinary row must not be flagged.
-    other = (await client.post("/agents", json={"name": "Builder", "instructions": "hi"})).json()
-    assert other["is_assistant"] is False
 
 
-async def test_the_model_column_stays_null(client):
-    """One source of truth: the effective model comes from AppConfig, not the row."""
+async def test_the_agent_carries_no_flag_at_all(client):
+    """The agent is ordinary, and the wire format must not suggest otherwise.
+
+    An ``is_assistant`` field on ``AgentRead`` is what the old shape used to hide
+    this row from every picker. Its absence is the simplification: there is
+    nothing about this agent for a picker to filter on, because there is nothing
+    special about it.
+    """
     await _seed()
     agent = next(a for a in (await client.get("/agents")).json() if a["id"] == ASSISTANT_AGENT_ID)
-    assert agent["model"] is None
+    assert "is_assistant" not in agent
 
 
-# --- guards ---------------------------------------------------------------------
+async def test_the_agent_ships_pointed_at_glm(client):
+    """The model lives on the row, like every other agent's."""
+    await _seed()
+    agent = next(a for a in (await client.get("/agents")).json() if a["id"] == ASSISTANT_AGENT_ID)
+    assert agent["model"] == DEFAULT_ASSISTANT_MODEL
+    assert agent["instructions"].strip() != ""
 
 
-async def test_the_assistant_agent_cannot_be_edited_or_deleted(client):
+# --- the agent is ordinary ------------------------------------------------------
+
+
+async def test_the_agent_can_be_edited_and_deleted(client):
+    """Rename it, retarget it, delete it — none of that touches what it can do."""
     await _seed()
 
-    patched = await client.patch(f"/agents/{ASSISTANT_AGENT_ID}", json={"name": "Pwned"})
-    assert patched.status_code == 400
-    assert "Settings" in patched.json()["detail"]
+    renamed = await client.patch(
+        f"/agents/{ASSISTANT_AGENT_ID}",
+        json={"name": "Ops", "model": "openrouter:anthropic/claude-opus-4"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Ops"
+    assert renamed.json()["model"] == "openrouter:anthropic/claude-opus-4"
 
-    deleted = await client.delete(f"/agents/{ASSISTANT_AGENT_ID}")
-    assert deleted.status_code == 400
+    assert (await client.delete(f"/agents/{ASSISTANT_AGENT_ID}")).status_code == 204
+    assert ASSISTANT_AGENT_ID not in {a["id"] for a in (await client.get("/agents")).json()}
 
-    # Still there, still itself.
+
+async def test_an_edit_survives_the_next_boot(client):
+    """Seeding writes the row once. A boot that re-asserted it would undo the editor."""
+    await _seed()
+    await client.patch(f"/agents/{ASSISTANT_AGENT_ID}", json={"name": "Ops", "web_search": False})
+
+    await _seed()
+
     agent = next(a for a in (await client.get("/agents")).json() if a["id"] == ASSISTANT_AGENT_ID)
-    assert agent["name"] == "Assistant"
+    assert agent["name"] == "Ops"
+    assert agent["web_search"] is False
 
 
-async def test_the_assistant_workspace_cannot_be_moved_or_deleted(client, tmp_path):
+# --- the workspace is not -------------------------------------------------------
+
+
+async def test_the_workspace_cannot_be_moved_or_deleted(client, tmp_path):
+    """This row *is* the privilege, so it stays where it is."""
     await _seed()
 
     moved = await client.patch(
@@ -88,50 +119,6 @@ async def test_the_assistant_workspace_cannot_be_moved_or_deleted(client, tmp_pa
     renamed = await client.patch(f"/workspaces/{ASSISTANT_WORKSPACE_ID}", json={"name": "Ops"})
     assert renamed.status_code == 200
     assert renamed.json()["name"] == "Ops"
-
-
-# --- the model setting ----------------------------------------------------------
-
-
-async def test_the_model_setting_round_trips(client):
-    """Unset inherits the shipped default; a saved value wins; blank clears it."""
-    initial = (await client.get("/settings/assistant")).json()
-    assert initial["model"] == DEFAULT_ASSISTANT_MODEL
-    assert initial["default_model"] == DEFAULT_ASSISTANT_MODEL
-    assert initial["source"] == "default"
-
-    saved = (
-        await client.put(
-            "/settings/assistant", json={"model": "openrouter:anthropic/claude-opus-4"}
-        )
-    ).json()
-    assert saved["model"] == "openrouter:anthropic/claude-opus-4"
-    assert saved["source"] == "database"
-    # And it survives a re-read rather than only being echoed back.
-    assert (await client.get("/settings/assistant")).json()["model"] == saved["model"]
-
-    cleared = (await client.put("/settings/assistant", json={"model": ""})).json()
-    assert cleared["model"] == DEFAULT_ASSISTANT_MODEL
-    assert cleared["source"] == "default"
-
-
-async def test_the_setting_is_what_the_build_resolves(client):
-    """The setting has to reach the run, not just the settings page."""
-    from sqlmodel import select
-
-    from app.assistant.builder import resolve_assistant_model
-    from app.db.models import AppConfig
-
-    await client.put("/settings/assistant", json={"model": "custom:box:glm-5.2"})
-    async with async_session_factory() as session:
-        cfg = (await session.execute(select(AppConfig))).scalars().first()
-    assert resolve_assistant_model(cfg) == "custom:box:glm-5.2"
-
-    await client.put("/settings/assistant", json={"model": ""})
-    async with async_session_factory() as session:
-        cfg = (await session.execute(select(AppConfig))).scalars().first()
-    assert resolve_assistant_model(cfg) == DEFAULT_ASSISTANT_MODEL
-    assert resolve_assistant_model(None) == DEFAULT_ASSISTANT_MODEL
 
 
 # --- routes ---------------------------------------------------------------------
@@ -163,6 +150,11 @@ async def test_assistant_conversations_are_ordinary_threads(client):
     # And it shows up in the unscoped list the sidebar actually uses.
     everything = (await client.get("/threads")).json()
     assert created["id"] in {t["id"] for t in everything}
+
+
+async def test_the_model_setting_is_gone(client):
+    """It was redundant once any agent could be selected: the row carries the model."""
+    assert (await client.get("/settings/assistant")).status_code == 404
 
 
 async def test_resolving_an_unknown_confirmation_is_404(client):

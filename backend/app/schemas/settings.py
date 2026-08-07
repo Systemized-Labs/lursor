@@ -217,23 +217,3 @@ class MediaSettingsUpdate(BaseModel):
 # Per-command default agent is an open ``dict[str, str]`` map (command name ->
 # agent id), handled directly in ``api/settings.py`` — no fixed schema, so a new
 # slash command needs no backend change (the frontend registry defines commands).
-
-
-class AssistantSettingsRead(BaseModel):
-    """The model the top-level Assistant runs on (see ``app/assistant/``).
-
-    ``model`` is what a run will actually use; ``default_model`` is what clearing
-    the setting reverts to, so the picker can name the inherited value rather than
-    showing an empty box.
-    """
-
-    model: str
-    default_model: str
-    source: Literal["database", "default"] = "default"
-
-
-class AssistantSettingsUpdate(BaseModel):
-    # A routing string from the model picker ("openrouter:…" / "custom:{provider}:
-    # {model}"), free-form like every other stored model field. Blank or null
-    # clears the override and reverts to the shipped default.
-    model: str | None = None

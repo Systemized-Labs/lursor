@@ -281,12 +281,6 @@ async def _apply_lightweight_migrations(conn) -> None:
         await conn.execute(
             text("ALTER TABLE app_config ADD COLUMN compaction_model VARCHAR")
         )
-    # NULL means the shipped default (``assistant.identity.DEFAULT_ASSISTANT_MODEL``),
-    # so an existing install needs no backfill.
-    if "assistant_model" not in app_config_cols:
-        await conn.execute(
-            text("ALTER TABLE app_config ADD COLUMN assistant_model VARCHAR")
-        )
     if "default_agents" not in app_config_cols:
         await conn.execute(
             text("ALTER TABLE app_config ADD COLUMN default_agents JSON DEFAULT '{}'")

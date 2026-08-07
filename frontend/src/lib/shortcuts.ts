@@ -7,7 +7,7 @@ import { isElectron, isMacElectron } from "@/lib/platform"
  * component that handles it: `command-palette` owns ⌘K, `pane-host` owns ⌘1–⌘9
  * (pane tabs), ⌘←/⌘→ (cycle tabs) and ⌘W (close pane), `sessions-pane` owns ⌘N (new chat),
  * `use-workspace-switch` owns the double-⌘ tap and ⌘⇧1–⌘⇧9 (workspace by position),
- * `use-assistant-overlay` owns ⌘⇧A, `editor-pane` owns find/replace, dockview
+ * `use-assistant-hotkey` owns ⌘⇧A, `editor-pane` owns find/replace, dockview
  * owns pane maximize.
  *
  * The plan called this "a table over the keybind registry"; there is no registry,

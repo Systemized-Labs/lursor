@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { useStore } from "zustand"
 import { useStickToBottom } from "use-stick-to-bottom"
 
-import { useAgents, useAssistantAgent } from "@/api/agents"
+import { useAgents } from "@/api/agents"
 import {
   invalidateThreadLists,
   threadsApi,
@@ -101,19 +101,10 @@ export function WorkspaceChatPage({
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
-  // The Assistant is filtered out of `useAgents` (it is not one of your agents),
-  // so its own workspace has to fetch it by name to pin conversations to it.
-  const { data: assistantAgent } = useAssistantAgent()
   const isAssistantWorkspace = Boolean(workspace?.is_assistant)
   const agentNameById = useMemo(
-    () =>
-      new Map(
-        [...agents, ...(assistantAgent ? [assistantAgent] : [])].map((a) => [
-          a.id,
-          a.name,
-        ])
-      ),
-    [agents, assistantAgent]
+    () => new Map(agents.map((a) => [a.id, a.name])),
+    [agents]
   )
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
@@ -243,17 +234,9 @@ export function WorkspaceChatPage({
   }, [location.state])
 
   // Keep the agent picker in sync with the open thread (or defaults for a new one).
-  //
-  // The Assistant's workspace is the exception and is pinned to its own agent:
-  // it is the only agent that holds the control plane, so a conversation there
-  // under anything else would be a chat that silently cannot do the one thing
-  // the workspace exists for. `useAgents` filters the Assistant out of every
-  // picker, so `assistantAgent` is fetched separately (`useAssistantAgent`).
+  // No special case for the Assistant workspace: any agent works there, and each
+  // one picks up the control plane for the duration of the run.
   useEffect(() => {
-    if (isAssistantWorkspace) {
-      if (assistantAgent) setSelectedAgentId(assistantAgent.id)
-      return
-    }
     if (selectedThreadId) {
       if (currentThread) setSelectedAgentId(currentThread.agent_id)
     } else {
@@ -264,14 +247,7 @@ export function WorkspaceChatPage({
           : agents[0]?.id
       setSelectedAgentId((prev) => prev || seedable || "")
     }
-  }, [
-    isAssistantWorkspace,
-    assistantAgent,
-    selectedThreadId,
-    currentThread,
-    agents,
-    defaultAgents,
-  ])
+  }, [selectedThreadId, currentThread, agents, defaultAgents])
 
   // Auto-launch the first turn when we arrive from the New Agent home surface.
   const launchedRef = useRef(false)
@@ -494,11 +470,7 @@ export function WorkspaceChatPage({
     }
   }
 
-  // "You have no agents" gates the composer everywhere — except the Assistant's
-  // own workspace, which always has exactly one and it is not in this list. Left
-  // unguarded, an install with no user agents would find its Assistant disabled
-  // and be told to go create an agent that has nothing to do with it.
-  const noAgents = agents.length === 0 && !isAssistantWorkspace
+  const noAgents = agents.length === 0
   const confirmCards = useMemo(() => Object.values(confirms), [confirms])
 
   const runView = goalStatus
@@ -676,7 +648,7 @@ export function WorkspaceChatPage({
                   </p>
                   <p className="mx-auto max-w-[18rem] text-xs text-muted-foreground">
                     {isAssistantWorkspace
-                      ? "Ask it to run Lursor. It can create workspaces, retarget another agent's model, set up schedules, start work in any project, and tell you what everything is costing. Deletes always stop and ask first."
+                      ? "Whichever agent you pick here can run Lursor itself: create workspaces, retarget another agent's model, set up schedules, start work in any project, and tell you what everything is costing. Deletes always stop and ask first."
                       : noAgents
                         ? "Create an agent in Settings → Capabilities to start chatting."
                         : workspace?.is_system
@@ -798,10 +770,7 @@ export function WorkspaceChatPage({
               onRemoveQueued={chat.removeQueued}
               onEditQueued={chat.editQueued}
               onResumeQueue={chat.resumeQueue}
-              // No picker in the Assistant's workspace: there is exactly one
-              // agent it could be, and offering the others would offer a
-              // conversation that silently lacks the control plane.
-              agents={noAgents || isAssistantWorkspace ? undefined : agents}
+              agents={noAgents ? undefined : agents}
               selectedAgentId={selectedAgentId}
               onAgentChange={handlePickerAgentChange}
               pendingAgentName={pendingAgentName}

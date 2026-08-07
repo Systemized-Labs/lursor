@@ -69,6 +69,7 @@ from app.agents.web_search import (
 # toolset, which imports the API layer, which imports this module.
 from app.assistant.registry import (
     ASSISTANT_CORE_TOOLS,
+    CONTROL_PLANE_PROMPT,
     AssistantToolGuard,
     assert_no_assistant_tools,
 )
@@ -954,7 +955,6 @@ def build_deep_agent(
     hindsight: HindsightConfig | None = None,
     compaction_model: str | None = None,
     extra_tools: list | None = None,
-    instructions_override: str | None = None,
     _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
@@ -1037,11 +1037,16 @@ def build_deep_agent(
     every config.
 
     ``extra_tools`` is the **only** way a control-plane tool can reach an agent.
-    Exactly one caller passes it — ``app/assistant/builder.py``, for the top-level
-    Assistant — and passing it is also what tells :class:`AssistantToolGuard` this
-    build is allowed to hold one. Every other build gets ``None``, and both a
-    build-time assert and a per-step guard raise :class:`AssistantToolLeak` if a
-    privileged tool turns up in one anyway.
+    Exactly one caller passes it — ``_build_agent_and_context`` in ``api/chat.py``,
+    for a run in the Assistant workspace — and passing it is also what tells
+    :class:`AssistantToolGuard` this build is allowed to hold one, and what
+    appends :data:`CONTROL_PLANE_PROMPT` to the instructions. Every other build
+    gets ``None``, and both a build-time assert and a per-step guard raise
+    :class:`AssistantToolLeak` if a privileged tool turns up in one anyway.
+
+    Note that entitlement is a property of the *workspace*, not of ``row``: the
+    same agent gets the control plane in the Assistant workspace and nothing extra
+    in one of the user's projects.
 
     Note that ``_subagent_config`` recurses into this function *without* threading
     ``extra_tools``, deliberately: a subagent the Assistant delegates to is an
@@ -1380,11 +1385,13 @@ def build_deep_agent(
     # the agent has no custom instructions we fall back to the library's base
     # prompt (what ``create_deep_agent`` would have used) so we extend it rather
     # than replace it — passing a non-None value swaps out the default entirely.
-    # ``instructions_override`` is for an agent whose prompt is owned by code
-    # rather than by the row — currently only the Assistant, whose ``instructions``
-    # column is deliberately empty so a stray edit cannot rewrite the rules around
-    # its destructive tools (``app/assistant/prompt.py``).
-    base_instructions = instructions_override or row.instructions or BASE_PROMPT
+    base_instructions = row.instructions or BASE_PROMPT
+    # The control-plane rules travel with the control-plane tools, always. The row
+    # is an ordinary user-editable agent, so its prompt is its own — but the rules
+    # around destructive actions are not editable, because there is no build that
+    # hands over ``extra_tools`` without also appending this.
+    if extra_tools is not None:
+        base_instructions = f"{base_instructions}\n\n{CONTROL_PLANE_PROMPT}"
     environment = _environment_instructions(
         workspace_path, workspace_name, workspace_description, skill_runtime
     )

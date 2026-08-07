@@ -54,11 +54,7 @@ from app.api import subagents as subagents_api
 from app.api import threads as threads_api
 from app.api import workspaces as workspaces_api
 from app.assistant.confirm import confirmations
-from app.assistant.identity import (
-    ASSISTANT_AGENT_ID,
-    ASSISTANT_WORKSPACE_ID,
-    DEFAULT_ASSISTANT_MODEL,
-)
+from app.assistant.identity import ASSISTANT_WORKSPACE_ID
 from app.assistant.registry import ASSISTANT_DESTRUCTIVE_TOOLS, assert_registry_matches
 from app.config import get_settings
 from app.db.models import (
@@ -89,7 +85,6 @@ _WRITABLE_SETTINGS = frozenset(
         "compaction_threshold",
         "compaction_ratio",
         "goal_evaluator_model",
-        "assistant_model",
         "image_source",
         "video_source",
         "image_model",
@@ -163,12 +158,17 @@ def _protected_workspace(ws: Workspace) -> str | None:
 # --- the toolset ----------------------------------------------------------------
 
 
-def build_assistant_tools(thread_id: str) -> list[Callable[..., Awaitable[str]]]:
+def build_assistant_tools(
+    thread_id: str, running_agent_id: str
+) -> list[Callable[..., Awaitable[str]]]:
     """Build the control-plane tools for one run.
 
-    ``thread_id`` is closed over rather than read from a ``RunContext`` because
-    the confirmation protocol publishes into *this* thread's event stream, and
-    the run's deps carry no thread id.
+    Both ids are closed over rather than read from a ``RunContext``, because the
+    run's deps carry neither. ``thread_id`` is where the confirmation protocol
+    publishes its cards; ``running_agent_id`` is the row this run is *using* —
+    the one row these tools decline to delete out from under themselves. It is
+    spelled in full because several tools take an ``agent_id`` parameter of their
+    own, and the two must not be confused.
     """
 
     async def _confirm(action: str, summary: str, impact: str) -> bool:
@@ -320,7 +320,6 @@ def build_assistant_tools(thread_id: str) -> list[Callable[..., Awaitable[str]]]
                     "thinking": a.thinking,
                 }
                 for a in result
-                if a.id != ASSISTANT_AGENT_ID
             ]
         )
 
@@ -395,11 +394,6 @@ def build_assistant_tools(thread_id: str) -> list[Callable[..., Awaitable[str]]]
             web_search: Toggle web search.
             browser_qa: Toggle the headless browser.
         """
-        if agent_id == ASSISTANT_AGENT_ID:
-            return (
-                "Error: that is me. My model is set in Settings → Model → Assistant, "
-                "not through this tool."
-            )
         fields = {
             "model": model,
             "name": name,
@@ -430,8 +424,10 @@ def build_assistant_tools(thread_id: str) -> list[Callable[..., Awaitable[str]]]
         Args:
             agent_id: From ``lursor_list_agents``.
         """
-        if agent_id == ASSISTANT_AGENT_ID:
-            return "Error: I can't delete myself."
+        if agent_id == running_agent_id:
+            # Not a policy so much as physics: ``Thread.agent_id`` is a non-null
+            # FK, and this conversation points at that row.
+            return "Error: that is the agent I am running as — I can't delete it."
 
         async def load(s: AsyncSession) -> Any:
             agent = await s.get(Agent, agent_id)
@@ -703,8 +699,14 @@ def build_assistant_tools(thread_id: str) -> list[Callable[..., Awaitable[str]]]
             agent = await s.get(Agent, agent_id)
             if agent is None:
                 return f"Error: no agent with id {agent_id}"
-            if agent_id == ASSISTANT_AGENT_ID:
-                return "Error: I can't delegate to myself."
+            if workspace_id == ASSISTANT_WORKSPACE_ID:
+                # A run in here holds the control plane, so this would fork a
+                # second privileged agent with nobody watching to answer its
+                # confirmation cards. Delegation is for getting into a *project*.
+                return (
+                    "Error: I can't delegate into my own workspace. Pick the "
+                    "project the work belongs in."
+                )
             thread = Thread(
                 title=prompt.strip()[:60],
                 workspace_id=workspace_id,
@@ -807,9 +809,6 @@ def build_assistant_tools(thread_id: str) -> list[Callable[..., Awaitable[str]]]
             cfg = (await s.execute(select(AppConfig))).scalars().first()
             return {
                 "default_model": settings.default_model,
-                "assistant_model": (
-                    getattr(cfg, "assistant_model", None) or DEFAULT_ASSISTANT_MODEL
-                ),
                 "web_search_provider": getattr(cfg, "web_search_provider", None),
                 "memory_provider": getattr(cfg, "memory_provider", None),
                 "compaction_model": getattr(cfg, "compaction_model", None),
@@ -837,9 +836,9 @@ def build_assistant_tools(thread_id: str) -> list[Callable[..., Awaitable[str]]]
             key: One of ``web_search_provider``, ``memory_provider``,
                 ``compaction_model``, ``compaction_threshold``,
                 ``compaction_ratio``, ``goal_evaluator_model``,
-                ``assistant_model``, ``image_source``, ``video_source``,
-                ``image_model``, ``video_model``. API keys are not settable here
-                — those belong in the Settings UI.
+                ``image_source``, ``video_source``, ``image_model``,
+                ``video_model``. API keys are not settable here — those belong
+                in the Settings UI.
             value: The new value, as text. Numbers are parsed; an empty string
                 clears the setting.
         """

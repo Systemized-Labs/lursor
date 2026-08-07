@@ -35,33 +35,15 @@ export const agentKeys = {
 /**
  * The user's agents — every agent picker, list and settings row reads this.
  *
- * The top-level Assistant is filtered out here rather than at each call site.
- * It is not one of your agents: it can't be edited, deleted, assigned to a
- * schedule, or picked in a composer, so every consumer would otherwise need the
- * same guard and one of them would eventually be missed. `is_assistant` is
- * computed server-side (`schemas/agent.py`).
+ * Unfiltered, deliberately. The agent seeded in the Assistant workspace is an
+ * ordinary row: pick it in a project, schedule it, rename it, delete it. What
+ * makes a run privileged is the workspace it happens in, not the agent, so
+ * there is nothing here for a picker to hide.
  */
 export function useAgents() {
   return useQuery({
     queryKey: agentKeys.all,
     queryFn: ({ signal }) => agentsApi.list(signal),
-    select: (agents) => agents.filter((a) => !a.is_assistant),
-  })
-}
-
-/**
- * The top-level Assistant's own row — the one {@link useAgents} filters out.
- *
- * Same query, different `select`, so this costs no extra request: the Assistant
- * workspace's chat pane needs the id to pin its conversations to, and the agent
- * name to stamp on a user bubble. Nowhere else should want this; if you are
- * reaching for it to put the Assistant in a picker, don't.
- */
-export function useAssistantAgent() {
-  return useQuery({
-    queryKey: agentKeys.all,
-    queryFn: ({ signal }) => agentsApi.list(signal),
-    select: (agents) => agents.find((a) => a.is_assistant),
   })
 }
 

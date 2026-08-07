@@ -19,7 +19,6 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 
 from app.agents.builder import _READONLY_TOOL_ALLOWLIST, build_deep_agent
-from app.assistant.identity import ASSISTANT_AGENT_ID, ASSISTANT_AGENT_NAME
 from app.assistant.registry import (
     ASSISTANT_CORE_TOOLS,
     ASSISTANT_DESTRUCTIVE_TOOLS,
@@ -53,7 +52,13 @@ def _row(**flags) -> AgentRow:
 
 
 def _assistant_row() -> AgentRow:
-    return AgentRow(id=ASSISTANT_AGENT_ID, name=ASSISTANT_AGENT_NAME, instructions="")
+    """The row a privileged build uses — deliberately indistinguishable from any other.
+
+    Entitlement is the workspace's, not this row's, so there is nothing to set
+    here. ``test_the_same_row_is_privileged_or_not_by_caller`` leans on that
+    directly: it builds this exact row both ways.
+    """
+    return AgentRow(name="Assistant", instructions="hi")
 
 
 async def _rosters(
@@ -83,6 +88,55 @@ async def test_a_normal_agent_never_sees_a_control_plane_tool(tmp_path):
     assert not ASSISTANT_TOOL_NAMES & set(steps[0])
 
 
+async def test_the_same_row_is_privileged_or_not_by_caller(tmp_path):
+    """The heart of the design: privilege is the *caller's* to grant, not the row's.
+
+    One ``AgentRow``, built twice. The privileged build is the one that was
+    handed ``extra_tools``, which in production means the one whose workspace was
+    the Assistant's. Nothing on the row differs, because if anything did it would
+    be a second answer to "may this run hold the control plane?" — and a second
+    answer is a thing that can disagree with the first.
+    """
+    row = _row(**_ALL_ON)
+
+    ordinary = await _rosters(row, tmp_path)
+    privileged = await _rosters(
+        row, tmp_path, extra_tools=build_assistant_tools("thread-1", "agent-1")
+    )
+
+    assert not ASSISTANT_TOOL_NAMES & set(ordinary[0])
+    assert ASSISTANT_CORE_TOOLS <= set(privileged[0])
+
+
+def test_the_rules_travel_with_the_tools(tmp_path):
+    """You cannot be handed the control plane without being handed its rules.
+
+    The agent's own instructions are its own — it is a user-editable row — so the
+    destructive-action rules cannot live there. They are appended by the builder
+    to whichever agent receives ``extra_tools``, which means there is no build
+    path that grants the tools and omits the rules.
+    """
+    from app.assistant.registry import CONTROL_PLANE_PROMPT
+
+    marker = CONTROL_PLANE_PROMPT.splitlines()[0]
+    row = _row(**_ALL_ON)
+
+    def static_prompt(agent) -> str:
+        # ``_instructions`` mixes literal strings with the library's dynamic
+        # callables; only the literals are ours to assert on.
+        return "\n".join(i for i in agent._instructions if isinstance(i, str))
+
+    ordinary, _ = build_deep_agent(row, str(tmp_path))
+    privileged, _ = build_deep_agent(
+        row, str(tmp_path), extra_tools=build_assistant_tools("t", "a")
+    )
+
+    assert marker not in static_prompt(ordinary)
+    assert marker in static_prompt(privileged)
+    # And the row's own prompt survives alongside them, rather than being replaced.
+    assert row.instructions in static_prompt(privileged)
+
+
 async def test_the_assistant_registers_every_declared_tool(tmp_path):
     """No dead entries in the name set, in either direction.
 
@@ -94,7 +148,7 @@ async def test_the_assistant_registers_every_declared_tool(tmp_path):
     steps = await _rosters(
         _assistant_row(),
         tmp_path,
-        extra_tools=build_assistant_tools("thread-1"),
+        extra_tools=build_assistant_tools("thread-1", "agent-1"),
     )
     offered = set(steps[0])
     # Non-core tools are deferred, so the opening roster holds the core set;
@@ -104,7 +158,7 @@ async def test_the_assistant_registers_every_declared_tool(tmp_path):
     revealed = await _rosters(
         _assistant_row(),
         tmp_path,
-        extra_tools=build_assistant_tools("thread-1"),
+        extra_tools=build_assistant_tools("thread-1", "agent-1"),
         search="workspace agent schedule settings conversation model skill usage",
     )
     everything = set(revealed[0]) | set(revealed[-1])
@@ -112,7 +166,7 @@ async def test_the_assistant_registers_every_declared_tool(tmp_path):
     # Tool search is keyword-matched, so a single query need not surface all 26.
     # What must hold is that nothing declared is *unreachable*: every name the
     # registry knows is registered on the agent.
-    registered = {t.__name__ for t in build_assistant_tools("thread-1")}
+    registered = {t.__name__ for t in build_assistant_tools("thread-1", "agent-1")}
     assert registered == ASSISTANT_TOOL_NAMES
     assert not missing & (ASSISTANT_TOOL_NAMES - registered)
 
@@ -137,7 +191,7 @@ async def test_a_subagent_of_the_assistant_gets_no_control_plane(tmp_path):
         str(tmp_path),
         None,
         [specialist],
-        extra_tools=build_assistant_tools("thread-1"),
+        extra_tools=build_assistant_tools("thread-1", "agent-1"),
     )
     with agent.override(model=FunctionModel(respond, profile=_NO_NATIVE)):
         await agent.run("hi", deps=deps)
@@ -171,7 +225,7 @@ async def test_the_guard_is_installed_on_every_build(tmp_path):
 
     ordinary, _ = build_deep_agent(_row(**_ALL_ON), str(tmp_path))
     privileged, _ = build_deep_agent(
-        _assistant_row(), str(tmp_path), extra_tools=build_assistant_tools("t")
+        _assistant_row(), str(tmp_path), extra_tools=build_assistant_tools("t", "a")
     )
 
     def guards(agent) -> list[AssistantToolGuard]:
@@ -202,14 +256,14 @@ async def test_ask_mode_strips_the_whole_control_plane(tmp_path):
         _assistant_row(),
         tmp_path,
         read_only=True,
-        extra_tools=build_assistant_tools("thread-1"),
+        extra_tools=build_assistant_tools("thread-1", "agent-1"),
     )
     assert not ASSISTANT_TOOL_NAMES & set(steps[0])
 
 
 async def test_destructive_tools_are_all_real(tmp_path):
     """Every name in the destructive set is a tool that exists."""
-    registered = {t.__name__ for t in build_assistant_tools("t")}
+    registered = {t.__name__ for t in build_assistant_tools("t", "a")}
     assert ASSISTANT_DESTRUCTIVE_TOOLS <= registered
     # And every one of them is genuinely gated — asserted in test_assistant_confirm.
     assert ASSISTANT_DESTRUCTIVE_TOOLS <= ASSISTANT_TOOL_NAMES
@@ -225,7 +279,7 @@ async def test_control_plane_tools_do_not_crowd_out_the_core_roster(tmp_path):
     steps = await _rosters(
         _assistant_row(),
         tmp_path,
-        extra_tools=build_assistant_tools("thread-1"),
+        extra_tools=build_assistant_tools("thread-1", "agent-1"),
     )
     offered = ASSISTANT_TOOL_NAMES & set(steps[0])
     assert offered == ASSISTANT_CORE_TOOLS

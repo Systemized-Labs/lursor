@@ -1,16 +1,19 @@
-"""Who the Assistant is, and how to recognise it.
+"""The Assistant's workspace, and the agent that starts out in it.
 
-The Assistant needs a :class:`Workspace` row and an :class:`Agent` row because
-``Thread.workspace_id`` and ``Thread.agent_id`` are both non-null foreign keys.
-Seeding two app-owned rows is far cheaper than making a core FK nullable, and
-the Skill Studio already established the pattern (``api/workspaces.py``): a real
-row at a known location, a *computed* system flag, and UI that files it
-separately from the user's own projects.
+Privilege attaches to the **workspace**, not to an agent. Any agent you select in
+the Assistant workspace gets the control-plane toolset for that run; the same
+agent used in one of your projects does not. That is the whole recognition rule,
+and :func:`is_assistant_workspace` is the whole of its implementation.
 
-Recognition is by **id**, not by name. Both rows carry a stable literal primary
-key, so renaming the Assistant in the UI cannot detach it from its privileges,
-and — more importantly — naming a user's own agent "Assistant" cannot attach
-them.
+The workspace is app-owned in the same way the Skill Studio is: a real row at a
+known location, a *computed* flag on the read model, and a sidebar that files it
+separately from your projects. It cannot be moved or deleted, because the runs
+that happen there are the ones holding the control plane.
+
+The agent seeded alongside it is **ordinary**. It exists so a fresh install has
+something to talk to, on a sensible model. Rename it, retarget it, rewrite its
+prompt, delete it and use your own — none of that changes what it can do, because
+none of that is where the privilege lives.
 """
 
 from __future__ import annotations
@@ -25,60 +28,64 @@ from app.db.models import Agent, ThinkingLevel, ToolChoice, Workspace
 
 settings = get_settings()
 
-# Stable primary keys. Deliberately not uuids: recognition is an id comparison in
-# a hot path (every turn), and a literal makes the seeded rows obvious in a
-# ``sqlite3`` session.
-ASSISTANT_AGENT_ID = "lursor-assistant"
+# Stable primary keys. Deliberately not uuids: the workspace id is compared on
+# every turn, and a literal makes the seeded rows obvious in a ``sqlite3``
+# session. The agent id is only a seed key — it grants nothing.
 ASSISTANT_WORKSPACE_ID = "lursor-assistant-ws"
+ASSISTANT_AGENT_ID = "lursor-assistant"
 
 ASSISTANT_AGENT_NAME = "Assistant"
 ASSISTANT_WORKSPACE_NAME = "Assistant"
 ASSISTANT_WORKSPACE_DESCRIPTION = (
-    "The Assistant's own scratch space. Notes, one-off scripts and exported "
-    "reports live here; the app itself is driven by its control-plane tools."
+    "Drive Lursor itself from here. Agents used in this workspace can create "
+    "workspaces, retarget other agents, manage schedules and read the bill."
 )
 
-# GLM 5.2 through OpenRouter. Overridable in Settings → Model (``AppConfig.
-# assistant_model``); this is only the value an unset setting inherits.
+# What the seeded agent ships pointed at: GLM 5.2 through OpenRouter. Not a
+# setting — it is written to the row once, at creation, and the agent editor owns
+# it from then on like any other agent's model.
 #
-# Note for anyone retargeting this: GLM is the named motivating case for
+# Note for anyone retargeting it: GLM is the named motivating case for
 # ``openai_supports_tool_choice_required=False`` (``agents/tolerant_model.py``),
-# which is why the seeded row pins ``ToolChoice.auto`` below and why nothing in
-# the assistant build path forces a tool call.
+# which is why the seeded row ships ``ToolChoice.auto``.
 DEFAULT_ASSISTANT_MODEL = "openrouter:z-ai/glm-5.2"
+
+ASSISTANT_AGENT_INSTRUCTIONS = """\
+You are the user's assistant inside Lursor. You are not scoped to one project —
+you help them run the app itself, and you keep notes and one-off scripts in this
+workspace.
+
+Answer plainly and act rather than proposing. When a request touches something
+outside this workspace, use the tools rather than describing what the user could
+click.
+"""
 
 
 def assistant_dir() -> Path:
-    """The Assistant's filesystem root (``settings.assistant_dir``)."""
+    """The Assistant workspace's filesystem root (``settings.assistant_dir``)."""
     return settings.assistant_dir.expanduser()
 
 
 def is_assistant_workspace(ws: Workspace) -> bool:
-    """True for the Assistant's own workspace row."""
+    """True for the Assistant's workspace — the one place the control plane runs.
+
+    The single predicate behind the whole feature. ``api/chat.py`` calls it once
+    per build to decide whether to pass ``extra_tools``.
+    """
     return ws.id == ASSISTANT_WORKSPACE_ID
 
 
-def is_assistant_agent(row: object) -> bool:
-    """True for the Assistant's own agent row.
-
-    Takes ``object`` rather than ``Agent`` because the callers that matter are
-    holding either an :class:`Agent` or a :class:`Subagent` (the builder treats
-    them interchangeably), and a subagent must never test true here.
-    """
-    return isinstance(row, Agent) and row.id == ASSISTANT_AGENT_ID
-
-
 async def ensure_assistant_records(session: AsyncSession) -> tuple[Workspace, Agent]:
-    """Register the Assistant's workspace and agent, once.
+    """Register the Assistant workspace and its starter agent, once.
 
     Idempotent: safe to run on every boot. Adopts rows that already exist rather
-    than adding a second pair, so a conversation history survives an upgrade.
+    than adding a second pair, so conversation history survives an upgrade.
 
-    The user owns cosmetic fields on an adopted row (a rename is theirs to keep,
-    matching ``ensure_skills_workspace``), but the fields that make the Assistant
-    *work* — its path, and the deep-agent flags its tools depend on — are
-    re-asserted every boot. Those are not user settings; the only knob the UI
-    offers is the model, and that lives on ``AppConfig``, not here.
+    Only the workspace's *path* is re-asserted, and only because ``data_dir`` can
+    move under it. Everything else on both rows — names, the agent's model, its
+    prompt, its feature toggles — is the user's to change and is written exactly
+    once, at creation. A boot that re-asserted them would be a boot that silently
+    undid the agent editor.
     """
     directory = assistant_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -96,9 +103,8 @@ async def ensure_assistant_records(session: AsyncSession) -> tuple[Workspace, Ag
         )
         session.add(workspace)
     elif workspace.path != resolved:
-        # The path is not the user's to change (the PATCH route refuses it), but
-        # ``data_dir`` can move under them — the packaged app and a source run
-        # resolve it differently. Follow it.
+        # Not the user's to change (the PATCH route refuses it), but the packaged
+        # app and a source run resolve ``data_dir`` differently. Follow it.
         workspace.path = resolved
         session.add(workspace)
 
@@ -109,31 +115,23 @@ async def ensure_assistant_records(session: AsyncSession) -> tuple[Workspace, Ag
         agent = Agent(
             id=ASSISTANT_AGENT_ID,
             name=ASSISTANT_AGENT_NAME,
-            description="Lursor's own assistant. Drives the app itself.",
-            # Null: the effective model is resolved per run from
-            # ``AppConfig.assistant_model`` falling back to
-            # ``DEFAULT_ASSISTANT_MODEL``. Leaving the column null keeps one
-            # source of truth instead of two that can drift.
-            model=None,
-            # Empty: the system prompt is a code constant (``prompt.py``) so a
-            # stray edit cannot disarm the language around destructive tools.
-            instructions="",
+            description="Drives Lursor itself. Edit or replace it like any agent.",
+            model=DEFAULT_ASSISTANT_MODEL,
+            instructions=ASSISTANT_AGENT_INSTRUCTIONS,
+            include_todo=True,
+            include_subagents=True,
+            include_skills=True,
+            include_memory=True,
+            include_plan=False,
+            web_search=True,
+            # It drives the app; it does not QA a dev server.
+            browser_qa=False,
+            include_video=False,
+            include_image=False,
+            thinking=ThinkingLevel.off,
+            tool_choice=ToolChoice.auto,
         )
         session.add(agent)
-
-    # Re-asserted on every boot — see the docstring.
-    agent.include_todo = True
-    agent.include_subagents = True
-    agent.include_skills = True
-    agent.include_memory = True
-    agent.include_plan = False
-    agent.web_search = True
-    agent.browser_qa = False  # it drives the app, it does not QA a dev server
-    agent.include_video = False
-    agent.include_image = False
-    agent.thinking = ThinkingLevel.off
-    agent.tool_choice = ToolChoice.auto  # never "required" — see DEFAULT_ASSISTANT_MODEL
-    session.add(agent)
 
     await session.commit()
     await session.refresh(workspace)
