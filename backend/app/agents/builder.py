@@ -63,6 +63,16 @@ from app.agents.web_search import (
     DEFAULT_WEB_SEARCH_PROVIDER,
     build_web_search_capability,
 )
+
+# The one import from ``app/assistant/`` allowed anywhere under ``app/agents/``.
+# ``registry`` is a leaf (pydantic-ai only), so this cannot cycle back through the
+# toolset, which imports the API layer, which imports this module.
+from app.assistant.registry import (
+    ASSISTANT_CORE_TOOLS,
+    CONTROL_PLANE_PROMPT,
+    AssistantToolGuard,
+    assert_no_assistant_tools,
+)
 from app.config import get_settings
 from app.db.models import Agent as AgentRow
 from app.db.models import CustomProvider, ToolChoice
@@ -944,6 +954,7 @@ def build_deep_agent(
     image_runtime: ImageRuntime | None = None,
     hindsight: HindsightConfig | None = None,
     compaction_model: str | None = None,
+    extra_tools: list | None = None,
     _subagent_depth: int = 0,
 ) -> tuple[PydanticAgent, DeepAgentDeps]:
     """Build a deep agent + deps for ``row`` scoped to ``workspace_path``.
@@ -1024,6 +1035,22 @@ def build_deep_agent(
     UI. This is behaviour-preserving: the library treats built-ins as ordinary
     ``SubAgentConfig`` dicts and applies the same default deep-agent factory to
     every config.
+
+    ``extra_tools`` is the **only** way a control-plane tool can reach an agent.
+    Exactly one caller passes it — ``_build_agent_and_context`` in ``api/chat.py``,
+    for a run in the Assistant workspace — and passing it is also what tells
+    :class:`AssistantToolGuard` this build is allowed to hold one, and what
+    appends :data:`CONTROL_PLANE_PROMPT` to the instructions. Every other build
+    gets ``None``, and both a build-time assert and a per-step guard raise
+    :class:`AssistantToolLeak` if a privileged tool turns up in one anyway.
+
+    Note that entitlement is a property of the *workspace*, not of ``row``: the
+    same agent gets the control plane in the Assistant workspace and nothing extra
+    in one of the user's projects.
+
+    Note that ``_subagent_config`` recurses into this function *without* threading
+    ``extra_tools``, deliberately: a subagent the Assistant delegates to is an
+    ordinary agent, and must not inherit the control plane.
     """
     backend = _workspace_backend(workspace_path)
 
@@ -1170,6 +1197,14 @@ def build_deep_agent(
             )
         )
 
+    # The control plane, for the one agent entitled to it (see ``app/assistant/``).
+    # The assert covers what we hand to ``create_deep_agent``; ``AssistantToolGuard``
+    # below covers everything that can appear later.
+    tools.extend(extra_tools or [])
+    assert_no_assistant_tools(
+        [getattr(t, "__name__", "") for t in tools], allowed=extra_tools is not None
+    )
+
     # Read-only ("ask") mode filters the mutating tools via a PrepareTools
     # capability. Merge with any capabilities supplied through the escape hatch
     # so we never pass the keyword twice.
@@ -1314,7 +1349,20 @@ def build_deep_agent(
     # discovers mid-turn, and ``task`` is still rewritten to the live roster once
     # revealed.
     if settings.tool_search_enabled:
-        capabilities.extend(build_tool_loading_capabilities())
+        capabilities.extend(
+            build_tool_loading_capabilities(
+                # The Assistant keeps a handful of control-plane tools hot; the
+                # other ~21 are discovered like everything else, so 26 extra
+                # tools cost nothing on a turn that does not use them.
+                extra_core=ASSISTANT_CORE_TOOLS if extra_tools is not None else frozenset()
+            )
+        )
+
+    # Last, so it sits outside every filter above and sees the final roster each
+    # step — including anything tool search reveals mid-turn. A no-op on the
+    # Assistant's own build; installed there anyway so every agent has one and a
+    # test can assert as much.
+    capabilities.append(AssistantToolGuard(allowed=extra_tools is not None))
 
     run_model_str = model_override or row.model or settings.default_model
     model = resolve_model(run_model_str, custom_providers or {})
@@ -1338,6 +1386,12 @@ def build_deep_agent(
     # prompt (what ``create_deep_agent`` would have used) so we extend it rather
     # than replace it — passing a non-None value swaps out the default entirely.
     base_instructions = row.instructions or BASE_PROMPT
+    # The control-plane rules travel with the control-plane tools, always. The row
+    # is an ordinary user-editable agent, so its prompt is its own — but the rules
+    # around destructive actions are not editable, because there is no build that
+    # hands over ``extra_tools`` without also appending this.
+    if extra_tools is not None:
+        base_instructions = f"{base_instructions}\n\n{CONTROL_PLANE_PROMPT}"
     environment = _environment_instructions(
         workspace_path, workspace_name, workspace_description, skill_runtime
     )

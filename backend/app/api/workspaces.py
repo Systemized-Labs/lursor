@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.api.workspace_folders import next_root_position
+from app.assistant.identity import is_assistant_workspace
 from app.config import get_settings
 from app.db.models import Workspace
 from app.db.session import get_session
@@ -259,6 +260,13 @@ async def update_workspace(
                 "The Skills workspace can't be moved — it points at your skills "
                 "catalog. You can rename it.",
             )
+        # Same reasoning for the Assistant's own directory, which the seeding pass
+        # re-asserts on every boot — a move here would be silently undone.
+        if is_assistant_workspace(ws):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "The Assistant's workspace can't be moved.",
+            )
         ws.path = _materialize(payload.path, ws.name)
 
     session.add(ws)
@@ -276,6 +284,11 @@ async def delete_workspace(workspace_id: str, session: AsyncSession = Depends(ge
             status.HTTP_400_BAD_REQUEST,
             "The Skills workspace can't be deleted — it's your skills catalog. "
             "Delete individual skills from Customization → Skills.",
+        )
+    if is_assistant_workspace(ws):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "The Assistant's workspace can't be deleted — the app owns it.",
         )
     # Intentionally leave the on-disk directory in place to avoid destroying user
     # files; only the database record is removed.

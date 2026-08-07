@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     # rebuildable index (see ``app/skills/store.py`` and ``api/skills.py``).
     skills_dir: Path = Path.home() / ".lursor" / "skills"
 
+    # --- Assistant ---
+    # Filesystem root for the top-level Assistant (see ``app/assistant/``). It is
+    # registered as a system workspace so the Assistant's ordinary file and shell
+    # tools have somewhere to keep notes, scratch scripts and exported reports —
+    # its control-plane tools drive the app itself and never touch this directory.
+    assistant_dir: Path = Path.home() / ".lursor" / "assistant"
+
     # Workspace-relative directories scanned for repo-committed skills, in
     # precedence order (later roots lose a slug collision). The first is Lursor's
     # own convention and the only one it will create; the rest are read in place
@@ -335,6 +342,8 @@ class Settings(BaseSettings):
             self.workspaces_dir = root / "workspaces"
         if "skills_dir" not in provided:
             self.skills_dir = root / "skills"
+        if "assistant_dir" not in provided:
+            self.assistant_dir = root / "assistant"
         if "media_dir" not in provided:
             self.media_dir = root / "media"
         if "database_url" not in provided:
@@ -348,6 +357,7 @@ class Settings(BaseSettings):
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.skills_dir.mkdir(parents=True, exist_ok=True)
+        self.assistant_dir.mkdir(parents=True, exist_ok=True)
 
     def apply_env(self) -> None:
         """Export provider keys so Pydantic AI's model providers can read them."""

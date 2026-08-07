@@ -32,6 +32,14 @@ export const agentKeys = {
   detail: (id: string) => ["agents", id] as const,
 }
 
+/**
+ * The user's agents — every agent picker, list and settings row reads this.
+ *
+ * Unfiltered, deliberately. The agent seeded in the Assistant workspace is an
+ * ordinary row: pick it in a project, schedule it, rename it, delete it. What
+ * makes a run privileged is the workspace it happens in, not the agent, so
+ * there is nothing here for a picker to hide.
+ */
 export function useAgents() {
   return useQuery({
     queryKey: agentKeys.all,

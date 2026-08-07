@@ -16,6 +16,7 @@ from app.agents.hindsight import close_hindsight_clients
 from app.api import (
     agents,
     analytics,
+    assistant,
     chat,
     env_vars,
     files,
@@ -44,6 +45,7 @@ from app.api import (
 from app.api import (
     settings as settings_api,
 )
+from app.assistant.identity import ensure_assistant_records
 from app.auth import TokenAuthMiddleware
 from app.config import BACKEND_DIR, get_settings
 from app.db.prompt_seed import seed_prompt_templates
@@ -116,6 +118,10 @@ async def lifespan(app: FastAPI):
     async with async_session_factory() as session:
         await seed_prompt_templates(session)
         await workspaces.ensure_skills_workspace(session)
+        # The Assistant's own workspace + agent rows (``app/assistant/``). Both
+        # exist only because ``Thread`` needs non-null FKs for them; both are
+        # hidden from the sidebar and the pickers. Idempotent, like the studio.
+        await ensure_assistant_records(session)
         await skills.reconcile(session)
         await globalize_bundled(session, seeded.installed)
     # Run state is in-memory only, so nothing survives a restart: any thread the
@@ -248,6 +254,7 @@ async def server_info() -> dict[str, object]:
 for module in (
     agents,
     analytics,
+    assistant,
     env_vars,
     skills,
     subagents,

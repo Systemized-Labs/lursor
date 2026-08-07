@@ -6,6 +6,7 @@ import type { MessageKind, TurnIntent } from "@/api/types"
 import type {
   AgentGoalStatus,
   AgentTodo,
+  AssistantConfirm,
   ChatMessage,
   ChatToolCall,
   PendingAttachment,
@@ -44,6 +45,13 @@ export interface ChatState {
   byId: Record<string, ChatMessage>
   todos: AgentTodo[]
   goalStatus: AgentGoalStatus | null
+  /**
+   * The Assistant's destructive-action confirmations, keyed by token. A map
+   * rather than a list because the backend republishes a card under the same
+   * token when it settles, and because a reconnect replays both the live copy
+   * and the sticky one — last write per token is the contract.
+   */
+  confirms: Record<string, AssistantConfirm>
   isStreaming: boolean
   error: string | null
   queue: QueuedMessage[]
@@ -69,6 +77,8 @@ export interface ChatActions {
   finishStreaming(): void
   setTodos(todos: AgentTodo[]): void
   setGoalStatus(next: AgentGoalStatus | null): void
+  /** Record (or settle) one confirmation card. */
+  setConfirm(next: AssistantConfirm): void
   markGoalStopped(): void
   setIsStreaming(value: boolean): void
   setError(error: string | null): void
@@ -110,6 +120,7 @@ export function createChatStore(): ChatStore {
       byId: {},
       todos: [],
       goalStatus: null,
+      confirms: {},
       isStreaming: false,
       error: null,
       queue: [],
@@ -199,6 +210,8 @@ export function createChatStore(): ChatStore {
 
       setTodos: (todos) => set({ todos }),
       setGoalStatus: (goalStatus) => set({ goalStatus }),
+      setConfirm: (next) =>
+        set((s) => ({ confirms: { ...s.confirms, [next.token]: next } })),
       markGoalStopped: () =>
         set((s) => ({
           goalStatus:

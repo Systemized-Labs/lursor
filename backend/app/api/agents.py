@@ -100,7 +100,6 @@ async def update_agent(
     agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
-
     data = payload.model_dump(exclude_unset=True, exclude={"tool_ids"})
     for key, value in data.items():
         setattr(agent, key, value)

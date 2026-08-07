@@ -261,8 +261,10 @@ export function ProjectRow({
             <GitBranch className="size-4" />
             Clone repo
           </ContextMenuItem>
-          {/* The studio is app-owned: renaming is fine, deleting is not. */}
-          {workspace.is_system ? null : (
+          {/* The studio and the Assistant are app-owned: renaming is fine,
+              deleting is not — the server refuses both with a 400, so an item
+              here would only ever produce an error toast. */}
+          {workspace.is_system || workspace.is_assistant ? null : (
             <ContextMenuItem
               className="text-destructive focus:text-destructive"
               onSelect={onDelete}

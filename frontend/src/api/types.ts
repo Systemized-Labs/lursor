@@ -382,6 +382,11 @@ export interface Workspace {
   // App-owned workspace (the skills catalog). Computed from the path server
   // side; can be renamed but not deleted or relocated.
   is_system: boolean
+  // The Assistant workspace. App-owned like the skills catalog, and pinned
+  // beside it in the sidebar rather than listed among your projects. Any agent
+  // used in here also holds Lursor's control-plane tools, which is why the
+  // server refuses to move or delete it.
+  is_assistant?: boolean
   // Sidebar placement: the {@link WorkspaceFolder} this row is filed under (null
   // at the root level), and its slot among its siblings there.
   folder_id: string | null

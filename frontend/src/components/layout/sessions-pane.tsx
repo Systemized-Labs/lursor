@@ -32,6 +32,7 @@ interface SessionsPaneProps {
   threads: AllThreads
   tree: WorkspaceTree
   studio: Workspace | undefined
+  assistant: Workspace | undefined
   icons: WorkspaceIcons
   status: WorkspaceStatus
   pins: Pins
@@ -71,6 +72,7 @@ export function SessionsPane({
   threads,
   tree,
   studio,
+  assistant,
   icons,
   status,
   pins,
@@ -202,6 +204,7 @@ export function SessionsPane({
         <ProjectsSection
           tree={tree}
           studio={studio}
+          assistant={assistant}
           icons={icons}
           status={status}
           activeWorkspaceId={activeWorkspaceId}

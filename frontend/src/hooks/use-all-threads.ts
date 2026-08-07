@@ -11,18 +11,21 @@ export interface AllThreads {
   byWorkspace: Map<string, Thread[]>
   /** Workspace name for a thread's `workspace_id`; "" if it hasn't loaded. */
   workspaceName: (workspaceId: string) => string
-  /** Yours — the studio is pinned separately in the rail. */
+  /** Yours — the studio and the Assistant are pinned separately in the rail. */
   workspaces: Workspace[]
   /**
-   * Every workspace, studio included. Anything resolving `is_system` itself must
-   * read this: {@link workspaces} has already filtered the only row it looks for,
-   * so searching that list for the studio silently finds nothing.
+   * Every workspace, studio and Assistant included. Anything resolving
+   * `is_system` / `is_assistant` itself must read this: {@link workspaces} has
+   * already filtered the only rows it looks for, so searching that list for
+   * either silently finds nothing.
    */
   allWorkspaces: Workspace[]
-  /** Every workspace id including the studio's. */
+  /** Every workspace id, app-owned ones included. */
   workspaceIds: string[]
   /** The system workspace behind the Skill Studio. */
   studio: Workspace | undefined
+  /** The app-owned workspace behind the Assistant. */
+  assistant: Workspace | undefined
   isLoading: boolean
   workspacesLoading: boolean
 }
@@ -70,11 +73,16 @@ export function useAllThreads(): AllThreads {
 
   const derived = useMemo(() => {
     const studio = allWorkspaces.find((ws) => ws.is_system)
+    const assistant = allWorkspaces.find((ws) => ws.is_assistant)
     return {
-      workspaces: allWorkspaces.filter((ws) => !ws.is_system),
+      // Both app-owned rows come out of "your projects" and are pinned below
+      // the divider instead — they are not things you made, and they take no
+      // part in the drag arrangement.
+      workspaces: allWorkspaces.filter((ws) => !ws.is_system && !ws.is_assistant),
       allWorkspaces,
       workspaceIds: allWorkspaces.map((ws) => ws.id),
       studio,
+      assistant,
     }
   }, [allWorkspaces])
 

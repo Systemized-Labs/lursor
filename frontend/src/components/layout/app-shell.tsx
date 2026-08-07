@@ -11,6 +11,7 @@ import type { CSSProperties, ReactNode } from "react"
 import { Outlet, useLocation, useSearchParams } from "react-router-dom"
 
 import { useWorkspace } from "@/api/workspaces"
+import { useAssistantHotkey } from "@/components/assistant/use-assistant-hotkey"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { destinationFor } from "@/components/layout/destinations"
 import {
@@ -102,6 +103,9 @@ export function AppShell() {
   const { openSettings } = useSettingsParam()
   const [sidebarSide, setSidebarSide] = useSidebarSide()
   const [layoutsOpen, setLayoutsOpen] = useState(false)
+  // ⌘⇧A → the Assistant's workspace. Bound once, here: a listener per consumer
+  // would fire N times per press.
+  useAssistantHotkey()
   // The active workspace (from `/workspaces/:id/...`) keys the pane layout, so
   // each workspace remembers its own arrangement.
   const workspaceId = pathname.match(/\/workspaces\/([^/]+)/)?.[1]

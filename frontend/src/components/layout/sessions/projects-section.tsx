@@ -33,6 +33,8 @@ interface ProjectsSectionProps {
   tree: WorkspaceTree
   /** The Skill Studio, pinned below the rest; it is a workspace with an icon. */
   studio: Workspace | undefined
+  /** The Assistant, pinned alongside the studio. Same shape, same rules. */
+  assistant: Workspace | undefined
   icons: WorkspaceIcons
   status: WorkspaceStatus
   activeWorkspaceId: string | undefined
@@ -79,6 +81,7 @@ interface ProjectsSectionProps {
 export function ProjectsSection({
   tree,
   studio,
+  assistant,
   icons,
   status,
   activeWorkspaceId,
@@ -179,7 +182,7 @@ export function ProjectsSection({
   // ── Drilled: one project fills the section ────────────────────────────────
   const drilled = drilledId
     ? (tree.ordered.find((w) => w.id === drilledId) ??
-      (studio?.id === drilledId ? studio : undefined))
+      [studio, assistant].find((w) => w?.id === drilledId))
     : undefined
 
   if (drilled) {
@@ -387,19 +390,36 @@ export function ProjectsSection({
           />
         ) : null}
 
-        {/* The studio is app-owned and can't be deleted, reordered or filed, so
-            it sits below the ones that can, behind a divider — and takes no drag
-            target, which is what makes the second half of that sentence true. */}
+        {/* The app-owned rows: the Assistant and the studio. Neither can be
+            deleted, reordered or filed, so they sit below the ones that can,
+            behind a divider — and take no drag target, which is what makes the
+            second half of that sentence true.
+
+            One divider for the pair rather than one each: they are the same kind
+            of thing (places the app gave you, not projects you made), and a rule
+            between them would imply a distinction that isn't there.
+
+            The Assistant leads because it is the one that acts on everything
+            above it. Its conversations list inline like any other row's — which
+            is the whole reason it is here rather than in a dialog. */}
+        {assistant || studio ? (
+          <li aria-hidden className="mx-2 my-1 h-px shrink-0 bg-sidebar-border" />
+        ) : null}
+        {assistant ? (
+          <Fragment key={`assistant-${assistant.id}`}>
+            {row(assistant, null)}
+            {inlineSessions(assistant.id)}
+          </Fragment>
+        ) : null}
         {studio ? (
           <Fragment key={`studio-${studio.id}`}>
-            <li aria-hidden className="mx-2 my-1 h-px shrink-0 bg-sidebar-border" />
             {row(studio, null)}
             {inlineSessions(studio.id)}
           </Fragment>
         ) : null}
       </ul>
 
-      {tree.nodes.length === 0 && !studio ? (
+      {tree.nodes.length === 0 && !studio && !assistant ? (
         <p className="px-2 py-1.5 text-xs text-muted-foreground">
           No projects yet.
         </p>

@@ -1,4 +1,4 @@
-import { Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
+import { Lightning, Robot, NotePencil, Sparkle, SquaresFour } from "@phosphor-icons/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useSearchParams } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
@@ -20,6 +20,7 @@ import { useWorkspace } from "@/api/workspaces"
 import { useChatEngine } from "@/agui/useChatEngine"
 import { ChatStoreProvider } from "@/agui/chatStore"
 import { Button } from "@/components/ui/button"
+import { AssistantConfirmCard } from "@/components/chat/AssistantConfirmCard"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { ChatTimeline } from "@/components/chat/ChatTimeline"
 import { ChatRunDeck } from "@/components/chat/ChatRunDeck"
@@ -100,6 +101,7 @@ export function WorkspaceChatPage({
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
 
   const [selectedAgentId, setSelectedAgentId] = useState("")
+  const isAssistantWorkspace = Boolean(workspace?.is_assistant)
   const agentNameById = useMemo(
     () => new Map(agents.map((a) => [a.id, a.name])),
     [agents]
@@ -168,6 +170,11 @@ export function WorkspaceChatPage({
   const error = useStore(store, (s) => s.error)
   const queue = useStore(store, (s) => s.queue)
   const queuePaused = useStore(store, (s) => s.queuePaused)
+  // Only ever populated by the Assistant's destructive tools, but read
+  // unconditionally: a store subscription is cheap, and gating it on the
+  // workspace would mean a card published a beat before `workspace` resolves has
+  // nowhere to land.
+  const confirms = useStore(store, (s) => s.confirms)
 
   // The open conversation. Normally it is in this workspace's list, but the list is
   // filterable (``list_threads`` can exclude scheduled runs), so fall back to
@@ -227,6 +234,8 @@ export function WorkspaceChatPage({
   }, [location.state])
 
   // Keep the agent picker in sync with the open thread (or defaults for a new one).
+  // No special case for the Assistant workspace: any agent works there, and each
+  // one picks up the control plane for the duration of the run.
   useEffect(() => {
     if (selectedThreadId) {
       if (currentThread) setSelectedAgentId(currentThread.agent_id)
@@ -462,6 +471,7 @@ export function WorkspaceChatPage({
   }
 
   const noAgents = agents.length === 0
+  const confirmCards = useMemo(() => Object.values(confirms), [confirms])
 
   const runView = goalStatus
   const goalExecuting = runView?.status === "running"
@@ -615,7 +625,9 @@ export function WorkspaceChatPage({
             <div className="flex h-full items-center justify-center">
               <div className="space-y-3 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/15">
-                  {workspace?.is_system && !noAgents ? (
+                  {isAssistantWorkspace ? (
+                    <Lightning weight="fill" className="h-7 w-7 text-primary" />
+                  ) : workspace?.is_system && !noAgents ? (
                     <Sparkle className="h-7 w-7 text-primary" />
                   ) : (
                     <Robot className="h-7 w-7 text-primary" />
@@ -626,18 +638,22 @@ export function WorkspaceChatPage({
                     result of doing it shows up. */}
                 <div className="space-y-1">
                   <p className="text-sm font-semibold text-foreground">
-                    {noAgents
-                      ? "No agents yet"
-                      : workspace?.is_system
-                        ? "Skill Studio"
-                        : "Start the conversation"}
+                    {isAssistantWorkspace
+                      ? "Assistant"
+                      : noAgents
+                        ? "No agents yet"
+                        : workspace?.is_system
+                          ? "Skill Studio"
+                          : "Start the conversation"}
                   </p>
                   <p className="mx-auto max-w-[18rem] text-xs text-muted-foreground">
-                    {noAgents
-                      ? "Create an agent in Settings → Capabilities to start chatting."
-                      : workspace?.is_system
-                        ? "Ask for a skill and it gets written into your catalog — SKILL.md, references and scripts. Every existing skill is in the file tree to crib from, and the terminal runs their scripts."
-                        : "Pick an agent above and send the first message."}
+                    {isAssistantWorkspace
+                      ? "Whichever agent you pick here can run Lursor itself: create workspaces, retarget another agent's model, set up schedules, start work in any project, and tell you what everything is costing. Deletes always stop and ask first."
+                      : noAgents
+                        ? "Create an agent in Settings → Capabilities to start chatting."
+                        : workspace?.is_system
+                          ? "Ask for a skill and it gets written into your catalog — SKILL.md, references and scripts. Every existing skill is in the file tree to crib from, and the terminal runs their scripts."
+                          : "Pick an agent above and send the first message."}
                   </p>
                   {workspace?.is_system && !noAgents ? (
                     <p className="mx-auto max-w-[18rem] pt-1 text-xs text-muted-foreground">
@@ -657,6 +673,18 @@ export function WorkspaceChatPage({
             </div>
           }
         />
+
+        {/* The Assistant's stop-and-ask cards. Directly above the composer
+            rather than inline in the timeline: the run is genuinely blocked on
+            one, so it belongs where the user's attention already is, not
+            wherever the transcript happened to scroll to. */}
+        {confirmCards.length ? (
+          <div className="space-y-2 px-4 pb-2">
+            {confirmCards.map((confirm) => (
+              <AssistantConfirmCard key={confirm.token} confirm={confirm} />
+            ))}
+          </div>
+        ) : null}
 
         {error ? (
           <p className="px-4 pb-1 text-sm text-destructive">{error}</p>
@@ -728,9 +756,11 @@ export function WorkspaceChatPage({
               isSending={isStreaming}
               disabled={noAgents}
               placeholder={
-                isParked
-                  ? "Refine the plan, or press Execute plan to run it…"
-                  : "Type a message, or / for commands…"
+                isAssistantWorkspace
+                  ? "Ask the Assistant to do something…"
+                  : isParked
+                    ? "Refine the plan, or press Execute plan to run it…"
+                    : "Type a message, or / for commands…"
               }
               attachments={attachments}
               onAttachmentsChange={setAttachments}
