@@ -120,9 +120,9 @@ export function WindowBar({
           started. */}
       {isMacElectron ? <div aria-hidden className="w-[88px] shrink-0" /> : null}
 
-      {/* Which machine this window is driving, when that is a question worth
-          answering — it renders nothing at all against a local backend. This bar is
-          the only surface mounted for every route, which is why it lives here. */}
+      {/* Which machine this window is driving, and the way into the connection
+          picker — shown for local and remote alike. This bar is the only surface
+          mounted for every route, which is why it lives here. */}
       <ConnectionStatus />
 
       <div className="min-w-0 flex-1" />
