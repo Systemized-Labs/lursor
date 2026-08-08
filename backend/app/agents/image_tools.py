@@ -861,7 +861,15 @@ def _model_menu(runtime: ImageRuntime, video_available: bool) -> str:
     Generated rather than written, so the model never reads about a checkpoint this
     box is not running.
     """
-    where = "OpenRouter" if runtime.provider == refs.OPENROUTER else "here"
+    # "here" is right for a box (it is this machine's GPUs) but not for a custom
+    # provider, which may be anybody's endpoint — including a paid one — so that
+    # gets named instead of being implied to be local and free.
+    if runtime.provider == refs.OPENROUTER:
+        where = "OpenRouter"
+    elif runtime.provider == refs.CUSTOM:
+        where = f"on {runtime.default.connection_name}"
+    else:
+        where = "here"
     lines = [f"Models available {where} (omit `model` for the first):"]
     for candidate in runtime.models:
         marker = " (default)" if candidate is runtime.default else ""

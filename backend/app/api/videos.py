@@ -39,6 +39,15 @@ the user rather than papered over:
   :func:`cancel_video` marks the row locally and says plainly that the render
   continues and will still be billed. Reporting a cancel that did not happen
   would be the worse failure.
+
+**A custom provider is the third source**, and it costs almost nothing here.
+A user-added OpenAI-compatible endpoint speaks the same ``/videos`` job API on the
+same ``/v1`` root, so submit, poll, cancel and download are literally the laios
+code path with a different client — which is what :func:`_endpoint` exists to
+hand back. The branch is one line in four places, and the error unwrapping,
+durability and media store are shared unchanged. What is *not* shared is how its
+models are found and what request shape they are driven with; see
+``app/media/custom.py`` and ``video_runtime._resolve_custom``.
 """
 
 from __future__ import annotations
@@ -57,6 +66,7 @@ from app import media_store
 from app.api.laios import gateway_base, load_connection
 from app.db.models import AppConfig, LaiosConnection, VideoJob
 from app.db.session import get_session
+from app.media import custom as custom_media
 from app.media import openrouter as openrouter_media
 from app.media import refs
 
@@ -91,10 +101,12 @@ async def video_capability(session: AsyncSession = Depends(get_session)):
         "source": runtime.provider if runtime else None,
         "model": runtime.model if runtime else None,
         "connection_name": runtime.connection_name if runtime else None,
-        # True when the request shape was inferred from the model's identity rather
-        # than declared by its recipe — worth surfacing, since it is the one case
-        # where Lursor is trusting a measurement instead of a declaration. Never
-        # true on OpenRouter, whose catalogue is the declaration.
+        # True when something about the model was inferred rather than declared:
+        # on laios, its request shape (from the model's identity); on a custom
+        # provider, that it is a video model at all (from its name). Both are the
+        # case where Lursor is trusting a guess instead of a declaration, and both
+        # are worth saying out loud. Never true on OpenRouter, whose catalogue is
+        # the declaration.
         "assumed": bool(runtime.assumed) if runtime else False,
         "price": _price(runtime.price) if runtime else None,
         "pinned": runtime.pinned if runtime else False,
@@ -159,6 +171,7 @@ async def list_video_models(
                 "price": _price(entry.price),
                 "observed_cost": observed.get(entry.slug),
                 "connection_name": "OpenRouter",
+                "custom": None,
                 "resolutions": list(entry.resolutions),
                 "aspect_ratios": list(entry.aspect_ratios),
                 "sizes": list(entry.sizes),
@@ -170,18 +183,25 @@ async def list_video_models(
             for entry in catalogue
         ]
     else:
-        # laios resolves to one drivable target, so the list is that target.
+        # laios and a custom provider each resolve to one drivable target, so the
+        # list is that target.
         constraints = runtime.constraints
+        note = f"driven as {runtime.request_schema}"
+        if runtime.custom is not None and not runtime.custom.declared:
+            note = f"matched by name, {note}"
         models = [
             {
                 "ref": runtime.ref,
                 "id": runtime.model,
                 "label": runtime.label,
-                "provider": refs.LAIOS,
-                "note": f"driven as {runtime.request_schema}",
+                "provider": runtime.provider,
+                "note": note,
                 "price": None,
                 "observed_cost": None,
                 "connection_name": runtime.connection_name,
+                "custom": {"declared": runtime.custom.declared}
+                if runtime.custom
+                else None,
                 "resolutions": [],
                 "aspect_ratios": list(constraints.aspect_ratios),
                 "sizes": list(constraints.sizes.values()),
@@ -240,11 +260,36 @@ async def _gateway(
     )
 
 
-def _unreachable(conn: LaiosConnection, exc: Exception) -> HTTPException:
-    logger.warning("laios gateway for %r unreachable: %s", conn.name, exc)
+async def _endpoint(
+    provider: str,
+    endpoint_id: str,
+    session: AsyncSession,
+    timeout: httpx.Timeout | None = None,
+) -> tuple[httpx.AsyncClient, str]:
+    """A client for whichever kind of endpoint owns this job, plus its name.
+
+    laios and a custom provider are both ``/v1``-rooted OpenAI-compatible origins
+    speaking the same four-verb job API, so everything above this — submit, poll,
+    cancel, download, and the error unwrapping — is one code path with one branch
+    at the bottom. Only the credential and the base URL differ.
+
+    :func:`_gateway` is still called by name rather than inlined: it is the seam the
+    tests replace to run this module against a fake box.
+    """
+    if provider == refs.CUSTOM:
+        record = await custom_media.load_provider(session, endpoint_id)
+        return custom_media.client(record, timeout=timeout or _DEFAULT_TIMEOUT), (
+            record.name
+        )
+    conn = await load_connection(endpoint_id, session)
+    return await _gateway(conn, timeout=timeout), conn.name
+
+
+def _unreachable(name: str, exc: Exception) -> HTTPException:
+    logger.warning("inference gateway for %r unreachable: %s", name, exc)
     return HTTPException(
         status.HTTP_502_BAD_GATEWAY,
-        f"could not reach the inference gateway for {conn.name} — "
+        f"could not reach the inference gateway for {name} — "
         "is the model serving, and the tunnel up?",
     )
 
@@ -415,8 +460,9 @@ async def _refresh_active(jobs: list[VideoJob], session: AsyncSession) -> None:
     up to date" when some of them weren't. Every failure leaves the row alone —
     an unreachable upstream means we don't know yet, not that the job died.
 
-    Grouped by connection so one gateway client serves all of that box's rows, and
-    so a box that is down short-circuits its own group without stalling the others.
+    Grouped by endpoint so one client serves all of that box's (or provider's) rows,
+    and so an endpoint that is down short-circuits its own group without stalling
+    the others.
     """
     active = [job for job in jobs if job.status not in TERMINAL]
     if not active:
@@ -426,19 +472,21 @@ async def _refresh_active(jobs: list[VideoJob], session: AsyncSession) -> None:
     for job in [j for j in active if j.provider == refs.OPENROUTER]:
         changed |= await _refresh_openrouter(job, session)
 
-    by_connection: dict[str, list[VideoJob]] = {}
+    # Keyed on (provider, endpoint) rather than the endpoint alone: a laios
+    # connection id and a custom provider id are different id spaces, and nothing
+    # stops them colliding.
+    by_endpoint: dict[tuple[str, str], list[VideoJob]] = {}
     for job in active:
         if job.provider != refs.OPENROUTER:
-            by_connection.setdefault(job.connection_id, []).append(job)
+            by_endpoint.setdefault((job.provider, job.connection_id), []).append(job)
 
-    for cid, group in by_connection.items():
+    for (provider, endpoint_id), group in by_endpoint.items():
         try:
-            conn = await load_connection(cid, session)
-            client = await _gateway(conn)
+            client, _name = await _endpoint(provider, endpoint_id, session)
         except HTTPException:
-            # No such connection, or no usable gateway base. Listing the history
-            # must still work — that is the surface where the operator would
-            # notice.
+            # No such connection or provider, or no usable base URL. Listing the
+            # history must still work — that is the surface where the operator
+            # would notice.
             continue
         async with client:
             for job in group:
@@ -538,9 +586,12 @@ async def create_video(body: dict, session: AsyncSession = Depends(get_session))
     if source.is_openrouter:
         created = await _submit_openrouter(request)
         connection_id = ""
+    elif source.is_custom:
+        connection_id = source.connection_id or await _only_provider(session)
+        created = await _submit_endpoint(refs.CUSTOM, connection_id, request, session)
     else:
         connection_id = source.connection_id or await _only_connection(session)
-        created = await _submit_laios(connection_id, request, session)
+        created = await _submit_endpoint(refs.LAIOS, connection_id, request, session)
 
     job = VideoJob(
         provider=source.provider,
@@ -579,19 +630,20 @@ async def _submit_openrouter(request: dict[str, Any]) -> dict[str, Any]:
         ) from exc
 
 
-async def _submit_laios(
-    cid: str, request: dict[str, Any], session: AsyncSession
+async def _submit_endpoint(
+    provider: str, endpoint_id: str, request: dict[str, Any], session: AsyncSession
 ) -> dict[str, Any]:
-    conn = await load_connection(cid, session)
+    """Submit to a laios box or a custom provider — the same call either way."""
+    client, name = await _endpoint(provider, endpoint_id, session)
     try:
-        async with await _gateway(conn) as client:
+        async with client:
             resp = await client.post("/videos", json=request)
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT, "submitting the video job timed out"
         ) from exc
     except httpx.RequestError as exc:
-        raise _unreachable(conn, exc) from exc
+        raise _unreachable(name, exc) from exc
 
     if resp.status_code >= 400:
         raise HTTPException(resp.status_code, _gateway_error_detail(resp))
@@ -639,6 +691,22 @@ async def _only_connection(session: AsyncSession) -> str:
     return connections[0].id
 
 
+async def _only_provider(session: AsyncSession) -> str:
+    """The custom provider a bare ``custom`` source means, when there is one."""
+    providers = await custom_media.media_providers(session)
+    if not providers:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "no custom provider is configured"
+        )
+    if len(providers) > 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "several custom providers are configured — name one, as "
+            f"'custom:{providers[0].id}'",
+        )
+    return providers[0].id
+
+
 @router.get("/{job_id}")
 async def video_status(job_id: str, session: AsyncSession = Depends(get_session)):
     """Poll the upstream and fold the result into our row.
@@ -671,16 +739,16 @@ async def video_status(job_id: str, session: AsyncSession = Depends(get_session)
         await session.refresh(job)
         return _to_read(job)
 
-    conn = await load_connection(job.connection_id, session)
+    client, name = await _endpoint(job.provider, job.connection_id, session)
     try:
-        async with await _gateway(conn) as client:
+        async with client:
             resp = await client.get(f"/videos/{job_id}")
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT, "polling the video job timed out"
         ) from exc
     except httpx.RequestError as exc:
-        raise _unreachable(conn, exc) from exc
+        raise _unreachable(name, exc) from exc
 
     # A 404 here is meaningful rather than fatal: the gateway forgot the job (its
     # map is bounded and in-memory) or the box was restarted. Record it instead
@@ -725,16 +793,16 @@ async def cancel_video(job_id: str, session: AsyncSession = Depends(get_session)
         await session.refresh(job)
         return _to_read(job)
 
-    conn = await load_connection(job.connection_id, session)
+    client, name = await _endpoint(job.provider, job.connection_id, session)
     try:
-        async with await _gateway(conn) as client:
+        async with client:
             resp = await client.delete(f"/videos/{job_id}")
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT, "cancelling the video job timed out"
         ) from exc
     except httpx.RequestError as exc:
-        raise _unreachable(conn, exc) from exc
+        raise _unreachable(name, exc) from exc
 
     # Already gone upstream is the outcome we wanted, not an error.
     if resp.status_code >= 400 and resp.status_code != status.HTTP_404_NOT_FOUND:
@@ -769,9 +837,11 @@ async def stored_clip(
     if job.provider == refs.OPENROUTER:
         return await _openrouter_clip(job, session)
 
-    conn = await load_connection(job.connection_id, session)
+    client, name = await _endpoint(
+        job.provider, job.connection_id, session, timeout=_CONTENT_TIMEOUT
+    )
     try:
-        async with await _gateway(conn, timeout=_CONTENT_TIMEOUT) as client:
+        async with client:
             resp = await client.get(
                 f"/videos/{job.job_id}/content", params={"variant": variant}
             )
@@ -780,7 +850,7 @@ async def stored_clip(
             status.HTTP_504_GATEWAY_TIMEOUT, "downloading the clip timed out"
         ) from exc
     except httpx.RequestError as exc:
-        raise _unreachable(conn, exc) from exc
+        raise _unreachable(name, exc) from exc
 
     if resp.status_code >= 400:
         raise HTTPException(resp.status_code, _gateway_error_detail(resp))

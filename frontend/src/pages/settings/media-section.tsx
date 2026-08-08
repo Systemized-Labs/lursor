@@ -32,11 +32,14 @@ import { priceLabel } from "@/lib/media-price"
 /** Sentinel for "no pin" — a Radix Select item cannot carry an empty value. */
 const AUTO = "__auto__"
 
-const SOURCES: {
+interface SourceChoice {
   value: MediaSource
   label: string
   description: string
-}[] = [
+}
+
+/** The two built-in sources. Custom providers are appended per install. */
+const SOURCES: SourceChoice[] = [
   {
     value: "laios",
     label: "LAIOS box",
@@ -50,6 +53,25 @@ const SOURCES: {
       "Hosted models — Seedream, GPT Image, Veo, Sora, Seedance. Billed per image or per second of video, on your OpenRouter key.",
   },
 ]
+
+/**
+ * The built-ins plus one row per user-added endpoint.
+ *
+ * A custom provider is offered even when it serves no media, for the same reason
+ * OpenRouter is offered without a key: the `reason` line below explains what to do,
+ * and a greyed-out row explains nothing. The backend does not probe them to build
+ * this list, so the cost of offering them all is zero.
+ */
+function sourceChoices(settings: MediaSettings): SourceChoice[] {
+  return [
+    ...SOURCES,
+    ...settings.custom_providers.map((provider) => ({
+      value: provider.ref,
+      label: provider.name,
+      description: `Your own OpenAI-compatible endpoint at ${provider.base_url}. Its models are classified by what it publishes about them, falling back to what they are named — see the note under each one.`,
+    })),
+  ]
+}
 
 const COPY = {
   image: {
@@ -110,6 +132,7 @@ function Body({
 }) {
   const modality: MediaModalitySettings = settings[kind]
   const copy = COPY[kind]
+  const sources = sourceChoices(settings)
 
   // Only the *selected* source's models are listed. A picker spanning both would
   // invite pinning a model on a source that is not selected, which the backend
@@ -167,15 +190,24 @@ function Body({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {SOURCES.map((source) => (
+              {sources.map((source) => (
                 <SelectItem key={source.value} value={source.value}>
                   {source.label}
                 </SelectItem>
               ))}
+              {/* A source that has since gone — a custom provider deleted while it
+                  was selected. Kept selectable so the card shows what is actually
+                  stored rather than snapping to LAIOS while the backend still
+                  fails on it, the same choice the model picker below makes. */}
+              {sources.some((s) => s.value === modality.source) ? null : (
+                <SelectItem value={modality.source}>
+                  {modality.source} (no longer configured)
+                </SelectItem>
+              )}
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            {SOURCES.find((s) => s.value === modality.source)?.description}
+            {sources.find((s) => s.value === modality.source)?.description}
           </p>
           <SourceHelp source={modality.source} settings={settings} />
         </div>
@@ -200,6 +232,12 @@ function Body({
                       {" "}
                       · {priceLabel(option.price)}
                     </span>
+                  ) : null}
+                  {/* The endpoint publishes no modality and this id merely looks
+                      like a media model — a caveat that belongs next to the
+                      choice, not only in the failure it might cause. */}
+                  {option.custom && !option.custom.declared ? (
+                    <span className="text-muted-foreground"> · by name</span>
                   ) : null}
                 </SelectItem>
               ))}
@@ -252,7 +290,12 @@ function SourceHelp({
       </p>
     )
   }
-  if (source === "laios" && !settings.laios_connected) {
+  if (source.startsWith("custom")) {
+    // Nothing to warn about — a custom provider exists by definition if it is in
+    // this list, and whether it *serves* media is what the reason line says.
+    return null
+  }
+  if (source.startsWith("laios") && !settings.laios_connected) {
     return (
       <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
         <Cpu className="mt-px h-3.5 w-3.5 shrink-0" />

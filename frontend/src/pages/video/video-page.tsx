@@ -9,6 +9,7 @@ import { isVideoActive, useVideoJobSync, useVideoJobs } from "@/api/videos"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
+import { isLaiosSource, pageMediaSource } from "@/lib/media-source"
 import {
   Select,
   SelectContent,
@@ -46,12 +47,8 @@ export function VideoPage({ embedded = false }: { embedded?: boolean } = {}) {
   // The page follows the configured source; Settings → Image & video is the one
   // place that choice is made. The history is unfiltered, so clips made under a
   // previous source stay visible.
-  const onLaios = (media?.video.source ?? "laios") === "laios"
-  const source = onLaios
-    ? connectionId
-      ? `laios:${connectionId}`
-      : undefined
-    : "openrouter"
+  const onLaios = isLaiosSource(media?.video.source)
+  const source = pageMediaSource(media?.video.source, connectionId)
 
   const { data: jobs } = useVideoJobs()
   useVideoJobSync(undefined, jobs)

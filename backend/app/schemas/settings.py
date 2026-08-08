@@ -192,10 +192,17 @@ class CompactionDefaultsUpdate(BaseModel):
     model: str | None = None
 
 
-# Where images and clips are generated. "laios" resolves across the connected
-# boxes; "openrouter" uses OpenRouter's media APIs. See ``app/media/refs.py`` for
-# the ref grammar that names a specific model within a source.
-MediaSource = Literal["laios", "openrouter"]
+# Where images and clips are generated: a **source ref**, not an enum. "laios"
+# resolves across the connected boxes (or "laios:{connection}" for one of them),
+# "openrouter" uses OpenRouter's media APIs, and "custom:{provider}" uses a
+# user-added OpenAI-compatible endpoint. See ``app/media/refs.py`` for the grammar,
+# which also names a specific model within a source.
+#
+# A plain ``str`` rather than a Literal because the custom form carries an id that
+# no enum can enumerate. Validation is not lost, only moved: ``set_media`` runs
+# every value through ``refs.parse_source`` and returns a 400 with the parser's own
+# sentence, which is a better message than Pydantic's "unexpected value" anyway.
+MediaSource = str
 
 
 class MediaModalityRead(BaseModel):
@@ -220,6 +227,16 @@ class MediaModalityRead(BaseModel):
     effective_model: str | None = None
 
 
+class MediaSourceOption(BaseModel):
+    """One custom provider, as the source picker lists it."""
+
+    # The source ref to save — ``custom:{id}``, already formatted, so the picker
+    # never assembles a ref itself.
+    ref: str
+    name: str
+    base_url: str
+
+
 class MediaSettingsRead(BaseModel):
     """Both modalities plus the context the UI needs to explain a dead option."""
 
@@ -228,6 +245,12 @@ class MediaSettingsRead(BaseModel):
     # So the section can say "add a key" rather than just "unavailable".
     openrouter_configured: bool = False
     laios_connected: bool = False
+    # Every user-added endpoint that could be a source. Listed whether or not it
+    # currently serves media — the same argument the card makes for not disabling
+    # OpenRouter without a key: being told what to do next beats a greyed-out row
+    # with no explanation. Deliberately *not* probed here, so opening Settings
+    # costs no round trip per provider; selecting one is what resolves it.
+    custom_providers: list[MediaSourceOption] = []
 
 
 class MediaSettingsUpdate(BaseModel):

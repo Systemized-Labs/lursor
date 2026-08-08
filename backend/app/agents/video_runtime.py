@@ -50,6 +50,11 @@ recipe has to opt into providing in its ``video_profile`` block. So the catalogu
 all of them, and there is nothing left to classify. What survives is the
 constraint discipline: a field the catalogue does not mention leaves that knob
 *unconstrained* rather than inheriting H3's number.
+
+**A custom provider is the third source** — a user-added OpenAI-compatible base URL
+(:class:`~app.db.models.CustomProvider`). It declares nothing either, and
+:func:`_resolve_custom` explains at length why it is driven anyway where an
+undeclared laios model is not.
 """
 
 from __future__ import annotations
@@ -64,8 +69,10 @@ from sqlmodel import select
 
 from app.api.laios import VideoServedModel, video_served_models
 from app.db.models import AppConfig, LaiosConnection
+from app.media import custom as custom_media
 from app.media import openrouter as openrouter_media
 from app.media import refs
+from app.media.custom import CustomMediaModel
 from app.media.history import observed_video_costs
 from app.media.openrouter import ORVideoModel, PriceQuote
 
@@ -168,6 +175,9 @@ class VideoRuntime:
     # The catalogue entry, on the OpenRouter path. Carries the bits that are not
     # constraints — passthrough parameter names, the label — for the tool menu.
     catalogue: ORVideoModel | None = None
+    # The classification, on the custom-provider path. Says whether the endpoint
+    # declared this model as a video model or we matched it by name.
+    custom: CustomMediaModel | None = None
 
     @property
     def ref(self) -> str:
@@ -175,11 +185,17 @@ class VideoRuntime:
 
     @property
     def label(self) -> str:
-        return self.catalogue.label if self.catalogue else self.model
+        if self.catalogue is not None:
+            return self.catalogue.label
+        return self.custom.label if self.custom else self.model
 
     @property
     def is_openrouter(self) -> bool:
         return self.provider == refs.OPENROUTER
+
+    @property
+    def is_custom(self) -> bool:
+        return self.provider == refs.CUSTOM
 
 
 def _range(profile: dict[str, Any], key: str) -> tuple[float, float] | None:
@@ -371,7 +387,141 @@ async def resolve_video_target(
 
     if source.is_openrouter:
         return await _resolve_openrouter(session, pinned)
+    if source.is_custom:
+        return await _resolve_custom(session, source.connection_id, pinned)
     return await _resolve_laios(session, source.connection_id, pinned)
+
+
+def constraints_unconstrained() -> VideoConstraints:
+    """Constraints for a model that declares nothing at all.
+
+    Every knob left open rather than filled with H3's numbers — the same discipline
+    :func:`constraints_from_profile` applies to a profile with gaps, applied to a
+    profile that does not exist. ``seconds_per_step=0`` means "no estimate", which
+    is the honest answer for hardware we have never measured.
+    """
+    return VideoConstraints(
+        short_edge=None,
+        aspect_ratios=(),
+        sizes={},
+        min_duration_seconds=0.0,
+        max_duration_seconds=float("inf"),
+        min_steps=1,
+        max_steps=1000,
+        seconds_per_step=0,
+        # ``sglang.video/v1`` carries a first frame (``input_reference``) and has no
+        # last-frame concept, which ``video_tools`` refuses by name rather than
+        # dropping.
+        keyframes=True,
+        # Unknown, so claimed as absent: ``view_video`` says plainly when it cannot
+        # judge audio, and asserting a track that is not there is the worse error.
+        emits_audio=False,
+    )
+
+
+async def _resolve_custom(
+    session: AsyncSession, provider_id: str, pinned: str | None
+) -> tuple[VideoRuntime | None, str]:
+    """A video model on a user-added OpenAI-compatible endpoint.
+
+    **The one place this source is less careful than laios, stated plainly.** The
+    laios path refuses to drive a model that does not declare its request shape,
+    because SGLang silently discards fields it does not recognise and returns a
+    wrong clip with HTTP 200. A custom provider cannot declare one either — there
+    is no ``video_profile`` on an OpenAI-compatible ``/models`` — so the choice was
+    between offering nothing at all and driving it as :data:`SCHEMA_SGLANG_VIDEO`,
+    which is the shape OpenAI's own ``/v1/videos`` and every SGLang-derived server
+    take (``model``/``prompt``/``seconds``/``size``).
+
+    It is offered, and the reason the laios argument does not carry over is *who
+    decided*. A box serves what it serves and the resolver picks from it; a custom
+    provider is a URL somebody typed in, pointed at a video API on purpose. The
+    equivalent of the missing declaration is that act. Every constraint is left
+    open (:func:`constraints_unconstrained`) so nothing is validated against
+    numbers that came from a different model, and the runtime carries the
+    classification so the tool menu and the picker can both say how this model was
+    identified.
+    """
+    providers = await custom_media.media_providers(session)
+    if provider_id:
+        providers = [p for p in providers if p.id == provider_id]
+        if not providers:
+            return None, (
+                f"the configured custom video provider {provider_id!r} no longer "
+                "exists — pick another in Settings → Image & video"
+            )
+    if not providers:
+        return None, (
+            "a custom provider is the configured video source, but none is "
+            "configured — add one in Settings → Providers"
+        )
+
+    runtimes: list[VideoRuntime] = []
+    no_route: list[str] = []
+    for provider in providers:
+        entry = await custom_media.catalogue(provider)
+        if custom_media.VIDEO in entry.missing_routes:
+            no_route.append(provider.name)
+        runtimes.extend(
+            VideoRuntime(
+                connection_id=provider.id,
+                connection_name=provider.name,
+                model=model.id,
+                request_schema=SCHEMA_SGLANG_VIDEO,
+                constraints=constraints_unconstrained(),
+                provider=refs.CUSTOM,
+                # Not "assumed" in laios's sense (which means the *request shape*
+                # was inferred from the model's identity); here the shape is the
+                # endpoint's own API and only the modality was matched by name.
+                assumed=not model.declared,
+                custom=model,
+            )
+            for model in entry.videos
+        )
+
+    if not runtimes:
+        if no_route:
+            return None, (
+                f"{', '.join(no_route)} does not serve a video API — its /videos "
+                "route answered 404. Point the provider at an OpenAI-compatible "
+                "video endpoint, or switch the source in Settings → Image & video"
+            )
+        names = ", ".join(p.name for p in providers)
+        return None, (
+            f"{names} is the configured video source, but none of its models is "
+            "one we can identify as a video model — add the model to the "
+            "provider's model list as 'video:<model-id>', or switch the source in "
+            "Settings → Image & video"
+        )
+
+    runtimes.sort(key=lambda r: (r.connection_name, r.model))
+    chosen = runtimes[0]
+    if pinned:
+        match = next((r for r in runtimes if r.ref == pinned), None)
+        if match is None:
+            return None, _pinned_missing(
+                pinned, refs.CUSTOM, [r.ref for r in runtimes]
+            )
+        chosen = replace(match, pinned=True)
+
+    logger.info(
+        "video tools resolved to %r on %r (%d model(s) available%s%s)",
+        chosen.model,
+        chosen.connection_name,
+        len(runtimes),
+        ", pinned" if chosen.pinned else "",
+        ", matched by name" if chosen.assumed else "",
+    )
+    how = (
+        "matched by name" if chosen.assumed else "declared by the endpoint"
+    )
+    reason = f"{chosen.model} on {chosen.connection_name}"
+    if chosen.pinned:
+        reason += " (pinned)"
+    reason += f" ({how}, driven as {SCHEMA_SGLANG_VIDEO})"
+    if len(runtimes) > 1:
+        reason += f" (+{len(runtimes) - 1} more)"
+    return chosen, reason
 
 
 async def _resolve_laios(

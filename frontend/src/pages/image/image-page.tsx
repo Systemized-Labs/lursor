@@ -9,6 +9,7 @@ import type { LaiosImageRun } from "@/api/types"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { DotGridLoader } from "@/components/ui/dot-grid-loader"
+import { isLaiosSource, pageMediaSource } from "@/lib/media-source"
 import {
   Select,
   SelectContent,
@@ -48,12 +49,8 @@ export function ImagePage({ embedded = false }: { embedded?: boolean } = {}) {
   // Settings → Image & video is the one place that choice is made, and a second
   // one here would mean an agent and the page could be generating on different
   // models with nothing saying so.
-  const onLaios = (media?.image.source ?? "laios") === "laios"
-  const source = onLaios
-    ? connectionId
-      ? `laios:${connectionId}`
-      : undefined
-    : "openrouter"
+  const onLaios = isLaiosSource(media?.image.source)
+  const source = pageMediaSource(media?.image.source, connectionId)
 
   // Unfiltered: history made under the previous source stays visible, because the
   // images are still on disk and a gallery that emptied itself on a settings

@@ -1282,8 +1282,8 @@ export interface LaiosVideoJob {
   /** Our row id. */
   id: string
   /** Which source produced it. Every row written before the setting is `laios`. */
-  provider: MediaSource
-  /** The box it ran on, or `""` when the source is not a box. */
+  provider: MediaProvider
+  /** The box or custom provider it ran on, or `""` on OpenRouter. */
   connection_id: string
   /** What the provider says it cost. Null on laios, which reports no price. */
   cost_usd: number | null
@@ -1319,17 +1319,28 @@ export interface LaiosVideoJob {
  * a checkbox that silently does nothing.
  */
 /**
- * Where images and clips are generated.
+ * Which kind of thing generated (or would generate) a piece of media.
  *
- * An app-wide choice, made in Settings → Image & video, not a per-agent or
- * per-run one. `laios` is a self-hosted box (billed in electricity), `openrouter`
- * is the hosted API (billed per image or per second).
+ * `laios` is a self-hosted box (billed in electricity), `openrouter` is the hosted
+ * API (billed per image or per second), `custom` is a user-added
+ * OpenAI-compatible endpoint (billed in whatever that endpoint bills in — usually
+ * nothing, since it is usually also your own hardware).
+ */
+export type MediaProvider = "laios" | "openrouter" | "custom"
+
+/**
+ * Where images and clips are generated — a **source ref**, not just a provider.
+ *
+ * An app-wide choice, made in Settings → Image & video, not a per-agent or per-run
+ * one. `"openrouter"`, `"laios"` / `"laios:{connection}"`, or
+ * `"custom:{provider}"`; see `app/media/refs.py` for the grammar. A plain string
+ * rather than a union because the custom form carries an id.
  *
  * The source **never falls back**: if the configured one cannot serve, generation
- * fails with a reason rather than quietly using the other. Every surface that can
+ * fails with a reason rather than quietly using another. Every surface that can
  * report "unavailable" therefore has to show the `reason` alongside it.
  */
-export type MediaSource = "laios" | "openrouter"
+export type MediaSource = string
 
 /** A rate, and what it is charged per. Null everywhere nothing is known. */
 export interface MediaPrice {
@@ -1347,14 +1358,17 @@ export interface MediaPrice {
   approximate: boolean
 }
 
-/** One image or video model, from either source, as the pickers render it. */
+/** One image or video model, from any source, as the pickers render it. */
 export interface MediaModelOption {
-  /** The stable id: `openrouter:{slug}` or `laios:{connection}:{served}`. */
+  /**
+   * The stable id: `openrouter:{slug}`, `laios:{connection}:{served}` or
+   * `custom:{provider}:{model}`.
+   */
   ref: string
   /** The bare name to put in a request's `model` field. */
   id: string
   label: string
-  provider: MediaSource
+  provider: MediaProvider
   note: string
   price: MediaPrice | null
   connection_name: string
@@ -1366,7 +1380,19 @@ export interface MediaModelOption {
     formats: string[]
     seed: boolean
   } | null
-  /** Present only for a laios image model — this build's own measurements. */
+  /**
+   * Present only for a custom-provider model — how it was identified.
+   *
+   * `declared: false` means the endpoint says nothing about which of its models
+   * generate images and the id merely *looks* like one, so the request may be
+   * rejected. Worth surfacing rather than folding into `note`: it is the one thing
+   * on this row that can be wrong about the model existing at all.
+   */
+  custom: { declared: boolean } | null
+  /**
+   * This build's own measurements. Present for a laios or custom-provider image
+   * model (neither endpoint publishes any), null for a hosted one.
+   */
   profile: {
     label: string
     default_steps: number
@@ -1382,7 +1408,7 @@ export interface MediaVideoModelOption {
   ref: string
   id: string
   label: string
-  provider: MediaSource
+  provider: MediaProvider
   note: string
   price: MediaPrice | null
   observed_cost: number | null
@@ -1395,11 +1421,14 @@ export interface MediaVideoModelOption {
   keyframes: boolean
   audio: boolean
   seed: boolean
+  /** Present only for a custom-provider model — see {@link MediaModelOption}. */
+  custom: { declared: boolean } | null
 }
 
 /** What `/media/{images,videos}/models` returns for one source. */
 export interface MediaModelList<T> {
-  source: MediaSource
+  /** Which kind of source answered — the bare provider, not the full ref. */
+  source: MediaProvider
   available: boolean
   /** Why not, when `available` is false. Always worth showing. */
   reason: string
@@ -1417,11 +1446,27 @@ export interface MediaModalitySettings {
   effective_model: string | null
 }
 
+/** One user-added endpoint the source picker can offer. */
+export interface MediaSourceOption {
+  /** The source ref to save — `custom:{id}`, already formatted. */
+  ref: string
+  name: string
+  base_url: string
+}
+
 export interface MediaSettings {
   image: MediaModalitySettings
   video: MediaModalitySettings
   openrouter_configured: boolean
   laios_connected: boolean
+  /**
+   * Every custom provider, listed whether or not it currently serves media.
+   *
+   * Same argument as not disabling OpenRouter without a key: being told what to do
+   * next beats a greyed-out row with no explanation, and the backend does not
+   * probe these on read, so listing them costs nothing.
+   */
+  custom_providers: MediaSourceOption[]
 }
 
 /** Partial: the image and video choices save independently. */
@@ -1435,7 +1480,7 @@ export interface MediaSettingsInput {
 export interface VideoCapability {
   available: boolean
   /** Which source resolved, or null when none could. */
-  source: MediaSource | null
+  source: MediaProvider | null
   /** Served name of the model that would be used, when one resolves. */
   model: string | null
   connection_name: string | null
@@ -1466,8 +1511,8 @@ export interface ImageCapability {
    * reads as broken rather than as a choice, because the source never falls back
    * to the other one.
    */
-  source: MediaSource | null
-  /** Served name (laios) or slug (OpenRouter) of the model that would be used. */
+  source: MediaProvider | null
+  /** Served name (laios/custom) or slug (OpenRouter) of the model used. */
   model: string | null
   connection_name: string | null
   /** Every serving image model, so the editor can say there is more than one. */
@@ -1533,8 +1578,8 @@ export interface LaiosImageRun {
   /** Our row id — what every route here is keyed by. */
   id: string
   /** Which source produced it. Every row written before the setting is `laios`. */
-  provider: MediaSource
-  /** The box it ran on, or `""` when the source is not a box. */
+  provider: MediaProvider
+  /** The box or custom provider it ran on, or `""` on OpenRouter. */
   connection_id: string
   /** What the provider says it cost. Null on laios, which reports no price. */
   cost_usd: number | null

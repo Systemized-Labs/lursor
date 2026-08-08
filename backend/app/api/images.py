@@ -8,11 +8,13 @@ cancel. An image is one call that returns the pixels, in ~6.5 s for
 passes). There is no upstream job id to bind, nothing to poll, and nothing to
 cancel.
 
-**That is true of both sources**, which is the whole reason adding OpenRouter here
-cost one branch rather than an architecture. ``POST /images`` returns base64 bytes
-and a price; the laios gateway returns base64 bytes and a timing. Everything below
+**That is true of all three sources**, which is the whole reason adding OpenRouter
+— and later a custom provider — cost one branch each rather than an architecture.
+``POST /images`` returns base64 bytes and a price; a laios gateway and a user-added
+OpenAI-compatible endpoint both return base64 bytes and a timing. Everything below
 — who waits, orphan reaping, sniffing the mime off the bytes, the media store — is
-already right for both, and the branch lives in :func:`_generate` alone.
+already right for all of them, and the branch lives in :func:`_run_generation`'s
+three-way dispatch alone.
 
 Routes are keyed on a **source ref** rather than a laios connection id (see
 ``app/media/refs.py``), because an OpenRouter generation has no connection to be
@@ -66,6 +68,7 @@ from app.api.laios import gateway_base, load_connection
 from app.api.videos import gateway_error_detail
 from app.db.models import ImageGeneration, LaiosConnection
 from app.db.session import async_session_factory, get_session
+from app.media import custom as custom_media
 from app.media import openrouter as openrouter_media
 from app.media import refs
 
@@ -141,11 +144,13 @@ async def list_image_models(
 ):
     """Every image model the given source offers, priced where a price is known.
 
-    One shape for both sources, so the Settings picker and the Image page need no
-    branch: ``profile`` carries this build's measurements for a laios model and is
-    null for a hosted one, ``openrouter`` carries the catalogue's parameter lists
-    and is null for a box. The join that decides which served models count as
-    image models happens server-side (``laios.image_served_models``).
+    One shape for all three sources, so the Settings picker and the Image page need
+    no branch: ``profile`` carries this build's measurements for a laios or custom
+    model and is null for a hosted one, ``openrouter`` carries the catalogue's
+    parameter lists and is null otherwise, and ``custom`` carries how a
+    custom-provider model was identified and is null otherwise. The join that
+    decides which served models count as image models happens server-side
+    (``laios.image_served_models``, ``media/custom.py``).
 
     ``source`` defaults to the configured one, so the page can ask without knowing
     what is selected.
@@ -189,6 +194,7 @@ async def list_image_models(
                 }
                 if m.catalogue
                 else None,
+                "custom": {"declared": m.custom.declared} if m.custom else None,
                 "profile": {
                     "label": m.profile.label,
                     "default_steps": m.profile.default_steps,
@@ -394,17 +400,22 @@ async def create_image(
                 "no OpenRouter API key is set — add one in Settings → Providers",
             )
     else:
-        # ``response_format``/``n`` are laios-only: OpenRouter always returns one
-        # base64 image and rejects fields it does not know.
+        # ``response_format``/``n`` belong to the OpenAI-compatible surface that
+        # laios and a custom provider share; OpenRouter always returns one base64
+        # image and rejects fields it does not know.
         request["response_format"] = "b64_json"
         request["n"] = 1
-        connection_id = source.connection_id or await _only_connection(session)
-        conn = await load_connection(connection_id, session)
-        if not await gateway_base(conn):
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "connection has no usable base URL for its inference gateway",
-            )
+        if source.is_custom:
+            connection_id = source.connection_id or await _only_provider(session)
+            await custom_media.load_provider(session, connection_id)
+        else:
+            connection_id = source.connection_id or await _only_connection(session)
+            conn = await load_connection(connection_id, session)
+            if not await gateway_base(conn):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "connection has no usable base URL for its inference gateway",
+                )
 
     row = ImageGeneration(
         provider=source.provider,
@@ -462,6 +473,22 @@ async def _only_connection(session: AsyncSession) -> str:
     return connections[0].id
 
 
+async def _only_provider(session: AsyncSession) -> str:
+    """The custom provider a bare ``custom`` source means, when there is one."""
+    providers = await custom_media.media_providers(session)
+    if not providers:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "no custom provider is configured"
+        )
+    if len(providers) > 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "several custom providers are configured — name one, as "
+            f"'custom:{providers[0].id}'",
+        )
+    return providers[0].id
+
+
 async def _run_generation(
     run_id: str, provider: str, cid: str, request: dict[str, Any]
 ) -> None:
@@ -477,6 +504,8 @@ async def _run_generation(
             try:
                 if provider == refs.OPENROUTER:
                     await _generate_openrouter(run_id, request, session)
+                elif provider == refs.CUSTOM:
+                    await _generate_custom(run_id, cid, request, session)
                 else:
                     await _generate(run_id, cid, request, session)
             except asyncio.CancelledError:
@@ -530,6 +559,121 @@ async def _generate_openrouter(
     row.status = "completed"
     row.media_id = media_id
     row.cost_usd = result.cost_usd
+    session.add(row)
+    await session.commit()
+
+
+async def _generate_custom(
+    run_id: str, provider_id: str, request: dict[str, Any], session: AsyncSession
+) -> None:
+    """The custom-provider path: the same OpenAI call, a different origin.
+
+    Deliberately not folded into :func:`_generate` despite sharing its request. The
+    ``url`` fallback is where they part: laios answers with a *relative*
+    ``/v1/images/{id}/content`` that only its own gateway can resolve, while a
+    third-party endpoint that returns a URL returns an absolute one nobody should
+    assume is on the same host. Merging them would mean one function guessing which
+    kind of URL it was holding, and guessing wrong is a request sent somewhere the
+    user did not configure.
+    """
+    provider = await custom_media.load_provider(session, provider_id)
+    try:
+        async with custom_media.image_client(provider) as client:
+            resp = await client.post("/images/generations", json=request)
+    except httpx.TimeoutException:
+        await _fail(
+            run_id,
+            session,
+            f"the generation timed out waiting on {provider.name}. A diffusion "
+            "model can take minutes — try fewer steps, or a smaller size.",
+        )
+        return
+    except httpx.RequestError as exc:
+        logger.warning("custom provider %r unreachable: %s", provider.name, exc)
+        await _fail(
+            run_id,
+            session,
+            f"could not reach {provider.name} at {custom_media.base_url(provider)}",
+        )
+        return
+
+    if resp.status_code >= 400:
+        await _fail(run_id, session, gateway_error_detail(resp))
+        return
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        await _fail(run_id, session, f"{provider.name} returned a non-JSON response")
+        return
+    if not isinstance(payload, dict):
+        await _fail(
+            run_id, session, f"{provider.name} returned an unexpected response shape"
+        )
+        return
+
+    entries = payload.get("data")
+    entry = entries[0] if isinstance(entries, list) and entries else None
+    if not isinstance(entry, dict):
+        await _fail(run_id, session, f"{provider.name} returned no image")
+        return
+
+    b64 = entry.get("b64_json")
+    if isinstance(b64, str) and b64:
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except (ValueError, TypeError):
+            await _fail(
+                run_id,
+                session,
+                f"{provider.name} returned a b64_json payload that would not decode",
+            )
+            return
+    else:
+        url = str(entry.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            await _fail(
+                run_id,
+                session,
+                f"{provider.name} returned neither image data nor an absolute URL "
+                "to fetch it from — it may not honour response_format=b64_json",
+            )
+            return
+        # The provider's key rides along only when the URL is on the provider's own
+        # origin. A self-hosted server usually returns one and needs the header;
+        # a hosted one may hand back a pre-signed URL on a CDN, and sending
+        # someone's API key to whatever host an upstream names is not a thing to do
+        # on the upstream's say-so.
+        try:
+            async with custom_media.download_client(
+                provider, url, timeout=_CONTENT_TIMEOUT
+            ) as client:
+                fetched = await client.get(url)
+        except (httpx.TimeoutException, httpx.RequestError):
+            await _fail(
+                run_id,
+                session,
+                "the image was generated but downloading it from "
+                f"{provider.name} failed",
+            )
+            return
+        if fetched.status_code >= 400:
+            await _fail(run_id, session, gateway_error_detail(fetched))
+            return
+        data = fetched.content
+
+    try:
+        media_id = media_store.save_generated_image(data, _sniff_mime(data, request))
+    except ValueError as exc:
+        await _fail(run_id, session, str(exc))
+        return
+
+    row = await _row(run_id, session)
+    row.status = "completed"
+    row.media_id = media_id
+    row.upstream_id = str(payload.get("id") or "") or None
+    row.inference_time_s = _as_float(payload.get("inference_time_s"))
+    row.peak_memory_mb = _as_float(payload.get("peak_memory_mb"))
     session.add(row)
     await session.commit()
 
