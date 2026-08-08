@@ -7,7 +7,7 @@
 // `window.electron`, and the connection picker (electron/connect.html) gets
 // `window.lursorConnect`. Each ignores the other's.
 
-const { contextBridge, ipcRenderer } = require("electron")
+const { contextBridge, ipcRenderer, webUtils } = require("electron")
 
 // The active connection is read *synchronously*, because `api/client.ts` resolves
 // `API_BASE` and `AUTH_TOKEN` at module scope — the first request can be in flight
@@ -33,6 +33,21 @@ contextBridge.exposeInMainWorld("electron", {
   // Forward a port on the backend host to 127.0.0.1 here, resolving to the local
   // port it landed on. Null in local mode, where the port is already local.
   forwardPort: (port) => ipcRenderer.invoke("forward:open", port),
+  // Hand a workspace file to the OS as a real file drag, so it can be dropped into
+  // Finder or another app. Only main can do this (webContents.startDrag), so the
+  // renderer cancels its own HTML drag and calls this instead.
+  startFileDrag: (item) => ipcRenderer.invoke("file:drag", item),
+  // The on-disk path of a dropped File. Electron removed `File.path` in v32, and
+  // webUtils is the sanctioned replacement — it has to be called here, in the
+  // preload, because the renderer has no access to it. Lets a drop tell a file that
+  // is *already in the workspace* from one arriving off the desktop.
+  filePath: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || null
+    } catch {
+      return null
+    }
+  },
 
   // --- Desktop updates ---
   // The offer lives in the React app rather than in a native dialog, so main has to

@@ -6,7 +6,8 @@ Python interpreter and starts/stops the FastAPI server itself. In **development*
 it runs the backend from source via `uv` and loads the Vite dev server.
 
 It can also run as a **thin client** against a backend on another machine, in which
-case it spawns nothing. See [REMOTE.md](REMOTE.md) for the user-facing side.
+case it spawns nothing — and leaves any local backend it already started running.
+See [REMOTE.md](REMOTE.md) for the user-facing side.
 
 ## Connections
 
@@ -31,7 +32,9 @@ to talk to, which is the same reason the splash and error screens are `data:` UR
 On launch (`electron/main.cjs`):
 
 1. Create the window, showing the splash, and resolve the connection.
-2. **Local**: pick a port (prefers `8791`, ephemeral if taken) and spawn the backend:
+2. **Local**: reattach to the backend this process already started, if there is one
+   (see step 7); otherwise pick a port (prefers `8791`, ephemeral if taken) and spawn
+   it:
    - **Packaged**: `<Resources>/backend/python/bin/python -m uvicorn app.main:app`,
      with `LURSOR_DATA_DIR=~/.lursor` so all writable state stays out of the
      read-only app bundle.
@@ -59,6 +62,15 @@ On launch (`electron/main.cjs`):
 6. The backend is spawned in its own process group and killed on quit
    (`before-quit`/`will-quit`), along with any open port forwards. A single-instance
    lock prevents port clashes.
+7. **Switching connections does not stop a local backend.** `releaseConnection()`
+   closes the forwards and the header injection and nothing else: killing the backend
+   would end every agent run, dev server and terminal on this machine because the user
+   looked at another one. So the process outlives the switch, and coming back to
+   `This Mac` reattaches on the port it is still listening on — tracked in
+   `backendPort` — rather than spawning a second backend on a second port against the
+   same SQLite database. If the reattach health check fails (it died or wedged while
+   we were away) the process is killed and replaced. The same path covers the macOS
+   `activate` reopen, which used to spawn a duplicate.
 
 ## Port forwarding
 
@@ -72,6 +84,32 @@ paths and their own HMR sockets — a path-prefixed proxy means rewriting HTML, 
 socket payloads per framework. Keeping the port number identical also keeps the
 address the dev server printed the address that works.
 
+## Dragging files out
+
+A row in the file explorer can be dragged out of the window into Finder, an editor
+or a chat box. Only `webContents.startDrag` can promise a *file* to the OS, and it
+lives in main, so the renderer cancels its own HTML drag and hands the item over
+(`file:drag`, called through `window.electron.startFileDrag`) — see
+`src/lib/file-drag-out.ts`.
+
+On a local connection the dragged file is the workspace path itself. On a remote one
+that path is on the other machine, so main downloads the bytes into a temp copy
+first (with the bearer token) and drags that; the staging dir is removed on quit.
+The path is trusted *only* when the connection is local — two machines with the same
+checkout at the same path would otherwise hand the drop target the wrong file.
+Folders can't cross a remote connection, and a staged file is capped at 64 MB: the
+drag has to become a file while the mouse is still down.
+
+In a plain browser there is no native drag, so the same helper falls back to
+Chromium's `DownloadURL` promise (Finder accepts it; the backend serves the bytes on
+drop) plus the path as `text/plain`.
+
+Dropping files *in* needs one thing from main as well: `window.electron.filePath(file)`
+(`webUtils.getPathForFile`, since Electron 32 removed `File.path`). It answers whether
+a dropped file is already inside the workspace, which is what makes that drop a move
+instead of an upload of a second copy. Deliberately inert on a remote connection —
+there the paths are this machine's and the workspace is on another.
+
 ## Layout
 
 ```
@@ -79,7 +117,8 @@ frontend/
   electron/
     main.cjs           Main process: connection bootstrap, backend lifecycle
                        (spawn/health/teardown), window, splash/error screens,
-                       auth-header injection, menu, single-instance lock.
+                       auth-header injection, file drag-out, menu,
+                       single-instance lock.
     connections.cjs    Saved connections: read/write, token encryption, URL rules.
     connect.html       The connection picker (plain HTML — runs before any backend).
     port-forward.cjs   Local TCP listeners piped to /api/tunnel on a remote backend.

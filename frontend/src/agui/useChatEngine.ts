@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useRef } from "react"
 import { HttpAgent, type Message, randomUUID } from "@ag-ui/client"
 
 import type {
@@ -250,30 +250,51 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
     return currentAssistantId.current
   }, [])
 
-  // Single place the AG-UI events touch the store; both transports use it.
-  const handlers = useMemo<ChatEventHandlers>(() => {
-    const s = () => store.getState()
-    return {
-      onTextStart: (messageId) => s().upsertAssistant(resolveAssistantId(messageId)),
-      onTextContent: (messageId, content) =>
-        s().setContent(resolveAssistantId(messageId), content),
-      onReasoning: (messageId, content) =>
-        s().setReasoning(resolveAssistantId(messageId), content),
-      onReasoningEnd: (messageId) => s().finishReasoning(messageId),
-      onToolStart: (parentMessageId, toolCallId, toolName) =>
-        s().addToolCall(resolveAssistantId(parentMessageId), {
-          id: toolCallId,
-          name: toolName,
-          args: "",
-        }),
-      onToolArgs: (toolCallId, args) => s().setToolArgs(toolCallId, args),
-      onToolResult: (toolCallId, result) => s().setToolResult(toolCallId, result),
-      onTodos: (next) => s().setTodos(next),
-      onGoalStatus: (next) => s().setGoalStatus(next),
-      onAssistantConfirm: (next) => s().setConfirm(next),
-      onError: (message) => s().setError(message),
-    }
-  }, [store, resolveAssistantId])
+  /**
+   * Single place the AG-UI events touch the store; both transports use it.
+   *
+   * Scoped to the thread the stream belongs to, and every write goes through `s()`,
+   * which returns the store only while that thread is still the open one. A run does
+   * not stop the instant the surface leaves it — `abortRun`/`abort` take effect
+   * asynchronously and the reader may already hold decoded events — so an unscoped
+   * handler kept writing the old run's events into whatever conversation was open
+   * next. Starting a new chat mid-run was where it showed: the fresh, cleared
+   * conversation inherited the previous run's todo deck (and its assistant text) a
+   * beat after `startNewConversation` wiped it.
+   *
+   * Optional chaining does the guarding: `s()?.setX(resolveAssistantId(id))`
+   * short-circuits the whole call, arguments included, so a stale event can't even
+   * claim an assistant id.
+   */
+  const makeHandlers = useCallback(
+    (threadId: string | null): ChatEventHandlers => {
+      const s = () => {
+        const state = store.getState()
+        return state.selectedThreadId === threadId ? state : null
+      }
+      return {
+        onTextStart: (messageId) => s()?.upsertAssistant(resolveAssistantId(messageId)),
+        onTextContent: (messageId, content) =>
+          s()?.setContent(resolveAssistantId(messageId), content),
+        onReasoning: (messageId, content) =>
+          s()?.setReasoning(resolveAssistantId(messageId), content),
+        onReasoningEnd: (messageId) => s()?.finishReasoning(messageId),
+        onToolStart: (parentMessageId, toolCallId, toolName) =>
+          s()?.addToolCall(resolveAssistantId(parentMessageId), {
+            id: toolCallId,
+            name: toolName,
+            args: "",
+          }),
+        onToolArgs: (toolCallId, args) => s()?.setToolArgs(toolCallId, args),
+        onToolResult: (toolCallId, result) => s()?.setToolResult(toolCallId, result),
+        onTodos: (next) => s()?.setTodos(next),
+        onGoalStatus: (next) => s()?.setGoalStatus(next),
+        onAssistantConfirm: (next) => s()?.setConfirm(next),
+        onError: (message) => s()?.setError(message),
+      }
+    },
+    [store, resolveAssistantId]
+  )
 
   const abortLocalStreams = useCallback(() => {
     agentRef.current?.abortRun()
@@ -293,9 +314,12 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
       currentAssistantId.current = null
       store.getState().setIsStreaming(true)
 
-      consumeThreadStream(threadId, handlers, controller.signal)
+      consumeThreadStream(threadId, makeHandlers(threadId), controller.signal)
         .catch((err: unknown) => {
           if (isAbortError(err)) return
+          // Same ownership rule as the events: a reconnect that fails after the
+          // surface moved on has no conversation left to report it to.
+          if (store.getState().selectedThreadId !== threadId) return
           store.getState().setError(err instanceof Error ? err.message : "Reconnect failed")
         })
         .finally(() => {
@@ -308,7 +332,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
           drainQueue()
         })
     },
-    [store, handlers, drainQueue]
+    [store, makeHandlers, drainQueue]
   )
 
   const loadConversation = useCallback(
@@ -447,6 +471,10 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
         agentThreadRef.current = threadId
       }
       const agent = agentRef.current
+      // Bound to this turn's thread: once the surface leaves it (a new chat, a
+      // switch to another conversation), the events this run is still emitting stop
+      // reaching the store. See `makeHandlers`.
+      const handlers = makeHandlers(threadId)
       // Seed the transport with the current history, then append the new turn.
       agent.setMessages(toAgentMessages(selectMessages(store.getState())))
 
@@ -560,7 +588,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
         drainQueue()
       }
     },
-    [store, handlers, drainQueue]
+    [store, makeHandlers, drainQueue]
   )
   performSendRef.current = performSend
 

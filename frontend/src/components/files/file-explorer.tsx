@@ -24,7 +24,7 @@ import {
 import { toast } from "sonner"
 
 import { filesApi, useDirectory } from "@/api/files"
-import type { DirEntry } from "@/api/files"
+import type { DirEntry, UploadEntry } from "@/api/files"
 import { gitKeys, useGitStatus } from "@/api/git"
 import { useWorkspace } from "@/api/workspaces"
 import { ApiError } from "@/api/client"
@@ -54,6 +54,14 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { startFileDragOut, takeOutgoingDrag } from "@/lib/file-drag-out"
+import {
+  collectDroppedFiles,
+  droppedPaths,
+  hasFiles,
+  hasTreeItem,
+  readTreeItem,
+} from "@/lib/file-drop-in"
 import { requestOpenPreview } from "@/lib/open-preview"
 import { cn, copyToClipboard } from "@/lib/utils"
 
@@ -122,6 +130,64 @@ function isHtmlFile(name: string): boolean {
   return /\.x?html?$/i.test(name)
 }
 
+/**
+ * The folder a drop on `target` lands in.
+ *
+ * A folder row takes the drop itself; a file row passes it to the folder it lives in
+ * (dropping *onto* a file has no meaning, and refusing the drop would just make the
+ * gaps between folders dead). Anything else is the empty area, which stands for the
+ * workspace root here exactly as it does for the root context menu.
+ */
+function dropDestination(target: EventTarget | null): string {
+  const row = target instanceof Element ? target.closest("[data-tree-path]") : null
+  if (!row) return ""
+  const path = row.getAttribute("data-tree-path") ?? ""
+  return row.getAttribute("data-tree-dir") === "true" ? path : parentOf(path)
+}
+
+/**
+ * The dropped paths as workspace-relative ones, or null if this isn't a drop of
+ * files that already live in the workspace.
+ *
+ * All or nothing on purpose: a mixed drop of inside and outside files has no single
+ * answer — half a move and half an upload is not a thing anyone dragged for — so it
+ * is treated as the upload it mostly is.
+ */
+function insideWorkspace(root: string, paths: string[]): string[] | null {
+  if (!root || paths.length === 0) return null
+  const base = `${root.replace(/\/+$/, "")}/`
+  const relative: string[] = []
+  for (const absolute of paths) {
+    if (!absolute.startsWith(base)) return null
+    const rel = absolute.slice(base.length)
+    if (!rel) return null
+    relative.push(rel)
+  }
+  return relative
+}
+
+/**
+ * What stands in the way of moving `item` into `dest`: a message to show, the
+ * sentinel `"already"` for a row dropped back where it started, or null to go ahead.
+ */
+function moveBlocker(item: { path: string; isDir: boolean }, dest: string): string | null {
+  if (parentOf(item.path) === dest) return "already"
+  // Moving a folder inside itself would move the destination along with it.
+  if (item.isDir && (dest === item.path || dest.startsWith(`${item.path}/`))) {
+    return "A folder can’t be moved inside itself."
+  }
+  return null
+}
+
+/** An upload waiting on an answer about the names it would overwrite. */
+interface PendingUpload {
+  /** Destination folder, "" for the workspace root. */
+  destPath: string
+  items: UploadEntry[]
+  /** Existing names in the destination the drop would write over. */
+  clashes: string[]
+}
+
 interface FileExplorerProps {
   workspaceId: string
   /** Currently active file path, highlighted in the tree. */
@@ -143,6 +209,18 @@ interface ExplorerContextValue {
   requestDelete: (entry: DirEntry) => void
   /** Put a row's absolute on-disk path on the clipboard. */
   copyPath: (path: string) => Promise<void>
+  /**
+   * The workspace's root on the backend host, or "" until it has loaded. Rows need
+   * it to name themselves absolutely — for the clipboard, and for a drag out of the
+   * window (see {@link startFileDragOut}).
+   */
+  workspaceRoot: string
+  /**
+   * The folder a drag is hovering ("" for the root), or null when nothing is being
+   * dragged. Rows read it to draw the drop highlight; the drop itself is handled once
+   * for the whole tree.
+   */
+  dropTarget: string | null
   /** Git state per row; every row is clean outside a repo. */
   gitStatus: GitStatusIndex
 }
@@ -193,6 +271,10 @@ export function FileExplorer({
   // in a ref between the menu click and the resulting `change` event.
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const uploadTarget = useRef<string>("")
+  // The folder a drag is currently over ("" for the root), or null when nothing is
+  // being dragged across the panel. Drives the drop highlight.
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null)
 
   const invalidateTree = useCallback(
     () => qc.invalidateQueries({ queryKey: ["files", workspaceId, "dir"] }),
@@ -278,8 +360,8 @@ export function FileExplorer({
   })
 
   const uploadMut = useMutation({
-    mutationFn: ({ parentPath, files }: { parentPath: string; files: File[] }) =>
-      filesApi.upload(workspaceId, parentPath, files),
+    mutationFn: ({ parentPath, items }: { parentPath: string; items: UploadEntry[] }) =>
+      filesApi.upload(workspaceId, parentPath, items),
     onSuccess: (entries, vars) => {
       void invalidateTree()
       if (vars.parentPath) expand(vars.parentPath)
@@ -292,8 +374,13 @@ export function FileExplorer({
   const renameMut = useMutation({
     mutationFn: ({ path, newPath }: { path: string; newPath: string }) =>
       filesApi.rename(workspaceId, path, newPath),
-    onSuccess: () => void invalidateTree(),
-    onError: (err) => toast.error(errMessage(err, "Could not rename")),
+    // Expanding the destination matters for a move, and costs nothing for a rename
+    // in place — a row you could rename was in an expanded folder already.
+    onSuccess: (entry) => {
+      void invalidateTree()
+      expand(parentOf(entry.path))
+    },
+    onError: (err) => toast.error(errMessage(err, "Could not move or rename")),
   })
 
   const deleteMut = useMutation({
@@ -322,6 +409,134 @@ export function FileExplorer({
     [pending, createMut, renameMut]
   )
 
+  /**
+   * Upload `items` into `destPath`, asking first about anything they'd write over.
+   *
+   * The upload endpoint overwrites by name without comment, which is the right
+   * behaviour for a deliberate "Upload files" but a bad one for a drop: a row
+   * missed by a few pixels shouldn't silently replace a file. So the destination is
+   * listed first and any collision becomes a question. A listing that fails is *not*
+   * treated as a collision — the server is the authority on what it holds, and
+   * refusing the drop because a pre-check broke would be a worse answer than the
+   * upload's own.
+   */
+  const startUpload = useCallback(
+    async (destPath: string, items: UploadEntry[]) => {
+      if (items.length === 0) return
+      // Only the first segment can collide: deeper names live inside a folder this
+      // drop is creating or merging into.
+      const incoming = new Set(
+        items.map((item) => (item.path || item.file.name).split("/")[0])
+      )
+      let clashes: string[] = []
+      try {
+        const existing = await filesApi.list(workspaceId, destPath)
+        clashes = existing.filter((e) => incoming.has(e.name)).map((e) => e.name)
+      } catch {
+        /* Nothing known to overwrite; let the upload be the answer. */
+      }
+      if (clashes.length > 0) {
+        setPendingUpload({ destPath, items, clashes })
+        return
+      }
+      uploadMut.mutate({ parentPath: destPath, items })
+    },
+    [workspaceId, uploadMut]
+  )
+
+  /**
+   * Move a row into `destPath` — a drop that started inside the tree, or one whose
+   * files were already in this workspace to begin with.
+   *
+   * A move rather than a copy because the file is the *same* file: uploading it back
+   * into a folder next door would leave two of it, which is not what dragging a row
+   * onto a folder has ever meant. Rename refuses to overwrite (409), so a name
+   * already taken in the destination surfaces as an error instead of a loss.
+   */
+  const moveInto = useCallback(
+    (items: { path: string; name: string; isDir: boolean }[], destPath: string) => {
+      for (const item of items) {
+        const blocker = moveBlocker(item, destPath)
+        // "already" is the common near-miss — dropping a row back on its own folder.
+        // Nothing to do and nothing worth saying.
+        if (blocker === "already") continue
+        if (blocker) {
+          toast.error(blocker)
+          continue
+        }
+        renameMut.mutate({
+          path: item.path,
+          newPath: joinPath(destPath, item.name),
+        })
+      }
+    },
+    [renameMut]
+  )
+
+  /**
+   * Take a drop on the tree: a row from inside it, files that already live in the
+   * workspace, or files from outside.
+   *
+   * Order matters, and so does doing the synchronous reads first: `dataTransfer`'s
+   * item list dies with the event, so the entry walk has to be *started* here even
+   * though it finishes later.
+   */
+  const handleDrop = useCallback(
+    (event: React.DragEvent) => {
+      const destPath = dropDestination(event.target)
+      setDropTarget(null)
+      const data = event.dataTransfer
+
+      // A row of ours, by either of the two ways one can identify itself: the marker
+      // a browser drag carries, or — for a desktop drag, which has no marker because
+      // it cancelled its own HTML drag — the record of what this window just started
+      // dragging, matched against what arrived.
+      const names = hasFiles(data) ? Array.from(data.files).map((f) => f.name) : []
+      const dragged = readTreeItem(data) ?? (names.length ? takeOutgoingDrag(names) : null)
+      if (dragged) {
+        event.preventDefault()
+        // Two explorers can be open on two workspaces. A row dragged between them
+        // isn't a move — there is no path from one root to the other — and silence
+        // would read as a bug rather than as a refusal.
+        if (dragged.workspaceId !== workspaceId) {
+          toast.error("A file can only be moved within its own workspace.")
+          return
+        }
+        moveInto([dragged], destPath)
+        return
+      }
+
+      if (names.length === 0) return
+      event.preventDefault()
+
+      const internal = insideWorkspace(workspaceRoot, droppedPaths(data))
+      if (internal) {
+        moveInto(
+          internal.map((rel) => ({
+            path: rel,
+            name: rel.slice(rel.lastIndexOf("/") + 1),
+            // A path alone doesn't say which it is, so assume the case with a rule:
+            // only a folder can swallow its own destination. Harmless for a file,
+            // whose path can never be a prefix of a real folder's.
+            isDir: true,
+          })),
+          destPath
+        )
+        return
+      }
+
+      const collecting = collectDroppedFiles(data)
+      void collecting.then(({ items, error }) => {
+        if (error) {
+          toast.error(error)
+          return
+        }
+        void startUpload(destPath, items)
+      })
+    },
+    [workspaceId, workspaceRoot, moveInto, startUpload]
+  )
+
   const ctx: ExplorerContextValue = {
     workspaceId,
     activePath,
@@ -333,6 +548,8 @@ export function FileExplorer({
     requestRename,
     requestDelete,
     copyPath,
+    workspaceRoot,
+    dropTarget,
     gitStatus,
   }
 
@@ -340,7 +557,37 @@ export function FileExplorer({
     <ExplorerContext.Provider value={ctx}>
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <div className="flex-1 min-h-0 overflow-auto py-1 text-sm">
+          {/* One drop surface for the whole tree, rather than a handler per row:
+              dragover bubbles, so the row under the cursor is a `closest` away, and
+              the empty space below the last row stays a target for the root instead
+              of a dead strip. */}
+          <div
+            className={cn(
+              "flex-1 min-h-0 overflow-auto py-1 text-sm",
+              // The root's own highlight — an inset ring, so it can't be mistaken
+              // for a row's fill.
+              dropTarget === "" && "ring-1 ring-inset ring-primary/40 bg-accent/20"
+            )}
+            onDragOver={(event) => {
+              const data = event.dataTransfer
+              const ours = hasTreeItem(data)
+              if (!ours && !hasFiles(data)) return
+              // Without this the browser refuses the drop and falls back to opening
+              // the file it was handed.
+              event.preventDefault()
+              data.dropEffect = ours ? "move" : "copy"
+              setDropTarget(dropDestination(event.target))
+            }}
+            onDragLeave={(event) => {
+              // dragleave fires on every child crossed on the way in, so only a
+              // departure from the panel itself clears the highlight.
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                return
+              }
+              setDropTarget(null)
+            }}
+            onDrop={handleDrop}
+          >
             <DirectoryChildren path="" depth={0} />
           </div>
         </ContextMenuTrigger>
@@ -375,8 +622,13 @@ export function FileExplorer({
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? [])
+          // Same route as a drop, so a picked file that would overwrite something
+          // asks the same question a dropped one does.
           if (files.length) {
-            uploadMut.mutate({ parentPath: uploadTarget.current, files })
+            void startUpload(
+              uploadTarget.current,
+              files.map((file) => ({ file }))
+            )
           }
         }}
       />
@@ -394,6 +646,20 @@ export function FileExplorer({
         onConfirm={() => {
           if (toDelete) deleteMut.mutate(toDelete.path)
           setToDelete(null)
+        }}
+      />
+
+      <OverwriteDialog
+        upload={pendingUpload}
+        onOpenChange={(open) => !open && setPendingUpload(null)}
+        onConfirm={() => {
+          if (pendingUpload) {
+            uploadMut.mutate({
+              parentPath: pendingUpload.destPath,
+              items: pendingUpload.items,
+            })
+          }
+          setPendingUpload(null)
         }}
       />
     </ExplorerContext.Provider>
@@ -540,6 +806,8 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
     requestRename,
     requestDelete,
     copyPath,
+    workspaceRoot,
+    dropTarget,
     gitStatus,
   } = useExplorer()
   // Open state is tracked so the skill scan only runs for a folder someone has
@@ -557,6 +825,9 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
   const linked = Boolean(entry.link_target)
   const decoration = gitStatus.forPath(entry.path, entry.is_dir)
   const git = decoration ? GIT_DECOR[decoration] : null
+  // Only a folder can *be* a destination: a drag over a file targets the folder it
+  // sits in, and highlighting the file would point at the wrong row.
+  const isDropTarget = entry.is_dir && dropTarget === entry.path
   // One tooltip, assembled from whatever this row has to say — the name always,
   // then where a link points and what git makes of it.
   const rowTitle = [
@@ -576,6 +847,25 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
             onClick={() =>
               entry.is_dir ? toggle(entry.path) : onOpenFile(entry.path, entry.name)
             }
+            // Rows leave the window as real files: in the desktop app the drag is
+            // handed to the main process, in a browser it goes out as a download
+            // promise plus the path as text. Nothing in the tree reorders, so a row
+            // being draggable can only mean "out".
+            draggable
+            onDragStart={(event) =>
+              startFileDragOut(event, {
+                workspaceId,
+                path: entry.path,
+                name: entry.name,
+                isDir: entry.is_dir,
+                absPath: workspaceRoot ? absolutePath(workspaceRoot, entry.path) : "",
+              })
+            }
+            // Read back by the tree's one drop handler to find the folder under the
+            // cursor. On the row itself rather than in React state because a
+            // `dragover` has no other way to ask which row it is over.
+            data-tree-path={entry.path}
+            data-tree-dir={entry.is_dir}
             style={{ paddingLeft }}
             aria-expanded={entry.is_dir ? expanded : undefined}
             title={rowTitle}
@@ -584,7 +874,10 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
               "focus-visible:bg-accent/60 focus-visible:text-foreground",
               isActive
                 ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+              // Where a drop would land. Beats the active row's fill on purpose:
+              // during a drag the only question is where this is going.
+              isDropTarget && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/50"
             )}
           >
             {/* Active rail — the shared "you are here" marker. */}
@@ -832,6 +1125,54 @@ function DeleteDialog({ entry, pending, onOpenChange, onConfirm }: DeleteDialogP
     </Dialog>
   )
 }
+
+interface OverwriteDialogProps {
+  upload: PendingUpload | null
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}
+
+/**
+ * The question a drop asks before it writes over something.
+ *
+ * Names, not a count: "replace 3 files" is unanswerable without knowing which
+ * three, and the whole point of the dialog is that a drop can land somewhere the
+ * user didn't mean.
+ */
+function OverwriteDialog({ upload, onOpenChange, onConfirm }: OverwriteDialogProps) {
+  const clashes = upload?.clashes ?? []
+  const shown = clashes.slice(0, MAX_LISTED_CLASHES)
+  const rest = clashes.length - shown.length
+  const where = upload?.destPath ? `“${upload.destPath}”` : "the workspace root"
+
+  return (
+    <Dialog open={upload !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            Replace {clashes.length === 1 ? "an item" : `${clashes.length} items`}?
+          </DialogTitle>
+          <DialogDescription>
+            {where} already has {shown.map((name) => `“${name}”`).join(", ")}
+            {rest > 0 ? ` and ${rest} more` : ""}. Dropping here overwrites{" "}
+            {clashes.length === 1 ? "it" : "them"}, and that can’t be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" onClick={onConfirm}>
+            Replace
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Past this many, the list stops being readable and a count says it better. */
+const MAX_LISTED_CLASHES = 5
 
 function errMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) return err.message

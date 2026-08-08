@@ -173,6 +173,11 @@ and the picker only appears when you ask for it or when the saved connection can
 reached. `This Mac` is always in the list, so switching back to a local backend is
 one click.
 
+Switching away does **not** stop a local backend that is already running. Agent runs,
+dev servers and terminals on this machine carry on while you look at the remote, and
+switching back to `This Mac` reattaches to the same backend with all of it still
+there. The local backend stops when you quit the app, as it always has.
+
 Connections are stored in `~/.lursor/connections.json`, with tokens encrypted using
 your OS keychain (`safeStorage`). Where no keychain is available the token is stored
 in plaintext and the app logs a warning saying so.

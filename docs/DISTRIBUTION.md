@@ -93,14 +93,27 @@ Bump the version and merge it to main. That is the whole trigger — no tagging
 step.
 
 ```bash
-# Bump all four in lockstep (the frontend one names every artifact):
-#   frontend/package.json    -> "version": "0.2.0"
-#   backend/pyproject.toml   -> version = "0.2.0"
-#   backend/uv.lock          -> version = "0.2.0" under [[package]] lursor-backend
-#   backend/app/__init__.py  -> __version__ = "0.2.0"
+./scripts/bump-version.sh minor        # or: patch | major | an explicit 0.2.0
 git commit -am "chore: version bump"
 # then merge to main as usual
 ```
+
+The script writes all four files that carry the version, then re-reads them and
+refuses to leave the tree in a state `gate` would reject:
+
+|  |  |
+| --- | --- |
+| `frontend/package.json` | `"version": "0.2.0"` — this one names every artifact |
+| `backend/pyproject.toml` | `version = "0.2.0"` under `[project]` |
+| `backend/uv.lock` | `version = "0.2.0"` under `[[package]] lursor-backend` |
+| `backend/app/__init__.py` | `__version__ = "0.2.0"` |
+
+Bump them by hand and you are one missed file away from a red check — usually
+`uv.lock`, which has a `version =` line for every one of hundreds of packages.
+`./scripts/bump-version.sh --check` reports what each file currently says and
+exits non-zero if they disagree; `<version> --force` repairs drift without
+bumping (the existing tag for that version is expected in that case, so the
+"already released" guard steps aside).
 
 `gate` fails the release if those four disagree, so a missed one costs a red
 check rather than a wrong release. That check exists because this list said

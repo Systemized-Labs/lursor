@@ -8,8 +8,10 @@
 //
 // It can also be a thin client. A saved *remote* connection points it at a backend
 // on another machine — typically a VPS over https with a bearer token — and then
-// nothing is spawned locally at all: agents run there and keep running with this
-// machine asleep. See electron/connections.cjs and docs/REMOTE.md.
+// nothing is spawned locally: agents run there and keep running with this machine
+// asleep. Switching to one does not stop a local backend that is already up — its
+// agents, dev servers and PTYs keep running, and switching back reattaches to the
+// same process. See electron/connections.cjs and docs/REMOTE.md.
 //
 // The connection is therefore resolved before anything else happens, and everything
 // downstream (health check, API base, port forwarding, teardown) branches on it.
@@ -55,6 +57,13 @@ const APP_ICON = nativeImage.createFromPath(
 let mainWindow = null
 /** @type {import("node:child_process").ChildProcess | null} */
 let backendProc = null
+/**
+ * The port {@link backendProc} was started on. Kept alongside the process because a
+ * local backend outlives a switch to a remote one, and switching back has to reattach
+ * to the port it is already listening on rather than pick a new one.
+ * @type {number | null}
+ */
+let backendPort = null
 /** Guards teardown so we only kill the backend once. */
 let backendKilled = false
 /**
@@ -66,6 +75,12 @@ let backendKilled = false
 let activeConnection = null
 /** Why the last connection attempt failed, surfaced on the picker. */
 let lastConnectionError = ""
+/**
+ * Whether the load-failure screen is currently up. Latched so the error screen's own
+ * navigation cannot re-enter the handler that showed it, and cleared on the next load
+ * that does succeed.
+ */
+let loadFailureShown = false
 
 // ---------------------------------------------------------------------------
 // Backend lifecycle
@@ -153,12 +168,16 @@ function startBackend(port) {
   })
   proc.on("exit", (code, signal) => {
     console.log(`[backend] exited (code=${code}, signal=${signal})`)
-    backendProc = null
+    if (backendProc === proc) {
+      backendProc = null
+      backendPort = null
+    }
   })
 
   backendProc = proc
-  // Re-arm the teardown guard: a previous local backend may have been killed on a
-  // connection switch, and this new process still has to be killable.
+  backendPort = port
+  // Re-arm the teardown guard: a previous local backend may have been killed and
+  // replaced, and this new process still has to be killable.
   backendKilled = false
   return proc
 }
@@ -247,9 +266,9 @@ async function pingHealth(apiBase, token, timeoutMs = 5000) {
  *
  * `watchProcess` is for the local backend only: if the process we spawned has died
  * there is nothing left to wait for, so failing immediately beats burning the whole
- * timeout. A remote backend has no such signal — and must not be given one, because
- * `backendProc` is null in remote mode and would end every attempt on the first
- * poll.
+ * timeout. A remote backend must never be given it — `backendProc` says nothing about
+ * a machine on the other end of the network, and is null on a client that has never
+ * started one.
  *
  * @returns {Promise<{ ok: boolean, status: number }>}
  */
@@ -348,9 +367,43 @@ function createWindow() {
   // nobody, and since `autoInstallOnAppQuit` stays false it would simply never be
   // offered. The splash and picker documents ignore it.
   mainWindow.webContents.on("did-finish-load", () => {
+    loadFailureShown = false
     if (updateState.phase !== "idle" && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("update:state", updateState)
     }
+  })
+
+  // A failed navigation leaves the *previous* document up rather than blanking the
+  // window. During startup that document is the splash, so anything that breaks the
+  // handoff in `loadApp` leaves it spinning "Bringing up the backend…" forever —
+  // describing a backend that is already healthy, and giving the user nothing to act
+  // on. Say what actually failed instead.
+  //
+  // Two things are deliberately not treated as failures. ERR_ABORTED (-3) is reported
+  // by any navigation that supersedes one still in flight, which is exactly what the
+  // splash-to-app handoff does. And subframe loads are the page's business, not the
+  // window's — a dead iframe must not replace a working app with an error screen.
+  mainWindow.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3 || loadFailureShown) return
+      console.error(
+        `[window] load failed (${errorCode} ${errorDescription}): ${validatedURL}`
+      )
+      // Latched so the error screen's own load can't feed back into this handler.
+      loadFailureShown = true
+      showLoadError(`The window could not load (${errorDescription}).`)
+    }
+  )
+
+  // A dead renderer has the same consequence as a failed load — the window keeps
+  // showing whatever happened to be there — so it gets the same treatment. A clean
+  // exit is just a process being recycled around a navigation, not a crash.
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    if (details?.reason === "clean-exit" || loadFailureShown) return
+    console.error("[window] renderer gone:", details?.reason)
+    loadFailureShown = true
+    showLoadError(`The interface process stopped unexpectedly (${details?.reason}).`)
   })
 
   mainWindow.on("closed", () => {
@@ -386,6 +439,24 @@ function showBackendError() {
   )
 }
 
+/**
+ * Report a navigation that never landed.
+ *
+ * Distinct from {@link showBackendError}: there the backend is the suspect and we
+ * never got as far as the interface. Here the backend answered and it is the
+ * renderer — or the bundle it was asked to load — that failed.
+ */
+function showLoadError(reason) {
+  if (!mainWindow) return
+  mainWindow.loadURL(
+    screenHtml(
+      "Lursor could not load its interface",
+      `${reason} The backend is running; it is the window that failed. Quit and reopen the app — if that doesn't clear it, reinstall with the command in docs/INSTALL.md.`,
+      false
+    )
+  )
+}
+
 // Renderer-invoked "open in system browser" (context menu on chat links). Guard
 // the scheme here too — never hand arbitrary URIs to the OS.
 ipcMain.handle("open-external", (_event, url) => {
@@ -396,6 +467,189 @@ ipcMain.handle("open-external", (_event, url) => {
     return shell.openExternal(url)
   }
 })
+
+// ---------------------------------------------------------------------------
+// Dragging files out
+// ---------------------------------------------------------------------------
+//
+// A file dragged out of the explorer has to leave the window as a *real file* —
+// Finder, Slack and every editor want a path on this machine, and an HTML5 drag
+// can only offer text. `webContents.startDrag` is the only thing that can promise
+// a file to the OS, and it lives in main, so the renderer cancels its own drag
+// (see lib/file-drag-out.ts) and hands the item over here.
+//
+// Local connection: the workspace is on this disk, so the path the tree already
+// computes for "Copy path" is the file. Remote: it isn't here at all, so the bytes
+// are staged into a temp copy first and the drag carries that.
+
+/** Temp dir holding staged copies of remote files; removed on quit. */
+let dragStagingDir = null
+
+/**
+ * Cap on a remote file staged for a drag.
+ *
+ * A drag has to become a file while the mouse is still down, so this is bounded by
+ * patience rather than by disk: past a certain size the gesture is over before the
+ * download is, and a silent no-op is a worse answer than "too big to drag".
+ */
+const DRAG_STAGE_MAX_BYTES = 64 * 1024 * 1024
+
+/** Where staged copies go, created on first use. */
+function stagingDir() {
+  if (!dragStagingDir) {
+    dragStagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "lursor-drag-"))
+  }
+  return dragStagingDir
+}
+
+/**
+ * Download one workspace file from the active backend into a temp copy.
+ *
+ * Each drag gets its own subdirectory, so two files with the same name from
+ * different folders don't overwrite each other, and the name the OS shows on the
+ * dropped file is the real one.
+ *
+ * @returns {Promise<{ file: string } | { error: string }>}
+ */
+function stageRemoteFile(workspaceId, relPath, name) {
+  const connection = activeConnection
+  if (!connection) return Promise.resolve({ error: "Not connected to a backend." })
+
+  let url
+  try {
+    url = new URL(
+      `${connection.apiBase.replace(/\/$/, "")}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/files/raw?path=${encodeURIComponent(relPath)}`
+    )
+  } catch {
+    return Promise.resolve({ error: "Couldn’t resolve the file’s address." })
+  }
+
+  // basename, always: the name is only ever a leaf here, and a "../" in it would
+  // otherwise write outside the staging dir.
+  const dir = fs.mkdtempSync(path.join(stagingDir(), "item-"))
+  const file = path.join(dir, path.basename(name) || "file")
+
+  return new Promise((resolve) => {
+    const transport = url.protocol === "https:" ? https : http
+    const req = transport.get(
+      url,
+      {
+        headers: connection.token
+          ? { Authorization: `Bearer ${connection.token}` }
+          : {},
+      },
+      (res) => {
+        if ((res.statusCode ?? 0) !== 200) {
+          res.resume()
+          resolve({ error: `The backend answered with HTTP ${res.statusCode ?? 0}.` })
+          return
+        }
+        const out = fs.createWriteStream(file)
+        let written = 0
+        res.on("data", (chunk) => {
+          written += chunk.length
+          if (written > DRAG_STAGE_MAX_BYTES) {
+            req.destroy()
+            out.destroy()
+            resolve({
+              error: "That file is too large to drag from a remote workspace.",
+            })
+          }
+        })
+        res.pipe(out)
+        out.on("finish", () => resolve({ file }))
+        out.on("error", () => resolve({ error: "Couldn’t write a local copy." }))
+      }
+    )
+    req.on("error", () => resolve({ error: "Couldn’t reach the backend." }))
+    // Generous, because the drag is already lost if it takes this long — the timeout
+    // exists to release the request, not to bound the gesture.
+    req.setTimeout(30_000, () => {
+      req.destroy()
+      resolve({ error: "The download timed out." })
+    })
+  })
+}
+
+/**
+ * The icon the cursor carries during the drag.
+ *
+ * The real file icon is what the OS would show, so ask for that first; `startDrag`
+ * rejects an empty image, so fall back to the app icon and let the caller report
+ * the throw if even that is missing.
+ */
+async function dragIcon(filePath) {
+  try {
+    const icon = await app.getFileIcon(filePath, { size: "normal" })
+    if (icon && !icon.isEmpty()) return icon
+  } catch {
+    /* No icon for this path — the app's own will do. */
+  }
+  if (APP_ICON.isEmpty()) return APP_ICON
+  return APP_ICON.resize({ width: 64, height: 64 })
+}
+
+/**
+ * Start a native drag of a workspace file or folder.
+ *
+ * `absPath` is trusted only on a local connection: with a remote backend it is a
+ * path on *that* machine, and a machine with the same checkout at the same place
+ * would otherwise hand the drop target a different file with the right name.
+ *
+ * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
+ */
+ipcMain.handle("file:drag", async (event, request) => {
+  const name = path.basename(String(request?.name ?? ""))
+  const relPath = String(request?.path ?? "")
+  const absPath = String(request?.absPath ?? "")
+  const workspaceId = String(request?.workspaceId ?? "")
+  const isDir = Boolean(request?.isDir)
+  if (!name) return { ok: false, error: "Nothing to drag." }
+
+  let file = ""
+  if (activeConnection?.kind === "remote") {
+    if (isDir) {
+      return {
+        ok: false,
+        error: "Folders on a remote backend can’t be dragged out — only files.",
+      }
+    }
+    if (!workspaceId || !relPath) return { ok: false, error: "Nothing to drag." }
+    const staged = await stageRemoteFile(workspaceId, relPath, name)
+    if ("error" in staged) return { ok: false, error: staged.error }
+    file = staged.file
+  } else {
+    // No path means the tree hasn't resolved the workspace root yet, which is a
+    // different answer from a path that isn't there — and it fixes itself.
+    if (!absPath) {
+      return { ok: false, error: "Still resolving the workspace path — try again." }
+    }
+    if (!fs.existsSync(absPath)) {
+      return { ok: false, error: `Couldn’t find ${name} on disk.` }
+    }
+    file = absPath
+  }
+
+  try {
+    event.sender.startDrag({ files: [file], icon: await dragIcon(file) })
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err?.message || "The drag couldn’t be started." }
+  }
+})
+
+/** Drop the staged copies. Best-effort: a leftover temp dir is not worth a crash. */
+function clearDragStaging() {
+  if (!dragStagingDir) return
+  try {
+    fs.rmSync(dragStagingDir, { recursive: true, force: true })
+  } catch {
+    /* The OS will reap it. */
+  }
+  dragStagingDir = null
+}
 
 // ---------------------------------------------------------------------------
 // Connections
@@ -446,25 +700,58 @@ function clearAuthHeaderInjection() {
 }
 
 /**
+ * Spawn a local backend on a free port, point {@link activeConnection} at it, and
+ * wait for it to answer.
+ *
+ * @returns {Promise<boolean>} whether it came up.
+ */
+async function startLocalBackend(connection) {
+  const port = await findFreePort(PREFERRED_PORT)
+  const apiBase = `http://127.0.0.1:${port}/api`
+  activeConnection = { ...connection, apiBase, token: "" }
+
+  mainWindow?.loadURL(screenHtml("Starting Lursor", "Bringing up the backend…", true))
+  startBackend(port)
+
+  const { ok } = await waitForHealth(apiBase, "", HEALTH_TIMEOUT_MS, true)
+  return ok
+}
+
+/**
  * Bring up a connection and load the app on it.
  *
- * Local: spawn the bundled backend, exactly as the app always has. Remote: spawn
- * nothing and check we can reach it. Either way the app only loads once the backend
- * answers, so the renderer never races a backend that isn't up.
+ * Local: reattach to the backend we already own, or spawn one. Remote: spawn nothing
+ * and check we can reach it. Either way the app only loads once the backend answers,
+ * so the renderer never races a backend that isn't up.
  */
 async function connectTo(connection) {
   clearAuthHeaderInjection()
   portForward.configure(null)
 
   if (connection.kind === "local") {
-    const port = await findFreePort(PREFERRED_PORT)
-    const apiBase = `http://127.0.0.1:${port}/api`
-    activeConnection = { ...connection, apiBase, token: "" }
+    // A local backend we started is still running: switching away doesn't stop it, so
+    // reattach instead of spawning a second one. Two backends would land on two ports
+    // against one SQLite database, and the agents and dev servers left running on the
+    // first would be invisible from the second.
+    let ok
+    if (backendProc && backendPort != null) {
+      const apiBase = `http://127.0.0.1:${backendPort}/api`
+      activeConnection = { ...connection, apiBase, token: "" }
+      mainWindow?.loadURL(
+        screenHtml("Connecting to Lursor", `Reattaching to ${connection.name}…`, true)
+      )
+      ok = (await waitForHealth(apiBase, "", HEALTH_TIMEOUT_MS, true)).ok
+      if (!ok) {
+        // It died or wedged while we were away. Replace it rather than leaving the
+        // user on an error screen for a process they can neither see nor restart.
+        console.log("[backend] reattach failed; starting a fresh local backend")
+        killBackend()
+        ok = await startLocalBackend(connection)
+      }
+    } else {
+      ok = await startLocalBackend(connection)
+    }
 
-    mainWindow?.loadURL(screenHtml("Starting Lursor", "Bringing up the backend…", true))
-    startBackend(port)
-
-    const { ok } = await waitForHealth(apiBase, "", HEALTH_TIMEOUT_MS, true)
     if (!ok) {
       showBackendError()
       return
@@ -515,11 +802,18 @@ async function bootConnection() {
   await connectTo(connections.lastUsed())
 }
 
-/** Tear down whatever the current connection owns, without quitting. */
+/**
+ * Detach from the current connection, without quitting.
+ *
+ * Deliberately does *not* stop a local backend. Switching connections is a change of
+ * view, not a shutdown: killing it would end every agent run, dev server and terminal
+ * on this machine just because you looked at another one — and the reason to run a
+ * backend elsewhere is precisely that work should survive you looking away. It is
+ * stopped on quit ({@link teardown}), and reattached to by {@link connectTo}.
+ */
 function releaseConnection() {
   portForward.closeAll()
   clearAuthHeaderInjection()
-  killBackend()
   activeConnection = null
 }
 
@@ -1069,8 +1363,8 @@ if (!gotLock) {
       if (BrowserWindow.getAllWindows().length !== 0) return
       createWindow()
       // The window was closed, so whatever it was connected to has to be brought
-      // back up — on macOS the app is still running and the backend may still be
-      // alive, in which case the health check simply passes immediately.
+      // back up — on macOS the app is still running and the local backend with it,
+      // so this reattaches to that process and the health check passes immediately.
       await connectTo(activeConnection ?? connections.lastUsed())
     })
   })
@@ -1086,6 +1380,7 @@ app.on("window-all-closed", () => {
 /** Everything the app owns outside its own process. */
 function teardown() {
   portForward.closeAll()
+  clearDragStaging()
   killBackend()
 }
 

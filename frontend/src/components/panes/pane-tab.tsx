@@ -157,8 +157,13 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
   const label = named ?? def?.title ?? props.api.title ?? "Pane"
 
   // ── Context menu actions ──────────────────────────────────────────────────
-  // The group's panels are read fresh on each click rather than captured in a
-  // ref: dockview mutates the array as tabs close, so a stale snapshot would
+  // Every action is scoped to *this tab's group*, not the whole dock: a strip's
+  // menu speaks for the strip it was opened on, so "Close All" on one split must
+  // leave the other split's tabs alone. `props.api.group` is the live group — a
+  // tab dragged into another strip answers for its new one.
+  //
+  // The panels are read fresh on each click rather than captured in a ref:
+  // dockview mutates the array as tabs close, so a stale snapshot would
   // double-fire on "Close All" or miss a tab that was dragged in between.
 
   const closeThis = useCallback(() => {
@@ -166,32 +171,32 @@ export function PaneTab(props: IDockviewPanelHeaderProps) {
   }, [props.api])
 
   const closeOthers = useCallback(() => {
-    const targets = props.containerApi.panels.filter(
+    const targets = props.api.group.panels.filter(
       (p: IDockviewPanel) => p.api.id !== props.api.id
     )
     for (const p of targets) p.api.close()
-  }, [props.api, props.containerApi])
+  }, [props.api])
 
   const closeToRight = useCallback(() => {
-    const panels = props.containerApi.panels
+    const panels = props.api.group.panels
     const idx = panels.findIndex(
       (p: IDockviewPanel) => p.api.id === props.api.id
     )
     if (idx < 0) return
     const targets = panels.slice(idx + 1)
     for (const p of targets) p.api.close()
-  }, [props.api, props.containerApi])
+  }, [props.api])
 
   const closeAll = useCallback(() => {
-    const targets = [...props.containerApi.panels]
+    const targets = [...props.api.group.panels]
     for (const p of targets) p.api.close()
-  }, [props.containerApi])
+  }, [props.api])
 
   // Whether there are any siblings to the right, for disabling the item.
   // Computed on every render rather than memoised: dockview mutates the
   // panels array in place, so the reference never changes and a memo would
   // go stale. The component already re-renders on layout change.
-  const panels = props.containerApi.panels
+  const panels = props.api.group.panels
   const myIndex = panels.findIndex(
     (p: IDockviewPanel) => p.api.id === props.api.id
   )

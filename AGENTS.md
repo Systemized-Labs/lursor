@@ -1,14 +1,19 @@
 # AGENTS.md
 
-Working notes for anyone — human or agent — changing this repo. This is the
-consolidated design record: the durable decisions, invariants and traps from the
-feature plans that built Lursor. Per-feature plan docs were deleted once shipped;
-`git log --diff-filter=A -- docs/` finds the original for any feature if you need
-the full reasoning.
+Working notes for anyone — human or agent — changing this repo. This file is the
+**index and the rules**: what the project is, how to build it, the conventions that
+are not negotiable, and the invariants that have already cost a debugging session.
+The per-subsystem design record lives in [`docs/architecture/`](docs/architecture/)
+and is linked from §6.
+
+Per-feature plan docs are deleted once shipped, with the durable decisions folded
+into `docs/architecture/`. `git log --diff-filter=A -- docs/` finds the original
+for any feature if you need the full reasoning.
 
 For end-user and ops docs see [`README.md`](README.md),
-[`docs/INSTALL.md`](docs/INSTALL.md), [`docs/ELECTRON.md`](docs/ELECTRON.md) and
-[`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md).
+[`docs/INSTALL.md`](docs/INSTALL.md), [`docs/ELECTRON.md`](docs/ELECTRON.md),
+[`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) and
+[`docs/REMOTE.md`](docs/REMOTE.md).
 
 ---
 
@@ -33,7 +38,9 @@ and the `task`-tool roster rewrite in `builder.py`.
 backend/          FastAPI + pydantic-deepagents + SQLite      (backend/README.md)
   app/api/        REST routers + the AG-UI chat endpoint (chat.py)
   app/agents/     agent construction and the run engine
+  app/assistant/  the control-plane toolset and its isolation boundary
   app/skills/     skill discovery, scope resolution, script exec
+  app/media/      image/video sources (laios, OpenRouter, custom)
   app/envvars/    env-var layer resolution
   app/db/         SQLModel tables, async session, migrations
   tests/          pytest, offline (no API key needed)
@@ -44,7 +51,10 @@ frontend/         Vite + React 19 + Tailwind v4 + shadcn/ui  (frontend/README.md
                   settings/ (the settings dialog), shell/ (pane bodies), ui/
   src/pages/      one dir per destination
   electron/       desktop main + preload
-docs/             INSTALL / ELECTRON / DISTRIBUTION / REMOTE
+docs/             INSTALL / ELECTRON / DISTRIBUTION / REMOTE  (user + ops)
+  architecture/   the design record, one file per subsystem group (§6)
+  upstream/       fixes for dependencies, prepared as diffs and never PR'd
+  *-AUDIT.md      point-in-time audits, cited from code and tests
 packaging/        Homebrew cask template (rendered by CI)
 scripts/          dev.sh, install.sh, update.sh, install-server.sh
 ```
@@ -122,16 +132,16 @@ default in anyway. That was measured, not reasoned about: `lursor:pins` and
 version in place. Comparing values is also what keeps toggling a preference *back* to
 its default persisting.
 
-## 5. Architecture
+## 5. Architecture at a glance
 
-### Backend: the run engine
+**Backend — one turn.** Detail:
+[`docs/architecture/runs-and-intents.md`](docs/architecture/runs-and-intents.md).
 
 ```
 POST /threads/{id}/chat
   → parse request + turn intent            api/chat.py
   → persist the user turn up front
-  → _build_agent_and_context(session, …)   resolves providers, subagents, deep
-                                           defaults, skills + their env vars
+  → _build_agent_and_context(session, …)   providers, subagents, skills + env vars
   → build_deep_agent(row, workspace_path,…)  agents/builder.py
   → AGUIAdapter.from_request(request, agent=agent)
   → pick a driver: chat | plan | goal | execute_plan
@@ -139,29 +149,14 @@ POST /threads/{id}/chat
   → return an SSE subscription to that run
 ```
 
-**`chat_run_manager` is the load-bearing abstraction.** A run is an
-`asyncio.Task` owned by the manager, not by the request: it buffers encoded SSE
-lines (capped at 5000, 200 finished threads retained), fans out to subscribers,
-and survives browser disconnect. The HTTP response is only a *subscriber*. This
-is what makes reconnect, stop, and headless (scheduled) runs all work with no
-extra machinery.
+**`chat_run_manager` is the load-bearing abstraction.** A run is an `asyncio.Task`
+owned by the manager, not by the request: it buffers encoded SSE lines, fans out to
+subscribers, and survives browser disconnect. The HTTP response is only a
+*subscriber*. That one choice is what makes reconnect, stop, headless scheduled
+runs and the Assistant's blocking confirmations all work with no extra machinery.
 
-Its critical invariant: `subscribe()` snapshots the buffer and registers the
-queue **with no `await` in between**, or events are lost in the gap.
-
-Routes: `POST /{id}/chat` (start + stream), `GET /{id}/stream` (reconnect,
-replays), `POST /{id}/stop`, `POST /{id}/goal/interject`, `POST /{id}/compact`.
-`GET /threads/active-runs` **must be declared before `/{thread_id}`** or FastAPI
-routes it as a thread id.
-
-Per-turn budget: `TURN_REQUEST_LIMIT = 300` model requests
-(`builder.py`), and subagents get their own budget of the same size.
-
-`reconcile_interrupted_runs()` runs at startup — run state is in-memory only, so
-a thread the last process left mid-run would otherwise show a live status pill
-forever.
-
-### Frontend: transport → store → view
+**Frontend — transport → store → view.** Detail:
+[`docs/architecture/runs-and-intents.md`](docs/architecture/runs-and-intents.md).
 
 ```
 transport   agui/agent.ts (HttpAgent) · agui/stream-reader.ts
@@ -175,971 +170,29 @@ view        components/chat/ChatTimeline → MessageRow(id) → UserBubble
 The normalized store is the fix for the chat surface's four chronic defects
 (render flashes, scroll detach, streaming jank, older-message flash). A streamed
 token mutates `byId[assistantId]`, so **only that row re-renders** — the timeline
-subscribes to `order` alone. Leaf rows are `memo`'d. `StreamingText` splits into a
-stable prefix and a growing tail so at most two markdown parses exist mid-stream.
-Scroll is `use-stick-to-bottom`, never hand-rolled — it pins before paint.
+subscribes to `order` alone.
 
-`useChatEngine` guards that must survive any refactor: the `loadSeq` monotonic
-guard, the `sendingThreadRef`/`loadedThreadRef` dedupe guards, and
-`resolveAssistantId` for models that omit message ids.
+**Everything else is a pane.** Chat, terminal, files, preview, diff and the media
+pages are tabs inside zones of a dockview grid, and a pane's DOM node is never
+reparented. Detail:
+[`docs/architecture/frontend-shell.md`](docs/architecture/frontend-shell.md).
 
 ## 6. Subsystems
 
-### Turn intents, and the plan → refine → execute flow
-
-There are **no sticky thread modes**. `ThreadMode` survives only so rows from
-older builds still load; live threads stay `chat`. Everything is a per-turn
-intent on `forwardedProps.turn`:
-
-| intent | behaviour |
+| Area | What's in it |
 | --- | --- |
-| `chat` | full agent, all tools. The default. |
-| `ask` | read-only, enforced by an **allowlist** tool filter (`_READONLY_TOOL_ALLOWLIST`) |
-| `plan` | writes/refines a plan doc at `.agents/plan/PLAN-<slug>.md`; parks the thread in `awaiting_approval` |
-| `execute_plan` | hands the finished doc to the goal loop |
-| `goal` | one-off autonomous loop, condition = the message text |
-
-The three-phase flow, with a human checkpoint at each boundary:
-
-1. `/plan <objective>` → drafts the doc, `status = awaiting_approval`. A fresh
-   `/plan` on a parked thread always starts a **new** doc.
-2. A **plain** follow-up while parked = *refine that doc* (persisted as
-   `kind="plan"`), not implement it. This inversion has been got wrong twice;
-   it is the behaviour users expect.
-3. The explicit **Execute plan** button sends `turn == "execute_plan"`:
-   `goal = <plan H1 title>`, `success_criteria = the doc's ## Success Criteria`
-   (falling back to the whole doc), and the loop is seeded with
-   **`initial_history = []`** — the plan doc *is* the compiled context, so the
-   refinement back-and-forth never reaches the model. The planning transcript
-   stays visible in scrollback.
-
-Plan mode is **instruction-gated, not tool-gated**. Gating the toolset was tried
-twice and reverted twice: without the todo board and delegation, local reasoning
-models (GLM/DeepSeek via vLLM) answer in prose and never call `write_file`, so a
-`/plan` turn produces *no plan doc at all* — a worse failure than a plan turn
-that edits a file. The allowlist also silently dropped `duckduckgo_search`. A
-plan turn now sees a normal toolset and is held to planning by
-`planning_instruction()`. `plan_mode` still disables browser QA and the
-dev-server directive. `/ask` keeps its allowlist — there the no-write guarantee
-is the feature, not a nudge.
-
-Slash commands are **data**, in `components/chat/commands/registry.ts`. Adding
-one is a single declarative entry; the parser, menu, dispatch and pill are all
-generic, keyed on `command.kind` (a closed set). Nothing in the UI shell grows.
-The descriptor fields mirror Claude Code's frontmatter so a future markdown
-command loader is additive.
-
-`agentScope` on a command decides whether its default agent is a **per-turn
-override** (`forwardedProps.agent_id`, never persisted — `/ask`, `/goal`,
-Execute plan) or a **sticky reassignment** (`PATCH thread.agent_id` — `/plan`
-only). Per-turn commands used to permanently steal the thread's agent; they
-must not.
-
-### The goal loop
-
-`agents/goal_loop.py` (`drive_goal_loop`) wraps the vendored
-`pydantic_deep.goal` engine: run a turn → evaluate the transcript against the
-condition → continue with `goal_continue_directive(condition, reason)` or
-terminate. Terminal states: `completed` (evaluator confirmed), `blocked`
-(`impossible` verdict), `failed` (iteration cap), `stopped` (user).
-
-- The evaluator **defaults to "not met" on any error** — a transient hiccup must
-  never declare premature success.
-- Recitation each turn is what stops drift on long loops.
-- The evaluator model resolves through Lursor's provider stack
-  (`build_goal_evaluator` + `AppConfig.goal_evaluator_model`). The library's
-  default is an Anthropic Haiku, and there may be no Anthropic key.
-- When a preview URL exists the evaluator is wrapped with visual QA, so
-  completion is judged on what actually rendered, not on the transcript.
-- Steering: plain messages during a run buffer as interjections and are woven
-  into the next seed.
-- **An autonomous run never has a human in it.** Nothing reads the agent's reply
-  between turns, so a turn that ends "do you approve...?" is a dead turn — and a
-  model that writes *"get user approval"* into the todo board poisons every later
-  turn with work no run can complete. Three layers stop it, and all three are
-  needed: `UNATTENDED_RUN_INSTRUCTION` is joined into the run-scoped instructions
-  inside `_run_goal_execution` (so it lands on *every* turn, not just the kickoff,
-  and covers `/goal`, Execute plan and cron alike); the plan-mode and
-  execute-plan prompts say approval already happened (pressing the button *was*
-  the approval — a plan must not contain checkpoint steps); and if a turn parks
-  anyway, `looks_like_awaiting_user(turn.text)` swaps the plain continue directive
-  for `awaiting_user_directive`, which grants the approval and forbids re-asking.
-  The detector reads only the reply's closing ~400 chars, so mentioning approval
-  mid-turn and then working on doesn't trigger it.
-
-### Compaction — two mechanisms, one pair of knobs
-
-- **In-run** (`agents/context_budget.py`): pydantic-deep's
-  `ContextManagerCapability` hard-codes compaction at 90% of the budget keeping
-  nothing verbatim, and exposes no passthrough. We **mutate the capability the
-  library already built** (keeping its limit warner, `compact_conversation` tool
-  and history-archive search) to apply `compaction_threshold` and
-  `compaction_ratio`. It also repoints the summarizer onto our stack — the
-  library only inherits the primary model when it was passed as a *string*, and
-  every Lursor run passes a built `Model` object, so it silently fell back to
-  `anthropic:claude-haiku-4-5` and raised on the first compaction.
-- **Manual `/compact`** (`agents/compaction.py`): condenses the stored
-  *transcript* into a `kind="summary"` assistant message and marks the rows it
-  subsumes `compacted` — kept in the DB, hidden from the UI and from model
-  context. `Message.compacted` is the general in-thread context-boundary
-  primitive; both history-assembly paths already filter it.
-
-### Skills — four layers
-
-`app/skills/resolve.py` owns scope; `app/skills/store.py` owns locations.
-Lowest precedence first:
-
-1. **user** — personal roots owned by other tools (`settings.user_skill_roots`)
-2. **global** — managed skills with `is_global`
-3. **workspace** — managed skills linked to this workspace
-4. **local** — folders in one of the workspace's own roots
-   (`settings.local_skill_roots`: `.agents/skills`, `.claude/skills`,
-   `.cursor/skills`, `skills`) — committed into the repo
-
-Closest layer wins a slug collision; your catalog beats a directory another tool
-happens to populate. Roots are **configuration**, because there will be a fifth
-convention.
-
-Rules that are load-bearing:
-- A managed skill lives **once**, in `~/.lursor/skills/<slug>/`. Reach is a DB
-  assignment (`is_global` + `SkillWorkspaceLink`), not a location — so
-  reassignment is a DB write and multi-workspace is free. Three states: global /
-  N workspaces / **parked** (in the catalog, injected nowhere).
-- **Foreign roots are discover-only.** `_reconcile_root(materialize=False)` means
-  a row whose folder has vanished is *deleted*, never rebuilt. Pointed at a
-  foreign root, the materialize path would create `.claude/` directories in repos
-  that never had one and resurrect skills the user deleted in Cursor. This is the
-  most important regression test in the skills suite.
-- `move` (promote) is only for roots we own; everything else gets **copy**. A
-  catalog entry may be a **symlink** into another tool's directory
-  (`Skill.link_target`) — `delete` unlinks the link and leaves the target alone.
-- `Skill.root` is **stored**, not probed: with several candidate roots per
-  workspace the same slug can exist twice, and probing in order resolves an edit
-  or a delete to the wrong file.
-- `write_skill` **merges** frontmatter rather than replacing it — a Claude Code
-  skill routinely carries `allowed-tools`/`license`/`version` and a `PATCH`
-  would otherwise delete them from a file in someone's repo.
-- `Skill.enabled` is checked in exactly one place (`resolve.candidates`) so env
-  vars, `@`-mentions and the agent's own skill directories cannot disagree. A
-  disabled row does not *shadow*: switching off a repo's `pdf` reveals the
-  catalog's `pdf`.
-- `reconcile()` runs on every `GET /skills`. That is up to 3N+2 directory scans;
-  known and accepted, worth knowing before blaming it for a slow Skills tab.
-- Widening discovery widened the **prompt-injection surface** — cloning a repo
-  now loads skill instructions written by whoever wrote that repo. Accepted
-  deliberately; `enabled` is the revocation path.
-- `tests/conftest.py` pins `USER_SKILL_ROOTS=[]`, or the suite indexes whatever
-  is in the developer's own `~/.claude/skills`.
-
-**Bundled skills** are the fifth source, and the only one Lursor itself authors:
-folders under `backend/app/skills/bundled/` (they ride in the wheel, so they reach the
-frozen desktop bundle too) are copied into the catalog by `app/skills/seed.py` on every
-start, *before* `reconcile` so the same pass indexes them. They then behave as ordinary
-managed skills — editable, assignable, switchable.
-
-The whole design is the upgrade path, since the destination is a directory the user can
-edit. Each seeded folder carries a `.bundled` stamp holding the digest of exactly what
-was installed, which separates three states: **absent** → install (and globalize once,
-because the catalog indexes a new folder as *parked* and a shipped skill in scope
-nowhere does nothing); **stamp still matches the contents** → ours and untouched, so a
-newer bundled version replaces it; **stamp missing or stale** → a user skill that
-happens to share the slug, or ours with their edits in it, so hands off and log the
-skip. The globalize step runs only for slugs a pass *installed*, so parking a bundled
-skill survives the next release. Copies go via a staging directory and a rename, or an
-interrupted write would leave a `SKILL.md` the agent library then fails to parse.
-
-**Skill Studio** is the catalog registered as a system `Workspace`
-(`is_system` is *computed* from `path == settings.skills_dir` — no column, no
-migration). Delete and path-change are refused by the API; rename is allowed.
-That gives skill authoring the whole workspace surface — agent, terminal, file
-tree, watcher — for the price of one row. A skill the agent writes there shows
-up in the manager as **Not assigned** on the next load.
-
-### Environment variables
-
-`app/envvars/resolve.py`. One `EnvVar` table; each var attaches to any mix of
-skills and workspaces, or is global. Precedence **global → workspace → skill**.
-`key` is deliberately not unique — uniqueness is per layer, so precedence is
-always well defined.
-
-Four injection points, all additive (with no vars defined, behaviour is
-byte-identical):
-- The agent's shell, via `DedupingLocalBackend` overriding `execute` /
-  `execute_background`. The base class takes no `env=`, so both are
-  reimplemented; `tests/test_deduping_backend.py` carries parity tests against
-  upstream drift.
-- Per-skill script execution, via a `CallableSkillScriptExecutor` — a script
-  never sees another skill's secrets.
-- The system prompt lists **keys and descriptions only**. Without this the agent
-  has no reason to believe a key exists and will ask the user for it.
-- **Redaction on the way out**: every injected value ≥8 chars is scrubbed from
-  shell and script output before it becomes tool output. The backend is the
-  single choke point, so this covers the transcript, the persisted messages and
-  the AG-UI stream at once.
-
-Run-scoping uses a **`ContextVar`**, not an attribute: the `LocalBackend` is
-shared per workspace across runs, so an attribute would leak one run's env into
-a concurrent run. `asyncio.to_thread` copies context into the worker thread and
-tasks inherit at creation, so a var set at the top of a run reaches every tool
-call and every subagent of that run.
-
-Values are **plaintext in SQLite**, matching every other secret the app holds
-(`GitHubConfig.token`, `LaiosConnection.master_key`). The API is write-only:
-reads return `has_value`, never the value. The interactive terminal panel is
-deliberately *not* injected.
-
-### Subagents
-
-No "built-in override" concept — a built-in is a name, the library's description
-and instructions, and an on/off switch. Overrides could express strictly less
-than an ordinary subagent row and bypassed the `enabled` check.
-
-The `task` tool's description ships `Use "general-purpose" when no specialized
-subagent fits.` unconditionally, and `subagent_type: str` has no enum — so
-disabling that built-in still produced `Error: Unknown subagent
-'general-purpose'`. Fixed with a `PrepareTools` capability that rewrites the
-`task` tool definition from the live roster and injects an `enum`, using
-`dataclasses.replace` (never in-place mutation of a schema shared across runs).
-The library's post-hoc validation stays as the backstop for local models that
-ignore enums.
-
-A user subagent with the same name as a built-in **shadows** it, not the reverse.
-
-### Tool loading — a small core, the rest on demand
-
-`agents/tool_loading.py`. A fully-enabled agent offers 52 tools / ~10.7k tokens of
-definitions — past the 30-50 band where tool-selection accuracy degrades. Every
-tool outside `_CORE_TOOLS` is marked `defer_loading=True` and hidden until a
-`search_tools` call reveals it (Anthropic's tool-search structure; pydantic-ai's
-`ToolSearch` capability picks native-vs-local per model, and Lursor is always on
-the local path because every model resolves to `OpenAIChatModel` /
-`TolerantOpenAIChatModel`). 23 tools up front, ~5.6k tokens.
-
-Traps, all load-bearing:
-
-- **Anything a directive names by hand must be core.** `DEV_SERVER_DIRECTIVE`
-  names `list_shells`/`run_in_background`/`kill_shell`, the memory and skills
-  prompts name theirs. Hiding a tool the prompt orders the model to call is the
-  same class of bug as trap 12 in §7.
-- **Guidance lives on the `search_tools` description, not in the system prompt.**
-  Instructions are assembled *before* tools are prepared each step, so a
-  "deferral is live" flag read at instruction time is a step stale — wrong on the
-  opening step. The tool description only exists when something is deferred, so
-  it cannot go stale.
-- **Deferral composes with the filters, it does not bypass them.** The read-only
-  allowlist and the `task` roster rewrite run per step, so they still vet a tool
-  the model discovers mid-turn. `search_tools` itself is allowlisted, or `/ask`
-  would strand its deferred tools.
-- Threshold (`_MIN_DEFERRABLE`) means small rosters stay flat, `/ask` included;
-  below it pydantic-ai registers no `search_tools` at all. `TOOL_SEARCH_ENABLED=false`
-  restores the flat roster everywhere.
-
-Full audit of the tool surface, including open findings: `docs/TOOL-SURFACE-AUDIT.md`.
-The file-editing tools (hashline read/edit) are audited separately against Claude
-Code and the reference hashline implementations: `docs/FILE-EDITING-AUDIT.md`. The
-guards that audit produced live in `agents/file_editing.py` (both ends of a range
-edit are validated, `write_file` cannot clobber an unread file, an anchor miss
-returns fresh anchors) and `agents/edit_syntax.py` (delta-only syntax check).
-Fixes that belong in the dependency are prepared as ready-to-submit diffs under
-`docs/upstream/`, not opened as PRs.
-
-### Memory
-
-App-wide *provider* choice (`AppConfig.memory_provider`), exactly like web
-search; the per-agent `include_memory` flag stays the master on/off switch.
-
-- `file` (default) — pydantic-deep's `MEMORY.md` in the workspace.
-- `hindsight` — a [Hindsight](https://github.com/vectorize-io/hindsight) bank via
-  `agents/hindsight.py`. Optional extra (`uv sync --extra hindsight`); a missing
-  package or base URL **degrades to file memory with a warning**, never fails.
-
-The two never coexist in one run — six overlapping memory tools is worse than
-three. Isolation is by tag (`workspace:{id}`, using the *id* so a rename doesn't
-orphan memories) with `tags_match="any_strict"`, the only variant that excludes
-untagged memories. `MEMORY.md` files are left on disk, so flipping back is
-lossless.
-
-`memory_instructions` recalls on **every model request** upstream — a 150-round
-turn would issue 150 recalls. Our capability caches the recalled block per agent
-instance with a 120s TTL, busted by `after_tool_execute` when the agent retains
-something. Privacy changes with this provider: recall/reflect send the query
-string to whatever `base_url` points at, once per turn, whether or not the agent
-uses memory.
-
-### Schedules
-
-`Schedule` + `ScheduleRun` rows, an in-process 30s `asyncio` tick
-(`agents/scheduler.py`, modelled on `preview_service._poll_loop`), and
-`chat.start_scheduled_run` — the headless counterpart to the chat endpoint. Both
-converge on the same drivers, so a scheduled run can't drift from a manual one.
-
-- **New thread per fire.** No unbounded context growth; each run's transcript,
-  todos, diff and usage stand alone.
-- **Missed fires are reported, never replayed.** A schedule whose `next_fire_at`
-  is in the past gets one `missed` history row with the elapsed count and rolls
-  forward. Opening the app after a weekend must never launch a burst of billable
-  runs. `next_fire_at` is null while disabled, so re-enabling doesn't read as a
-  pile of missed fires.
-- **One run per schedule at a time** (`skipped` row otherwise).
-- Timezone is an IANA name on the row; `zoneinfo` does the arithmetic, so 9am
-  survives DST. `host_timezone()` reads `TZ` then the `/etc/localtime` symlink —
-  `datetime.now().astimezone().tzinfo` yields an abbreviation (`EDT`) that
-  `ZoneInfo` rejects, which would silently default every schedule to UTC.
-- `app/cron.py` takes its reference instant as an argument everywhere and never
-  reads the clock, which is what makes DST and closed-for-a-weekend ordinary
-  assertions.
-- `next_fire_at` rolls forward from **now**, not from the missed slot, so a slow
-  tick fires once instead of catching up silently.
-- Only one process, no workers — adding `--workers > 1` would multiply the loop
-  and needs a lock first.
-- Usage rows are tagged `kind="cron"` so unattended spend is visible in
-  Analytics. Plan mode is not offered: a schedule that parks a doc nobody
-  approves is a trap.
-- Deleting a schedule **clears `schedule_id`** on its threads, handing them back
-  to the workspace as ordinary conversations — a dangling id would make every
-  run it ever produced unreachable.
-- `GET /threads/{id}` stays unfiltered (asserted in `test_scheduler.py`): the
-  chat page falls back to it, because resolving a scheduled thread against the
-  filtered workspace list rendered the wrong state and the wrong agent.
-
-Still open: there is no ambient signal that an overnight run finished. The
-Schedules page is the only place it shows up.
-
-### Preview and background processes
-
-Detection **must not** ride the chat run. The first cut did, and lost: the dev
-server outlives the turn and the chat SSE closes on `RUN_FINISHED`.
-
-`agents/preview_service.py` is a long-lived per-workspace service. The chat
-endpoint `register(workspace_id, backend)`s each run's backend; a poll loop scans
-retained backends, parses candidate URLs (`preview_detect.parse_server_url`),
-probes readiness over HTTP, and broadcasts **full snapshots** over
-`WS /api/workspaces/{id}/preview/ws`. The panel keeps that socket open regardless
-of chat activity.
-
-- It tracks *all running background processes*, not just servers — a server is
-  just a process that advertised a URL and passed the probe.
-- Keep the most-recently-registered backend even while idle. `register` runs at
-  run start, before the agent calls `run_in_background`; pruning on an empty
-  first scan released the backend the dev server was about to appear in.
-- First ready server auto-opens the panel once; further servers are one-tap
-  chips, and a panel the user closed is not re-popped.
-- `RunningProcessesBar` sits above the composer with inline output; the
-  right-dock `process` panel and its pub/sub plumbing were removed as a
-  duplicated surface for a read-only log tail.
-- Process tracking is in-memory per backend, so a backend restart orphans
-  still-running servers (they keep running, untracked). psutil-based
-  rediscovery stays deferred.
-
-### Browser visual QA
-
-`agents/browser_qa.py` **composes** pydantic-deep's `BrowserCapability` rather
-than using it directly: upstream `screenshot` returns text-only base64 (the model
-cannot actually see it) and it captures no console or network. So we reuse the
-vendored driving toolset (navigate/click/type/…) and own the browser lifecycle to
-add `view_app` (screenshot → vision model) plus `get_console_logs` /
-`get_network_errors`.
-
-Python Playwright, no Node. Chromium auto-installs on first use (~150 MB, once).
-Per-run, headless, `allowed_domains` scoped to loopback. `screenshot_url` is the
-standalone path the goal evaluator uses, since the capability is run-scoped and
-agent-driven.
-
-### laios (local models)
-
-Lursor is the **application plane**; the `laios` daemon is the **control plane**.
-`api/laios.py` is a thin authenticated proxy that holds the `master_key`
-server-side and forwards to the daemon's `/v1/*` API on `:7420`. All
-restart/update logic lives in the daemon — Lursor stays a pure proxy. Restart is
-special: the daemon dies mid-request, so a dropped connection shortly after a
-`202` is expected, surfaced as `202 {restarting: true}`.
-
-A box's *inference* gateway is a separate plane from its control plane
-(`gateway_url` decouples them: LAN-side management, tunnelled model traffic), and
-the two are joined in one place only — `non_chat_served_names` /
-`video_served_names` read the control plane's per-recipe `capabilities` and map them
-onto the gateway's flat `/v1/models` list. Same join, opposite failure policies, on
-purpose: the chat picker **fails open** (a box we cannot classify shows all its
-models rather than none), the video tools **fail closed** (no classification means
-no tools, because a tool that 400s on every call is worse than an absent one).
-
-### Three media sources, chosen in Settings
-
-Images and clips are generated on **one of three sources**, picked app-wide in
-Settings → Image & video and stored on `AppConfig.{image,video}_{source,model}`:
-
-* **`laios`** — a connected box, through its inference gateway. Free at the point
-  of use, seconds for an image and minutes for a clip, and the source that every
-  install used before this setting existed (NULL means `laios`, so an upgrade
-  changes nothing).
-* **`openrouter`** — `POST /api/v1/images` (synchronous, base64 + an exact cost)
-  and `POST /api/v1/videos` (202 + polling). `GET /images/models` and
-  `/videos/models` are capability catalogues, which is what a hosted model has
-  instead of a laios recipe's `video_profile` block. All of it lives in
-  `app/media/openrouter.py`; `app/media/refs.py` owns the string grammar
-  (`openrouter:{slug}`, `laios:{cid}:{served}`, `custom:{provider}:{model}`), which
-  deliberately mirrors chat's `openrouter:` / `custom:` convention — and for
-  `custom:` it is the *same* `CustomProvider` row on both sides.
-* **`custom:{provider_id}`** — a user-added OpenAI-compatible endpoint, the one the
-  chat picker already routes to. Structurally it is the laios path with a different
-  client: the same `/v1/images/generations` and the same `/videos` job API, so
-  `videos._endpoint` hands back either and everything above it is shared. Two things
-  are its own, both in `app/media/custom.py`:
-
-  * **Modality has to be recovered, because `/models` does not carry it.** Four
-    layers, most authoritative first: a `POST {}` route probe (`404`/`405`/`501`
-    means there is no images/videos API here at all — nothing is generated and
-    nothing is billed by an empty body), then LiteLLM's `/model/info` `mode`, then
-    modality fields on the `/models` entry, then the model id itself. A model
-    matched only by its name carries `declared: false`, and every surface says "by
-    name" rather than stating a guess as a fact. The escape hatch when all four
-    miss is an `image:` / `video:` prefix in the provider's manual model list,
-    which is excluded from the chat list so tagging one cannot pollute the chat
-    picker.
-  * **Video is driven as `sglang.video/v1` without a declaration**, which is exactly
-    what the laios path refuses to do. The difference is who decided: a box serves
-    what it serves, while a custom provider is a URL somebody typed in and pointed
-    at a video API on purpose. Every constraint is left *unconstrained* so nothing
-    is validated against another model's numbers.
-
-  Providers auto-managed by a laios connection are excluded (`media_providers`) —
-  they point at the same box's gateway, so offering them would list every served
-  model twice and submit to one GPU by two routes.
-
-**The source never falls back**, and this is the invariant the feature rests on.
-If the configured one cannot serve, `resolve_image_target` / `resolve_video_target`
-return `None` plus a sentence naming the source — they never quietly use the other.
-Crossing would be silent in both directions and wrong in both: onto OpenRouter it
-spends money nobody authorised, onto a box it swaps a chosen model for a different
-one. A **pinned model that has gone missing fails the same way**; "Auto" is the
-setting for anyone who wants the resolver to choose. Every "no" therefore ships
-with a reason, and the same string is shown by the Settings card, the Image/Video
-pages and the agent editor's capability hint — one state, one sentence.
-
-Consequences worth knowing before touching any of this:
-
-* **Routes are keyed on a source ref, not a connection id** (`/media/images`,
-  `/media/videos`). An OpenRouter generation has no connection, run ids were
-  already uuids, and content URLs now carry no source at all. `?source=` filters
-  the history; omitting it returns everything, on purpose — switching sources must
-  not empty the gallery.
-* **`connection_id` is `""`, not NULL, for an OpenRouter row**, and holds the
-  *custom provider* id on a `custom:` one. It was never a real foreign key, and
-  SQLite cannot relax NOT NULL without rebuilding the table. Two id spaces share
-  the column, which is safe only because `provider` is always read with it — see
-  `videos._refresh_active`, which keys its grouping on the pair.
-* **`AppConfig.{image,video}_source` is a free-form ref, not an enum.** The custom
-  form carries an id no `Literal` can enumerate, so `set_media` validates by running
-  every value through `refs.parse_source` and returning the parser's own sentence.
-* **A hosted clip is downloaded eagerly**, on the poll that first sees
-  `completed`, because `unsigned_urls` expire. That is the opposite of the laios
-  path's deliberate laziness, and the reason is that a clip somebody paid for must
-  not become unreachable because they closed the tab. `content_url` stays on the
-  row as the retry handle.
-* **OpenRouter has no video cancel.** `cancel_video` marks the row locally and
-  says plainly that the render continues and will still be billed.
-* **A catalogue fetch that fails reuses the last good one** (the `pricing.py`
-  shape). With no fallback by policy, a transient blip that emptied the catalogue
-  would read as "OpenRouter cannot generate" and stop generation entirely.
-* **`_GATEWAY_BODY_LIMIT` is a fact about one axum server**, not about video, so
-  the keyframe budget is chosen per source (`video_tools._body_limit`).
-* **The `image_tools` lock is GPU contention, not rate limiting** — one box cannot
-  run three renders at Qwen's 58.5 GB peak. It is skipped for OpenRouter, where
-  serialising would triple the latency of "give me three variations".
-* **Pricing is uneven, and that is the API's shape.** Video models publish
-  `pricing_skus`, so a per-second floor is derivable and shown up front. Image
-  models publish **no** catalogue price — it sits behind a per-model `/endpoints`
-  call and is quoted per output *token* — so the only honest number is the mean of
-  what past runs actually cost (`app/media/history.py`), and where there is none,
-  nothing is shown rather than `$0.00`.
-
-### Video generation
-
-`api/videos.py` drives the job API of whichever source is configured: submit,
-poll, cancel, download-once into the content-addressed media store. The rest of
-this section is the **laios** half; the hosted half is above. It **does not invent a
-request shape** — the body is relayed as sent, so a new engine knob works here the
-day it works there. MiniMax-H3 is the only `capabilities: [video]` recipe today:
-~44 s per denoise step (8 steps ≈ 6 min, 50 ≈ 35), `short_edge` fixed at 768,
-4-15 s clips, and audio-video out in one mp4.
-
-`fl2va` (first/last-frame conditioning) is **not** multipart, despite what an early
-docstring guessed. It is the same JSON body plus `conditions: [{type: "image", uri,
-role: "keyframe", frame_index}]`, where `frame_index` is `0`, `-1`, or both in that
-order, and `uri` may be a `data:` URI — which is the only transport that works from
-an off-box Lursor, since a path would name a file the engine cannot see. The
-inlined base64 is stripped from the *stored* row (`_storable_request`): the pixels
-are the one part of a submission nothing here needs to keep, and the history list
-reads `request` on every poll.
-
-Two measured numbers that are not in any doc and are invisible until they bite:
-
-1. **The gateway caps a request body at 2 MiB** (axum's `Bytes` extractor default;
-   2,090,000 bytes went through, 2,200,000 got `413 Failed to buffer the request
-   body`). A keyframe is base64 in that body — a real 1344x768 frame is 587 KB as
-   PNG against 31 KB as JPEG, and an incompressible one is 2.9 MB, so PNG is the
-   format that gets you near the edge rather than one that always fails.
-   `generate_video` checks the *assembled* body, not each frame (two keyframes share
-   the budget), and answers with the `-q:v 3` JPEG remedy. The upstream patch raises
-   the limit on that one route.
-2. **The delivered duration is not the requested one.** The engine aligns frames to
-   17n+5 at 24 fps, so `duration_seconds=4` returns a 4.5 s clip. Every fade/concat
-   calculation must come from `ffprobe`, never from what was submitted.
-
-**Which model, and how to ask it** — on a box. (None of this applies to
-OpenRouter, and the difference is not that the strictness was relaxed: its
-catalogue *is* the declaration, so there is nothing left to classify and one
-builder drives every model behind it.) `capabilities: [video]` says a model
-generates video; it says nothing about the request shape, and the shape is per-model rather
-than per-engine — H3 takes `task`/`target`/`conditions`, the generic SGLang video API
-takes `seconds`/`size`/`input_reference`. Guessing wrong does **not** error: SGLang's
-base `lower_video_request_kwargs` is `del request; return kwargs`, so a non-H3 model
-discards the fields it does not know, falls back to `DEFAULT_VIDEO_SECONDS = 4` and
-its own resolution, and returns HTTP 200 — full GPU time for a clip of the wrong
-length with its keyframes ignored. Silent wrong output, which is worse than any 400.
-
-So the model declares its shape, in the recipe's `video_profile` block surfaced on
-the control plane's `/v1/models` (prepared upstream:
-`docs/upstream/laios-video-profile.patch`). `video_runtime.py` resolves in that
-order: a profile naming a schema we implement → drive it with the profile's own
-ranges; no profile but the model *identifies* as MiniMax-H3 → drive it as H3 with
-the measured defaults and mark the runtime `assumed`; anything else → **no tools**,
-logged. H3 is grandfathered because it predates the block and is the only video
-recipe in the wild; requiring a declaration would turn a working box off.
-
-A profile's missing fields leave that knob *unconstrained* rather than inheriting
-H3's, or a 5-second-max model would accept 15 and fail on the box. `GET
-/video/capability` reports the outcome for the agent editor, because a toggle that
-silently does nothing is indistinguishable from a broken one. Model choice among
-several is still first-connection, alphabetically-first — correct by accident while
-H3 is the only one.
-
-Agents reach it through four deferred tools (`agents/video_tools.py`):
-`generate_video` (submit, never wait — a 35-minute tool call makes a run look hung),
-`video_status` (poll with a **bounded** wait, then materialize the clip into
-`<workspace>/.agents/video/gen/` because ffmpeg and `read_file` live inside the
-workspace and the media store does not), `cancel_video` (a wrong render otherwise
-holds the GPU for its full estimate), and `view_video` (ffprobe + a tiled contact
-sheet + one vision call — and it says plainly that it cannot hear the audio track).
-Gated on `Agent.include_video` (default off; a clip is minutes of someone's GPU) plus
-a resolved `VideoRuntime`. A subagent inherits the parent's runtime — it has no
-session to resolve one with — but only when its own `include_video` is on, so a
-video-enabled agent does not silently hand every specialist a GPU.
-
-An agent with both capabilities can also draw an opening still with `generate_image`
-and hand it to `generate_video` as a `first_frame` — the image tool's docstring says
-so, but only when video is actually available, and it asks for JPEG because a
-photographic 1024px PNG exceeds the gateway's inlined-keyframe budget.
-
-Everything ffmpeg — trim, concat, xfade, captions — is the `video-production` skill
-instead, because a tool is only justified when the work needs a credential, a DB row
-or app state, and ffmpeg needs none of the three. **ffmpeg is a real dependency**
-(declared in the cask template, checked by the skill's preflight) and is deliberately
-not vendored. Homebrew's formula ships without libfreetype, so `drawtext` is absent
-there; the skill carries an `overlay` fallback. `scripts/verify_video_tools.py` is the
-one check that needs a real box, and is a script rather than a test for that reason.
-
-Nothing advances a job server-side, so `list_videos` reconciles every non-terminal
-row on the way out. Without it an agent that submits and is then stopped leaves a row
-at `queued` forever while the box finishes the render — a silent stall.
-
-### Image generation
-
-`api/images.py` + `pages/image/` drive the image surface of whichever source is
-configured (see above); the rest of this section is the **laios** half. It reads
-like the video page and is architecturally the opposite, because **the image API is
-synchronous**: one POST returns the pixels, so there is no job id to bind, nothing to
-poll and nothing to cancel. Two `capabilities: [image]` recipes today, and they are
-*not* interchangeable — `z-image-turbo` (6B, distilled to 9 steps, no CFG) is ~6.5 s
-an image; `qwen-image-2512` (20B) is 58 s at 25 steps and 116 s at 50, because its
-default `negative_prompt` is `" "` (a space, not None) which switches CFG on and runs
-the transformer twice per step. ~37× the cost for better glyphs, which measured
-head-to-head is a narrower win than its reputation.
-
-**The wait lives on the backend, not in the browser.** `create_image` writes the row,
-hands the gateway call to an `asyncio` task and returns `201` immediately; the page
-polls the row. Holding the request open would be a truer relay and would lose two
-minutes of someone's GPU to any reload. The cost of that choice is orphans: a
-`running` row is only meaningful while this process holds a task for it, so
-`_reap_orphans` fails any `running` row absent from the `_active` map on the next
-read. That map — not a timeout heuristic — is what makes the repair exact, and it is
-why the backend being single-process is load-bearing here.
-
-Two fields are **not** relayed on the laios path, against the video module's strict
-pass-through stance (and are absent from the OpenRouter body, which rejects them):
-`response_format` is forced to `b64_json` (the engine's `url` default returns a
-relative `/v1/images/{id}/content` whose bytes live in the container and die with it,
-so a durable history is impossible on that path), and `n` is pinned to 1 (one row,
-one `media_id`). Everything else is the engine's schema, relayed as sent.
-
-The stored MIME is **sniffed from the bytes**, never taken from `output_format` — that
-field is a request the engine may ignore, and a `b64_json` payload carries no content
-type, so trusting it mislabels the file the browser is later handed. Fixing this
-surfaced a latent bug in `media_store`: `_MIME_BY_EXT` is built by inverting
-`_EXT_BY_MIME`, where two types map to `.jpg`, so every served jpeg — chat attachment
-included — was labelled `image/jpg`, which is not a real type. Now overridden
-explicitly rather than by dict order.
-
-Per-model knobs live in `pages/image/image-settings.ts` as a table keyed on served
-name, **not** in a recipe block like video's `video_profile`. The distinction is
-real: video needed a declaration because H3's request *shape* is unlike any other
-engine's and guessing returns HTTP 200 with silently wrong output. Here both models
-take the same fields and only the sensible *values* differ, so a table is enough — and
-an unrecognised image model still works, it just gets conservative defaults and no
-time estimate rather than a confident wrong one. Switching model deliberately resets
-steps and guidance: 9 steps is right for a distilled turbo checkpoint and undercooked
-on Qwen, so a number that is right for one is wrong for the other.
-
-That table is also why the backend can have a profile table of its own
-(`agents/image_runtime.py`) without a recipe declaration to read: the two halves
-answer different questions — the frontend's drives sliders, the backend's drives
-validation ranges and a tool docstring — and the only field where drift produces a
-wrong *request* rather than a worse estimate is `guidance`, which is pinned by test
-on both sides.
-
-The page stays in the ⋯ menu rather than pinned to the rail beside Video, by Video's
-own argument for being pinned: you leave a clip and come back to it, while an image
-finishes while you watch.
-
-Agents reach it through one deferred tool (`agents/image_tools.py`): `generate_image`,
-which submits, **waits**, copies the file into `<workspace>/.agents/image/gen/` and
-returns the path. That is the deliberate opposite of `generate_video`, and the reason
-is latency, not taste — 6.5s (or worst case ~116s) is inside the range where waiting
-is simply the better interface, so there is no job id for the model to carry, no poll
-tool and no half-finished state to explain. Gated on `Agent.include_image` (default
-off) plus a resolved `ImageRuntime`, with the same subagent double opt-in as video.
-There is no `cancel_image`: neither source offers one on its image API, so a
-submitted generation always runs to completion. There is no `view_image` either — every agent
-already has one.
-
-**The tool is not enough on its own, and this cost a round trip to learn.** An agent
-with `include_image` on, `generate_image` sitting in its roster next to `execute`, and
-a box serving z-image was asked for an image — and ran `curl` against
-`image.pollinations.ai` instead. The prompt left the machine for a third party, the
-user's own GPU stayed idle, and nothing landed in the media store, the Image pane or
-Artifacts. A tool description does not beat a model's prior about how a job is
-normally done, especially under a software-engineering persona where `execute` is the
-reflex. So `IMAGE_GENERATION_DIRECTIVE` (`agents/builder.py`) states the preference
-and **names the wrong path explicitly** — "use X" is much weaker than "use X, never
-Y" — closing both the external-API route and the draw-it-in-code route, while leaving
-charts-from-data alone. It is gated on the resolved runtime, not on the flag: telling
-an agent to use a tool it does not have is the same class of bug. This is the third
-directive of its kind, after `DEV_SERVER_DIRECTIVE` and `BROWSER_QA_DIRECTIVE`; any
-future capability a model won't reach for unaided needs one too.
-
-Generated media is also **browsable in the file tree**, which needed a change to
-`api/files.py`: `.agents/` is hidden wholesale, and the old plan-shaped exception
-only understood one subtree. `_VISIBLE_AGENT_SUBDIRS` now lists
-`.agents/{plan,image/gen,video/gen}`, and `_tree_hidden` un-hides *ancestors* of a
-visible subtree as well as its contents — without that the tree, which is walked one
-level at a time, never asks about `.agents/image/gen` because `.agents/image` was
-hidden, and `.agents` renders as an expandable folder containing nothing. Only the
-`gen/` folders: `.agents/video/frames/` is contact-sheet stills the agent
-regenerates at will, and each folder's `.gitignore` is plumbing.
-
-Three consequences of waiting, each handled rather than hoped away. The wait is capped
-at 240s and the render **is not cancelled** when it expires, so the message says so; a
-timed-out run is remembered and delivered by the next call, because with no run id
-there would otherwise be no way back to an image the agent paid for. And calls to one
-box are serialised behind a per-connection lock: pydantic-ai runs the tool calls in one
-model response concurrently, "three variations" is the obvious prompt, and two renders
-on one GPU is slower for both and at Qwen's 58.5 GB peak can be fatal for both. Queue
-time is deliberately not charged against the wait budget.
-
-`agents/image_runtime.py` **fails open** where `video_runtime.py` fails closed, and the
-asymmetry is the most load-bearing decision here. Video refuses to drive an undeclared
-model because the request shape is per-model and guessing returns HTTP 200 with a
-silently wrong clip; images share one request surface, so an unrecognised model still
-gets the tool with conservative defaults and no time estimate. Video's worst case was a
-wrong render, this one's is a mediocre default. Both still fail closed on
-*reachability* — an unreachable control plane means no tool either way. The runtime
-also resolves *every* serving model rather than one, with the fastest as the default
-and `model=` to override, because z-image and qwen differ ~20x in wall clock and the
-choice between them is a real tradeoff the agent is better placed to make.
-
-`api/laios.py`'s inventory join is shared: `_served_with_capability(conn, capability,
-profile_key=...)` with `video_served_models` / `image_served_models` as wrappers. Of
-the ~50 lines, three differ — the `running_instance.status == "running"` check in
-particular is a subtlety worth getting right only once.
-
-### The pane layer
-
-`components/panes/` — every surface is a pane, and panes are tabs inside zones of
-a dockview grid. It replaced a router `Outlet` that owned exactly one surface plus
-a right dock with its own tab strip and its own four panel kinds: a chat and a
-terminal are the same kind of thing to a user, and the app used to model them as
-different kinds of thing.
-
-**`renderer: 'always'` is the load-bearing line.** Dockview renders those panels
-into one shared overlay container tracked to their group's bounding box, so moving
-a pane between zones never reparents its DOM node. That is what keeps a PTY, a
-preview iframe and a Monaco buffer alive across a drag — reparenting an iframe
-reloads it, and `app-shell` used to contort itself around exactly that (maximize
-collapsed the existing panel rather than portaling the dock, for this reason).
-Measured before adopting it, and again in the product: a terminal dragged into a
-new group keeps its shell, with one xterm instance in the DOM throughout.
-
-Rules that cost something to rediscover:
-
-- **A layout template cannot be a frozen constant.** `fromJSON` destroys any panel
-  the incoming layout does not mention — `reuseExistingPanels: true` preserves the
-  ones it *also* lists, and nothing more. So every template is a function of the
-  live pane set (`layout-templates.ts`), and a saved layout contributes only its
-  *geometry*: its pane ids belong to the workspace it came from, so `reshape`
-  re-deals the live panes and rebuilds the `panels` map from them.
-- **Pane id = dockview panel id, persisted.** Panes key their own state off it via
-  `lib/tab-storage.ts` (`lursor:tab:<id>:*`), and those keys are global, so a
-  recycled id hands a new pane a dead one's preview URL. The `lursor:dock:*`
-  migration carries the old tab ids across for this reason; the old key is left in
-  place.
-- **Never persist a layout on a workspace switch.** `loadedFor` guards the write:
-  on the render where the active workspace changes, a write would land the previous
-  workspace's layout in the new one's key. Same trap the right dock documented.
-- **`ensurePane` targets active → most recently used → leftmost.** An "open this
-  file" request displaces whatever that pane held, so it has to be the pane you are
-  looking at, not one you forgot was open.
-- **A hidden pane keeps running.** That is what `always` buys and what it costs.
-  Every pane gets `active` from `onDidVisibilityChange`; gate expensive work on it.
-- **`layout-shapes.ts` is the only module that narrows a serialized tree.**
-  `SerializedGridObject<T>` types `data` as `T | SerializedGridObject<T>[]` without
-  discriminating on `type`, so readers used to re-assert the shape by hand — 18 casts
-  across three files and three separate answers to "what are this tree's leaves". Ask
-  `leaves`, `leafViews`, `leafIds`, `countLeaves` or `mapLeaves` instead; the two
-  remaining casts live in `asLeaf`/`children`. `LeafData` is dockview's own group
-  state, not a hand-written `{id, views, activeView}` — a zone can also carry
-  `locked`, `constraints` and `tabGroups`, and a narrower type lets a rebuild drop
-  them silently.
-- **Read a pane's kind with `paneKindOf(panel)`** (`paneParamsOf` for the rest of the
-  params). `panel.params` is an open record, so getting ours out takes a cast, and
-  that cast lives in `pane-kinds.ts` and nowhere else.
-- **`layout-shapes`, `terminal-deck` and `pane-kinds` import dockview `import type`,
-  and must keep doing so.** All three are reached from the shell on every route, so a
-  *value* import pulls dockview into the entry chunk past the lazy pane host. That is
-  why `HORIZONTAL` is a double-cast string literal instead of `Orientation.HORIZONTAL`.
-  Check with `bun run build` and compare *first-load* bytes — the entry chunk alone is
-  misleading, because rolldown moves shared modules in and out of it between builds.
-
-**Chat is a pane, so routing is an address, not an owner.** `?c=` is written *from*
-the focused chat pane and read exactly once per workspace load, to honour a
-bookmark. A sidebar row therefore cannot address a pane through the URL — it parks
-a request on `lib/open-thread.ts`, the same channel `open-file` and `open-preview`
-use, and the shell routes it.
-
-**To add a cross-component open request, call `createRequestChannel`**
-(`lib/request-channel.ts`). The three `open-*.ts` modules are that factory plus their
-own request type and their own reason for existing; each re-exports the four names its
-callers already use (`requestOpenX` / `peekPendingX` / `consumePendingX` /
-`subscribeOpenX`) and the channel object for the shell. Keep the module
-dependency-free — no React, no dockview — because it is reached on every route.
-
-On the receiving end the shell uses `usePendingRequest(channel, workspaceId, ready,
-handle)`. **`ready` matters**: the pane host is lazy, so a request can arrive before
-dockview exists, and a handler that runs then marks it handled while `ensurePane`
-no-ops on `if (!api) return` — the request opens nothing and is never consumed. The
-shell passes `isMobile || layout.api !== null`, and the `isMobile` half is not
-decoration: there is no pane layer on a phone at all, so gating on `layout.api` there
-would stop a plan doc ever reaching `MobilePlanView`. Consuming is the *handler's*
-choice — a conversation is opened by the shell, while a Preview pane reads its own URL
-out of the channel once it mounts.
-
-**Outside a workspace there is a global layout** (`lursor:layout:_global`), which
-is what `/analytics`, `/video`, `/image` and `/artifacts` resolve to. Those kinds
-are not workspace-scoped — Usage is cross-workspace, Video and Image are scoped to
-a LAIOS box — and `WORKSPACE_KINDS` keeps a global zone from offering a Terminal
-with no directory to open in. A global layout starts *empty*: the default seeds a
-chat pane, and a chat with no workspace has nothing to talk to.
-
-**Mobile has no pane layer.** A four-zone grid on a 390px screen is not a layout,
-so a phone shows one surface at a time and the bottom bar switches between them —
-reading the workspace's persisted layout (`readLayoutKinds`) so the bar reflects
-what you actually opened rather than a fixed list. Same `PaneContent` map, no
-zones, tabs or drag.
-
-### The shell
-
-`WindowBar` is the frame's own 44px strip: full width, above the sidebar and the
-content. It exists to end a negotiation — on frameless macOS the traffic lights
-float over the top-left, and four surfaces each used to reconstruct that band and
-each decide whether to inset past the buttons. Reserving it once means nothing
-below has to know the buttons exist. On a phone it is the app bar too (hamburger,
-title, `⚙`), which is what let `MobileHeader` go.
-
-The sidebar's box is `position: fixed`, so nothing can push it down: the primitive
-reads `--sidebar-top` and derives `--shell-height: calc(100svh - var(--sidebar-top))`,
-and the shell sets it once. Every `h-svh` that meant "the whole viewport" is
-`h-(--shell-height)`.
-
-**Settings is a dialog, not a page.** One category rail over the existing sections,
-state in `?settings=<category>` so it deep-links and survives a reload while opening
-over whatever route you are on. It absorbed `/settings`, `/customization`, `/laios`
-and `/schedules`; those paths are one-hop redirects now. Two-pane categories
-(Capabilities, Environment, Schedules) get a wider dialog, and `useBrowserBox`
-honours a `data-browser-bounds` ancestor so they size to the modal rather than to
-the fold.
-
-**Watch the entry chunk.** Three things belong behind a lazy boundary and will
-quietly climb back out: dockview (~76KB, behind the pane host), Monaco (~330KB,
-behind both the Files pane and the *skill editor dialog* — the settings dialog
-mounts on every route, so an eager import there puts Monaco in the entry), and the
-media/analytics pages. `use-pane-layout` must stay free of dockview **value**
-imports for the same reason: `Orientation` is a runtime enum, and importing it
-pulls the whole library in. When the entry chunk moves unexpectedly, build the
-previous commit in a worktree and diff the chunk lists — that is how the Monaco
-regression above was found, after two wrong guesses.
-
-### The file editor
-
-`components/files/` — `file-viewer.tsx` wires a workspace up (tree, search,
-watcher, open-file requests); `editor-pane.tsx` renders one group of tabs plus the
-active file; `file-buffers.ts` is the state machine behind both; `code-editor.tsx`
-wraps Monaco. The skill editor reuses the pane and the buffers, so it is the same
-editor without a workspace around it.
-
-**Monaco's language workers must be configured, not just registered.** Left at
-their defaults they report a screenful of errors on correct code, because each one
-assumes it is the whole toolchain for the file and this is a single-file view over
-a repo whose types live on disk. `monaco-setup.ts` therefore turns *semantic*
-TS/JS validation off outright (no `tsconfig.json`, no `node_modules`, no sibling
-modules in the model graph — so every import is "cannot find module"), demotes
-CSS `unknownAtRules` so Tailwind v4's `@theme`/`@apply` are not errors, and puts
-the JSON worker in jsonc mode with `enableSchemaRequest: false` so it never phones
-out to a schema URL. Syntax validation stays **on** everywhere — an unbalanced
-brace is real and needs no project. There is deliberately **no toggle**: semantic
-validation here is wrong for a structural reason, not a preference. If real
-diagnostics are ever wanted the honest version is a `tsserver`/LSP bridge on the
-backend, which is a subsystem, not a flag.
-
-Note the API moved in Monaco 0.56: the language namespaces are top-level
-(`monaco.typescript`, `monaco.css`, `monaco.json`), and `monaco.languages.*` is a
-deprecated stub. `unknownAtRules` is a real rule in the `vscode-css-languageservice`
-behind the worker but missing from Monaco's public `lint` type, so it is set
-through a widened type rather than a cast to `any`.
-
-**Content search** is `GET /files/grep`, the counterpart to `/search` (filenames).
-Two implementations of one endpoint: ripgrep when the machine has it, a pure-Python
-walk when it doesn't — a packaged Electron build cannot assume `rg`, so it stays an
-optimization and never a dependency. They are kept deliberately interchangeable:
-`rg` runs with `--no-ignore` (a checkout's `.gitignore` must not change what a
-search finds from one machine to the next), `--hidden`, and one exclude glob per
-`_IGNORED_DIRS` entry, and the `include` filter plus every cap are applied in
-Python for both paths. `rg` reports byte offsets and Monaco counts characters, so
-the column is converted. Read-only by design — there is no replace-across-files.
-
-**Split is one buffer store with tabs tagged by group**, never two
-`useFileBuffers`. Two stores would each need their own watcher fan-out and
-reconcile path, and the same file open in both would give one file on disk two
-independent dirty buffers — a conflict generator. So `OpenFile.groups` is a *set*
-of groups (a file split against itself is one buffer in two views), `saveFile` /
-`reconcile` / auto-save stay keyed on path alone, and `closeFile(path, group)`
-only prompts about unsaved edits when it is dropping the last view. Two
-`<Editor path=…>` with the same path share a Monaco model deliberately: edits and
-undo stay in step, while each editor keeps its own scroll and cursor because view
-state lives on the editor, not the model. Below `MIN_SPLIT_WIDTH` the split
-control is disabled with a reason rather than producing two unreadable columns.
-
-A search result — or any `OpenFileRequest` carrying a `line` — travels as a
-`RevealTarget` on the `OpenFile`, is applied on editor mount, and is then cleared,
-so a later re-render can't drag the cursor back. A reveal also forces a Markdown
-file to open as source: there is no line 42 in a rendered preview.
-
-### First run
-
-`pages/onboarding/` — a five-step walkthrough at `/welcome`: bring a model, connect
-GitHub, open the first workspace, create the first agent, then a summary of the
-surfaces before landing in it. Full-screen, outside `AppShell` (nothing in the
-sidebar or dock is useful yet). Four rules hold it together:
-
-- **Progress is derived, never stored.** `useOnboardingStatus` reads the
-  OpenRouter key, custom providers, the GitHub config, the workspace list, and the
-  agents — so a step is "done" because the thing exists, not because a step was
-  walked. That is what makes `/welcome` safe to revisit (Settings → General links
-  to it) and invisible to installs that predate it: `OnboardingGate` silently
-  marks a ready install complete instead of showing it a tour.
-- **"No workspaces" is never true.** `ensure_skills_workspace` registers the
-  skills catalog on every boot, so first-run detection has to filter
-  `is_system` — otherwise the walkthrough thinks a workspace already exists.
-- **A fresh install has no agents.** Nothing seeds one (unlike prompt templates
-  and the skills catalog), and a chat with no agent can't be typed into — hence
-  the agent step, without which the walkthrough would hand over a dead end. It
-  prefills a name and, on a local-only install, the endpoint's own first `custom:`
-  model: inheriting the app default there would name a cloud model the box has no
-  key for. Never over a model the user picked themselves.
-- **Only a model gates.** GitHub, the workspace, and the agent can be skipped (the
-  forward control says so); the rail refuses to unlock past step one until a model
-  source exists, since every other surface assumes one. LAIOS is deliberately
-  absent — it needs its own daemon installed first, so it stays a post-setup
-  destination.
-- **The seen-flag is `localStorage`, read synchronously.** The gate short-circuits
-  on it before mounting anything, so a returning user fires no extra queries;
-  only an unfinished install pays for the check. Losing the flag costs nothing —
-  see the first rule.
-
-`GitHubRepoPickerDialog` takes `navigateOnClone={false}` here: it otherwise jumps
-straight into the cloned workspace's chat, which would skip the last step.
-
-Finishing hands over to `/workspaces/<id>/chat`, calling **`seedChatOnlyLayout`**
-first: a single chat pane for that workspace, so the first conversation is the
-whole window instead of a chat beside an empty panel. Guarded by
-`hasStoredLayout`, so it is a first-visit default and never overwrites a layout the
-user arranged; a zone's `+` adds the rest.
-
-### Other
-
-- **Terminal** — a real PTY per workspace over a WebSocket (`api/terminal.py`).
-  POSIX only. Deliberately *not* env-injected.
-- **Files** — `api/files.py` + a per-workspace watcher; Monaco, lazily loaded,
-  fully editable on mobile with touch-tuned options. Tree rows carry VS Code-style
-  git decorations from `GET /git/status` — deliberately *not* `/git/diff`, which
-  computes a patch per changed file; the tree needs a state per path and nothing
-  else. Changes roll up onto collapsed folders (`lib/git-tree-status.ts`), and
-  `--ignored=matching` is what keeps the ignored set one entry per wholly-ignored
-  directory instead of one per file inside `node_modules`. See **The file editor**
-  below for the panel itself.
-- **Git / GitHub** — `api/git.py` returns `is_repo=False` for a non-repo
-  (the skills catalog) and the panel renders its empty state. `api/github.py`
-  holds the token server-side.
-- **Prompt library** — `PromptTemplate` rows, seeded idempotently on every boot
-  (`db/prompt_seed.py`). A template is **copied into** `Agent.instructions`, not
-  linked, so agents stay self-contained. `agents/prompt_author.py` generates and
-  improves prompts, capability-aware: it only references tools the agent
-  actually has.
-- **Analytics** — `UsageRecord` rows per turn, tagged with a `kind`, rolled up by
-  model / workspace / day.
-- **Models** — OpenRouter by default (`openrouter:` prefix), plus
-  `CustomProvider` rows for OpenAI-compatible endpoints, including ones with no
-  `/v1/models` (manual model lists).
-- **Nav** — one sidebar column (`sessions-pane.tsx`): nav rows, Pinned, and
-  Projects with its folders and **every** project's recent sessions inline
-  (`INLINE_SESSIONS`). It replaced a 68px workspace rail plus a contextual panel,
-  which cost the sidebar two widths, two toggles, and 10px truncated workspace
-  names. It also replaced an Activity feed — a second cross-workspace list of the
-  same conversations in time order, with its own filters, reachable only by leaving
-  the projects behind. What it was good for is in the list itself now: sessions
-  from every project are on screen at once, and a running agent shows as a dot on
-  its project row (`use-workspace-status`). Rolled-up marks survive only on a
-  **shut** folder header, which is hiding the rows that would carry their own; open
-  it and the header goes quiet. No member count — it restated the list directly
-  below and read as a session count while counting projects.
-- A **folder** (`folder-row.tsx`) is a root row like a project, so it takes a
-  project row's geometry — `pl-2`, one 16px glyph, 13px name, caret trailing on
-  hover (held open while shut, the one state with no rows to imply it). Its members
-  hang off a **guide rail** rather than being padded in: each carries four session
-  rows of its own, and indentation alone left the group's contents at the same left
-  edge as everything else. Filing into a shut group **opens** it
-  (`use-workspace-tree`) — otherwise the drop looked like a delete. The studio gets
-  **no** drag target, since `tree` never sees it and the server would happily file
-  it somewhere nothing renders.
-- A project row is **two targets**: the **name** switches to the project and
-  drills the list into it, the **caret** shows/hides its sessions in place
-  (`use-collapsed-projects`, persisted; shut projects are stored, so a new project
-  arrives expanded). They are siblings, not nested — a button inside an anchor is
-  invalid HTML — and the row div owns the hover background and the drag handlers,
-  with `draggable={false}` on the link so an anchor drag can't beat filing a
-  project into a folder. Which project the list is **drilled into** is sidebar
-  state, not a route (`use-project-drill`) — opening a session navigates, and a
-  route-derived scope would snap back under the cursor. ⌘1–⌘9 switch without
-  drilling, because a shortcut that re-scopes the list makes the sidebar jump on
-  every hop between two repos.
+| [`runs-and-intents.md`](docs/architecture/runs-and-intents.md) | The run engine, the chat transport/store, turn intents and the plan → refine → execute flow, the goal loop, compaction |
+| [`skills-and-env.md`](docs/architecture/skills-and-env.md) | Skills' four layers, bundled skills, Skill Studio, environment variables and redaction |
+| [`tools-and-agents.md`](docs/architecture/tools-and-agents.md) | Tool deferral and `search_tools`, subagents, memory providers, file-editing guards, **the Assistant** (control plane) |
+| [`media.md`](docs/architecture/media.md) | laios as a control plane, the three media sources, video generation, image generation |
+| [`frontend-shell.md`](docs/architecture/frontend-shell.md) | The pane layer, the shell and settings dialog, the sidebar, the file editor, first run |
+| [`services.md`](docs/architecture/services.md) | Schedules, preview/background processes, persistent terminals, browser visual QA, git/prompts/analytics/models |
+| [`backlog.md`](docs/architecture/backlog.md) | Work deferred with a reason: shell-rewrite leftovers, the laios UI backlog |
+
+Two point-in-time audits are cited from code and tests, and carry open findings:
+[`docs/TOOL-SURFACE-AUDIT.md`](docs/TOOL-SURFACE-AUDIT.md) (every tool the model
+actually sees) and [`docs/FILE-EDITING-AUDIT.md`](docs/FILE-EDITING-AUDIT.md)
+(hashline read/edit against Claude Code and the reference implementations).
 
 ## 7. Invariants and traps
 
@@ -1155,7 +208,8 @@ Each of these has already cost a debugging session.
    why run-scoped state (env) must use a `ContextVar`.
 3. **`subscribe()` must not `await` between snapshotting the buffer and
    registering the queue.**
-4. **Reconcile must not materialize into roots we don't own.** See Skills.
+4. **Reconcile must not materialize into roots we don't own.** See
+   [`skills-and-env.md`](docs/architecture/skills-and-env.md).
 5. **The goal evaluator fails closed** (not met), never open.
 6. **Cross-cache invalidation.** `threadKeys.all()` is a separate TanStack Query
    entry from `threadKeys.byWorkspace(id)`. Every invalidation and optimistic
@@ -1166,11 +220,13 @@ Each of these has already cost a debugging session.
 8. **`GET /threads/{id}` must stay unfiltered.**
 9. **The media source never falls back.** `resolve_image_target` /
    `resolve_video_target` resolve within the configured source or return `None`
-   plus a reason — never the other source. See Two media sources.
+   plus a reason — never another source. See
+   [`media.md`](docs/architecture/media.md).
 10. **A pane's DOM node must never be reparented.** `renderer: 'always'` is what
    guarantees it; a template applied without `reuseExistingPanels`, or built as a
    constant that forgets to name an open pane, destroys the panel instead — and
-   with it a live PTY, a scrolled iframe and an unsaved buffer. See The pane layer.
+   with it a live PTY, a scrolled iframe and an unsaved buffer. See
+   [`frontend-shell.md`](docs/architecture/frontend-shell.md).
 11. **Nothing outside the pane layer may address a pane through the URL.** `?c=` is
    written *from* the focused chat pane; a sidebar row parks a request on
    `lib/open-thread.ts` instead. Reading the URL to position a pane happens in
@@ -1182,8 +238,8 @@ Each of these has already cost a debugging session.
    explicit handler; don't remove it.
 13. **Never patch a vendored dependency.** Compose, subclass, or wrap with a
    `PrepareTools` / `AbstractCapability`. When a fix belongs upstream, prepare it
-   locally as a patch and hand it over — this repo does not open PRs against
-   third-party projects.
+   locally as a patch under [`docs/upstream/`](docs/upstream/) and hand it over —
+   this repo does not open PRs against third-party projects.
 14. **Local models are a first-class constraint.** GLM/DeepSeek via vLLM ignore
     tool enums, need the todo board to scaffold, and break on native
     `WebSearchTool` under `OpenAIChatModel`. Anything that narrows the toolset
@@ -1201,13 +257,13 @@ Each of these has already cost a debugging session.
     `add_middleware` inserts at the front of the list and the stack is built in
     reverse, so the middleware added **last** is outermost. Registering auth second
     would put it outside `CORSMiddleware`, strip `access-control-allow-origin` from
-    every 401, and turn each one into `TypeError: Failed to fetch` — invariant 11
+    every 401, and turn each one into `TypeError: Failed to fetch` — trap 12
     again, one layer up. `tests/test_auth.py` asserts the header on a 401 precisely
     so a reorder fails loudly.
 17. **A new WebSocket route is authenticated for free; a new *client* is not.**
     Browsers can't set headers on a WebSocket, so the token rides as a
     `lursor.bearer.<token>` subprotocol and `TokenAuthMiddleware` wraps `send` to
-    echo it back on accept — which is why the four route handlers call a bare
+    echo it back on accept — which is why the route handlers call a bare
     `accept()` and know nothing about any of it. Keep it that way: a route that
     selects its own subprotocol will fight the wrapper. Any new client must go
     through `connectWs()` in `api/client.ts`, which is also the only place the ws/wss
@@ -1231,8 +287,8 @@ Each of these has already cost a debugging session.
 20. **Update state is polled, never pushed.** The obvious move for "tell the UI an
     update exists" is a new AG-UI event, and it is the wrong one: the stream is
     thread-scoped, so an update would only be announced to someone mid-conversation,
-    and it would owe the dual-transport wiring in invariant 1 for nothing. `/api/update/*`
-    plus Electron IPC is the whole mechanism. This is invariant 1's own advice —
+    and it would owe the dual-transport wiring in trap 1 for nothing. `/api/update/*`
+    plus Electron IPC is the whole mechanism. This is trap 1's own advice —
     "the cheapest correct move is to add no new event type at all".
 21. **All writable state lives under one root, `config.DEFAULT_DATA_ROOT`.** There is
     no "dev location" any more. Until 0.1.10 the database alone defaulted to
@@ -1244,6 +300,13 @@ Each of these has already cost a debugging session.
     `Settings` and gets rebased by `_rebase_under_data_dir`; do not reach for
     `BACKEND_DIR`. `LURSOR_DATA_DIR` remains the override, which is how a second
     isolated backend is run.
+22. **The Assistant's privilege is the *workspace*, and `app/assistant/registry.py`
+    is a leaf.** Nothing under `app/agents/` may import from `app/assistant/` except
+    that module, which is what lets `builder.py` take the tool guard without a cycle.
+    A control-plane tool reaching an agent outside the Assistant workspace **raises**
+    (`AssistantToolLeak`) rather than being filtered out: filtering would make a
+    broken security boundary look like a missing feature. See
+    [`tools-and-agents.md`](docs/architecture/tools-and-agents.md).
 
 ## 8. Desktop and distribution
 
@@ -1253,48 +316,27 @@ so all writable state stays out of the read-only bundle. `HashRouter` in Electro
 (history routing doesn't work from `file://`), `BrowserRouter` in the browser.
 
 It can also be a **thin client** against a backend on another machine — a VPS over
-https with a bearer token — in which case nothing is spawned locally at all. The
-connection is resolved before the app document loads, which shapes the bootstrap:
+https with a bearer token — in which case nothing is spawned locally. Two
+consequences worth knowing before touching the bootstrap:
 
-- Connections live in `~/.lursor/connections.json` (`electron/connections.cjs`).
-  The **local one is synthesized, never persisted**, so a fresh install has no config
-  file, boots straight into local mode and never sees the picker. Remote tokens are
-  encrypted with `safeStorage`.
-- The API base and token reach the renderer through a **synchronous** `sendSync` in
-  the preload, not `additionalArguments`. `api/client.ts` resolves `API_BASE` and
-  `AUTH_TOKEN` at module scope, and the connection isn't known when the window is
-  created — the picker may not have run yet. This replaced the old
-  `--lursor-api-base=` argument.
-- Subresource loads (`<img>`, `<video>`, download links) can't be given a header
-  from JS, so the main process injects `Authorization` via
-  `webRequest.onBeforeSendHeaders`, scoped to the active connection's origin.
-- Remote dev-server previews are reached by **forwarding the port**, not proxying
-  HTTP: `electron/port-forward.cjs` listens on the same port number locally and pipes
-  each connection to `/api/tunnel` (`api/tunnel.py`). Rewriting HTML/CSS/HMR payloads
-  behind a path prefix is the alternative, and it breaks on every framework that
-  emits root-absolute asset paths. See both files' docstrings.
-- Auto-update runs on a remote connection too, and the *backend* has its own update
-  path (`/api/update/*`, `scripts/self-update.sh`) because a remote one is a git
-  checkout rather than a frozen bundle. This used to be skipped outright on the
-  grounds that quitting to install would drop the connection mid-run — true of the
-  install, not the check, and the install is now user-initiated from the renderer
-  rather than a native dialog that appears unbidden. `server-info` carries the
-  backend's version so the client can report skew, which is the one thing a remote
-  setup can have and a local one cannot.
-
-`docs/REMOTE.md` is the user-facing runbook.
-
-macOS release builds are signed and notarized. Notarization requires *every*
-nested binary to be signed, so `scripts/sign-backend-bundle.cjs` discovers every
-Mach-O under `Resources/backend` at `afterPack` rather than maintaining a
-`mac.binaries` list that would rot on each dependency bump.
+- The connection is resolved **before** the app document loads, and the API base
+  and token reach the renderer through a **synchronous** `sendSync` in the preload.
+  `api/client.ts` resolves `API_BASE` and `AUTH_TOKEN` at module scope, and the
+  connection isn't known when the window is created.
+- **Switching connections never stops a local backend.** `releaseConnection()`
+  drops the forwards and the header injection only; the process is killed on quit.
+  Ending every agent run, dev server and PTY on this machine because the user
+  looked at another one is the opposite of the point.
 
 Platform scope: macOS arm64 and Linux x64. The frozen backend is
-architecture-specific, so each arch is a full extra build. Windows is unbuilt
-(the Electron main process already branches on `win32`; the bundle script is the
-missing piece).
+architecture-specific, so each arch is a full extra build. Windows is unbuilt (the
+Electron main process already branches on `win32`; the bundle script is the missing
+piece).
 
-Details, secrets and the release runbook: [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md).
+How it is all wired — connections, backend lifecycle, port forwarding, drag-out,
+signing and notarization: [`docs/ELECTRON.md`](docs/ELECTRON.md). Release runbook,
+channels and secrets: [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md). The
+user-facing remote runbook: [`docs/REMOTE.md`](docs/REMOTE.md).
 
 ## 9. Deliberately not built
 
@@ -1307,63 +349,19 @@ put a header on a navigation or an iframe load), a container image for the backe
 or launchd instead), resuming a turn interrupted by a backend restart (run state is
 in-memory, so supervision means "the API comes back", not "the work continues" — see
 `reconcile_interrupted_runs`), app-managed SSH tunnels (the shipped remote path is
-https direct; a tunnel is supervised outside the app — `docs/REMOTE.md`), restarting a
-*local* backend that crashes (Electron logs the exit and leaves the window a dead
-shell), Docker sandbox execution, MCP + HTTP tool wiring
-(`Tool` rows are catalogued but not yet passed to agents), Alembic, encryption or
-OS keychain for stored secrets, an always-on scheduler daemon, catch-up fires,
-non-cron triggers, chained schedules, a budget ceiling that disables a schedule,
-auto-retain of transcripts into Hindsight, terminal-panel env injection, custom
-`.claude/commands/*.md` slash commands, virtualized chat timeline, backend
-thread pagination, and `.cursor/rules` / `AGENTS.md` ingestion alongside skills.
+https direct; a tunnel is supervised outside the app), restarting a *local* backend
+that crashes (Electron logs the exit and leaves the window a dead shell), Docker
+sandbox execution, MCP + HTTP tool wiring (`Tool` rows are catalogued but not yet
+passed to agents), Alembic, encryption or OS keychain for stored secrets, an
+always-on scheduler daemon, catch-up fires, non-cron triggers, chained schedules, a
+budget ceiling that disables a schedule, auto-retain of transcripts into Hindsight,
+terminal-panel env injection, custom `.claude/commands/*.md` slash commands,
+virtualized chat timeline, backend thread pagination, and `.cursor/rules` /
+`AGENTS.md` ingestion alongside skills.
 
 **Known debt:** `api/chat.py` is ~1900 lines; moving the run engine out of
 `app/api/` into `app/agents/` is the right follow-up. `Skill.scope` is a dormant
 column left in place so a migration didn't have to rewrite the table.
 
-**Shell rewrite leftovers** — the seven-phase rewrite that produced the pane layer
-shipped everything it set out to except these, each deferred with a reason rather
-than forgotten:
-
-- **`GET /workspaces/{id}/artifacts`.** The Artifacts pane covers plan docs and
-  generated media but not agent-written files. The provenance exists per *turn* —
-  a write is a `write_file` / `hashline_edit` tool call and `tool_calls` is
-  persisted, which is how `agui/file-changes.ts` derives it — but there is no way
-  to ask for it across a workspace. Client-side it would mean fetching every
-  thread's messages: N requests for a list whose contents depend on which
-  conversations you happened to open, which looks complete and is not.
-- **Popout panes.** Dockview supports panes in real OS windows and it is a genuine
-  Electron win (a terminal on a second monitor). Deferred because the
-  absolute-overlay positioning we inherit has its sharpest edges there.
-- **`Thread.pinned`.** Pins are client-side under `lursor:pins`. A column can
-  follow if they need to survive a machine change — the app is reachable over the
-  LAN, so that is real.
-- **Rebindable shortcuts.** `lib/shortcuts.ts` is documentation, not a registry:
-  nine call sites bind their own chords and the file lists them. Making them
-  rebindable is when the registry has to exist, and then that file becomes its
-  labels.
-
-**laios UI backlog** — the daemon has shipped features with no client surface.
-The Lursor side of each is the same four layers (proxy route in `api/laios.py`,
-hook in `api/laios.ts`, types, page):
-
-- `GET /v1/models`, `GET /v1/models/{id}` — the whole model-inventory family is
-  unconsumed, so the UI can't distinguish *installed on disk* from *in the
-  catalog* and shows no run stats (`run_count`, `last_served_at`,
-  `available_on_nodes`, `usable_recipes`, live `running_instance`).
-- `GET /v1/models/partial` + `DELETE /v1/models/{id}` — reclaim orphaned or
-  incomplete downloads (409 when in use).
-- `POST /v1/jobs/{id}/cancel` — pull is hard-coupled to serve in
-  `useServeManager.start`; there is no download-only path and no cancel.
-- `EngineKind::Sglang` is missing from the frontend engine union, so sglang
-  models render a broken badge and mis-classify in `serve-model-dialog.tsx`.
-  Smallest of these and a real correctness bug.
-- `DELETE /v1/cluster/workers/{id}` and `GET /v1/cluster/token` — the cluster
-  panel is view-only; `workers[]`/`remotes[]` are typed `unknown[]`.
-- Never wired: `GET /v1/metrics/summary`, `/v1/keys`, `/v1/aliases`,
-  `/v1/cluster/remotes`, `POST /v1/gateway/restart`. `GET /v1/doctor` is already
-  proxied by the backend with zero frontend consumers — a free diagnostics panel.
-
-Also worth carrying upstream: `DELETE /v1/instances/{id}` exists in the daemon
-and Lursor uses it, but it is absent from laios's `docs/api.md` and
-`openapi.yaml`.
+Scoped-and-deferred work, each entry with the reason it was left:
+[`docs/architecture/backlog.md`](docs/architecture/backlog.md).
