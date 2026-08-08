@@ -16,7 +16,7 @@ export {
 
 /**
  * Wall-clock cost of one denoise step, measured at 1344×768×107f in the recipe
- * header (docs/inference-matrix.md).
+ * header (laios's `docs/inference-matrix.md`, not a doc in this repo).
  *
  * This constant is the page's only live signal. MiniMax-H3 reports `queued`/0
  * for the entire run and flips straight to `completed`/100, so elapsed-time
