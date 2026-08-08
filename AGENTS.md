@@ -1290,8 +1290,8 @@ so all writable state stays out of the read-only bundle. `HashRouter` in Electro
 (history routing doesn't work from `file://`), `BrowserRouter` in the browser.
 
 It can also be a **thin client** against a backend on another machine — a VPS over
-https with a bearer token — in which case nothing is spawned locally at all. The
-connection is resolved before the app document loads, which shapes the bootstrap:
+https with a bearer token — in which case nothing is spawned locally. The connection
+is resolved before the app document loads, which shapes the bootstrap:
 
 - Connections live in `~/.lursor/connections.json` (`electron/connections.cjs`).
   The **local one is synthesized, never persisted**, so a fresh install has no config
@@ -1302,6 +1302,13 @@ connection is resolved before the app document loads, which shapes the bootstrap
   `AUTH_TOKEN` at module scope, and the connection isn't known when the window is
   created — the picker may not have run yet. This replaced the old
   `--lursor-api-base=` argument.
+- **Switching connections never stops a local backend.** `releaseConnection()` drops
+  the forwards and the header injection only; the process is killed on quit. Ending
+  every agent run, dev server and PTY on this machine because the user looked at
+  another one is the opposite of the point. Switching back reattaches on the port
+  held in `backendPort` — a second spawn would put two backends on two ports against
+  one SQLite database — and only replaces the process if the reattach health check
+  fails.
 - Subresource loads (`<img>`, `<video>`, download links) can't be given a header
   from JS, so the main process injects `Authorization` via
   `webRequest.onBeforeSendHeaders`, scoped to the active connection's origin.

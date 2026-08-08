@@ -6,7 +6,8 @@ Python interpreter and starts/stops the FastAPI server itself. In **development*
 it runs the backend from source via `uv` and loads the Vite dev server.
 
 It can also run as a **thin client** against a backend on another machine, in which
-case it spawns nothing. See [REMOTE.md](REMOTE.md) for the user-facing side.
+case it spawns nothing — and leaves any local backend it already started running.
+See [REMOTE.md](REMOTE.md) for the user-facing side.
 
 ## Connections
 
@@ -31,7 +32,9 @@ to talk to, which is the same reason the splash and error screens are `data:` UR
 On launch (`electron/main.cjs`):
 
 1. Create the window, showing the splash, and resolve the connection.
-2. **Local**: pick a port (prefers `8791`, ephemeral if taken) and spawn the backend:
+2. **Local**: reattach to the backend this process already started, if there is one
+   (see step 7); otherwise pick a port (prefers `8791`, ephemeral if taken) and spawn
+   it:
    - **Packaged**: `<Resources>/backend/python/bin/python -m uvicorn app.main:app`,
      with `LURSOR_DATA_DIR=~/.lursor` so all writable state stays out of the
      read-only app bundle.
@@ -59,6 +62,15 @@ On launch (`electron/main.cjs`):
 6. The backend is spawned in its own process group and killed on quit
    (`before-quit`/`will-quit`), along with any open port forwards. A single-instance
    lock prevents port clashes.
+7. **Switching connections does not stop a local backend.** `releaseConnection()`
+   closes the forwards and the header injection and nothing else: killing the backend
+   would end every agent run, dev server and terminal on this machine because the user
+   looked at another one. So the process outlives the switch, and coming back to
+   `This Mac` reattaches on the port it is still listening on — tracked in
+   `backendPort` — rather than spawning a second backend on a second port against the
+   same SQLite database. If the reattach health check fails (it died or wedged while
+   we were away) the process is killed and replaced. The same path covers the macOS
+   `activate` reopen, which used to spawn a duplicate.
 
 ## Port forwarding
 

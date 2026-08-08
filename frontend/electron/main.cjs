@@ -8,8 +8,10 @@
 //
 // It can also be a thin client. A saved *remote* connection points it at a backend
 // on another machine — typically a VPS over https with a bearer token — and then
-// nothing is spawned locally at all: agents run there and keep running with this
-// machine asleep. See electron/connections.cjs and docs/REMOTE.md.
+// nothing is spawned locally: agents run there and keep running with this machine
+// asleep. Switching to one does not stop a local backend that is already up — its
+// agents, dev servers and PTYs keep running, and switching back reattaches to the
+// same process. See electron/connections.cjs and docs/REMOTE.md.
 //
 // The connection is therefore resolved before anything else happens, and everything
 // downstream (health check, API base, port forwarding, teardown) branches on it.
@@ -55,6 +57,13 @@ const APP_ICON = nativeImage.createFromPath(
 let mainWindow = null
 /** @type {import("node:child_process").ChildProcess | null} */
 let backendProc = null
+/**
+ * The port {@link backendProc} was started on. Kept alongside the process because a
+ * local backend outlives a switch to a remote one, and switching back has to reattach
+ * to the port it is already listening on rather than pick a new one.
+ * @type {number | null}
+ */
+let backendPort = null
 /** Guards teardown so we only kill the backend once. */
 let backendKilled = false
 /**
@@ -159,12 +168,16 @@ function startBackend(port) {
   })
   proc.on("exit", (code, signal) => {
     console.log(`[backend] exited (code=${code}, signal=${signal})`)
-    backendProc = null
+    if (backendProc === proc) {
+      backendProc = null
+      backendPort = null
+    }
   })
 
   backendProc = proc
-  // Re-arm the teardown guard: a previous local backend may have been killed on a
-  // connection switch, and this new process still has to be killable.
+  backendPort = port
+  // Re-arm the teardown guard: a previous local backend may have been killed and
+  // replaced, and this new process still has to be killable.
   backendKilled = false
   return proc
 }
@@ -253,9 +266,9 @@ async function pingHealth(apiBase, token, timeoutMs = 5000) {
  *
  * `watchProcess` is for the local backend only: if the process we spawned has died
  * there is nothing left to wait for, so failing immediately beats burning the whole
- * timeout. A remote backend has no such signal — and must not be given one, because
- * `backendProc` is null in remote mode and would end every attempt on the first
- * poll.
+ * timeout. A remote backend must never be given it — `backendProc` says nothing about
+ * a machine on the other end of the network, and is null on a client that has never
+ * started one.
  *
  * @returns {Promise<{ ok: boolean, status: number }>}
  */
@@ -687,25 +700,58 @@ function clearAuthHeaderInjection() {
 }
 
 /**
+ * Spawn a local backend on a free port, point {@link activeConnection} at it, and
+ * wait for it to answer.
+ *
+ * @returns {Promise<boolean>} whether it came up.
+ */
+async function startLocalBackend(connection) {
+  const port = await findFreePort(PREFERRED_PORT)
+  const apiBase = `http://127.0.0.1:${port}/api`
+  activeConnection = { ...connection, apiBase, token: "" }
+
+  mainWindow?.loadURL(screenHtml("Starting Lursor", "Bringing up the backend…", true))
+  startBackend(port)
+
+  const { ok } = await waitForHealth(apiBase, "", HEALTH_TIMEOUT_MS, true)
+  return ok
+}
+
+/**
  * Bring up a connection and load the app on it.
  *
- * Local: spawn the bundled backend, exactly as the app always has. Remote: spawn
- * nothing and check we can reach it. Either way the app only loads once the backend
- * answers, so the renderer never races a backend that isn't up.
+ * Local: reattach to the backend we already own, or spawn one. Remote: spawn nothing
+ * and check we can reach it. Either way the app only loads once the backend answers,
+ * so the renderer never races a backend that isn't up.
  */
 async function connectTo(connection) {
   clearAuthHeaderInjection()
   portForward.configure(null)
 
   if (connection.kind === "local") {
-    const port = await findFreePort(PREFERRED_PORT)
-    const apiBase = `http://127.0.0.1:${port}/api`
-    activeConnection = { ...connection, apiBase, token: "" }
+    // A local backend we started is still running: switching away doesn't stop it, so
+    // reattach instead of spawning a second one. Two backends would land on two ports
+    // against one SQLite database, and the agents and dev servers left running on the
+    // first would be invisible from the second.
+    let ok
+    if (backendProc && backendPort != null) {
+      const apiBase = `http://127.0.0.1:${backendPort}/api`
+      activeConnection = { ...connection, apiBase, token: "" }
+      mainWindow?.loadURL(
+        screenHtml("Connecting to Lursor", `Reattaching to ${connection.name}…`, true)
+      )
+      ok = (await waitForHealth(apiBase, "", HEALTH_TIMEOUT_MS, true)).ok
+      if (!ok) {
+        // It died or wedged while we were away. Replace it rather than leaving the
+        // user on an error screen for a process they can neither see nor restart.
+        console.log("[backend] reattach failed; starting a fresh local backend")
+        killBackend()
+        ok = await startLocalBackend(connection)
+      }
+    } else {
+      ok = await startLocalBackend(connection)
+    }
 
-    mainWindow?.loadURL(screenHtml("Starting Lursor", "Bringing up the backend…", true))
-    startBackend(port)
-
-    const { ok } = await waitForHealth(apiBase, "", HEALTH_TIMEOUT_MS, true)
     if (!ok) {
       showBackendError()
       return
@@ -756,11 +802,18 @@ async function bootConnection() {
   await connectTo(connections.lastUsed())
 }
 
-/** Tear down whatever the current connection owns, without quitting. */
+/**
+ * Detach from the current connection, without quitting.
+ *
+ * Deliberately does *not* stop a local backend. Switching connections is a change of
+ * view, not a shutdown: killing it would end every agent run, dev server and terminal
+ * on this machine just because you looked at another one — and the reason to run a
+ * backend elsewhere is precisely that work should survive you looking away. It is
+ * stopped on quit ({@link teardown}), and reattached to by {@link connectTo}.
+ */
 function releaseConnection() {
   portForward.closeAll()
   clearAuthHeaderInjection()
-  killBackend()
   activeConnection = null
 }
 
@@ -1310,8 +1363,8 @@ if (!gotLock) {
       if (BrowserWindow.getAllWindows().length !== 0) return
       createWindow()
       // The window was closed, so whatever it was connected to has to be brought
-      // back up — on macOS the app is still running and the backend may still be
-      // alive, in which case the health check simply passes immediately.
+      // back up — on macOS the app is still running and the local backend with it,
+      // so this reattaches to that process and the health check passes immediately.
       await connectTo(activeConnection ?? connections.lastUsed())
     })
   })
