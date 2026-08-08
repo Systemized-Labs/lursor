@@ -724,6 +724,98 @@ async def test_file_upload_into_folder(client: AsyncClient):
     assert raw.content == png_bytes
 
 
+async def test_file_rename_moves_into_folder(client: AsyncClient):
+    """`/files/rename` is also *move* — what dragging a row onto a folder does.
+
+    The refusal to overwrite is the load-bearing part: a drop that lands on a folder
+    already holding that name has to fail loudly rather than replace what's there.
+    """
+    ws = (await client.post("/workspaces", json={"name": "Moves"})).json()
+    wid = ws["id"]
+    for path in ("a.txt", "dir/inner.txt", "dest/keep.txt", "dest/a.txt"):
+        r = await client.put(
+            f"/workspaces/{wid}/files/write", json={"path": path, "content": path}
+        )
+        assert r.status_code == 200, r.text
+
+    async def move(src: str, dst: str):
+        return await client.post(
+            f"/workspaces/{wid}/files/rename", json={"path": src, "new_path": dst}
+        )
+
+    # A file into a folder, and a whole directory into a folder.
+    assert (await move("a.txt", "dest/moved.txt")).status_code == 200
+    assert (await move("dir", "dest/dir")).status_code == 200
+    listed = (
+        await client.get(f"/workspaces/{wid}/files/list", params={"path": "dest"})
+    ).json()
+    assert {(e["name"], e["is_dir"]) for e in listed} == {
+        ("keep.txt", False),
+        ("a.txt", False),
+        ("moved.txt", False),
+        ("dir", True),
+    }
+    inner = await client.get(
+        f"/workspaces/{wid}/files/read", params={"path": "dest/dir/inner.txt"}
+    )
+    assert inner.status_code == 200
+    assert inner.json()["content"] == "dir/inner.txt"
+
+    # A name already taken in the destination is a conflict, not an overwrite.
+    assert (await move("dest/keep.txt", "dest/a.txt")).status_code == 409
+    assert (
+        await client.get(f"/workspaces/{wid}/files/read", params={"path": "dest/a.txt"})
+    ).json()["content"] == "dest/a.txt"
+
+    # And the usual pair: nothing to move, and nowhere outside the root to move it.
+    assert (await move("gone.txt", "dest/gone.txt")).status_code == 404
+    assert (await move("dest/a.txt", "../escaped.txt")).status_code == 400
+
+
+async def test_file_upload_preserves_relative_subpaths(client: AsyncClient):
+    """A filename carrying a subpath rebuilds the folder it came from.
+
+    This is the wire shape a *folder* drop produces (the explorer walks the dropped
+    directory and names each file by its path within it), so the tree that lands has
+    to match the tree that was dragged.
+    """
+    ws = (await client.post("/workspaces", json={"name": "Dropped"})).json()
+    wid = ws["id"]
+
+    r = await client.post(
+        f"/workspaces/{wid}/files/upload",
+        data={"path": "incoming"},
+        files=[
+            ("files", ("site/index.html", b"<h1>hi</h1>", "text/html")),
+            ("files", ("site/assets/app.css", b"body{}", "text/css")),
+            ("files", ("README.md", b"# top level", "text/markdown")),
+        ],
+    )
+    assert r.status_code == 201, r.text
+    assert {e["path"] for e in r.json()} == {
+        "incoming/site/index.html",
+        "incoming/site/assets/app.css",
+        "incoming/README.md",
+    }
+
+    # The intermediate directories were created, not flattened into the names.
+    listed = (
+        await client.get(f"/workspaces/{wid}/files/list", params={"path": "incoming/site"})
+    ).json()
+    assert {(e["name"], e["is_dir"]) for e in listed} == {
+        ("index.html", False),
+        ("assets", True),
+    }
+
+    # A subpath that climbs out of the destination is still refused.
+    escape = await client.post(
+        f"/workspaces/{wid}/files/upload",
+        data={"path": "incoming"},
+        files=[("files", ("../../escape.txt", b"nope", "text/plain"))],
+    )
+    assert escape.status_code == 400
+
+
 async def test_file_serve_path_in_url_with_html_type(client: AsyncClient):
     """`/serve/<path>` returns the file as `text/html`, siblings included.
 

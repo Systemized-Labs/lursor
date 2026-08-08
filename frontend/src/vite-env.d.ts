@@ -53,6 +53,12 @@ interface ElectronBridge {
     isDir: boolean
     absPath: string
   }) => Promise<{ ok: true } | { ok: false; error: string }>
+  /**
+   * The on-disk path of a dropped `File`, or null when it has none. Only the
+   * preload can answer this (`webUtils.getPathForFile`); a browser never can, so
+   * callers must treat "" as "unknown", not as "outside the workspace".
+   */
+  readonly filePath: (file: File) => string | null
 
   /** Subscribe to desktop update state. Returns its own unsubscribe function. */
   readonly onUpdateState: (

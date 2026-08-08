@@ -66,6 +66,27 @@ export interface GrepParams {
   limit?: number
 }
 
+/**
+ * One file to upload, and where it should land relative to the destination folder.
+ *
+ * `path` exists because a folder upload has to keep its shape, and the *only* place
+ * the multipart format has to say so is the filename — which is why the backend
+ * reads a subpath out of it. It is passed explicitly rather than stuffed into a
+ * re-wrapped `File`: a `File`'s name is not reliably preserved through the
+ * constructor (some engines take the source file's name instead), so a walked
+ * folder that carried its path there would silently flatten on drop.
+ */
+export interface UploadEntry {
+  file: File
+  /** Relative path, e.g. `site/assets/app.css`. Defaults to the file's own name. */
+  path?: string
+}
+
+/** Where an entry lands: its explicit path, the browser's, or just its name. */
+function uploadPath(item: UploadEntry): string {
+  return item.path || item.file.webkitRelativePath || item.file.name
+}
+
 export const filesApi = {
   list: (workspaceId: string, path = "", signal?: AbortSignal) =>
     api.get<DirEntry[]>(
@@ -116,12 +137,13 @@ export const filesApi = {
     ),
   /** Upload files into a workspace folder ("" for the root). Bytes round-trip
    * verbatim, so binary files (images, archives, …) upload intact. */
-  upload: (workspaceId: string, path: string, files: File[]) => {
+  upload: (workspaceId: string, path: string, items: UploadEntry[]) => {
     const form = new FormData()
     form.append("path", path)
-    for (const file of files) {
-      // Preserve any relative subpath the browser attached (folder uploads).
-      form.append("files", file, file.webkitRelativePath || file.name)
+    for (const item of items) {
+      // The destination path is the multipart *filename*, which is where the
+      // backend reads a subpath from — see `uploadPath`.
+      form.append("files", item.file, uploadPath(item))
     }
     return api.upload<DirEntry[]>(
       `/workspaces/${workspaceId}/files/upload`,

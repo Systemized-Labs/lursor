@@ -92,6 +92,12 @@ In a plain browser there is no native drag, so the same helper falls back to
 Chromium's `DownloadURL` promise (Finder accepts it; the backend serves the bytes on
 drop) plus the path as `text/plain`.
 
+Dropping files *in* needs one thing from main as well: `window.electron.filePath(file)`
+(`webUtils.getPathForFile`, since Electron 32 removed `File.path`). It answers whether
+a dropped file is already inside the workspace, which is what makes that drop a move
+instead of an upload of a second copy. Deliberately inert on a remote connection —
+there the paths are this machine's and the workspace is on another.
+
 ## Layout
 
 ```

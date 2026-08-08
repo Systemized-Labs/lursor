@@ -1037,6 +1037,32 @@ undo stay in step, while each editor keeps its own scroll and cursor because vie
 state lives on the editor, not the model. Below `MIN_SPLIT_WIDTH` the split
 control is disabled with a reason rather than producing two unreadable columns.
 
+**Files drop *into* the tree, onto the folder under the cursor.** One drop surface
+for the whole panel (`dragover` bubbles, so the row is a `closest` away and the empty
+space below the last row still stands for the root); a file row passes the drop to
+the folder it lives in. `lib/file-drop-in.ts` reads the `DataTransfer`, which is a
+hostile object: `items` dies with the event — so the entry walk must be *started*
+inside the handler — and a dropped folder arrives as an entry tree whose
+`readEntries` returns in batches of 100, silently truncating anything larger if you
+call it once. Each walked file carries its relative path in an `UploadEntry`
+alongside the `File`, **not** in a re-wrapped `File.name`: some engines take the
+source file's name instead and the folder would flatten on drop. Caps (300 files,
+128 MB) reject a drop whole rather than uploading part of it.
+
+Upload overwrites by name without asking, which is fine for a menu command and not
+for a drop that missed a row by two pixels — so the destination is listed first and
+any collision becomes a dialog. The picker takes the same route, so both paths ask
+the same question.
+
+**A drop that came from inside the tree is a move, not a copy** (`/files/rename`,
+which refuses to overwrite with a 409). It identifies itself two ways, because the
+desktop drag-out cancels its own HTML drag and takes the marker with it: the
+`TREE_ITEM_DRAG_TYPE` payload on a browser drag, and — for a native one — a
+short-lived record of what this window just started dragging, believed only for a
+single dropped file whose name matches. Failing both, a dropped file whose *real
+path* is already inside the workspace is also a move; that check is off on a remote
+connection, where paths belong to the wrong machine.
+
 **A file leaves the window as a file, not as text.** Explorer rows are `draggable`
 and go through `lib/file-drag-out.ts`, which has two mechanisms because the renderer
 has no way to promise a file to the OS: in the desktop app it cancels its own drag
