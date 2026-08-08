@@ -98,6 +98,8 @@ Status added after implementation (§7): **fixed** = closed in this repo,
 | 9 | medium | patch | non-UTF-8 bytes destroyed file-wide by any edit |
 | 10 | medium | open | `read_file` has no character cap on the hashline path |
 | 11 | low | open | no PDF or notebook reads |
+| 12 | high | fixed | a one-line anchor carrying a multi-line body strands the rest of the block — the duplicate lines the agents kept reporting |
+| 13 | high | fixed | agents re-edit from line numbers their own previous edit shifted; 62% of all anchor misses |
 
 ### 3.1 `end_hash` optional — silent destruction under drift
 
@@ -192,6 +194,65 @@ ships `max_characters` for precisely this.
 `document_support` exists in the console toolset but pydantic-deep hardcodes only
 `image_support=True` (`pydantic_deep/agent.py:413`). Claude Code's `Read` handles
 both, plus a dedicated `NotebookEdit`.
+
+### 3.12 One-line anchor, multi-line body — the duplicate lines
+
+`end_line` is optional and nothing checks that `new_content` is one line to
+match, so a model that re-states a whole block but forgets the range gets the new
+copy spliced in *above* the old one with `error=None`. This is the "duplicate
+lines" the agents kept reporting, and unlike 3.1 it needs no drift at all — the
+anchor is perfectly valid, the edit is just narrower than the content.
+
+Measured over the 713 real `hashline_edit` calls in `~/.lursor/lursor.db`: **16%
+(114) had this shape**, and they were followed by a re-read-and-re-edit of the
+same file **75%** of the time against **52%** for explicit range edits. It also
+slips past 3.5's fix by construction — duplicated code is usually still
+*parseable*, so `edit_syntax.py` stays quiet. Confirmed against the checker: a
+`.tsx` file with `flightTime: 0` twice in one object literal and `const
+groundLevel` declared twice (the real bug from the minigame session) returns
+`None`; both are semantic, not syntactic, and `transpileModule` reports only
+syntactic diagnostics.
+
+Fixed in `agents/file_editing.py`. The replacement is compared against the lines
+the edit *keeps* on either side of the splice; a repeat of two or more
+substantive lines is refused with the `end_line`/`end_hash` that expresses what
+the model meant. Anchoring on the last line of `new_content` and extending
+backwards is what finds it — the repeat rarely starts at the splice, because the
+stranded originals sit in front of it. Measured on this repo's own source:
+**96.9%** of the bug shape caught with the *correct* `end_line` named, **0.17%**
+of legitimate range edits flagged (all as warnings, never refusals), and **0%**
+of legitimate one-line-to-many expansions touched.
+
+Refusal is reserved for the replace-with-no-`end_line` shape, where supplying the
+reported range produces exactly the file the model was aiming for. `insert_after`
+next to a repetitive structure — a list of near-identical config blocks — may
+genuinely mean it, so that gets a warning appended to a successful write instead.
+
+### 3.13 Agents re-edit from line numbers they already invalidated
+
+**13.7% of the 713 calls (98) failed on a hash mismatch — and 62% of those were
+self-inflicted**: the agent edited a file, then edited it again from numbers its
+own earlier edit had shifted. That answers §3's open question about the real
+mismatch rate, and it lands above the 10% line at which the format costs more
+than it saves.
+
+The mismatch is the *lucky* outcome. The hash is positional-blind, and on this
+repo's source **19.1% of lines share a 2-char hash with another line within ±10
+lines** (75.5% file-wide — blank lines, `}`, `  );`), so a drifted anchor
+validates against the wrong line roughly one time in five and splices silently.
+Range edits are well covered once 3.1 is fixed: simulated under 1-5 lines of
+drift with both hashes supplied, only **0.01-0.21%** are falsely accepted. The
+exposure is concentrated in the single-anchor path.
+
+Fixed by re-tagging the edited region on every *successful* edit, with the line
+delta, so the next edit never needs stale numbers or a re-read. Same trade as
+3.6, applied to the success path rather than the error path.
+
+Related, and worth keeping in mind rather than fixing: `_find_anchor`'s recovery
+advice is wrong 4% of the time at 2 lines of drift and 19% at 10, because a
+nearer hash collision outranks the true match. Low volume in practice (15 "moved
+to line N" against 7 "content changed" in the history), and a wrong suggestion
+still fails its own hash check on retry.
 
 ### Also open
 

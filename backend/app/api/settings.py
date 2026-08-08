@@ -26,6 +26,7 @@ from app.agents.web_search import DEFAULT_WEB_SEARCH_PROVIDER
 from app.config import get_settings
 from app.db.models import AppConfig, LaiosConnection
 from app.db.session import async_session_factory, get_session
+from app.media import custom as custom_media
 from app.media import openrouter as openrouter_media
 from app.media import refs
 from app.schemas.settings import (
@@ -35,6 +36,7 @@ from app.schemas.settings import (
     MediaModalityRead,
     MediaSettingsRead,
     MediaSettingsUpdate,
+    MediaSourceOption,
     MemorySettingsRead,
     MemorySettingsUpdate,
     MemoryTestResult,
@@ -342,6 +344,8 @@ async def _media_modality(
 
 @router.get("/media", response_model=MediaSettingsRead)
 async def get_media(session: AsyncSession = Depends(get_session)):
+    from app.media.custom import media_providers
+
     cfg = await _get_config(session)
     connections = (await session.execute(select(LaiosConnection))).scalars().first()
     return MediaSettingsRead(
@@ -349,6 +353,14 @@ async def get_media(session: AsyncSession = Depends(get_session)):
         video=await _media_modality(session, cfg, "video"),
         openrouter_configured=bool(get_settings().openrouter_api_key),
         laios_connected=connections is not None,
+        custom_providers=[
+            MediaSourceOption(
+                ref=refs.format_source(refs.CUSTOM, provider.id),
+                name=provider.name,
+                base_url=provider.base_url,
+            )
+            for provider in await media_providers(session)
+        ],
     )
 
 
@@ -375,15 +387,21 @@ async def set_media(
     # the resolver would then have to choose between honouring the pin (crossing
     # a source the user did not select) and ignoring it (silently). Neither is a
     # state worth being able to reach.
+    #
+    # The source itself is parsed here too, now that it is a free-form ref rather
+    # than an enum — an unparseable one has to fail on the save that introduced it,
+    # not on the next resolve, where the message would arrive detached from the
+    # action that caused it.
     for kind, source, pinned in (
         ("image", cfg.image_source, cfg.image_model),
         ("video", cfg.video_source, cfg.video_model),
     ):
         try:
+            selected = refs.parse_source(source)
             ref = refs.parse_model_ref(pinned)
         except refs.RefError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-        if ref is not None and not refs.belongs_to(ref, refs.parse_source(source)):
+        if ref is not None and not refs.belongs_to(ref, selected):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"the pinned {kind} model {pinned!r} is not on the selected "
@@ -397,6 +415,7 @@ async def set_media(
     reset_image_model_cache()
     reset_video_model_cache()
     openrouter_media.reset_catalogues()
+    custom_media.reset_custom_media_cache()
 
     return await get_media(session)
 

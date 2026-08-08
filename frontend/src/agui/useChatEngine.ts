@@ -194,6 +194,12 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
   const loadedThreadRef = useRef<string | null>(null)
   // Monotonic token so a slow history load can't clobber a newer conversation.
   const loadSeq = useRef(0)
+  // The agent the turn now streaming is running under. Usually the thread's own,
+  // but a one-off command ("Execute plan", `/goal`, `/ask`) runs under a per-turn
+  // override the thread never learns about — so anything that joins a run already
+  // in flight (`interject`) must read the run's agent from here rather than off the
+  // selection, or it labels the steer with an agent taking no part in the run.
+  const runAgentRef = useRef<{ id: string; name?: string } | null>(null)
 
   const optionsRef = useRef(options)
   optionsRef.current = options
@@ -329,6 +335,8 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
       s.setTodos([])
       s.setGoalStatus(null)
       currentAssistantId.current = null
+      // The remembered run agent belongs to the conversation we're leaving.
+      runAgentRef.current = null
       agentRef.current = createThreadAgent(threadId)
       agentThreadRef.current = threadId
 
@@ -376,6 +384,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
     currentAssistantId.current = null
     sendingThreadRef.current = null
     loadedThreadRef.current = null
+    runAgentRef.current = null
     const s = store.getState()
     s.setSelectedThreadId(null)
     s.resetMessages([])
@@ -406,6 +415,7 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
         store.getState().setError("Pick an agent before sending a message.")
         return
       }
+      runAgentRef.current = { id: agentId, name: agentName }
 
       // Lazily create the thread on first send so "New conversation" leaves no
       // orphan threads behind.
@@ -489,10 +499,14 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
           {
             onTextMessageStartEvent: ({ event }) =>
               handlers.onTextStart(event.messageId),
+            // The `*Buffer` a subscriber receives is the value *before* this
+            // event's delta is folded in — the client appends only after the
+            // subscriber returns. Add the delta ourselves, or the UI trails the
+            // stream by one chunk and never sees the final one at all.
             onTextMessageContentEvent: ({ event, textMessageBuffer }) =>
-              handlers.onTextContent(event.messageId, textMessageBuffer),
+              handlers.onTextContent(event.messageId, textMessageBuffer + event.delta),
             onReasoningMessageContentEvent: ({ event, reasoningMessageBuffer }) =>
-              handlers.onReasoning(event.messageId, reasoningMessageBuffer),
+              handlers.onReasoning(event.messageId, reasoningMessageBuffer + event.delta),
             onReasoningMessageEndEvent: ({ event }) =>
               handlers.onReasoningEnd(event.messageId),
             onToolCallStartEvent: ({ event }) =>
@@ -501,8 +515,12 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
                 event.toolCallId,
                 event.toolCallName
               ),
+            // Same one-delta lag as the text handlers above. It bites hardest
+            // here: a `task` call whose args arrive in a single delta would land
+            // as an empty string, so the subagent card never learns which
+            // subagent it delegated to and stays stuck on "Delegating…".
             onToolCallArgsEvent: ({ event, toolCallBuffer }) =>
-              handlers.onToolArgs(event.toolCallId, toolCallBuffer),
+              handlers.onToolArgs(event.toolCallId, toolCallBuffer + event.delta),
             onToolCallResultEvent: ({ event }) =>
               handlers.onToolResult(event.toolCallId, event.content),
             onCustomEvent: ({ event }) => {
@@ -588,14 +606,17 @@ export function useChatEngine(options: UseChatEngineOptions): ChatEngine {
       const threadId = store.getState().selectedThreadId
       if (!threadId) return
       const outgoing = expandMentionTokens(trimmed)
+      // The run's agent, not the selection — see `runAgentRef`. Matches what the
+      // backend persists for this steer, so the reload reconciles to the same badge.
+      const runAgent = runAgentRef.current
       store.getState().appendMessage({
         id: randomUUID(),
         role: "user",
         content: outgoing,
         toolCalls: [],
         kind: "goal",
-        agentId: optionsRef.current.agentId,
-        agentName: optionsRef.current.agentName,
+        agentId: runAgent?.id ?? optionsRef.current.agentId,
+        agentName: runAgent?.name ?? optionsRef.current.agentName,
       })
       try {
         await threadsApi.interjectGoal(threadId, outgoing)

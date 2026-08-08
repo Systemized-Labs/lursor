@@ -1,6 +1,6 @@
 [project]
 name = "lursor-backend"
-version = "0.1.15"
+version = "0.1.16"
 description = "Lursor agent-harness backend (FastAPI + pydantic-deepagents)"
 license = "Apache-2.0"
 requires-python = ">=3.11,<3.13"

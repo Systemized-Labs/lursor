@@ -156,6 +156,13 @@ export function ImageComposer({
                       · {priceLabel(option.price)}
                     </span>
                   ) : null}
+                  {/* A custom endpoint that publishes no modality: this row is
+                      here because the id looked like an image model, which can
+                      be wrong. Said in the picker rather than only in the error
+                      that would follow. */}
+                  {option.custom && !option.custom.declared ? (
+                    <span className="text-muted-foreground"> · by name</span>
+                  ) : null}
                 </SelectItem>
               ))}
             </SelectContent>

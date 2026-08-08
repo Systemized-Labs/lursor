@@ -10,13 +10,20 @@ value — the same shape as :class:`~app.agents.video_runtime.VideoRuntime` and
 ``None`` means "build without the image tool": the agent's ``include_image`` flag is
 off, or the configured source cannot serve.
 
-**The source never falls back.** ``AppConfig.image_source`` picks laios or
-OpenRouter, and a run resolves within that source or not at all — even when the
-other one is sitting right there and working. Silently crossing would be worse
-than failing in both directions: onto OpenRouter it spends money nobody
-authorised, and onto a box it quietly swaps a chosen model for a different one.
-So every "no" here comes with a sentence, and the sentence names the source, or
-the empty picker reads as a bug rather than a choice.
+**The source never falls back.** ``AppConfig.image_source`` picks laios, OpenRouter
+or one custom provider, and a run resolves within that source or not at all — even
+when another is sitting right there and working. Silently crossing would be worse
+than failing in every direction: onto OpenRouter it spends money nobody authorised,
+and onto a box (or someone's own endpoint) it quietly swaps a chosen model for a
+different one. So every "no" here comes with a sentence, and the sentence names the
+source, or the empty picker reads as a bug rather than a choice.
+
+**The third source is a custom provider** — the same OpenAI-compatible base URL the
+chat picker routes to (:class:`~app.db.models.CustomProvider`). It resolves exactly
+like laios, because it *is* the laios shape with a different endpoint: the same
+``/v1/images/generations`` surface, the same absence of published measurements, so
+the same :class:`ImageProfile` table and the same fail-open default. What differs is
+only how its models are found, which is ``app/media/custom.py``'s problem.
 
 **Two deliberate differences from ``video_runtime.py``**, and both are worth the
 words because this module otherwise reads as its copy.
@@ -55,8 +62,10 @@ from sqlmodel import select
 
 from app.api.laios import ServedModel, image_served_models
 from app.db.models import AppConfig, LaiosConnection
+from app.media import custom as custom_media
 from app.media import openrouter as openrouter_media
 from app.media import refs
+from app.media.custom import CustomMediaModel
 from app.media.history import observed_image_costs
 from app.media.openrouter import ORImageModel, PriceQuote
 
@@ -178,27 +187,34 @@ def profile_for(model: str) -> ImageProfile:
 class ImageModel:
     """One image model an agent could reach, and what it costs.
 
-    Covers both sources. A laios model carries a :class:`ImageProfile` (this
+    Covers all three sources. A laios model carries a :class:`ImageProfile` (this
     build's own measurements, since a box publishes none) and a connection; an
     OpenRouter model carries the catalogue entry it came from (which *is* its
-    declaration) and no connection. Exactly one of ``profile`` / ``catalogue`` is
-    set, and ``provider`` says which.
+    declaration) and no connection; a custom-provider model carries both a profile
+    (its endpoint publishes no measurements either) and the
+    :class:`~app.media.custom.CustomMediaModel` that says how it was classified.
+    ``provider`` says which.
     """
 
     connection_id: str
     connection_name: str
     # The *served* name for laios (what the gateway routes on — never a recipe id),
-    # or the model slug for OpenRouter.
+    # the model slug for OpenRouter, or the id a custom endpoint answers to.
     model: str
     # Positional third-after-model so that ``ImageModel(cid, name, served, profile)``
     # — the laios shape this class had before OpenRouter existed — still reads.
     profile: ImageProfile | None = None
     provider: str = refs.LAIOS
     catalogue: ORImageModel | None = None
+    # The classification, on the custom path. Carries whether the endpoint declared
+    # this model's modality or we matched it by name — a caveat the picker has to
+    # be able to state, since a name match can be wrong.
+    custom: CustomMediaModel | None = None
     # Mean USD this install has actually paid per image on this model, over its
-    # completed runs. The only honest price for an OpenRouter image before the
-    # first one (see ``app/media/history.py``); always None on laios, which bills
-    # in electricity and reports no number.
+    # completed runs. The fallback price for an OpenRouter model that OpenRouter
+    # bills per output token, which publishes no rate a picker can state (see
+    # ``app/media/history.py``); always None on laios, which bills in electricity
+    # and reports no number.
     observed_cost: float | None = None
 
     @property
@@ -216,31 +232,65 @@ class ImageModel:
         return self.provider == refs.OPENROUTER
 
     @property
+    def is_custom(self) -> bool:
+        return self.provider == refs.CUSTOM
+
+    @property
     def label(self) -> str:
         if self.catalogue is not None:
             return self.catalogue.label
+        if self.custom is not None:
+            return self.custom.label
         return self.profile.label if self.profile else self.model
 
     @property
     def note(self) -> str:
         if self.catalogue is not None:
             return self.catalogue.note
+        if self.custom is not None:
+            # Both halves, and in this order: how we know this is an image model at
+            # all comes before what it is expected to cost, because the first is
+            # the one that can be wrong.
+            measured = self.profile.note if self.recognised and self.profile else ""
+            return f"{self.custom.note} {measured}".strip()
         return self.profile.note if self.profile else ""
 
     @property
     def price(self) -> PriceQuote | None:
-        """A per-image price, when one is known. See ``app/media/history.py``."""
+        """What one image costs, when there is an honest number for it.
+
+        The catalogue's published rate first. It is a quote rather than a
+        retrospective average, it is true before this install has ever run the
+        model, and it is the same number for everyone — so a fresh install gets a
+        priced picker instead of forty blank rows.
+
+        What this install has paid is the fallback, for the models OpenRouter
+        bills per output token and therefore quotes no per-image rate for (see
+        ``app/media/openrouter``). :attr:`price_source` says which of the two a
+        caller is holding, because they do not mean the same thing.
+        """
+        if self.catalogue is not None and self.catalogue.price is not None:
+            return self.catalogue.price
         if self.observed_cost is None:
             return None
         return PriceQuote(amount=self.observed_cost, unit="image", approximate=True)
 
     @property
+    def price_source(self) -> str:
+        """``"catalogue"``, ``"observed"``, or ``""`` — where :attr:`price` came from."""
+        if self.catalogue is not None and self.catalogue.price is not None:
+            return "catalogue"
+        return "observed" if self.observed_cost is not None else ""
+
+    @property
     def recognised(self) -> bool:
         """Whether this build knows how to size a request for it.
 
-        For laios this is "we have measurements" (see the fail-open note above).
-        For OpenRouter it is always true: the catalogue states the model's own
-        parameters, so there is nothing left to guess at.
+        For laios and a custom provider this is "we have measurements" (see the
+        fail-open note above) — both serve the same ``/v1/images/generations``
+        surface and publish nothing about how long a step takes. For OpenRouter it
+        is always true: the catalogue states the model's own parameters, so there
+        is nothing left to guess at.
         """
         if self.provider == refs.OPENROUTER:
             return True
@@ -315,7 +365,12 @@ def _cost_key(model: ImageModel) -> tuple[Any, ...]:
     they share is the shape: a known cost, then an unknown one, then the name.
     """
     if model.provider == refs.OPENROUTER:
-        return (model.observed_cost is None, model.observed_cost or 0.0, model.model)
+        # A published rate and a measured average are both dollars for one image,
+        # and a per-megapixel rate is dollars for about one image at 1K — close
+        # enough to order by, and the row states its own unit either way. What
+        # would not be honest is calling an unpriced model the cheapest.
+        quote = model.price
+        return (quote is None, quote.amount if quote else 0.0, model.model)
     profile = model.profile or GENERIC_PROFILE
     per_step = profile.seconds_per_step
     return (
@@ -377,6 +432,8 @@ async def resolve_image_target(
 
     if source.is_openrouter:
         found, unavailable = await _openrouter_models(session)
+    elif source.is_custom:
+        found, unavailable = await _custom_models(session, source.connection_id)
     else:
         found, unavailable = await _laios_models(session, source.connection_id)
     if unavailable is not None:
@@ -416,10 +473,78 @@ async def _laios_models(
     return found, None
 
 
+async def _custom_models(
+    session: AsyncSession, provider_id: str
+) -> tuple[list[ImageModel], str | None]:
+    """Every image model the selected custom provider is classified as serving.
+
+    The laios shape with a different endpoint: a custom provider publishes no
+    measurements either, so its models get the same :class:`ImageProfile` lookup by
+    name and the same fail-open default. What it does *not* share is how the models
+    were found — see ``app/media/custom.py`` — so the reason sentence distinguishes
+    "this endpoint has no images API" from "it has one but nothing looked like an
+    image model", which want different things done about them.
+    """
+    providers = await custom_media.media_providers(session)
+    if provider_id:
+        providers = [p for p in providers if p.id == provider_id]
+        if not providers:
+            return [], (
+                f"the configured custom image provider {provider_id!r} no longer "
+                "exists — pick another in Settings → Image & video"
+            )
+    if not providers:
+        return [], (
+            "a custom provider is the configured image source, but none is "
+            "configured — add one in Settings → Providers"
+        )
+
+    found: list[ImageModel] = []
+    no_route: list[str] = []
+    for provider in providers:
+        entry = await custom_media.catalogue(provider)
+        if custom_media.IMAGE in entry.missing_routes:
+            no_route.append(provider.name)
+        found.extend(
+            ImageModel(
+                connection_id=provider.id,
+                connection_name=provider.name,
+                model=model.id,
+                provider=refs.CUSTOM,
+                profile=profile_for(model.id),
+                custom=model,
+            )
+            for model in entry.images
+        )
+
+    if not found:
+        names = ", ".join(p.name for p in providers)
+        if no_route:
+            return [], (
+                f"{', '.join(no_route)} does not serve an images API — its "
+                "/images/generations route answered 404. Point the provider at an "
+                "OpenAI-compatible image endpoint, or switch the source in "
+                "Settings → Image & video"
+            )
+        return [], (
+            f"{names} is the configured image source, but none of its models is "
+            "one we can identify as an image model — add the model to the "
+            "provider's model list as 'image:<model-id>', or switch the source in "
+            "Settings → Image & video"
+        )
+    return found, None
+
+
 async def _openrouter_models(
     session: AsyncSession,
 ) -> tuple[list[ImageModel], str | None]:
-    """Every image model OpenRouter offers, priced by what we have paid for it."""
+    """Every image model OpenRouter offers, at its rate or at what we have paid.
+
+    Both numbers are gathered here even though only one is shown per model: the
+    catalogue's rate rides on the entry, and the observed average is one indexed
+    aggregate for the whole source, so fetching it for models that will not use it
+    costs nothing extra.
+    """
     if not openrouter_media.configured():
         return [], (
             "OpenRouter is the configured image source, but no OpenRouter API key "

@@ -154,7 +154,7 @@ replays), `POST /{id}/stop`, `POST /{id}/goal/interject`, `POST /{id}/compact`.
 `GET /threads/active-runs` **must be declared before `/{thread_id}`** or FastAPI
 routes it as a thread id.
 
-Per-turn budget: `TURN_REQUEST_LIMIT = 150` model requests
+Per-turn budget: `TURN_REQUEST_LIMIT = 300` model requests
 (`builder.py`), and subagents get their own budget of the same size.
 
 `reconcile_interrupted_runs()` runs at startup — run state is in-memory only, so
@@ -563,9 +563,9 @@ purpose: the chat picker **fails open** (a box we cannot classify shows all its
 models rather than none), the video tools **fail closed** (no classification means
 no tools, because a tool that 400s on every call is worse than an absent one).
 
-### Two media sources, chosen in Settings
+### Three media sources, chosen in Settings
 
-Images and clips are generated on **one of two sources**, picked app-wide in
+Images and clips are generated on **one of three sources**, picked app-wide in
 Settings → Image & video and stored on `AppConfig.{image,video}_{source,model}`:
 
 * **`laios`** — a connected box, through its inference gateway. Free at the point
@@ -577,8 +577,34 @@ Settings → Image & video and stored on `AppConfig.{image,video}_{source,model}
   `/videos/models` are capability catalogues, which is what a hosted model has
   instead of a laios recipe's `video_profile` block. All of it lives in
   `app/media/openrouter.py`; `app/media/refs.py` owns the string grammar
-  (`openrouter:{slug}`, `laios:{cid}:{served}`), which deliberately mirrors chat's
-  `openrouter:` / `custom:` convention.
+  (`openrouter:{slug}`, `laios:{cid}:{served}`, `custom:{provider}:{model}`), which
+  deliberately mirrors chat's `openrouter:` / `custom:` convention — and for
+  `custom:` it is the *same* `CustomProvider` row on both sides.
+* **`custom:{provider_id}`** — a user-added OpenAI-compatible endpoint, the one the
+  chat picker already routes to. Structurally it is the laios path with a different
+  client: the same `/v1/images/generations` and the same `/videos` job API, so
+  `videos._endpoint` hands back either and everything above it is shared. Two things
+  are its own, both in `app/media/custom.py`:
+
+  * **Modality has to be recovered, because `/models` does not carry it.** Four
+    layers, most authoritative first: a `POST {}` route probe (`404`/`405`/`501`
+    means there is no images/videos API here at all — nothing is generated and
+    nothing is billed by an empty body), then LiteLLM's `/model/info` `mode`, then
+    modality fields on the `/models` entry, then the model id itself. A model
+    matched only by its name carries `declared: false`, and every surface says "by
+    name" rather than stating a guess as a fact. The escape hatch when all four
+    miss is an `image:` / `video:` prefix in the provider's manual model list,
+    which is excluded from the chat list so tagging one cannot pollute the chat
+    picker.
+  * **Video is driven as `sglang.video/v1` without a declaration**, which is exactly
+    what the laios path refuses to do. The difference is who decided: a box serves
+    what it serves, while a custom provider is a URL somebody typed in and pointed
+    at a video API on purpose. Every constraint is left *unconstrained* so nothing
+    is validated against another model's numbers.
+
+  Providers auto-managed by a laios connection are excluded (`media_providers`) —
+  they point at the same box's gateway, so offering them would list every served
+  model twice and submit to one GPU by two routes.
 
 **The source never falls back**, and this is the invariant the feature rests on.
 If the configured one cannot serve, `resolve_image_target` / `resolve_video_target`
@@ -597,8 +623,14 @@ Consequences worth knowing before touching any of this:
   already uuids, and content URLs now carry no source at all. `?source=` filters
   the history; omitting it returns everything, on purpose — switching sources must
   not empty the gallery.
-* **`connection_id` is `""`, not NULL, for a non-laios row.** It was never a real
-  foreign key, and SQLite cannot relax NOT NULL without rebuilding the table.
+* **`connection_id` is `""`, not NULL, for an OpenRouter row**, and holds the
+  *custom provider* id on a `custom:` one. It was never a real foreign key, and
+  SQLite cannot relax NOT NULL without rebuilding the table. Two id spaces share
+  the column, which is safe only because `provider` is always read with it — see
+  `videos._refresh_active`, which keys its grouping on the pair.
+* **`AppConfig.{image,video}_source` is a free-form ref, not an enum.** The custom
+  form carries an id no `Literal` can enumerate, so `set_media` validates by running
+  every value through `refs.parse_source` and returning the parser's own sentence.
 * **A hosted clip is downloaded eagerly**, on the poll that first sees
   `completed`, because `unsigned_urls` expire. That is the opposite of the laios
   path's deliberate laziness, and the reason is that a clip somebody paid for must

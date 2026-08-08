@@ -26,14 +26,22 @@ omission here.**
   inconsistent (``cents_per_second_output``, ``duration_seconds_1080p``,
   ``text_to_video_duration_seconds_480p``, …) so :func:`_video_rate` takes the
   cheapest parseable per-second key and says "from".
-* Image models publish **no price in the catalogue at all**. It lives behind a
-  per-model ``/endpoints`` call, one request per model, and is quoted per
-  *output token* — which cannot be turned into a price per image without knowing
-  the token count a given resolution produces. So there is no upfront image
-  price, and inventing one would be worse than none (the argument
-  ``ImageProfile.seconds_per_step`` already makes for unmeasured models). What
-  the UI shows instead is the exact ``usage.cost`` recorded on past runs of that
-  model — see ``api/images.observed_costs``.
+* Image models publish **no price in the list catalogue**. It lives behind a
+  per-model ``/endpoints`` call — so :func:`image_models` sweeps them, one
+  request per model, bounded on concurrency and on total time (measured at ~1s
+  for the forty models served today, once per cache period).
+
+  What comes back is a ``pricing`` array per endpoint, and only part of it can
+  become a price per image. ``billable: output_image`` is quoted in one of three
+  units: ``image`` (a flat rate — usable as is), ``megapixel`` (a rate, shown as
+  one rather than multiplied by a resolution nobody has chosen yet), and
+  ``token`` (which cannot be turned into a price per image without knowing the
+  token count a given resolution produces — skipped, because inventing one would
+  be worse than none, the argument ``ImageProfile.seconds_per_step`` already
+  makes for unmeasured models). For those last ones the only honest figure is
+  still the exact ``usage.cost`` recorded on past runs — see
+  ``app/media/history.py``, which remains the fallback rather than the only
+  source.
 
 Both catalogues are cached like ``app/pricing.py``: 15 minutes, and **the last
 good value is reused on a fetch failure**. That matters more here than it does
@@ -44,10 +52,11 @@ images" and stop generation entirely.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -68,6 +77,20 @@ _SUBMIT_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 _GENERATE_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 _DOWNLOAD_TIMEOUT = httpx.Timeout(300.0, connect=30.0)
 
+# The image price sweep is one request *per model*, so it is bounded on both
+# axes: this many in flight, and the whole thing abandoned past this many
+# seconds. It runs on the resolve path — the same call an agent's first
+# ``generate_image`` waits behind — so a slow upstream must cost the run a
+# bounded pause and no more. Falling out of the budget loses the prices, not the
+# catalogue: the models still resolve, priced by what past runs cost.
+_PRICE_CONCURRENCY = 8
+_PRICE_BUDGET_SECONDS = 20.0
+
+# Which ``billable: output_image`` units become a price, in preference order. A
+# flat per-image rate is the thing a picker wants; a per-megapixel rate is shown
+# as one. ``token`` is deliberately absent — see the module docstring.
+_IMAGE_PRICE_UNITS = ("image", "megapixel")
+
 
 class OpenRouterMediaError(RuntimeError):
     """A failed call, carrying a message already fit to show a user or an agent."""
@@ -78,11 +101,12 @@ class PriceQuote:
     """A rate, with the unit it is charged in.
 
     ``approximate`` marks a floor rather than a quote — video rates vary by
-    resolution and by whether audio is on, and this is the cheapest of them.
+    resolution and by whether audio is on, an image rate can vary by resolution
+    or by provider, and this is the cheapest of them.
     """
 
     amount: float
-    unit: str  # "second" | "image"
+    unit: str  # "second" | "image" | "megapixel"
     approximate: bool = False
 
 
@@ -105,9 +129,10 @@ class ORImageModel:
     formats: tuple[str, ...] = ()
     seed: bool = False
     max_reference_images: int = 0
-    # Always None today: the catalogue carries no image price (see the module
-    # docstring). Kept on the dataclass so the surfaces that render a price do not
-    # need a second shape if OpenRouter starts publishing one.
+    # A published per-image or per-megapixel rate, from the model's ``/endpoints``
+    # payload (:func:`_output_image_rate`). None for a model billed per output
+    # token, where there is no upfront number to state — those fall back to what
+    # this install has actually paid (``app/media/history.py``).
     price: PriceQuote | None = None
 
     @property
@@ -308,6 +333,103 @@ def _video_rate(skus: Any) -> PriceQuote | None:
     return PriceQuote(amount=min(rates), unit="second", approximate=len(rates) > 1)
 
 
+def _output_image_rate(payload: Any) -> PriceQuote | None:
+    """The cheapest published rate for *producing* an image, or ``None``.
+
+    Reads one model's ``/endpoints`` payload. Only ``billable: output_image``
+    counts: ``input_image`` is what a reference image costs to send and
+    ``input_text`` is the prompt, neither of which is the price of the thing
+    being bought.
+
+    Units are not mixed. A model quoted per image and a model quoted per
+    megapixel are both shown, each in its own unit, and the first unit that has
+    any rate at all wins — turning megapixels into images would mean assuming a
+    resolution the user has not picked yet. Within a unit the cheapest is taken,
+    as :func:`_video_rate` does, because the several numbers are alternatives
+    (1K vs 2K, one provider vs another) and the honest summary of a spread is its
+    floor, rendered as "from".
+    """
+    endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+    if not isinstance(endpoints, list):
+        return None
+    by_unit: dict[str, list[float]] = {}
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        entries = endpoint.get("pricing")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("billable") != "output_image":
+                continue
+            unit = str(entry.get("unit") or "")
+            if unit not in _IMAGE_PRICE_UNITS:
+                continue
+            try:
+                cost = float(entry.get("cost_usd"))
+            except (TypeError, ValueError):
+                continue
+            if cost > 0:
+                by_unit.setdefault(unit, []).append(cost)
+    for unit in _IMAGE_PRICE_UNITS:
+        rates = by_unit.get(unit)
+        if rates:
+            return PriceQuote(
+                amount=min(rates), unit=unit, approximate=len(set(rates)) > 1
+            )
+    return None
+
+
+async def _model_price(
+    client: httpx.AsyncClient, slug: str
+) -> tuple[str, PriceQuote | None]:
+    """One model's rate. A failure is no price, never a raise.
+
+    The sweep runs alongside a catalogue that already loaded; one model's
+    ``/endpoints`` being unreachable should cost that row its price, not empty
+    the picker.
+    """
+    try:
+        resp = await client.get(
+            f"{_base()}/images/models/{slug}/endpoints", headers=_headers()
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
+        logger.warning("openrouter media: no price for %s: %s", slug, exc)
+        return slug, None
+    return slug, _output_image_rate(payload)
+
+
+async def _priced(models: tuple[ORImageModel, ...]) -> tuple[ORImageModel, ...]:
+    """The catalogue with each model's published rate attached, best effort."""
+    if not models:
+        return models
+    limit = asyncio.Semaphore(_PRICE_CONCURRENCY)
+
+    async with httpx.AsyncClient(timeout=_CATALOGUE_TIMEOUT) as client:
+
+        async def one(model: ORImageModel) -> tuple[str, PriceQuote | None]:
+            async with limit:
+                return await _model_price(client, model.slug)
+
+        try:
+            quotes = dict(
+                await asyncio.wait_for(
+                    asyncio.gather(*(one(m) for m in models)), _PRICE_BUDGET_SECONDS
+                )
+            )
+        except TimeoutError:
+            logger.warning(
+                "openrouter media: image price sweep exceeded %.0fs — the catalogue "
+                "stands, priced by past runs only",
+                _PRICE_BUDGET_SECONDS,
+            )
+            return models
+
+    return tuple(replace(m, price=quotes.get(m.slug)) for m in models)
+
+
 def _parse_image_models(payload: Any) -> tuple[ORImageModel, ...]:
     entries = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
@@ -380,7 +502,12 @@ async def _catalogue(path: str) -> Any | None:
 
 
 async def image_models(*, force_refresh: bool = False) -> tuple[ORImageModel, ...]:
-    """Every image model OpenRouter serves. Empty when there is no key."""
+    """Every image model OpenRouter serves, priced. Empty when there is no key.
+
+    Two round trips deep — the list, then one ``/endpoints`` call per model for
+    the price (see :func:`_priced`) — and both are behind the same 15 minute
+    cache, so the sweep happens once per period rather than once per picker.
+    """
     global _image_cache, _image_fetched_at
     if not configured():
         return ()
@@ -394,7 +521,7 @@ async def image_models(*, force_refresh: bool = False) -> tuple[ORImageModel, ..
     payload = await _catalogue("/images/models")
     if payload is None:
         return _image_cache if _image_cache is not None else ()
-    _image_cache = _parse_image_models(payload)
+    _image_cache = await _priced(_parse_image_models(payload))
     _image_fetched_at = now
     return _image_cache
 

@@ -387,6 +387,285 @@ def test_the_library_alone_allows_the_blind_overwrite(backend, workspace):
     assert target.read_text() == "gone\n"
 
 
+# --- A one-line anchor must not strand the rest of the block ---------------------
+
+FUNC = 'def greet(name):\n    msg = "hi " + name\n    print(msg)\n    return msg\n'
+REWRITE = 'def greet(name):\n    msg = f"hi {name}"\n    print(msg)\n    return msg'
+
+
+def test_the_library_alone_duplicates_the_rest_of_the_block():
+    """The premise. Omitting ``end_line`` replaces one line and keeps the others."""
+    new_text, error, _summary = apply_hashline_edit_with_summary(
+        FUNC,
+        start_line=1,
+        start_hash=line_hash("def greet(name):"),
+        new_content=REWRITE,
+    )
+
+    assert error is None
+    assert new_text.count("    print(msg)") == 2
+
+
+def test_one_line_anchor_with_a_multi_line_body_is_refused(backend, workspace):
+    target = workspace / "app.py"
+    target.write_text(FUNC)
+
+    outputs = _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 1,
+                    "start_hash": line_hash("def greet(name):"),
+                    "new_content": REWRITE,
+                },
+            )
+        ],
+    )
+
+    assert any("would duplicate 2 line(s)" in out for out in outputs)
+    # The guard runs before the edit, so nothing reached disk.
+    assert target.read_text() == FUNC
+    assert hashline_stats().blocked_duplicates == 1
+    assert hashline_stats().edits == 0
+
+
+def test_the_refusal_names_the_range_that_was_meant(backend, workspace):
+    """The retry it spells out has to produce the file the model was aiming for."""
+    target = workspace / "app.py"
+    target.write_text(FUNC)
+
+    refusal = _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 1,
+                    "start_hash": line_hash("def greet(name):"),
+                    "new_content": REWRITE,
+                },
+            )
+        ],
+    )[0]
+
+    assert "end_line=4" in refusal
+    assert f"end_hash='{line_hash('    return msg')}'" in refusal
+
+    _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 1,
+                    "start_hash": line_hash("def greet(name):"),
+                    "new_content": REWRITE,
+                    "end_line": 4,
+                    "end_hash": line_hash("    return msg"),
+                },
+            )
+        ],
+    )
+
+    assert target.read_text() == REWRITE + "\n"
+
+
+def test_a_genuine_expansion_is_left_alone(backend, workspace):
+    """One line becoming several is ordinary — only a *repeat* is refused."""
+    target = workspace / "app.py"
+    target.write_text("alpha\nbeta\ngamma\n")
+
+    _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 2,
+                    "start_hash": line_hash("beta"),
+                    "new_content": "beta_one()\nbeta_two()\nbeta_three()",
+                },
+            )
+        ],
+    )
+
+    assert target.read_text() == "alpha\nbeta_one()\nbeta_two()\nbeta_three()\ngamma\n"
+    assert hashline_stats().blocked_duplicates == 0
+
+
+def test_a_repeated_run_of_punctuation_is_not_enough(backend, workspace):
+    """``}`` under ``}`` is coincidence, not a stranded block."""
+    target = workspace / "app.ts"
+    target.write_text("if (a) {\n  b();\n  }\n}\n")
+
+    _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.ts",
+                    "start_line": 2,
+                    "start_hash": line_hash("  b();"),
+                    "new_content": "  c();\n  }\n}",
+                },
+            )
+        ],
+    )
+
+    assert hashline_stats().blocked_duplicates == 0
+    assert hashline_stats().edits == 1
+
+
+def test_insert_after_is_warned_about_rather_than_refused(backend, workspace):
+    """An insert next to a repetitive structure may well be deliberate."""
+    target = workspace / "app.py"
+    target.write_text('entry = {\n    "name": "a",\n    "on": True,\n}\n')
+
+    outputs = _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 1,
+                    "start_hash": line_hash("entry = {"),
+                    "new_content": '    "name": "a",\n    "on": True,',
+                    "insert_after": True,
+                },
+            )
+        ],
+    )
+
+    assert any("Duplication check:" in out for out in outputs)
+    # Warned, not blocked: the write went through.
+    assert target.read_text().count('    "name": "a",') == 2
+    assert hashline_stats().blocked_duplicates == 0
+    assert hashline_stats().flagged_duplicates == 1
+
+
+def test_a_stale_anchor_still_reports_the_mismatch(backend, workspace):
+    """The library's mismatch error is the better answer; the guard stays quiet."""
+    target = workspace / "app.py"
+    target.write_text(FUNC)
+
+    outputs = _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 1,
+                    "start_hash": line_hash("something else entirely"),
+                    "new_content": REWRITE,
+                },
+            )
+        ],
+    )
+
+    assert any("Hash mismatch" in out for out in outputs)
+    assert hashline_stats().blocked_duplicates == 0
+
+
+# --- A successful edit hands back fresh anchors ----------------------------------
+
+
+def test_a_successful_edit_returns_live_anchors(backend, workspace):
+    target = workspace / "app.py"
+    target.write_text("alpha\nbeta\ngamma\n")
+
+    outputs = _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 2,
+                    "start_hash": line_hash("beta"),
+                    "new_content": "BETA",
+                },
+            )
+        ],
+    )
+
+    assert f"2:{line_hash('BETA')}|BETA" in outputs[0]
+    # The anchors are usable without a re-read: a second edit from them lands.
+    _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 2,
+                    "start_hash": line_hash("BETA"),
+                    "new_content": "beta again",
+                },
+            )
+        ],
+    )
+    assert target.read_text() == "alpha\nbeta again\ngamma\n"
+
+
+def test_a_shifting_edit_says_how_far_everything_moved(backend, workspace):
+    target = workspace / "app.py"
+    target.write_text("alpha\nbeta\ngamma\n")
+
+    outputs = _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 1,
+                    "start_hash": line_hash("alpha"),
+                    "new_content": "one\ntwo\nthree",
+                },
+            )
+        ],
+    )
+
+    assert "moved by +2" in outputs[0]
+
+
+def test_a_large_replacement_keeps_both_edges(backend, workspace):
+    """The head and tail are what a follow-up edit anchors on; the middle is not."""
+    target = workspace / "app.py"
+    target.write_text("head\n" + "".join(f"line{i}\n" for i in range(1, 5)) + "tail\n")
+
+    outputs = _run(
+        backend,
+        [
+            (
+                "hashline_edit",
+                {
+                    "path": "app.py",
+                    "start_line": 2,
+                    "start_hash": line_hash("line1"),
+                    "new_content": "\n".join(f"new{i}" for i in range(1, 81)),
+                    "end_line": 5,
+                    "end_hash": line_hash("line4"),
+                },
+            )
+        ],
+    )
+
+    assert "unchanged lines omitted" in outputs[0]
+    assert f"1:{line_hash('head')}|head" in outputs[0]
+    # head + 80 replacement lines + tail.
+    assert f"82:{line_hash('tail')}|tail" in outputs[0]
+
+
 # --- The write_file description has to name a tool that exists -------------------
 
 

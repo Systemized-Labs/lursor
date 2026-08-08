@@ -16,6 +16,7 @@ from sqlmodel import select
 
 from app.db.models import CustomProvider
 from app.db.session import get_session
+from app.media.custom import reset_custom_media_cache
 from app.schemas.provider import (
     ProviderCreate,
     ProviderHealth,
@@ -120,6 +121,7 @@ async def create_provider(
     session.add(provider)
     await session.commit()
     await session.refresh(provider)
+    reset_custom_media_cache()
     return provider
 
 
@@ -162,6 +164,10 @@ async def update_provider(
     session.add(provider)
     await session.commit()
     await session.refresh(provider)
+    # The base URL, key and model list are exactly what the media classification
+    # was derived from, so its five-minute cache goes with them — otherwise a
+    # just-fixed provider keeps reporting the old failure for five more minutes.
+    reset_custom_media_cache()
     return provider
 
 
@@ -174,3 +180,4 @@ async def delete_provider(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider not found")
     await session.delete(provider)
     await session.commit()
+    reset_custom_media_cache()

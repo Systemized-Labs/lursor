@@ -20,7 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.deduping_backend import DedupingLocalBackend, _normalize
+from app.agents.deduping_backend import DedupingLocalBackend
+from app.agents.service_key import spawn_key
 
 
 @pytest.fixture
@@ -44,8 +45,8 @@ def populated(backend):
 
 
 def test_normalize_strips_fd_redirections():
-    assert _normalize("npm run dev 2>&1") == _normalize("npm run dev") == "npm run dev"
-    assert _normalize("npm  run   dev") == "npm run dev"
+    assert spawn_key("npm run dev 2>&1") == spawn_key("npm run dev") == "npm run dev"
+    assert spawn_key("npm  run   dev") == "npm run dev"
 
 
 def test_identical_command_reuses_process(backend):

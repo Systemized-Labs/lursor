@@ -46,3 +46,5 @@ class FileEditingStats(BaseModel):
     recovered_anchors: int = 0
     missing_end_hash: int = 0
     blocked_writes: int = 0
+    blocked_duplicates: int = 0
+    flagged_duplicates: int = 0

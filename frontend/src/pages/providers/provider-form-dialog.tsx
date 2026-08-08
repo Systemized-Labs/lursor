@@ -246,7 +246,9 @@ export function ProviderFormDialog({
             <Label htmlFor="provider-models">Model IDs (optional)</Label>
             <Textarea
               id="provider-models"
-              placeholder={"moonshotai/Kimi-K3\nqwen/Qwen3-Coder"}
+              placeholder={
+                "moonshotai/Kimi-K3\nqwen/Qwen3-Coder\nimage:flux-dev"
+              }
               value={form.manualModels}
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, manualModels: e.target.value }))
@@ -259,6 +261,13 @@ export function ProviderFormDialog({
               <code>/models</code> list. One ID per line (or comma-separated);
               these are used as a fallback so the models still appear in the
               picker.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Prefix an ID with <code>image:</code> or <code>video:</code> to use
+              it in Settings → Image &amp; video. Only needed when the endpoint
+              doesn't say which of its models generate media and the name doesn't
+              give it away — a tagged ID is a media model only, and stays out of
+              the chat picker.
             </p>
           </div>
 

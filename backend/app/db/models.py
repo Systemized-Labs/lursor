@@ -470,6 +470,18 @@ class Subagent(TimestampMixin, table=True):
     )
 
 
+def _media_prefix(entry: str) -> tuple[str, str]:
+    """Split ``"image:flux-dev"`` into ``("image", "flux-dev")``.
+
+    ``("", entry)`` for anything else — including a bare model id that happens to
+    contain a colon, since only these two heads are meaningful here.
+    """
+    head, sep, rest = entry.partition(":")
+    if sep and head.strip().lower() in ("image", "video"):
+        return head.strip().lower(), rest.strip()
+    return "", entry
+
+
 class CustomProvider(TimestampMixin, table=True):
     """A user-added, locally-hosted OpenAI-compatible model endpoint.
 
@@ -489,12 +501,29 @@ class CustomProvider(TimestampMixin, table=True):
     # usable ``/models`` (auth-gated or simply unimplemented). Comma- or
     # newline-separated; used only when discovery yields nothing, so a provider
     # whose catalogue *is* readable keeps updating itself automatically.
+    #
+    # An entry may carry an ``image:`` or ``video:`` prefix (``image:flux-dev``),
+    # which declares that model's modality for the media pickers — the escape hatch
+    # for an endpoint that publishes no modality and whose model ids do not look
+    # like anything (see ``app/media/custom.py``). Prefixed entries are *only* media
+    # models: they are absent from the chat list below, so tagging one does not put
+    # a diffusion model in the chat picker.
     manual_models: str = ""
 
-    def manual_model_ids(self) -> list[str]:
-        """Split :attr:`manual_models` into a clean list of model IDs."""
+    def _manual_entries(self) -> list[str]:
         entries = self.manual_models.replace("\n", ",").split(",")
         return [entry.strip() for entry in entries if entry.strip()]
+
+    def manual_model_ids(self) -> list[str]:
+        """Split :attr:`manual_models` into a clean list of *chat* model IDs."""
+        return [
+            entry for entry in self._manual_entries() if not _media_prefix(entry)[0]
+        ]
+
+    def manual_media_models(self) -> list[tuple[str, str]]:
+        """``(modality, model_id)`` for every explicitly tagged entry."""
+        tagged = (_media_prefix(entry) for entry in self._manual_entries())
+        return [(modality, model) for modality, model in tagged if modality and model]
 
 
 class LaiosConnection(TimestampMixin, table=True):

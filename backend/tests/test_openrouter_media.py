@@ -1,11 +1,13 @@
 """The OpenRouter media client — catalogue parsing, caching, and error text.
 
 The payloads below are trimmed copies of real responses from
-``/api/v1/images/models`` and ``/api/v1/videos/models``, keeping the shapes that
-actually caused design decisions: image models publish ``supported_parameters``
-as a per-parameter type/values block and **no price at all**, while video models
-publish flat capability lists plus a ``pricing_skus`` map whose keys differ from
-provider to provider.
+``/api/v1/images/models``, ``/api/v1/images/models/{slug}/endpoints`` and
+``/api/v1/videos/models``, keeping the shapes that actually caused design
+decisions: an image model's list entry publishes ``supported_parameters`` as a
+per-parameter type/values block and **no price**, its ``/endpoints`` payload
+publishes a ``pricing`` array in one of three units (only two of which become a
+price per image), and a video model publishes flat capability lists plus a
+``pricing_skus`` map whose keys differ from provider to provider.
 
 The property this file protects hardest is the failure behaviour. The configured
 source never falls back to the other one, so a transient catalogue blip that
@@ -46,9 +48,70 @@ IMAGE_PAYLOAD = {
                 "aspect_ratio": {"type": "enum", "values": ["1:1", "4:3"]},
             },
         },
+        {"id": "black-forest-labs/flux.2-pro", "name": "BFL: FLUX.2 Pro"},
+        {"id": "broken/no-endpoints", "name": "Broken"},
         # No id — must be skipped rather than becoming a blank row in the picker.
         {"name": "Nameless"},
     ]
+}
+
+# One ``/images/models/{slug}/endpoints`` payload per model above, covering each
+# way OpenRouter quotes a generated image.
+ENDPOINT_PAYLOADS = {
+    # Per output token. There is no token count for a resolution nobody has picked,
+    # so no per-image number can be stated up front.
+    "openai/gpt-image-2": {
+        "endpoints": [
+            {
+                "provider_slug": "openai",
+                "pricing": [
+                    {"billable": "input_text", "unit": "token", "cost_usd": 5e-06},
+                    {"billable": "output_image", "unit": "token", "cost_usd": 3e-05},
+                ],
+            }
+        ]
+    },
+    # A flat rate, quoted twice (two resolutions) and by two providers. The floor
+    # is $0.03, and the spread is what makes it "from".
+    "krea/krea-2-large": {
+        "endpoints": [
+            {
+                "provider_slug": "krea",
+                "pricing": [
+                    # Sending a reference image is not the price of making one.
+                    {"billable": "input_image", "unit": "image", "cost_usd": 0.001},
+                    {
+                        "billable": "output_image",
+                        "unit": "image",
+                        "cost_usd": 0.04,
+                        "variant": "2k",
+                    },
+                    {
+                        "billable": "output_image",
+                        "unit": "image",
+                        "cost_usd": 0.03,
+                        "variant": "1k",
+                    },
+                ],
+            },
+            {
+                "provider_slug": "krea-mirror",
+                "pricing": [
+                    {"billable": "output_image", "unit": "image", "cost_usd": 0.05}
+                ],
+            },
+        ]
+    },
+    "black-forest-labs/flux.2-pro": {
+        "endpoints": [
+            {
+                "provider_slug": "black-forest-labs",
+                "pricing": [
+                    {"billable": "output_image", "unit": "megapixel", "cost_usd": 0.03}
+                ],
+            }
+        ]
+    },
 }
 
 VIDEO_PAYLOAD = {
@@ -134,15 +197,43 @@ def _json(payload, status: int = 200):
     return lambda request: httpx.Response(status, json=payload)
 
 
+def _images(*, endpoints: bool = True):
+    """The image catalogue plus its per-model price calls, routed by path.
+
+    ``endpoints=False`` fails every price call, which is the realistic partial
+    failure: the list is one request and the prices are forty more, so the sweep
+    can fail on its own.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if not path.endswith("/endpoints"):
+            return httpx.Response(200, json=IMAGE_PAYLOAD)
+        if not endpoints:
+            return httpx.Response(503, json={"error": {"message": "upstream down"}})
+        slug = path.split("/images/models/", 1)[1].rsplit("/endpoints", 1)[0]
+        payload = ENDPOINT_PAYLOADS.get(slug)
+        if payload is None:
+            return httpx.Response(404, json={"error": {"message": "no such model"}})
+        return httpx.Response(200, json=payload)
+
+    return handler
+
+
 # --- Image catalogue ----------------------------------------------------------
 
 
 async def test_image_models_parse_their_supported_parameters(monkeypatch, key):
-    _install(monkeypatch, _json(IMAGE_PAYLOAD))
+    _install(monkeypatch, _images())
     models = await openrouter.image_models()
 
-    assert [m.slug for m in models] == ["krea/krea-2-large", "openai/gpt-image-2"]
-    gpt = models[1]
+    assert [m.slug for m in models] == [
+        "black-forest-labs/flux.2-pro",
+        "broken/no-endpoints",
+        "krea/krea-2-large",
+        "openai/gpt-image-2",
+    ]
+    gpt = {m.slug: m for m in models}["openai/gpt-image-2"]
     assert gpt.label == "OpenAI: GPT Image 2"
     assert gpt.qualities == ("low", "medium", "high")
     assert gpt.aspect_ratios == ("1:1", "16:9")
@@ -154,25 +245,78 @@ async def test_image_models_parse_their_supported_parameters(monkeypatch, key):
 
 async def test_an_absent_parameter_is_empty_not_a_default(monkeypatch, key):
     """Empty means "this model does not take that knob", so the builder omits it."""
-    _install(monkeypatch, _json(IMAGE_PAYLOAD))
-    krea = (await openrouter.image_models())[0]
+    _install(monkeypatch, _images())
+    krea = {m.slug: m for m in await openrouter.image_models()}["krea/krea-2-large"]
     assert krea.qualities == ()
     assert krea.formats == ()
     assert krea.seed is False
     assert krea.resolutions == ("1K",)
 
 
-async def test_image_models_carry_no_price(monkeypatch, key):
-    """The catalogue publishes none, and a made-up one would be worse than none."""
-    _install(monkeypatch, _json(IMAGE_PAYLOAD))
-    assert all(m.price is None for m in await openrouter.image_models())
-
-
 async def test_no_key_means_no_catalogue_and_no_request(monkeypatch):
     monkeypatch.setattr(get_settings(), "openrouter_api_key", None)
-    transport = _install(monkeypatch, _json(IMAGE_PAYLOAD))
+    transport = _install(monkeypatch, _images())
     assert await openrouter.image_models() == ()
     assert transport.calls == []
+
+
+# --- Image prices -------------------------------------------------------------
+
+
+async def test_a_flat_rate_is_the_cheapest_of_its_variants(monkeypatch, key):
+    """Two resolutions and two providers quote four numbers; the floor is the one."""
+    _install(monkeypatch, _images())
+    krea = {m.slug: m for m in await openrouter.image_models()}["krea/krea-2-large"]
+
+    assert krea.price is not None
+    assert krea.price.unit == "image"
+    assert krea.price.amount == pytest.approx(0.03)
+    assert krea.price.approximate is True  # more than one rate exists
+    # The reference-image rate on the same endpoint is what it costs to *send* an
+    # image, and counting it would have made the floor $0.001.
+    assert krea.price.amount > 0.001
+
+
+async def test_a_per_megapixel_rate_keeps_its_own_unit(monkeypatch, key):
+    """Not multiplied out — that would assume a resolution nobody has picked."""
+    _install(monkeypatch, _images())
+    flux = {m.slug: m for m in await openrouter.image_models()}[
+        "black-forest-labs/flux.2-pro"
+    ]
+
+    assert flux.price is not None
+    assert flux.price.unit == "megapixel"
+    assert flux.price.amount == pytest.approx(0.03)
+    assert flux.price.approximate is False  # one rate, so it is a quote
+
+
+async def test_a_token_priced_model_has_no_upfront_price(monkeypatch, key):
+    """Per output token cannot become per image, and a guess would be worse."""
+    _install(monkeypatch, _images())
+    gpt = {m.slug: m for m in await openrouter.image_models()}["openai/gpt-image-2"]
+    assert gpt.price is None
+
+
+async def test_a_failed_price_call_costs_that_row_its_price_only(monkeypatch, key):
+    _install(monkeypatch, _images())
+    models = {m.slug: m for m in await openrouter.image_models()}
+
+    assert models["broken/no-endpoints"].price is None  # its /endpoints 404s
+    assert models["krea/krea-2-large"].price is not None  # the others still priced
+
+
+async def test_the_whole_sweep_failing_leaves_the_catalogue_standing(monkeypatch, key):
+    """An unpriced picker is a worse outcome than an empty one only in theory."""
+    _install(monkeypatch, _images(endpoints=False))
+    models = await openrouter.image_models()
+
+    assert [m.slug for m in models] == [
+        "black-forest-labs/flux.2-pro",
+        "broken/no-endpoints",
+        "krea/krea-2-large",
+        "openai/gpt-image-2",
+    ]
+    assert all(m.price is None for m in models)
 
 
 # --- Video catalogue ----------------------------------------------------------
@@ -222,15 +366,18 @@ async def test_an_unparseable_price_is_none_not_zero(monkeypatch, key):
 
 
 async def test_a_second_call_within_the_ttl_makes_no_request(monkeypatch, key):
-    transport = _install(monkeypatch, _json(IMAGE_PAYLOAD))
+    """The price sweep is behind the same cache — forty calls per period, not per view."""
+    transport = _install(monkeypatch, _images())
+    models = await openrouter.image_models()
+    assert len(transport.calls) == 1 + len(models)  # the list, then one price each
+
     await openrouter.image_models()
-    await openrouter.image_models()
-    assert len(transport.calls) == 1
+    assert len(transport.calls) == 1 + len(models)
 
 
 async def test_a_failed_refresh_reuses_the_last_good_catalogue(monkeypatch, key):
     """The no-fallback rule makes this load-bearing: an empty catalogue = no images."""
-    _install(monkeypatch, _json(IMAGE_PAYLOAD))
+    _install(monkeypatch, _images())
     first = await openrouter.image_models()
     assert first
 

@@ -231,6 +231,195 @@ async def test_preview_service_kill_and_output(tmp_path, monkeypatch):
     assert await service.kill("ws3", "be-C:bg_1") is False  # already gone
 
 
+async def test_ready_server_that_stops_answering_goes_unhealthy(tmp_path, monkeypatch):
+    """Regression: `ready` used to latch. A server that crashed its child — or
+    started erroring — kept a green dot for as long as the wrapper process lived,
+    so the indicator meant "answered once", not "is serving"."""
+    serving = True
+
+    async def _probe(_url: str) -> bool:
+        return serving
+
+    monkeypatch.setattr(preview_service_mod, "probe_ready", _probe)
+    # Probe on every scan rather than waiting out the health cadence.
+    monkeypatch.setattr(preview_service_mod, "_HEALTH_INTERVAL", 0.0)
+
+    log = tmp_path / "out.log"
+    log.write_text("Local: http://localhost:3000\n")
+
+    backend = _FakeBackend("be-H")
+    backend._bg = {"bg_1": _Proc(log)}
+    backend._infos = [_Info("bg_1", "npm run dev", True)]
+
+    service = PreviewService()
+    service.register("ws-h", backend)
+    queue, _ = service.subscribe("ws-h")
+
+    await service._scan("ws-h")
+    assert queue.get_nowait()[0]["status"] == "ready"
+
+    # The port stops answering, and the log offers nowhere to follow to.
+    serving = False
+    await service._scan("ws-h")
+    msg = queue.get_nowait()
+    assert msg[0]["status"] == "unhealthy"
+    assert msg[0]["ready"] is False
+    # Still offered as the preview target — it is the only server there is, and a
+    # visible connection error beats silently having no preview at all. It is only
+    # *deprioritized*, behind any server that is actually answering.
+    assert service.current_preview_url("ws-h") == "http://localhost:3000"
+
+    # It recovers on its own once the socket answers again.
+    serving = True
+    await service._scan("ws-h")
+    assert queue.get_nowait()[0]["status"] == "ready"
+
+
+async def test_a_server_that_moves_port_is_followed(tmp_path, monkeypatch):
+    """A dev server restarting itself prints a new address. Following it is what
+    keeps the Preview panel off a dead port."""
+    live = {"http://localhost:3000"}
+
+    async def _probe(url: str) -> bool:
+        return url in live
+
+    monkeypatch.setattr(preview_service_mod, "probe_ready", _probe)
+    monkeypatch.setattr(preview_service_mod, "_HEALTH_INTERVAL", 0.0)
+
+    log = tmp_path / "out.log"
+    log.write_text("Local: http://localhost:3000\n")
+
+    backend = _FakeBackend("be-M")
+    backend._bg = {"bg_1": _Proc(log)}
+    backend._infos = [_Info("bg_1", "npm run dev", True)]
+
+    service = PreviewService()
+    service.register("ws-m", backend)
+    queue, _ = service.subscribe("ws-m")
+
+    await service._scan("ws-m")
+    assert queue.get_nowait()[0]["port"] == 3000
+
+    # The server restarts onto 3100 and says so; 3000 goes dark.
+    live = {"http://localhost:3100"}
+    log.write_text("Local: http://localhost:3000\nrestarting…\nLocal: http://localhost:3100\n")
+
+    # First scan follows the address (and resets to "starting" — the new one is
+    # unverified); the next confirms it.
+    await service._scan("ws-m")
+    moved = queue.get_nowait()[0]
+    assert moved["port"] == 3100 and moved["status"] == "starting"
+
+    await service._scan("ws-m")
+    assert queue.get_nowait()[0]["status"] == "ready"
+    assert service.current_preview_url("ws-m") == "http://localhost:3100"
+
+
+async def test_duplicate_dev_server_retires_the_older_one(tmp_path, monkeypatch):
+    """The reported bug: a second `npm run dev` finds 3000 taken, auto-increments
+    to 3001, and both stay alive. Spawn-time dedup can't see this — the collision
+    only exists once both are up — so the older one is retired here."""
+
+    async def _always_ready(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(preview_service_mod, "probe_ready", _always_ready)
+
+    first = tmp_path / "first.log"
+    first.write_text("Local: http://localhost:3000\n")
+    second = tmp_path / "second.log"
+    second.write_text("Port 3000 is in use, trying 3001\nLocal: http://localhost:3001\n")
+
+    backend = _FakeBackend("be-R")
+    backend._bg = {"bg_1": _Proc(first), "bg_2": _Proc(second)}
+    backend._infos = [_Info("bg_1", "npm run dev", True)]
+
+    service = PreviewService()
+    service.register("ws-r", backend)
+    queue, _ = service.subscribe("ws-r")
+
+    await service._scan("ws-r")
+    assert len(queue.get_nowait()) == 1
+
+    # The agent starts a second one asking for another port. Spawn-time dedup
+    # deliberately lets this through — a caller naming a port must not be handed
+    # a server on a different one — but the two are still one service.
+    backend._infos.append(_Info("bg_2", "npm run dev -- --port 3001", True))
+    await service._scan("ws-r")
+
+    msg = queue.get_nowait()
+    assert len(msg) == 1, "the superseded server should have been retired"
+    assert msg[0]["port"] == 3001
+    assert backend.killed == ["bg_1"]
+
+
+async def test_two_genuine_servers_are_both_kept(tmp_path, monkeypatch):
+    """The guard on the above: a frontend and an API server in one workspace are
+    different services and must both survive."""
+
+    async def _always_ready(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(preview_service_mod, "probe_ready", _always_ready)
+
+    web = tmp_path / "web.log"
+    web.write_text("Local: http://localhost:5173\n")
+    api = tmp_path / "api.log"
+    api.write_text("Uvicorn running on http://127.0.0.1:8000\n")
+
+    backend = _FakeBackend("be-T")
+    backend._bg = {"bg_1": _Proc(web), "bg_2": _Proc(api)}
+    backend._infos = [
+        _Info("bg_1", "npm run dev", True),
+        _Info("bg_2", "uvicorn app.main:app", True),
+    ]
+
+    service = PreviewService()
+    service.register("ws-t", backend)
+    queue, _ = service.subscribe("ws-t")
+
+    await service._scan("ws-t")
+    assert len(queue.get_nowait()) == 2
+    assert backend.killed == []
+
+
+async def test_a_replacement_that_never_boots_leaves_the_incumbent_alone(
+    tmp_path, monkeypatch
+):
+    """Retirement waits for the newcomer to actually serve. Otherwise a restart
+    that fails to come up would take the working server down with it."""
+    live = {"http://localhost:3000"}
+
+    async def _probe(url: str) -> bool:
+        return url in live
+
+    monkeypatch.setattr(preview_service_mod, "probe_ready", _probe)
+    monkeypatch.setattr(preview_service_mod, "_HEALTH_INTERVAL", 0.0)
+
+    first = tmp_path / "first.log"
+    first.write_text("Local: http://localhost:3000\n")
+    second = tmp_path / "second.log"
+    second.write_text("Local: http://localhost:3001\n")  # printed, but never serves
+
+    backend = _FakeBackend("be-F")
+    backend._bg = {"bg_1": _Proc(first), "bg_2": _Proc(second)}
+    backend._infos = [_Info("bg_1", "npm run dev", True)]
+
+    service = PreviewService()
+    service.register("ws-f", backend)
+    service.subscribe("ws-f")
+    await service._scan("ws-f")
+
+    backend._infos.append(_Info("bg_2", "npm run dev -- --port 3001", True))
+    await service._scan("ws-f")
+    await service._scan("ws-f")
+
+    assert backend.killed == []
+    assert len(service._ws["ws-f"].procs) == 2
+    # The one that works is still what a screenshot would target.
+    assert service.current_preview_url("ws-f") == "http://localhost:3000"
+
+
 async def test_preview_rest_output_and_kill(client: AsyncClient, tmp_path, monkeypatch):
     """The output/kill REST endpoints drive the shared service end to end."""
 

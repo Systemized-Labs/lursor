@@ -324,6 +324,50 @@ def test_guidance_halves_the_estimate_where_the_model_supports_it():
     assert without < with_cfg < 2 * without + 1
 
 
+# --- what a hosted row costs ---------------------------------------------------------
+
+
+def _hosted(slug: str, *, rate=None, observed=None):
+    """One OpenRouter row, with either kind of price attached, or neither."""
+    from app.agents.image_runtime import ImageModel
+    from app.media import refs
+    from app.media.openrouter import ORImageModel
+
+    return ImageModel(
+        connection_id="",
+        connection_name="OpenRouter",
+        model=slug,
+        provider=refs.OPENROUTER,
+        catalogue=ORImageModel(slug=slug, label=slug, price=rate),
+        observed_cost=observed,
+    )
+
+
+def test_a_published_rate_wins_over_what_this_install_has_paid():
+    """The rate is a quote and the average is a rear-view mirror."""
+    from app.media.openrouter import PriceQuote
+
+    model = _hosted("x/y", rate=PriceQuote(0.03, "image"), observed=0.05)
+    assert model.price == PriceQuote(0.03, "image")
+    assert model.price_source == "catalogue"
+
+
+def test_a_token_priced_model_falls_back_to_the_measured_average():
+    model = _hosted("x/y", observed=0.05)
+    quote = model.price
+    assert quote is not None
+    assert quote.amount == pytest.approx(0.05)
+    assert quote.unit == "image"
+    assert quote.approximate is True  # a mean of past runs, never a quote
+    assert model.price_source == "observed"
+
+
+def test_a_model_with_neither_is_unpriced_rather_than_free():
+    model = _hosted("x/y")
+    assert model.price is None
+    assert model.price_source == ""
+
+
 # --- caching -----------------------------------------------------------------------
 
 

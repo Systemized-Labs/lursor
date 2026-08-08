@@ -36,20 +36,19 @@ function labelFor(proc: BackgroundProcess): string {
   return afterCd || cmd || "background process"
 }
 
-/** A dot + short word describing a process's live state. */
+/** Dot colour per live state. Grey is "running, but not a server". */
+const STATUS_DOT: Record<BackgroundProcess["status"], string> = {
+  ready: "bg-emerald-500",
+  starting: "bg-amber-500 animate-pulse",
+  unhealthy: "bg-destructive",
+  running: "bg-muted-foreground/60",
+}
+
+/** A dot describing a process's live state. */
 function StatusDot({ proc }: { proc: BackgroundProcess }) {
-  const ready = Boolean(proc.url) && proc.ready
-  const starting = Boolean(proc.url) && !proc.ready
   return (
     <span
-      className={cn(
-        "h-1.5 w-1.5 rounded-full shrink-0",
-        ready
-          ? "bg-emerald-500"
-          : starting
-            ? "bg-amber-500 animate-pulse"
-            : "bg-muted-foreground/60"
-      )}
+      className={cn("h-1.5 w-1.5 rounded-full shrink-0", STATUS_DOT[proc.status])}
       aria-hidden
     />
   )
@@ -110,7 +109,7 @@ export function ProcessRows({
     <div className="flex flex-col">
       {processes.map((proc) => {
         const elapsed = formatElapsed(now / 1000 - proc.startedAt)
-        const ready = Boolean(proc.url) && proc.ready
+        const ready = proc.status === "ready"
         const expanded = expandedId === proc.id
         return (
           <div
@@ -216,7 +215,7 @@ function ProcessOutput({
     }
   }, [workspaceId, proc.id])
 
-  const ready = Boolean(proc.url) && proc.ready
+  const ready = proc.status === "ready"
   const url = proc.url ?? undefined
 
   return (
@@ -233,10 +232,19 @@ function ProcessOutput({
             {url.replace(/^https?:\/\//, "")}
           </button>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-            {url
-              ? "Waiting for the server to respond…"
-              : "Agent process — read-only"}
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-[11px]",
+              proc.status === "unhealthy"
+                ? "text-destructive"
+                : "text-muted-foreground"
+            )}
+          >
+            {proc.status === "unhealthy"
+              ? `${url?.replace(/^https?:\/\//, "")} stopped responding`
+              : url
+                ? "Waiting for the server to respond…"
+                : "Agent process — read-only"}
           </span>
         )}
         {ready && url && (
