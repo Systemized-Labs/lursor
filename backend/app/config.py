@@ -314,6 +314,13 @@ class Settings(BaseSettings):
     # the escape hatch if a small local model can't handle two-step discovery.
     tool_search_enabled: bool = True
 
+    # Model rounds a single agent turn (or delegated subagent run) may take, up
+    # from pydantic-ai's default of 50, which trips deep agents on tool-heavy
+    # turns before they can finish the work. See ``agents/builder.TURN_REQUEST_LIMIT``
+    # for where this is applied. Override with ``TURN_REQUEST_LIMIT`` if a
+    # workload needs more (or less) headroom than the default.
+    turn_request_limit: int = 300
+
     # --- laios control plane ---
     # Used to auto-seed a "local" laios connection on startup when Lursor runs
     # alongside a daemon (the supervisor injects these). LAIOS_MASTER_KEY takes
