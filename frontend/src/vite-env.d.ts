@@ -36,6 +36,23 @@ interface ElectronBridge {
    * connection is local and forwarding is unnecessary.
    */
   readonly forwardPort: (port: number) => Promise<number | null>
+  /**
+   * Begin a native drag of a workspace file, so it can be dropped into Finder or
+   * another app as a real file — which an HTML5 drag cannot offer. The renderer
+   * cancels its own drag and calls this; see `lib/file-drag-out.ts`.
+   *
+   * `absPath` is the file's path on the backend host. It is used directly on a
+   * local connection; a remote one downloads the bytes to a temp copy first, which
+   * is why this resolves rather than returning nothing.
+   */
+  readonly startFileDrag: (item: {
+    workspaceId: string
+    /** POSIX path relative to the workspace root. */
+    path: string
+    name: string
+    isDir: boolean
+    absPath: string
+  }) => Promise<{ ok: true } | { ok: false; error: string }>
 
   /** Subscribe to desktop update state. Returns its own unsubscribe function. */
   readonly onUpdateState: (

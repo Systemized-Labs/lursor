@@ -72,6 +72,26 @@ paths and their own HMR sockets — a path-prefixed proxy means rewriting HTML, 
 socket payloads per framework. Keeping the port number identical also keeps the
 address the dev server printed the address that works.
 
+## Dragging files out
+
+A row in the file explorer can be dragged out of the window into Finder, an editor
+or a chat box. Only `webContents.startDrag` can promise a *file* to the OS, and it
+lives in main, so the renderer cancels its own HTML drag and hands the item over
+(`file:drag`, called through `window.electron.startFileDrag`) — see
+`src/lib/file-drag-out.ts`.
+
+On a local connection the dragged file is the workspace path itself. On a remote one
+that path is on the other machine, so main downloads the bytes into a temp copy
+first (with the bearer token) and drags that; the staging dir is removed on quit.
+The path is trusted *only* when the connection is local — two machines with the same
+checkout at the same path would otherwise hand the drop target the wrong file.
+Folders can't cross a remote connection, and a staged file is capped at 64 MB: the
+drag has to become a file while the mouse is still down.
+
+In a plain browser there is no native drag, so the same helper falls back to
+Chromium's `DownloadURL` promise (Finder accepts it; the backend serves the bytes on
+drop) plus the path as `text/plain`.
+
 ## Layout
 
 ```
@@ -79,7 +99,8 @@ frontend/
   electron/
     main.cjs           Main process: connection bootstrap, backend lifecycle
                        (spawn/health/teardown), window, splash/error screens,
-                       auth-header injection, menu, single-instance lock.
+                       auth-header injection, file drag-out, menu,
+                       single-instance lock.
     connections.cjs    Saved connections: read/write, token encryption, URL rules.
     connect.html       The connection picker (plain HTML — runs before any backend).
     port-forward.cjs   Local TCP listeners piped to /api/tunnel on a remote backend.

@@ -456,6 +456,189 @@ ipcMain.handle("open-external", (_event, url) => {
 })
 
 // ---------------------------------------------------------------------------
+// Dragging files out
+// ---------------------------------------------------------------------------
+//
+// A file dragged out of the explorer has to leave the window as a *real file* —
+// Finder, Slack and every editor want a path on this machine, and an HTML5 drag
+// can only offer text. `webContents.startDrag` is the only thing that can promise
+// a file to the OS, and it lives in main, so the renderer cancels its own drag
+// (see lib/file-drag-out.ts) and hands the item over here.
+//
+// Local connection: the workspace is on this disk, so the path the tree already
+// computes for "Copy path" is the file. Remote: it isn't here at all, so the bytes
+// are staged into a temp copy first and the drag carries that.
+
+/** Temp dir holding staged copies of remote files; removed on quit. */
+let dragStagingDir = null
+
+/**
+ * Cap on a remote file staged for a drag.
+ *
+ * A drag has to become a file while the mouse is still down, so this is bounded by
+ * patience rather than by disk: past a certain size the gesture is over before the
+ * download is, and a silent no-op is a worse answer than "too big to drag".
+ */
+const DRAG_STAGE_MAX_BYTES = 64 * 1024 * 1024
+
+/** Where staged copies go, created on first use. */
+function stagingDir() {
+  if (!dragStagingDir) {
+    dragStagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "lursor-drag-"))
+  }
+  return dragStagingDir
+}
+
+/**
+ * Download one workspace file from the active backend into a temp copy.
+ *
+ * Each drag gets its own subdirectory, so two files with the same name from
+ * different folders don't overwrite each other, and the name the OS shows on the
+ * dropped file is the real one.
+ *
+ * @returns {Promise<{ file: string } | { error: string }>}
+ */
+function stageRemoteFile(workspaceId, relPath, name) {
+  const connection = activeConnection
+  if (!connection) return Promise.resolve({ error: "Not connected to a backend." })
+
+  let url
+  try {
+    url = new URL(
+      `${connection.apiBase.replace(/\/$/, "")}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/files/raw?path=${encodeURIComponent(relPath)}`
+    )
+  } catch {
+    return Promise.resolve({ error: "Couldn’t resolve the file’s address." })
+  }
+
+  // basename, always: the name is only ever a leaf here, and a "../" in it would
+  // otherwise write outside the staging dir.
+  const dir = fs.mkdtempSync(path.join(stagingDir(), "item-"))
+  const file = path.join(dir, path.basename(name) || "file")
+
+  return new Promise((resolve) => {
+    const transport = url.protocol === "https:" ? https : http
+    const req = transport.get(
+      url,
+      {
+        headers: connection.token
+          ? { Authorization: `Bearer ${connection.token}` }
+          : {},
+      },
+      (res) => {
+        if ((res.statusCode ?? 0) !== 200) {
+          res.resume()
+          resolve({ error: `The backend answered with HTTP ${res.statusCode ?? 0}.` })
+          return
+        }
+        const out = fs.createWriteStream(file)
+        let written = 0
+        res.on("data", (chunk) => {
+          written += chunk.length
+          if (written > DRAG_STAGE_MAX_BYTES) {
+            req.destroy()
+            out.destroy()
+            resolve({
+              error: "That file is too large to drag from a remote workspace.",
+            })
+          }
+        })
+        res.pipe(out)
+        out.on("finish", () => resolve({ file }))
+        out.on("error", () => resolve({ error: "Couldn’t write a local copy." }))
+      }
+    )
+    req.on("error", () => resolve({ error: "Couldn’t reach the backend." }))
+    // Generous, because the drag is already lost if it takes this long — the timeout
+    // exists to release the request, not to bound the gesture.
+    req.setTimeout(30_000, () => {
+      req.destroy()
+      resolve({ error: "The download timed out." })
+    })
+  })
+}
+
+/**
+ * The icon the cursor carries during the drag.
+ *
+ * The real file icon is what the OS would show, so ask for that first; `startDrag`
+ * rejects an empty image, so fall back to the app icon and let the caller report
+ * the throw if even that is missing.
+ */
+async function dragIcon(filePath) {
+  try {
+    const icon = await app.getFileIcon(filePath, { size: "normal" })
+    if (icon && !icon.isEmpty()) return icon
+  } catch {
+    /* No icon for this path — the app's own will do. */
+  }
+  if (APP_ICON.isEmpty()) return APP_ICON
+  return APP_ICON.resize({ width: 64, height: 64 })
+}
+
+/**
+ * Start a native drag of a workspace file or folder.
+ *
+ * `absPath` is trusted only on a local connection: with a remote backend it is a
+ * path on *that* machine, and a machine with the same checkout at the same place
+ * would otherwise hand the drop target a different file with the right name.
+ *
+ * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
+ */
+ipcMain.handle("file:drag", async (event, request) => {
+  const name = path.basename(String(request?.name ?? ""))
+  const relPath = String(request?.path ?? "")
+  const absPath = String(request?.absPath ?? "")
+  const workspaceId = String(request?.workspaceId ?? "")
+  const isDir = Boolean(request?.isDir)
+  if (!name) return { ok: false, error: "Nothing to drag." }
+
+  let file = ""
+  if (activeConnection?.kind === "remote") {
+    if (isDir) {
+      return {
+        ok: false,
+        error: "Folders on a remote backend can’t be dragged out — only files.",
+      }
+    }
+    if (!workspaceId || !relPath) return { ok: false, error: "Nothing to drag." }
+    const staged = await stageRemoteFile(workspaceId, relPath, name)
+    if ("error" in staged) return { ok: false, error: staged.error }
+    file = staged.file
+  } else {
+    // No path means the tree hasn't resolved the workspace root yet, which is a
+    // different answer from a path that isn't there — and it fixes itself.
+    if (!absPath) {
+      return { ok: false, error: "Still resolving the workspace path — try again." }
+    }
+    if (!fs.existsSync(absPath)) {
+      return { ok: false, error: `Couldn’t find ${name} on disk.` }
+    }
+    file = absPath
+  }
+
+  try {
+    event.sender.startDrag({ files: [file], icon: await dragIcon(file) })
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err?.message || "The drag couldn’t be started." }
+  }
+})
+
+/** Drop the staged copies. Best-effort: a leftover temp dir is not worth a crash. */
+function clearDragStaging() {
+  if (!dragStagingDir) return
+  try {
+    fs.rmSync(dragStagingDir, { recursive: true, force: true })
+  } catch {
+    /* The OS will reap it. */
+  }
+  dragStagingDir = null
+}
+
+// ---------------------------------------------------------------------------
 // Connections
 // ---------------------------------------------------------------------------
 
@@ -1144,6 +1327,7 @@ app.on("window-all-closed", () => {
 /** Everything the app owns outside its own process. */
 function teardown() {
   portForward.closeAll()
+  clearDragStaging()
   killBackend()
 }
 

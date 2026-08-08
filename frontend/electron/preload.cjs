@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld("electron", {
   // Forward a port on the backend host to 127.0.0.1 here, resolving to the local
   // port it landed on. Null in local mode, where the port is already local.
   forwardPort: (port) => ipcRenderer.invoke("forward:open", port),
+  // Hand a workspace file to the OS as a real file drag, so it can be dropped into
+  // Finder or another app. Only main can do this (webContents.startDrag), so the
+  // renderer cancels its own HTML drag and calls this instead.
+  startFileDrag: (item) => ipcRenderer.invoke("file:drag", item),
 
   // --- Desktop updates ---
   // The offer lives in the React app rather than in a native dialog, so main has to

@@ -1037,6 +1037,17 @@ undo stay in step, while each editor keeps its own scroll and cursor because vie
 state lives on the editor, not the model. Below `MIN_SPLIT_WIDTH` the split
 control is disabled with a reason rather than producing two unreadable columns.
 
+**A file leaves the window as a file, not as text.** Explorer rows are `draggable`
+and go through `lib/file-drag-out.ts`, which has two mechanisms because the renderer
+has no way to promise a file to the OS: in the desktop app it cancels its own drag
+and lets the main process run a native one (`file:drag` →
+`webContents.startDrag`), and in a browser it falls back to Chromium's `DownloadURL`
+promise plus the path as `text/plain`. A remote connection stages a temp copy of the
+downloaded bytes rather than dragging the path, which is a path on the *other*
+machine — see [`docs/ELECTRON.md`](docs/ELECTRON.md). Nothing in the tree reorders,
+so a draggable row can only ever mean "out"; the composer's drop handler ignores a
+drag carrying no `files`, so dragging a row over the chat is a no-op there.
+
 A search result — or any `OpenFileRequest` carrying a `line` — travels as a
 `RevealTarget` on the `OpenFile`, is applied on editor mount, and is then cleared,
 so a later re-render can't drag the cursor back. A reveal also forces a Markdown

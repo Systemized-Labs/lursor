@@ -54,6 +54,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { startFileDragOut } from "@/lib/file-drag-out"
 import { requestOpenPreview } from "@/lib/open-preview"
 import { cn, copyToClipboard } from "@/lib/utils"
 
@@ -143,6 +144,12 @@ interface ExplorerContextValue {
   requestDelete: (entry: DirEntry) => void
   /** Put a row's absolute on-disk path on the clipboard. */
   copyPath: (path: string) => Promise<void>
+  /**
+   * The workspace's root on the backend host, or "" until it has loaded. Rows need
+   * it to name themselves absolutely — for the clipboard, and for a drag out of the
+   * window (see {@link startFileDragOut}).
+   */
+  workspaceRoot: string
   /** Git state per row; every row is clean outside a repo. */
   gitStatus: GitStatusIndex
 }
@@ -333,6 +340,7 @@ export function FileExplorer({
     requestRename,
     requestDelete,
     copyPath,
+    workspaceRoot,
     gitStatus,
   }
 
@@ -540,6 +548,7 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
     requestRename,
     requestDelete,
     copyPath,
+    workspaceRoot,
     gitStatus,
   } = useExplorer()
   // Open state is tracked so the skill scan only runs for a folder someone has
@@ -575,6 +584,20 @@ function TreeNode({ entry, depth }: TreeNodeProps) {
             type="button"
             onClick={() =>
               entry.is_dir ? toggle(entry.path) : onOpenFile(entry.path, entry.name)
+            }
+            // Rows leave the window as real files: in the desktop app the drag is
+            // handed to the main process, in a browser it goes out as a download
+            // promise plus the path as text. Nothing in the tree reorders, so a row
+            // being draggable can only mean "out".
+            draggable
+            onDragStart={(event) =>
+              startFileDragOut(event, {
+                workspaceId,
+                path: entry.path,
+                name: entry.name,
+                isDir: entry.is_dir,
+                absPath: workspaceRoot ? absolutePath(workspaceRoot, entry.path) : "",
+              })
             }
             style={{ paddingLeft }}
             aria-expanded={entry.is_dir ? expanded : undefined}
