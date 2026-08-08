@@ -66,6 +66,12 @@ let backendKilled = false
 let activeConnection = null
 /** Why the last connection attempt failed, surfaced on the picker. */
 let lastConnectionError = ""
+/**
+ * Whether the load-failure screen is currently up. Latched so the error screen's own
+ * navigation cannot re-enter the handler that showed it, and cleared on the next load
+ * that does succeed.
+ */
+let loadFailureShown = false
 
 // ---------------------------------------------------------------------------
 // Backend lifecycle
@@ -348,9 +354,43 @@ function createWindow() {
   // nobody, and since `autoInstallOnAppQuit` stays false it would simply never be
   // offered. The splash and picker documents ignore it.
   mainWindow.webContents.on("did-finish-load", () => {
+    loadFailureShown = false
     if (updateState.phase !== "idle" && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("update:state", updateState)
     }
+  })
+
+  // A failed navigation leaves the *previous* document up rather than blanking the
+  // window. During startup that document is the splash, so anything that breaks the
+  // handoff in `loadApp` leaves it spinning "Bringing up the backend…" forever —
+  // describing a backend that is already healthy, and giving the user nothing to act
+  // on. Say what actually failed instead.
+  //
+  // Two things are deliberately not treated as failures. ERR_ABORTED (-3) is reported
+  // by any navigation that supersedes one still in flight, which is exactly what the
+  // splash-to-app handoff does. And subframe loads are the page's business, not the
+  // window's — a dead iframe must not replace a working app with an error screen.
+  mainWindow.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3 || loadFailureShown) return
+      console.error(
+        `[window] load failed (${errorCode} ${errorDescription}): ${validatedURL}`
+      )
+      // Latched so the error screen's own load can't feed back into this handler.
+      loadFailureShown = true
+      showLoadError(`The window could not load (${errorDescription}).`)
+    }
+  )
+
+  // A dead renderer has the same consequence as a failed load — the window keeps
+  // showing whatever happened to be there — so it gets the same treatment. A clean
+  // exit is just a process being recycled around a navigation, not a crash.
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    if (details?.reason === "clean-exit" || loadFailureShown) return
+    console.error("[window] renderer gone:", details?.reason)
+    loadFailureShown = true
+    showLoadError(`The interface process stopped unexpectedly (${details?.reason}).`)
   })
 
   mainWindow.on("closed", () => {
@@ -381,6 +421,24 @@ function showBackendError() {
     screenHtml(
       "Backend failed to start",
       "Lursor could not start its backend. Please quit and reopen the app; if the problem persists, check Console for [backend] logs.",
+      false
+    )
+  )
+}
+
+/**
+ * Report a navigation that never landed.
+ *
+ * Distinct from {@link showBackendError}: there the backend is the suspect and we
+ * never got as far as the interface. Here the backend answered and it is the
+ * renderer — or the bundle it was asked to load — that failed.
+ */
+function showLoadError(reason) {
+  if (!mainWindow) return
+  mainWindow.loadURL(
+    screenHtml(
+      "Lursor could not load its interface",
+      `${reason} The backend is running; it is the window that failed. Quit and reopen the app — if that doesn't clear it, reinstall with the command in docs/INSTALL.md.`,
       false
     )
   )
